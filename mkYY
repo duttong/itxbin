@@ -1,0 +1,14 @@
+site=$1
+YY=$2
+
+cd /hats/gc/$site
+
+mkdir $YY
+cd $YY
+mkdir chromatograms chroms_itx data eng_data  
+
+cd chromatograms
+mkdir channel0 channel1 channel2 channel3
+
+cd ../data
+mkdir flags run.summary
