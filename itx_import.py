@@ -3,6 +3,7 @@ VERSION = 1.21
 ''' Added the 'wide_spike_filter' routine.  GSD 150102
     Improved the speed of parse_chroms() by factor of 3.  GSD 150218
     Capture IndexError on wide spike filter.  GSD 150508
+    Now uses python3  GSD 170104
 '''
 
 import argparse
@@ -27,13 +28,12 @@ class ITX():
         self.chans = self.countchans()
         self.datafreq = self.samplefreq()       # Hz
         self.name = self.chromname()
-        self.chroms = self.parse_chroms()
+        self.chroms = self.load_chroms()
         if saveorig == True:
             self.org = np.copy(self.chroms)     # save original data
 
     def load(self):
         """ Loads content of file into memory.
-        
             Handles gziped files too.
         """
         if self.file[-3:] == '.gz' or self.file[-2:] == '.Z':
@@ -96,35 +96,26 @@ class ITX():
         hh, mm, ss = time.split(':')
         return yyyy[2:4]+mn+dd+'.'+hh+mm+'.'+str(ssv)
 
+    '''   
+    Old version  
     def parse_chroms(self):
         """ parses data into chroms array """
         lastrow = self.chans + 2
         raw = self.data[4:-lastrow]     # string data for all channels
         return np.array([map(int,raw[i].split()) for i in range(len(raw))]).transpose()
-        
-    '''   
-    Old version  
-    def parse_chroms(self):
-        """ parses data into chroms array """
-        import re
-        chroms = np.zeros(self.chans*len(self.data), dtype=np.int32).reshape(self.chans, len(self.data))
-        row = 0
-        for line in self.data:
-            if re.search("[a-zA-Z]", line) is None:
-                onerowdata = re.findall("\d+", line)
-                if len(onerowdata) == self.chans:
-                    for ch in range(self.chans):
-                        chroms[ch, row] = np.uint32(onerowdata[ch])
-                    row += 1
-            
-        return chroms[0:self.chans, 0:row]
     '''
-        
+    def load_chroms(self):
+        """ uses numpy genfromtxt to load the chrom data
+            probably would be faster to read self.data but can't get it to work
+        """
+        lastrow = self.chans + 2
+        return np.genfromtxt(self.file, skip_header=3, skip_footer=lastrow).transpose()
+            
     def write(self):
         """ writes chroms to stdout """
         print("name %s" % self.name)
         print("hz %2d" % self.datafreq)
-        for r in range(self.chroms.shape[1]):
+        for r in range(self.chans):
             l = ''.join([str(self.chroms[c, r])+' ' for c in range(self.chans)])
             print(l)
             
@@ -192,13 +183,16 @@ class ITX():
                 self.chroms[ch, pt0:pt1] = [m*x+b for x in range(pt0,pt1)]
                                     
     def savitzky_golay(self, ch, winsize=21, order=4):
+        from scipy.signal import savgol_filter
         """ applies the savitzky golay smoothing algo """
         if ch == 'all':
             for c in range(self.chans):
                 self.savitzky_golay(c, winsize=winsize, order=order)
-        else:       
+        else:
+            print(chroms)       
             y = self.chroms[ch, :]
-            ysg = gmd_smoothing.savitzky_golay(y, window_size=winsize, order=order)
+            #ysg = gmd_smoothing.savitzky_golay(y, window_size=winsize, order=order)
+            ysg = savgol_filter(y, winsize, order)
             self.chroms[ch] = ysg
                     
     def display(self, ch):

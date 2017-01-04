@@ -51,13 +51,13 @@ def savitzky_golay(y, window_size, order, deriv=0):
     try:
         window_size = np.abs(np.int(window_size))
         order = np.abs(np.int(order))
-    except ValueError, msg:
+    except ValueError as msg:
         raise ValueError("window_size and order have to be of type int")
     if window_size % 2 != 1 or window_size < 1:
         raise TypeError("window_size size must be a positive odd number")
     if window_size < order + 2:
         raise TypeError("window_size is too small for the polynomials order")
-    order_range = range(order+1)
+    order_range = list(range(order+1))
     half_window = (window_size - 1) // 2
     # precompute coefficients
     b = np.mat([[k**i for i in order_range] for k in range(-half_window, half_window+1)])
@@ -105,16 +105,16 @@ def smooth(x,window_len=11,window='hanning'):
     """
 
     if x.ndim != 1:
-        raise ValueError, "smooth only accepts 1 dimension arrays."
+        raise ValueError("smooth only accepts 1 dimension arrays.")
 
     if x.size < window_len:
-        raise ValueError, "Input vector needs to be bigger than window size."
+        raise ValueError("Input vector needs to be bigger than window size.")
 
     if window_len<3:
         return x
 
     if not window in ['flat', 'hanning', 'hamming', 'bartlett', 'blackman']:
-        raise ValueError, "Window is on of 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'"
+        raise ValueError("Window is on of 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'")
 
 
     s = np.r_[x[window_len-1:0:-1],x,x[-1:-window_len:-1]]
