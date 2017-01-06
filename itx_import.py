@@ -28,7 +28,7 @@ class ITX():
         self.chans = self.countchans()
         self.datafreq = self.samplefreq()       # Hz
         self.name = self.chromname()
-        self.chroms = self.load_chroms()
+        self.chroms = self.parse_chroms()
         if saveorig == True:
             self.org = np.copy(self.chroms)     # save original data
 
@@ -37,13 +37,12 @@ class ITX():
             Handles gziped files too.
         """
         if self.file[-3:] == '.gz' or self.file[-2:] == '.Z':
-            return [line.strip() for line in GzipFile(self.file)]
+            return [line.strip().decode() for line in GzipFile(self.file)]
         else:
             return [line.strip() for line in open(self.file)]
         
     def countchans(self):
         """ Returns the number of columns of data. 
-        
             It is currently hard coded to line 20 of an itx file.
         """
         try: 
@@ -84,7 +83,7 @@ class ITX():
         """
         l = self.data[-1]
         if l.find('SetScale') > -1:
-            rate = float(self.data[-1].split(',')[2])
+            rate = float(l.split(',')[2])
             return int(1/rate)
         else:
             return None
@@ -96,26 +95,17 @@ class ITX():
         hh, mm, ss = time.split(':')
         return yyyy[2:4]+mn+dd+'.'+hh+mm+'.'+str(ssv)
 
-    '''   
-    Old version  
     def parse_chroms(self):
         """ parses data into chroms array """
         lastrow = self.chans + 2
         raw = self.data[4:-lastrow]     # string data for all channels
-        return np.array([map(int,raw[i].split()) for i in range(len(raw))]).transpose()
-    '''
-    def load_chroms(self):
-        """ uses numpy genfromtxt to load the chrom data
-            probably would be faster to read self.data but can't get it to work
-        """
-        lastrow = self.chans + 2
-        return np.genfromtxt(self.file, skip_header=3, skip_footer=lastrow).transpose()
-            
+        return np.array([list(map(int,raw[i].split())) for i in range(len(raw))]).transpose()
+         
     def write(self):
         """ writes chroms to stdout """
         print("name %s" % self.name)
         print("hz %2d" % self.datafreq)
-        for r in range(self.chans):
+        for r in range(self.chroms.shape[1]):
             l = ''.join([str(self.chroms[c, r])+' ' for c in range(self.chans)])
             print(l)
             
@@ -189,7 +179,6 @@ class ITX():
             for c in range(self.chans):
                 self.savitzky_golay(c, winsize=winsize, order=order)
         else:
-            print(chroms)       
             y = self.chroms[ch, :]
             #ysg = gmd_smoothing.savitzky_golay(y, window_size=winsize, order=order)
             ysg = savgol_filter(y, winsize, order)
