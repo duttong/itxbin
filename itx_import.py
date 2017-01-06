@@ -99,7 +99,7 @@ class ITX():
         """ parses data into chroms array """
         lastrow = self.chans + 2
         raw = self.data[4:-lastrow]     # string data for all channels
-        return np.array([list(map(int,raw[i].split())) for i in range(len(raw))]).transpose()
+        return np.array([[int(x) for x in r.split()] for r in raw]).transpose()
          
     def write(self):
         """ writes chroms to stdout """
