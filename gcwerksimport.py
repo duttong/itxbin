@@ -53,10 +53,10 @@ class GCwerks_import():
         """
 
         # list of files for a site that need to be imported
-        files = list(self.chromsdir.glob('*.*.itx'))
-        files += list(self.chromsdir.glob('*.*.itx.gz'))
+        files = list(self.chromsdir.glob('*.*[0-9].itx'))
+        files += list(self.chromsdir.glob('*.*[0-9].itx.gz'))
         if ('all', True) in self.options.items():
-            files += list(self.chromsdir.glob('*.*.itx.Z'))
+            files += list(self.chromsdir.glob('*.*[0-9].itx.Z'))
 
         cmd = f'{self.path}itxbin/itx_import.py '
         werks = f'{self.path}gcwerks-3/bin/chromatogram_import -gcdir {self.path}{self.site} > /dev/null 2>&1'
