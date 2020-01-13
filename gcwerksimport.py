@@ -1,12 +1,12 @@
 #! /home/hats/gdutton/anaconda3/bin/python
 
-''' Added itx_import filters to optional arguments.  GSD 150227
+""" Added itx_import filters to optional arguments.  GSD 150227
     The shebang is pointed to gdutton anaconda directory since python3.6 is
     not installed on catsdata. Hopefully, this will work for other users or the code.
 
     Python 3.6 f formating added 180219
     linted 191212
-'''
+"""
 
 from glob import glob
 import argparse
@@ -16,6 +16,7 @@ import gzip
 import shutil
 import multiprocessing
 from datetime import date
+from pathlib import Path
 
 import quickindex
 cats_sites = ('brw','sum','nwr','mlo','smo','spo')
@@ -31,7 +32,7 @@ class GCwerks_import():
         if 'yyyy' not in self.options:
             self.options['yyyy'] = today.year
         yy = self.options['yyyy'][2:] if len(self.options['yyyy']) == 4 else self.options['yyyy']
-        self.chromsdir = self.path + self.site + '/' + yy + '/chroms_itx/'
+        self.chromsdir = Path(f'{self.path}/{self.site}/{yy}/chroms_itx')
         self.permission()
 
     def permission(self):
@@ -51,22 +52,13 @@ class GCwerks_import():
             /hats/gc/itxbin/itx_import.py -g 2012nwr1672338.a1.itx.gz | /hats/gc/gcwerks-3/bin/chromatogram_import -gcdir /hats/gc/nwr
         """
 
-        if self.site == 'bld1' or self.site == 'agc1':
-            files = glob(self.chromsdir+'*.itx') + glob(self.chromsdir+'*.itx.gz')
-            if ('all', True) in self.options.items():
-                files += glob(self.chromsdir+'*.itx.Z')
-        elif self.site == 'std' or self.site == 'stdhp':
-            ''' Standard GCs '''
-            files = glob(self.chromsdir+'*.itx') + glob(self.chromsdir+'*.itx.gz')
-            if ('all', True) in self.options.items():
-                files += glob(self.chromsdir+'*.itx.Z')
-        else:
-            ''' CATS sites '''
-            files = glob(self.chromsdir+'*.??.itx') + glob(self.chromsdir+'*.??.itx.gz')
-            if ('all', True) in self.options.items():
-                files += glob(self.chromsdir+'*.??.itx.Z')
+        # list of files for a site that need to be imported
+        files = list(self.chromsdir.glob('*.*.itx'))
+        files += list(self.chromsdir.glob('*.*.itx.gz'))
+        if ('all', True) in self.options.items():
+            files += list(self.chromsdir.glob('*.*.itx.Z'))
 
-        cmd = self.path + 'itxbin/itx_import.py '
+        cmd = f'{self.path}itxbin/itx_import.py '
         werks = f'{self.path}gcwerks-3/bin/chromatogram_import -gcdir {self.path}{self.site} > /dev/null 2>&1'
 
         # apply spike filter before SG smoothing
@@ -102,12 +94,13 @@ class GCwerks_import():
         """ calls itximport on an .itx file and pipes content to gcwerks' chromatogram_import
             Maybe os.system should be replaced with subprocess.Popen?
         """
-        os.system(cmd + " " + file + " | " + werks)
+        os.system(f'{cmd} {file} | {werks}')
         if ('v', True) in self.options.items():
-            print(f'   {os.path.basename(file)}')
+            print(f'   {file.name}')
 
     @staticmethod
     def compress_to_Z(file):
+        file = str(file)    # file is a pathlib filetype
         with open(file, 'rb') as f_in, gzip.open(file+'.Z', 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
             os.remove(file)
@@ -120,7 +113,7 @@ class GCwerks_import():
         """
 
         """ compress .itx files to .Z files """
-        files = glob(self.chromsdir + '*.itx')
+        files = list(self.chromsdir.glob('*.itx'))
         if len(files) > 0:
             print('Compressing *.itx files.')
             with multiprocessing.Pool() as pool:
@@ -128,11 +121,9 @@ class GCwerks_import():
                     pass
 
         """ rename .gz file to .Z files """
-        files = glob(self.chromsdir + '*.gz')
-        if len(files) > 0:
-            print('Renameing *.gz files')
-            for file in files:
-                os.rename(file, file[:-2]+'Z')
+        for file in self.chromsdir.glob('*.gz'):
+            file.rename(str(file)[:-2]+'Z')
+            #os.rename(file, file[:-2]+'Z')
 
     def main(self):
         self.import2gcwerks()
@@ -142,11 +133,11 @@ class GCwerks_import():
         #idx.updateindex(self.options['yyyy'])
         #os.system('/hats/gc/itxbin/quickindex.py ' + self.site)
         # recreate index files for GCwerks -- not needed.  GCwerks adds to the index file.
-        os.system('/hats/gc/gcwerks-3/bin/run-index -gcdir /hats/gc/' + self.site)
+        os.system(f'/hats/gc/gcwerks-3/bin/run-index -gcdir /hats/gc/{self.site}')
 
         # updates integration and mixing ratios
-        call(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', '/hats/gc/'+self.site])
-        call(['/hats/gc/gcwerks-3/bin/gccalc', '-gcdir', '/hats/gc/'+self.site, '-1'])
+        call(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', f'/hats/gc/{self.site}'])
+        call(['/hats/gc/gcwerks-3/bin/gccalc', '-gcdir', f'/hats/gc/{self.site}', '-1'])
 
 
 if __name__ == '__main__':
