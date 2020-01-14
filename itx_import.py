@@ -8,21 +8,23 @@
 
 import argparse
 import numpy as np
-from gzip import GzipFile
+import gzip
 import os.path
+import os
+import shutil
 
 import gmd_smoothing
 
-VERSION = 1.22
+VERSION = 1.23
 
 
 class ITX():
     """ Igor Pro Text File Class """
 
     def __init__(self, itxfile, saveorig=False):
-        self.file = itxfile
+        self.file = str(itxfile)
         if os.path.getsize(self.file) < 100:
-            print('File too small: {}'.format(self.file))
+            print(f'File too small: {self.file}')
             self.data = None
             return
 
@@ -39,7 +41,7 @@ class ITX():
             Handles gziped files too.
         """
         if self.file[-3:] == '.gz' or self.file[-2:] == '.Z':
-            return [line.strip().decode() for line in GzipFile(self.file)]
+            return [line.strip().decode() for line in gzip.GzipFile(self.file)]
         else:
             return [line.strip() for line in open(self.file)]
 
@@ -53,16 +55,6 @@ class ITX():
             cols = 0
         return cols
 
-    def SSVfromFilename(self):
-        """ Determines the SSV position from the itx file name.  """
-        ports = {'c1': 2, 'a1': 4, 'c2': 6, 'a2': 8}
-        ssv = 0
-        p = self.file.find('.itx')
-        if p > -1 and self.file.find('_') == -1:  # excludes cal3 injections
-            port = self.file[p-2:p]
-            ssv = ports[port]
-        return ssv
-
     def wavenote(self):
         """ returns date and time of injection and the SSV positions.
             this method could also return injection press and temp, etc.
@@ -74,7 +66,6 @@ class ITX():
             date = ll[2].strip()
             time = ll[3].strip()
             ssv = int(ll[4].strip())
-            #ssv = self.SSVfromFilename()
             return [date, time, ssv]
         else:
             return ['01-01-2001', '00:00:00', -1]
@@ -95,21 +86,30 @@ class ITX():
         time, date, ssv = self.wavenote()
         mn, dd, yyyy = date.split('-')
         hh, mm, ss = time.split(':')
-        return yyyy[2:4]+mn+dd+'.'+hh+mm+'.'+str(ssv)
+        return f'{yyyy[2:4]}{mn}{dd}.{hh}{mm}.{ssv}'
 
     def parse_chroms(self):
         """ parses data into chroms array """
         lastrow = self.chans + 2
         raw = self.data[4:-lastrow]     # string data for all channels
-        return np.array([[int(x) for x in r.split()] for r in raw]).transpose()
+        try:
+            return np.array([[int(x) for x in r.split()] for r in raw]).transpose()
+        except ValueError:
+            # handle some early fe3 files that were floats instead of ints
+            return np.array([[int(float(x)*1000) for x in r.split()] for r in raw]).transpose()
 
-    def write(self):
-        """ writes chroms to stdout """
-        print("name %s" % self.name)
-        print("hz %2d" % self.datafreq)
+    def write(self, stdout=True):
+        """ writes chroms to a string.
+            The string can be sent with subprocess.run to GCwerks.
+            Write to stdout if piping processes together.
+        """
+        output = f'name {self.name}\nhz {self.datafreq}\n'
         for r in range(self.chroms.shape[1]):
             line = ''.join([str(self.chroms[c, r])+' ' for c in range(self.chans)])
-            print(line)
+            output += f'{line}\n'
+        if stdout:
+            print(output)
+        return output
 
     def spike_filter(self, ch, thresh=500):
         """ Applies a spike filter.  A spike is one data point wide.
@@ -184,6 +184,13 @@ class ITX():
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
 
+    @staticmethod
+    def compress_to_Z(file):
+        file = str(file)    # file is a pathlib filetype
+        with open(file, 'rb') as f_in, gzip.open(file+'.Z', 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+            os.remove(file)
+
     def display(self, ch):
         import matplotlib.pyplot as plt
         num = self.chroms.shape[1]
@@ -202,10 +209,6 @@ class ITX():
         #bx.plot(np.diff(self.org[ch, :]))
         #bx.set_xlabel('Time (s)')
         plt.show()
-
-    def lowess(self, ch):
-        #gmd_smoothing.lowess()
-        pass
 
 
 if __name__ == '__main__':
