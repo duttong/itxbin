@@ -133,7 +133,7 @@ class GCwerks_import():
         #idx.updateindex(self.options['yyyy'])
         #os.system('/hats/gc/itxbin/quickindex.py ' + self.site)
         # recreate index files for GCwerks -- not needed.  GCwerks adds to the index file.
-        os.system(f'/hats/gc/gcwerks-3/bin/run-index -gcdir /hats/gc/{self.site}')
+        call([f'/hats/gc/gcwerks-3/bin/run-index', '-gcdir', f'/hats/gc/{self.site}'])
 
         # updates integration and mixing ratios
         call(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', f'/hats/gc/{self.site}'])
