@@ -186,14 +186,14 @@ class ITX():
 
     @staticmethod
     def compress_to_Z(file):
-        file = str(file)    # file is a pathlib filetype
+        sfile = str(file)    # file is a pathlib filetype
         # rename .gz file to .Z files
-        if file[-3:] == '.gz':
-            file.rename(file[:-2]+'Z')
+        if sfile[-3:] == '.gz':
+            file.rename(sfile[:-2]+'Z')
         # compress .itx file to .Z
-        with open(file, 'rb') as f_in, gzip.open(file+'.Z', 'wb') as f_out:
+        with open(sfile, 'rb') as f_in, gzip.open(sfile+'.Z', 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
-            os.remove(file)
+            os.remove(sfile)
 
     def display(self, ch):
         import matplotlib.pyplot as plt
@@ -219,6 +219,7 @@ if __name__ == '__main__':
 
     SGwin, SGorder = 21, 4      # Savitzky Golay default variables
     WSTART = -1                 # Wide spike filter start time
+    yyyy = date.today().year
 
     parser = argparse.ArgumentParser(description='Import chromatograms \
         in the Igor Text File (.itx) format')
