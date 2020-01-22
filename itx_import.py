@@ -12,6 +12,7 @@ import gzip
 import os.path
 import os
 import shutil
+from datetime import date
 
 import gmd_smoothing
 
@@ -225,7 +226,7 @@ if __name__ == '__main__':
         in the Igor Text File (.itx) format')
     parser.add_argument('-s', action="store_true", default=False,
                         help='Apply 1-point spike filter (default=False)')
-    parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
+    parser.add_argument('-W', action="store", dest='ws_start', default=WSTART, type=int,
                         help='Apply wide spike filter (default off)')
     parser.add_argument('-g', action="store_true", default=False,
                         help='Apply Savitzky Golay smoothing (default=False)')
