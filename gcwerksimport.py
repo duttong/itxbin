@@ -12,7 +12,7 @@ import gzip
 from itx_import import ITX
 
 
-class GCWerks_Import:
+class GCwerks_Import:
 
     def __init__(self, site, options, incoming_dir='chroms_itx'):
         self.options = vars(options)
@@ -106,5 +106,5 @@ if __name__ == '__main__':
             print(f'Working on {s}')
             werks.main()
     else:
-        werks = GCWerks_Import(options.site, options)
+        werks = GCwerks_Import(options.site, options)
         werks.main()

@@ -4,7 +4,25 @@ import argparse
 from datetime import date
 
 from itx_import import ITX
-from gcwerksimport import GCWerks_Import
+from gcwerksimport import GCwerks_Import
+
+
+class FE3_import(GCwerks_Import):
+
+    def __init__(self, site, args, incoming_dir='incoming'):
+        super().__init__(site, args, incoming_dir)
+
+    def mark_first_itx_bad(self):
+        for dir in self.incoming.glob('*-*'):
+            itxs = [itx for itx in sorted(list(dir.glob('*itx*')))]
+            first_itx = itxs[0].name
+            extension = first_itx[21:]
+            if extension == '.Z' or extension == '.gz':
+                itxs[0].rename(first_itx[:-(len(extension)-1)]+'B')
+            elif extension == '':
+                itx = ITX(itxs[0])
+                itx.compress_to_Z(extension='B')
+
 
 if __name__ == '__main__':
 
@@ -31,5 +49,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    fe3 = GCWerks_Import(args.site, args, 'incoming')
+    fe3 = FE3_import(args.site, args)
+    fe3.mark_first_itx_bad()
+    quit()
     fe3.main()
