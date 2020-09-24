@@ -30,7 +30,7 @@ class DataProcessing:
         flags = f'{mol}_flag'
         resp = f'{mol}_ht'      # hardcoded to ht
 
-        np_resp = df.loc[(df['port'] == ssv_norm_port) & (df[flags] is False)][resp]
+        np_resp = df.loc[(df['port'] == ssv_norm_port) & (df[flags] == False)][resp]
         if lowess:
             df[det] = self.make_lowess(np_resp)
         else:
@@ -110,7 +110,7 @@ class DataProcessing:
             a molecule and returns the coefs and x_fit, y_fit arrays. """
 
         dir_df = df.loc[df.dir == run].copy()
-        # dir_df = self.reduce_df(dir_df, mol)
+        dir_df = self.reduce_df(dir_df, mol)
 
         meth_for_run = dir_df[f'{mol}_meth'].values[0]
         detrend, fit_function = self.parse_method(meth_for_run)
@@ -124,7 +124,7 @@ class DataProcessing:
         dir_df[det] = self.detrend_response(dir_df, mol, ssv_norm_port, lowess=lowess)
 
         # fit to unflagged data
-        good = dir_df.loc[dir_df[f'{mol}_flag'] is False][[cal, det]].dropna()
+        good = dir_df.loc[dir_df[f'{mol}_flag'] == False][[cal, det]].dropna()
         good = good.sort_values([cal, det])
         x = good[cal].values
         y = good[det].values
@@ -193,10 +193,10 @@ class DataProcessing:
         cal0 = df.loc[(df['port'] == p0)][cal].values[0]  # cal val on p0
         cal1 = df.loc[(df['port'] == p1)][cal].values[0]  # cal val on p1
         # detrended response on p0
-        df1['r0'] = df.loc[(df['port'] == p0) & (df[flags] is False)][det]
+        df1['r0'] = df.loc[(df['port'] == p0) & (df[flags] == False)][det]
         df1['r0'] = df1['r0'].interpolate()
         # detrended response on p1
-        df1['r1'] = df.loc[(df['port'] == p1) & (df[flags] is False)][det]
+        df1['r1'] = df.loc[(df['port'] == p1) & (df[flags] == False)][det]
         df1['r1'] = df1['r1'].interpolate()
         # slope
         df1['m'] = (df1['r0']-df1['r1']) / (cal0-cal1)
