@@ -2,17 +2,18 @@ from PyQt5 import QtCore, QtWidgets
 import pandas as pd
 import numpy as np
 import numpy.polynomial.polynomial as poly
-from scipy.optimize import curve_fit
-from datetime import date, datetime
+# from scipy.optimize import curve_fit
+# from datetime import date, datetime
 import matplotlib.pyplot as plt
 from matplotlib.dates import num2date, AutoDateFormatter, AutoDateLocator, DateFormatter
-from pathlib import Path
+# from pathlib import Path
 
 import fe3_panel
 import fe3_incoming
 from processing_routines import DataProcessing
 
 np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
+
 
 class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing):
 
@@ -37,13 +38,14 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.methods = ['one-point', 'two-point', 'most recent cal curve']
         self.madechanges = False    # if True, save the DB when the app quits
         # different color for each SSV port (port 2 is for flask SSV)
-        self.colors = {0:'cornflowerblue', 1:'green', 2:'red', 3:'cyan', 4:'pink',
-                       5:'gray', 6:'orange', 7:'darkgreen', 8:'darkred', 9:'orange'}
-        self.flaggedcolor = (0,0,0,1)
+        self.colors = {0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
+                       5: 'gray', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'orange'}
+        self.flaggedcolor = (0, 0, 0, 1)
         self.flaskbgcolor = 'moccasin'
         self.flasktextcolor = 'maroon'
         # different marker for each flask port
-        self.markers = {0:'$1$', 1:'$2$', 2:'$3$', 3:'$4$', 4:'$5$', 5:'$6$', 6:'$7$', 7:'$8$'}
+        self.markers = {0: '$1$', 1: '$2$', 2: '$3$', 3: '$4$', 4: '$5$',
+                        5: '$6$', 6: '$7$', 7: '$8$'}
         self.markersize = 75    # points
 
         self.setupUi(self)
@@ -80,7 +82,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.initialize_run_filtering()
 
     def mol_clicked(self, button):
-        self.mol_select = button.text().replace('-','')
+        self.mol_select = button.text().replace('-', '')
         # make both buttons change together
         mainbutton = getattr(self, f'button_{self.mol_select}')
         mainbutton.setChecked(True)
@@ -88,7 +90,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         altbutton.setChecked(True)
         self.update_data_fig()
 
-    ############### Run selection code below ########################
+    # Run selection code below
     def initialize_run_filtering(self):
         """ Code for selecting a subset of runs from runs_df
             box_runs: are the current list of runs to view
@@ -123,7 +125,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if type == 'all':
             series = self.fe3data.dir
         else:
-            series = self.fe3data.loc[self.fe3data.type==type].dir
+            series = self.fe3data.loc[self.fe3data.type == type].dir
 
         if dates == 'last-two-weeks':
             series = series.last('2W')
@@ -142,7 +144,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.update_data_fig()
 
-    ################## code below for plotting figures ################
+    # code below for plotting figures
     def unique_ports(self, df, remove_flask_port=False):
         """ Returns a list of port numbers (with or
             without the flask_port) """
@@ -159,12 +161,12 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         plist = []
         for p in range(self.MAX_N_SSVports):
             if p == 0:
-                val = df.loc[df['port']==10, 'port_id'][0]
+                val = df.loc[df['port'] == 10, 'port_id'][0]
             elif p == 2:
                 val = 'Stop port'
             else:
                 try:
-                    val = df.loc[df['port']==p, 'port_id'][0]
+                    val = df.loc[df['port'] == p, 'port_id'][0]
                 except IndexError:
                     val = ''
             plist.append(val)
@@ -177,7 +179,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         flist = []
         for p in range(self.MAX_N_Flasks):
             try:
-                val = sub.loc[sub['flask_port']==p, 'port_id'][0]
+                val = sub.loc[sub['flask_port'] == p, 'port_id'][0]
             except IndexError:
                 val = ''
             flist.append(val)
@@ -188,7 +190,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             and molecule. """
 
         self.run_selected = self.box_runs.currentText()
-        self.sub = self.fe3data.loc[self.fe3data.dir==self.run_selected]
+        self.sub = self.fe3data.loc[self.fe3data.dir == self.run_selected]
         self.sub = self.reduce_df(self.sub, self.mol_select)
 
         # add column for cal tank values
@@ -204,7 +206,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         meth = f'{self.mol_select}_meth'
         det = 'lowess' if self.detrend_lowess.isChecked() else 'p2p'
         fit = self.comboBox_calcurve.currentText()
-        self.fe3data.loc[self.fe3data['dir']==dir, meth] = f'{det};{fit}'
+        self.fe3data.loc[self.fe3data['dir'] == dir, meth] = f'{det};{fit}'
 
         self.madechanges = True     # set to True to save changes
 
@@ -249,11 +251,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         df = self.sub.copy()
 
         port_list = self.portlist(df)
-        flask_list = self.flasklist(df)
 
         resp = f'{self.mol_select}_ht'      # hardcoded to height
         flags = f'{self.mol_select}_flag'
-        meth = f'{self.mol_select}_meth'
 
         self.checkBox_scale0.setEnabled(False)
         self.checkBox_one2one.setEnabled(False)
@@ -270,13 +270,13 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         # plot all ports except flask port
         for p in self.unique_ports(df, remove_flask_port=True):
-            x = df.loc[df['port']==p].index
-            y = df.loc[df['port']==p][resp]
+            x = df.loc[df['port'] == p].index
+            y = df.loc[df['port'] == p][resp]
 
-            c = self.colors[p%10]
-            facecolors = [c if flag == False else self.flaggedcolor for flag in df.loc[df['port']==p][flags]]
+            c = self.colors[p % 10]
+            facecolors = [c if flag is False else self.flaggedcolor for flag in df.loc[df['port'] == p][flags]]
             edgecolors = c
-            port_label = f'({p}) {port_list[p%10]}'
+            port_label = f'({p}) {port_list[p % 10]}'
 
             self.mpl_plot.canvas.ax2.scatter(x, y,
                 color=facecolors, edgecolors=edgecolors, s=self.markersize,
@@ -285,10 +285,10 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # individual flask data on flask port
         if self.ssv_flask_port in self.unique_ports(df):
             for n in range(self.MAX_N_Flasks):
-                x = df.loc[df['flask_port']==n].index
-                y = df.loc[df['flask_port']==n][resp]
+                x = df.loc[df['flask_port'] == n].index
+                y = df.loc[df['flask_port'] == n][resp]
 
-                facecolors = [self.flaskbgcolor if flag == False else self.flaggedcolor for flag in df.loc[df['flask_port']==n][flags]]
+                facecolors = [self.flaskbgcolor if flag is False else self.flaggedcolor for flag in df.loc[df['flask_port'] == n][flags]]
                 edgecolors = self.flaskbgcolor
 
                 # square marker behind numbered flask markers, this is used for flagging (the picker)
@@ -296,13 +296,13 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                     marker='s', color=facecolors, edgecolors=edgecolors,
                     s=self.markersize, picker=1)
                 # numbered flask markers
-                label = df.loc[df['flask_port']==n].port_id.values[0]
+                label = df.loc[df['flask_port'] == n].port_id.values[0]
                 self.mpl_plot.canvas.ax2.scatter(x, y,
                     marker=self.markers[n],
                     color=self.flasktextcolor, label=label)
 
         # detrend linear or lowess smooth line
-        norm = df.loc[(df['port']==self.ssv_norm_port) & (df[flags]==False)][resp]
+        norm = df.loc[(df['port'] == self.ssv_norm_port) & (df[flags] is False)][resp]
         if self.detrend_linear.isChecked():
             sm = norm
         else:
@@ -312,7 +312,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         xtick_locator = AutoDateLocator()
         xtick_formatter = AutoDateFormatter(xtick_locator)
         xtick_formatter = DateFormatter('%H:%M:%S')
-        #xtick_formatter.scaled[1/(24.*60.)] = '%H:%M:%S'
+        # xtick_formatter.scaled[1/(24.*60.)] = '%H:%M:%S'
         self.mpl_plot.canvas.ax2.xaxis.set_major_locator(xtick_locator)
         self.mpl_plot.canvas.ax2.xaxis.set_major_formatter(xtick_formatter)
 
@@ -324,7 +324,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax2.set_title(f'Response: {title_text}', loc='right')
         self.mpl_plot.canvas.ax2.legend(fontsize=8, loc=(1.04, uppermargin))
         self.mpl_plot.canvas.ax2.tick_params(labelsize=8)
-        #self.mpl_plot.canvas.fig.tight_layout()
+        # self.mpl_plot.canvas.fig.tight_layout()
         self.mpl_plot.canvas.draw()
         self.mpl_plot.toolbar.update()
 
@@ -334,7 +334,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         flags = f'{self.mol_select}_flag'
         det = f'{self.mol_select}_det'
 
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port, lowess=self.detrend_lowess.isChecked())
+        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
+                                        lowess=self.detrend_lowess.isChecked())
         port_list = self.portlist(df)
 
         self.checkBox_scale0.setEnabled(False)
@@ -351,17 +352,17 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         for p in self.unique_ports(df, remove_flask_port=True):
             # all data for a selected port
-            x = df.loc[df['port']==p].index
-            y = df.loc[df['port']==p][det]
+            x = df.loc[df['port'] == p].index
+            y = df.loc[df['port'] == p][det]
             # all unflagged data for a selected port
-            ygood = df.loc[(df['port']==p) & (df[flags]==False)][det]
+            ygood = df.loc[(df['port'] == p) & (df[flags] is False)][det]
 
             avg, std = ygood.mean(), ygood.std()
             if np.isnan(avg):
                 continue
 
-            c = self.colors[p%10]
-            facecolors = [c if flag == False else self.flaggedcolor for flag in df.loc[df['port']==p][flags]]
+            c = self.colors[p % 10]
+            facecolors = [c if flag is False else self.flaggedcolor for flag in df.loc[df['port'] == p][flags]]
             edgecolors = c
 
             port_label = f'({p}) {port_list[p%10]}'
@@ -375,18 +376,18 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if self.ssv_flask_port in self.unique_ports(df):
             for n in range(self.MAX_N_Flasks):
                 # all data for a selected port
-                x = df.loc[df['flask_port']==n].index
-                y = df.loc[df['flask_port']==n][det]
+                x = df.loc[df['flask_port'] == n].index
+                y = df.loc[df['flask_port'] == n][det]
                 # all unflagged data for a selected port
-                ygood = df.loc[(df['flask_port']==n) & (df[flags]==False)][det]
+                ygood = df.loc[(df['flask_port'] == n) & (df[flags] is False)][det]
 
                 avg, std = ygood.mean(), ygood.std()
                 if np.isnan(avg):
                     continue
 
-                port_label = df.loc[df['flask_port']==n].port_id.values[0]
+                port_label = df.loc[df['flask_port'] == n].port_id.values[0]
                 port_label = f'{port_label}\n{avg:0.3f} ± {std:0.3f}'
-                facecolors = [self.flaskbgcolor if flag == False else self.flaggedcolor for flag in df.loc[df['flask_port']==n][flags]]
+                facecolors = [self.flaskbgcolor if flag is False else self.flaggedcolor for flag in df.loc[df['flask_port'] == n][flags]]
                 edgecolors = self.flaskbgcolor
 
                 # square marker behind numbered flask markers, this is used for flagging (the picker)
@@ -401,7 +402,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         xtick_locator = AutoDateLocator()
         xtick_formatter = AutoDateFormatter(xtick_locator)
         xtick_formatter = DateFormatter('%H:%M:%S')
-        #xtick_formatter.scaled[1/(24.*60.)] = '%H:%M:%S'
+        # xtick_formatter.scaled[1/(24.*60.)] = '%H:%M:%S'
         self.mpl_plot.canvas.ax2.xaxis.set_major_locator(xtick_locator)
         self.mpl_plot.canvas.ax2.xaxis.set_major_formatter(xtick_formatter)
 
@@ -413,7 +414,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax2.set_title(f'Detrended: {title_text}', loc='right')
         self.mpl_plot.canvas.ax2.legend(fontsize=8, loc=(1.04, uppermargin))
         self.mpl_plot.canvas.ax2.tick_params(labelsize=8)
-        #self.mpl_plot.canvas.fig.tight_layout()
         self.mpl_plot.canvas.draw()
         self.mpl_plot.toolbar.update()
 
@@ -442,8 +442,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.sub = df
 
         # fit to unflagged data
-        good = df.loc[df[flags]==False][[cal,det]].dropna()
-        good = good.sort_values([cal,det])
+        good = df.loc[df[flags] is False][[cal, det]].dropna()
+        good = good.sort_values([cal, det])
         x = good[cal].values
         y = good[det].values
 
@@ -455,7 +455,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if len(x) > 1:
             # one-to-one fit
             one2one_x = np.linspace(min(x_fit), max(x_fit), 100)
-            calval = df.loc[df['port']==self.ssv_norm_port, cal].values[0]
+            calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
             one2one_y = one2one_x / calval
         else:
             one2one_x, one2one_y = [], []
@@ -463,15 +463,15 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # plot residuals
         self.mpl_plot.canvas.ax1.grid(True)
         for p in self.unique_ports(df, remove_flask_port=True):
-            x = df.loc[(df['port']==p) & (df[flags]==False), cal]
-            y = df.loc[(df['port']==p) & (df[flags]==False), det]
+            x = df.loc[(df['port'] == p) & (df[flags] is False), cal]
+            y = df.loc[(df['port'] == p) & (df[flags] is False), det]
             if fit.find('exponetial') >= 0:
                 resid = self.exp_func(x, *coefs) - y
             else:
                 resid = poly.polyval(x, coefs) - y
             avg, std = resid.mean(), resid.std()
 
-            c = self.colors[p%10]
+            c = self.colors[p % 10]
             if p != 10:
                 port_label = f'({p}) {avg:0.3f} ± {std:0.3f}'
 
@@ -480,14 +480,14 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                     label=port_label)
 
         # ax2 (bottom figure) legend label
-        if fit.find('exponetial') >=0:
-            fitlabel = f'exponential fit\n' + r'$a + b e^{cx}$' + '\n'
+        if fit.find('exponetial') >= 0:
+            fitlabel = 'exponential fit\n' + r'$a + b e^{cx}$' + '\n'
             vars = ['a', 'b', 'c', 'd']
-            for n,coef in enumerate(coefs):
+            for n, coef in enumerate(coefs):
                 fitlabel += f'({vars[n]}) {coef:0.6f}\n'
         else:
             fitlabel = f'{fit} fit\n'
-            for n,coef in enumerate(coefs):
+            for n, coef in enumerate(coefs):
                 fitlabel += f'($x^{n}$) {coef:0.6f}\n'
 
         # add fits to figure
@@ -499,11 +499,11 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax2.grid(True)
         port_list = self.portlist(df)
         for p in self.unique_ports(df, remove_flask_port=True):
-            x = df.loc[df['port']==p, cal]
-            y = df.loc[df['port']==p, det]
+            x = df.loc[df['port'] == p, cal]
+            y = df.loc[df['port'] == p, det]
 
-            c = self.colors[p%10]
-            facecolors = [c if flag == False else self.flaggedcolor for flag in df.loc[df['port']==p][flags]]
+            c = self.colors[p % 10]
+            facecolors = [c if flag is False else self.flaggedcolor for flag in df.loc[df['port'] == p][flags]]
             edgecolors = c
             if p != 10:
                 port_label = f'({p}) {port_list[p%10]}'
@@ -562,20 +562,20 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         for p in self.unique_ports(df, remove_flask_port=True):
             # all data for a selected port
-            x = df.loc[df['port']==p].index
-            y = df.loc[df['port']==p][value]
+            x = df.loc[df['port'] == p].index
+            y = df.loc[df['port'] == p][value]
             # all unflagged data for a selected port
-            ygood = df.loc[(df['port']==p) & (df[flags]==False)][value]
+            ygood = df.loc[(df['port'] == p) & (df[flags] is False)][value]
 
             avg, std = ygood.mean(), ygood.std()
             if np.isnan(avg):
                 continue
 
-            c = self.colors[p%10]
-            facecolors = [c if flag == False else self.flaggedcolor for flag in df.loc[df['port']==p][flags]]
+            c = self.colors[p % 10]
+            facecolors = [c if flag is False else self.flaggedcolor for flag in df.loc[df['port'] == p][flags]]
             edgecolors = c
 
-            port_label = f'({p}) {port_list[p%10]}'
+            port_label = f'({p}) {port_list[p % 10]}'
             port_label = f'{port_label}\n{avg:0.2f} ± {std:0.2f}'
 
             self.mpl_plot.canvas.ax2.scatter(x, y,
@@ -586,18 +586,18 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if self.ssv_flask_port in self.unique_ports(df):
             for n in range(self.MAX_N_Flasks):
                 # all data for a selected port
-                x = df.loc[df['flask_port']==n].index
-                y = df.loc[df['flask_port']==n][value]
+                x = df.loc[df['flask_port'] == n].index
+                y = df.loc[df['flask_port'] == n][value]
                 # all unflagged data for a selected port
-                ygood = df.loc[(df['flask_port']==n) & (df[flags]==False)][value]
+                ygood = df.loc[(df['flask_port'] == n) & (df[flags] is False)][value]
 
                 avg, std = ygood.mean(), ygood.std()
                 if np.isnan(avg):
                     continue
 
-                port_label = df.loc[df['flask_port']==n].port_id.values[0]
+                port_label = df.loc[df['flask_port'] == n].port_id.values[0]
                 port_label = f'{port_label}\n{avg:0.2f} ± {std:0.2f}'
-                facecolors = [self.flaskbgcolor if flag == False else self.flaggedcolor for flag in df.loc[df['flask_port']==n][flags]]
+                facecolors = [self.flaskbgcolor if flag is False else self.flaggedcolor for flag in df.loc[df['flask_port'] == n][flags]]
                 edgecolors = self.flaskbgcolor
 
                 # square marker behind numbered flask markers, this is used for flagging (the picker)
@@ -612,7 +612,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         xtick_locator = AutoDateLocator()
         xtick_formatter = AutoDateFormatter(xtick_locator)
         xtick_formatter = DateFormatter('%H:%M:%S')
-        #xtick_formatter.scaled[1/(24.*60.)] = '%H:%M:%S'
         self.mpl_plot.canvas.ax2.xaxis.set_major_locator(xtick_locator)
         self.mpl_plot.canvas.ax2.xaxis.set_major_formatter(xtick_formatter)
 
@@ -624,12 +623,11 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax2.set_title(f'Mole Fraction: {title_text}', loc='right')
         self.mpl_plot.canvas.ax2.legend(fontsize=8, loc=(1.04, uppermargin))
         self.mpl_plot.canvas.ax2.tick_params(labelsize=8)
-        #self.mpl_plot.canvas.fig.tight_layout()
         self.mpl_plot.canvas.draw()
         self.mpl_plot.toolbar.update()
 
     def units(self):
-        if self.mol_select.upper() is 'N2O':
+        if self.mol_select.upper() == 'N2O':
             return 'ppb'
         return 'ppt'
 
@@ -644,7 +642,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # picked from calibration figures (x units are in mole fraction)
         calfig = True if x < 2000 else False
 
-        #print(artist.properties())     # method to see what is in the artist
+        # print(artist.properties())     # method to see what is in the artist
         fc = artist.properties()['facecolor']
         ec = artist.properties()['edgecolor']
 
@@ -658,32 +656,32 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             # xaxis units in cal mol fraction
             # need to locate det,cal pair in the whole dataframe (self.fe3data)
             dir = self.sub.iloc[0].dir
-            height = self.sub.loc[(self.sub[cal]==x) & (self.sub[det]==y), ht].values[0]
-            pt = self.fe3data.loc[(self.fe3data['dir']==dir) & (self.fe3data[ht]==height)]
+            height = self.sub.loc[(self.sub[cal] == x) & (self.sub[det] == y), ht].values[0]
+            pt = self.fe3data.loc[(self.fe3data['dir'] == dir) & (self.fe3data[ht] == height)]
             flag = pt[flagcol].values
         else:
             # xaxis units in pandas datetime
-            flag = self.fe3data.loc[self.fe3data.index==num2date(x)][flagcol].values
+            flag = self.fe3data.loc[self.fe3data.index == num2date(x)][flagcol].values
 
-        if flag == True:
+        if flag is True:
             # toggled to no flag (False)
             if calfig:
-                self.fe3data.loc[(self.fe3data['dir']==dir) & (self.fe3data[ht]==height), flagcol] = False
+                self.fe3data.loc[(self.fe3data['dir'] == dir) & (self.fe3data[ht] == height), flagcol] = False
             else:
-                self.fe3data.loc[self.fe3data.index==num2date(x), flagcol] = False
-            fc[point,:] = ec      # edgecolor never changes, can use to set facecolor
+                self.fe3data.loc[self.fe3data.index == num2date(x), flagcol] = False
+            fc[point, :] = ec      # edgecolor never changes, can use to set facecolor
             artist.set_facecolors(fc)
         else:
             # toggled to flagged
             if calfig:
-                self.fe3data.loc[(self.fe3data['dir']==dir) & (self.fe3data[ht]==height), flagcol] = True
+                self.fe3data.loc[(self.fe3data['dir'] == dir) & (self.fe3data[ht] == height), flagcol] = True
             else:
-                self.fe3data.loc[self.fe3data.index==num2date(x), flagcol] = True
-            fc[point,:] = self.flaggedcolor
+                self.fe3data.loc[self.fe3data.index == num2date(x), flagcol] = True
+            fc[point, :] = self.flaggedcolor
             artist.set_facecolors(fc)
 
         self.madechanges = True
-        #self.mpl_plot.canvas.draw()
+        # self.mpl_plot.canvas.draw()
         self.update_data_fig()
 
     def update_tables(self):
@@ -712,7 +710,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                 calvalue = ''
             cell1 = QtWidgets.QTableWidgetItem(f'{calvalue}')
             cell1.setTextAlignment(QtCore.Qt.AlignCenter)
-            listrow = row-1 if row !=0 else self.MAX_N_SSVports-1
+            listrow = row-1 if row != 0 else self.MAX_N_SSVports-1
             self.table_ports.setItem(listrow, 0, cell0)
             self.table_ports.setItem(listrow, 1, cell1)
             self.table_ports.setItemDelegate(FloatDelegate(2, self.table_ports))
@@ -720,6 +718,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
 class FloatDelegate(QtWidgets.QStyledItemDelegate):
     """ To report floating point numbers in Qt table """
+
     def __init__(self, decimals, parent=None):
         super(FloatDelegate, self).__init__(parent=parent)
         self.nDecimals = decimals
