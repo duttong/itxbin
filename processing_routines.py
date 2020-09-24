@@ -174,7 +174,8 @@ class DataProcessing:
         """ Mole fraction calculation, one point cal through the norm_port
             Todo: add uncertainty estimate """
         det, cal = f'{mol}_det', f'{mol}_cal'
-        value, unc = f'{mol}_value', f'{mol}_unc'
+        value = f'{mol}_value'
+        # unc = f'{mol}_unc'
         calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
         df[value] = df[det] * calvalue
         return df
@@ -185,7 +186,8 @@ class DataProcessing:
         p0, p1 = ports
         # column names
         det, cal = f'{mol}_det', f'{mol}_cal'
-        value, unc, flags = f'{mol}_value', f'{mol}_unc', f'{mol}_flag'
+        value, flags = f'{mol}_value', f'{mol}_flag'
+        # unc = f'{mol}_unc'
 
         df1 = df.copy()     # temporary dataframe
         cal0 = df.loc[(df['port'] == p0)][cal].values[0]  # cal val on p0
