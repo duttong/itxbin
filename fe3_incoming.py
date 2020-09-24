@@ -3,16 +3,18 @@
 """ These classes should be db into the fe3_export.py file. GSD """
 
 import os
-from time import time
 from datetime import date
 from pathlib import Path
+import numpy as np
 import pandas as pd
 import json
+
 
 class FE3_paths:
 
     def __init__(self):
         self.basepath = Path('/Users/geoff/programing/agc1')
+
 
 class FE3_runs(FE3_paths):
     """ Class to handle data specific to each FE3 run. Meta data such as
@@ -248,11 +250,11 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         df['flask_port'] = ''
 
         # step through all flask runs and update port_id with flask_port
-        flask_runs = df.loc[df.type=='flask'].dir.unique()
+        flask_runs = df.loc[df.type == 'flask'].dir.unique()
         for run in flask_runs:
-            port_id, port_num = self._seq2list(df.loc[df.dir==run])
-            df.loc[df.dir==run, 'port_id'] = port_id
-            df.loc[df.dir==run, 'flask_port'] = port_num
+            port_id, port_num = self._seq2list(df.loc[df.dir == run])
+            df.loc[df.dir == run, 'port_id'] = port_id
+            df.loc[df.dir == run, 'flask_port'] = port_num
 
         # don't need these columns anymore
         df.drop(columns=['ports', 'flasks', 'seq'], inplace=True)
@@ -293,9 +295,9 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             cols.remove(item)
         cols = first + sorted(cols, key=str.casefold)
         df = df[cols]
-        #df = df[cols].dropna()
+        # df = df[cols].dropna()
         df = df.set_index('time')
-        #df = df.tz_localize('utc')  # set time zone
+        # df = df.tz_localize('utc')  # set time zone
 
         return df
 
@@ -330,7 +332,8 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         self.save_db_file()
         return df
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
 
     fe3 = FE3_db()
     df = fe3.results()
