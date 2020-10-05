@@ -13,7 +13,7 @@ class DataProcessing:
 
     fe3cals = fe3_incoming.FE3_cals()
     fe3curves = fe3_incoming.FE3_cal_curves()
-    fe3db = fe3_incoming.FE3_db()
+    # fe3db = fe3_incoming.FE3_db()
 
     def __init__(self):
         self.cals = self.fe3cals.cals
@@ -75,6 +75,7 @@ class DataProcessing:
             curve_fit.
             Set scale0 to True to return x and y fits to 0 mole fraction. """
 
+        # polynomial degree determination
         if fit_function.find('line') >= 0:
             degree = 1
         elif fit_function.find('quad') >= 0:
@@ -138,7 +139,11 @@ class DataProcessing:
         return coefs, x_fit, y_fit
 
     def save_calcurve(self, dir_df, mol, coefs):
-        # only save cal curves of type='other' not type='flask'
+        """ Method to save a cal curve type (name) and its coefficients to a
+            a cal curve db file.
+            dir_df is the run or dir dataframe """
+
+        # Only save cal curves of type='other' not type='flask'
         if dir_df['type'].values[0] != 'other':
             return
 
@@ -151,14 +156,17 @@ class DataProcessing:
         # update calcurve method and save coefs
         self.calcurves.loc[self.calcurves.index == run, f'{mol}_meth'] = meth
         coefstr = ''.join(f'{i};' for i in coefs)
+        coefstr = coefstr[0:-1]     # drop trailing ';'
         self.calcurves.loc[self.calcurves.index == run, f'{mol}_coefs'] = coefstr
         self.calcurves.sort_index(inplace=True)
         self.fe3curves.calcurves_df = self.calcurves
         self.fe3curves.save()
 
+    """
     def save_calcurve_allmols(self, df, run, norm_port=1):
         for mol in self.fe3db.mols:
             self.calculate_calcurve_run(df, run, mol, ssv_norm_port=norm_port, save=True)
+    """
 
     @staticmethod
     def exp_func(x, a, b, c):
@@ -181,7 +189,8 @@ class DataProcessing:
         return df
 
     def mf_twopoint(self, df, mol, *ports):
-        """ Mole fraction calculation, two point cal through the norm_port
+        """ Mole fraction calculation, two point cal through the norm_port and
+            a second port (p1).
             Todo: add uncertainty estimate """
         p0, p1 = ports
         # column names
@@ -204,3 +213,32 @@ class DataProcessing:
         df1['b'] = df1['r0'] - df1['m'] * cal0
         df[value] = (df1[det] - df1['b'])/df1['m']
         return df
+
+    def mf_recent_calcurve(self, df, mol, norm_port):
+        det, cal = f'{mol}_det', f'{mol}_cal'
+        value, flags = f'{mol}_value', f'{mol}_flag'
+        # unc = f'{mol}_unc'
+
+        # calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
+
+        meth = self.calcurves.iloc[-2][f'{mol}_meth']
+        coefs_str = self.calcurves.iloc[-2][f'{mol}_coefs'].split(';')
+        c = np.array(coefs_str)
+
+        coefs = c.astype(np.float)[::-1]
+        ply = np.poly1d(coefs)
+        # print((p-1).r)
+        if meth.find('exp') >= 0:
+            df[value] = self.exp_func(df[det], *coefs)
+        else:
+            # df[value] = poly.polyval(df[det], coefs)
+            df[value] = df[det].apply(self.inv, args=[ply])
+        return df
+
+    def inv(self, y, p):
+        # print(y, y is np.nan, y == np.nan)
+        try:
+            roots = (p - y).r
+            return max(roots)
+        except np.linalg.LinAlgError:
+            return np.nan
