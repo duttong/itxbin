@@ -123,7 +123,7 @@ class FE3_runs(FE3_paths):
         """ Returns a pandas dataframe with info from meta files for all years.
             The method loads previous years from .pkl files and the current
             year from directories in yy/incoming
-            Remove the .pkl files and the method with regenerate them.
+            Remove the .pkl files and the method will regenerate them.
         """
         years = sorted([dir.name for dir in self.basepath.glob('??')])
         most_recent_year = years.pop(-1)
@@ -131,7 +131,7 @@ class FE3_runs(FE3_paths):
         for year in years:
             df = self.runs_df_yy(generate=False, year=year)
             dfs.append(df)
-        # regenerate last years df incase new data
+        # regenerate last years df in case new data
         df = self.runs_df_yy(generate=True, year=most_recent_year)
         dfs.append(df)
         df = pd.concat(dfs, axis=0)
@@ -162,7 +162,7 @@ class FE3_GCwerks(FE3_paths):
         super().__init__()
         self.gcwerksexport = self.basepath / 'fe3_gcwerks_all.csv'
 
-    def gcwerks_results(self, range='all'):
+    def gcwerks_df(self, range='all'):
         # range can be a yyyy-mm-dd string to return a subset of the df
         df = pd.read_csv(self.gcwerksexport,
             index_col=0, skipinitialspace=True, parse_dates=True)
@@ -192,7 +192,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         FE3_runs.__init__(self)
         FE3_GCwerks.__init__(self)
         self.dbfile = self.basepath / 'fe3_db.csv'
-        self.db = self.get_db_file()
+        self.db = self.return_db_file()
         self.mols = [item[:-3] for item in self.db.columns if '_ht' in item]
 
     @staticmethod
@@ -233,12 +233,12 @@ class FE3_db(FE3_runs, FE3_GCwerks):
                 num.append('')
         return des, num
 
-    def create_db_file(self):
-        """ Load two steams of data. Meta data from FE3 and GCwerks results, then
+    def merge_gcwerks_and_metadata(self):
+        """ Load two streams of data. Meta data from FE3 and GCwerks results, then
             merges into a single file (self.dbfile) """
 
         fe3_runs = self.runs_df()
-        gcwerks = self.gcwerks_results()
+        gcwerks = self.gcwerks_df()
 
         # merge the two streams of data
         # if runs are longer than 24 hours, this may not work.
@@ -263,7 +263,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         for mol in self.mols:
             flag = f'{mol}_flag'
             meth = f'{mol}_meth'
-            mf = f'{mol}_mf'
+            mf = f'{mol}_value'
             unc = f'{mol}_unc'
             df[flag] = False
             df[meth] = 'quadratic'
@@ -271,6 +271,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             df[unc] = np.nan
 
         df = self.cleanup_db_df(df)
+        self.db = df
 
         return df
 
@@ -295,41 +296,66 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             cols.remove(item)
         cols = first + sorted(cols, key=str.casefold)
         df = df[cols]
-        # df = df[cols].dropna()
+
+        df = df.loc[~((df.type != 'flask') & (df.type != 'other'))]
         df = df.set_index('time')
-        # df = df.tz_localize('utc')  # set time zone
+        df = df.drop(['index'], axis=1)
+        df = df.tz_localize('utc')  # set time zone
 
         return df
+
+    def update_db(self):
+
+        df = self.merge_gcwerks_and_metadata()
+        db = self.db_df()   # original saved db
+        db = db.loc[~db.duplicated()]
+
+        attribs = ['_flag', '_meth', '_value', '_unc']
+        cols = [f'{mol}{at}' for mol in self.mols for at in attribs]
+
+        # preseve data from original db into extended df
+        idx = df.index.intersection(db.index)
+        df.loc[idx, cols] = db.loc[idx, cols]
+
+        self.db = df
+
+        return df
+
+    def db_df(self):
+        """" Returns the current saved FE3 db """
+        return pd.read_csv(self.dbfile, index_col=0, skipinitialspace=True, parse_dates=True)
 
     def save_db_file(self):
         """ Save to csv file """
         self.db.to_csv(self.dbfile)
 
-    def get_db_file(self):
-        """ This method merges two incoming data streams: GCwerks integrations
-            and FE3 meta data for each run.
+    def return_db_file(self):
+        """ Three possibilities:
+            1) if the db file does not exist, create it from GCwerks data and
+               the FE3 meta data.
+            2) if the db exists and is the same date or newer than the GCwerks
+               integration results, return the saved db file.
+            3) if the db exists and is older than the GCwerks file, then presumably
+               there is new integrations or more runs added. The db is extended
+               while flags, methods, etc are preserved.
             TODO: The method works on all years of FE3 data and will progressively
                   get slower. Maybe only work on the last two years of data?
         """
 
         # load the fe3_db file if same date or newer than the gcwerk exported data.
         if self.dbfile.exists():
-            gcwerks = self.basepath / 'fe3_gcwerks_all.csv'
-            gcw_date = os.path.getmtime(gcwerks)
+            gcw_date = os.path.getmtime(self.gcwerksexport)
             out_date = os.path.getmtime(self.dbfile)
             if out_date >= gcw_date:
-                df = pd.read_csv(self.dbfile, index_col=0, skipinitialspace=True, parse_dates=True)
+                df = self.db_df()
             else:
-                # update db results
-                df = self.create_db_file()
+                df = self.update_db()
+                self.save_db_file()
         else:
-            # this is where I need to have code to extend the db data file with
-            # new data and not recreate it.
-            # update db results
-            df = self.create_db_file()
+            # if db does not exist, create it.
+            df = self.merge_gcwerks_and_metadata()
+            self.save_db_file()
 
-        self.db = df
-        self.save_db_file()
         return df
 
 
