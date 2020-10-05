@@ -194,6 +194,11 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         self.dbfile = self.basepath / 'fe3_db.csv'
         self.db = self.return_db_file()
         self.mols = [item[:-3] for item in self.db.columns if '_ht' in item]
+        # additional columns and default values for db
+        self.attribs = {'flag': False,
+                        'meth': 'lowess;quadratic',
+                        'value': np.nan,
+                        'unc': np.nan}
 
     @staticmethod
     def _port_id(row):
@@ -259,16 +264,11 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         # don't need these columns anymore
         df.drop(columns=['ports', 'flasks', 'seq'], inplace=True)
 
-        # need to create flag calculation method columns
+        # create extra attribute columns
         for mol in self.mols:
-            flag = f'{mol}_flag'
-            meth = f'{mol}_meth'
-            mf = f'{mol}_value'
-            unc = f'{mol}_unc'
-            df[flag] = False
-            df[meth] = 'lowess;quadratic'
-            df[mf] = np.nan
-            df[unc] = np.nan
+            for k in self.attribs:
+                col = f'{mol}_{k}'
+                df[col] = self.attribs[k]
 
         df = self.cleanup_db_df(df)
         self.db = df
@@ -310,11 +310,9 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         db = self.db_df()   # original saved db
         db = db.loc[~db.duplicated()]
 
-        attribs = ['_flag', '_meth', '_value', '_unc']
-        cols = [f'{mol}{at}' for mol in self.mols for at in attribs]
-
-        # preseve data from original db into extended df
+        # preserve data from original db into extended df
         idx = df.index.intersection(db.index)
+        cols = [f'{mol}_{at}' for mol in self.mols for at in self.attribs.keys()]
         df.loc[idx, cols] = db.loc[idx, cols]
 
         self.db = df
