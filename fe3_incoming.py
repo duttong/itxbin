@@ -266,7 +266,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             mf = f'{mol}_value'
             unc = f'{mol}_unc'
             df[flag] = False
-            df[meth] = 'quadratic'
+            df[meth] = 'lowess;quadratic'
             df[mf] = np.nan
             df[unc] = np.nan
 
