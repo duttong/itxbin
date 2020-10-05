@@ -438,8 +438,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax1.tick_params(axis='x', which='both', length=0)
 
         # add detrend column to df
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port, lowess=self.detrend_lowess.isChecked())
-        self.sub = df
+        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
+                                        lowess=self.detrend_lowess.isChecked())
+        self.sub = df.copy()  # save to sub
 
         # fit to unflagged data
         good = df.loc[df[flags] == False][[cal, det]].dropna()
@@ -538,7 +539,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         det = f'{self.mol_select}_det'
         value = f'{self.mol_select}_value'
 
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port, lowess=self.detrend_lowess.isChecked())
+        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
+                                        lowess=self.detrend_lowess.isChecked())
         port_list = self.portlist(df)
 
         self.checkBox_scale0.setEnabled(False)
@@ -546,20 +548,23 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.comboBox_calcurve.setEnabled(False)
 
         meth = self.comboBox_meth.currentText()
-        self.methods = ['one-point', 'two-point', 'most recent cal curve']
+        # self.methods = ['one-point', 'two-point', 'most recent cal curve']
         if meth.find('one') >= 0:
             df = self.mf_onepoint(df, self.mol_select, self.ssv_norm_port)
         elif meth.find('two') >= 0:
             df = self.mf_twopoint(df, self.mol_select, self.ssv_norm_port, 3)
+        elif meth.find('recent') >= 0:
+            df = self.mf_recent_calcurve(df, self.mol_select, self.ssv_norm_port)
 
         self.mpl_plot.canvas.ax1.clear()
         self.mpl_plot.canvas.ax2.clear()
         self.mpl_plot.canvas.ax1.set_visible(False)
         self.mpl_plot.canvas.ax2.set_position([0.1, 0.1, .68, .85])
-        # this is needed for refreshing from shared xaxis from calibration fig
+        # this is needed for refreshing from shared xaxis from the calibration fig
         shax = self.mpl_plot.canvas.ax1.get_shared_x_axes()
         shax.remove(self.mpl_plot.canvas.ax1)
 
+        # non flask data ports
         for p in self.unique_ports(df, remove_flask_port=True):
             # all data for a selected port
             x = df.loc[df['port'] == p].index
@@ -615,31 +620,32 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax2.xaxis.set_major_locator(xtick_locator)
         self.mpl_plot.canvas.ax2.xaxis.set_major_formatter(xtick_formatter)
 
-        uppermargin = .3
         plt.setp(self.mpl_plot.canvas.ax2.get_xticklabels(), rotation=15)
         self.mpl_plot.canvas.ax2.set_ylabel(f'mole fraction ({self.units()})')
         yyyymmdd = f'{self.run_selected[0:4]}-{self.run_selected[4:6]}-{self.run_selected[6:8]}'
         self.mpl_plot.canvas.ax2.set_xlabel(yyyymmdd)
-        self.mpl_plot.canvas.ax2.set_title(f'Mole Fraction: {title_text}', loc='right')
-        self.mpl_plot.canvas.ax2.legend(fontsize=8, loc=(1.04, uppermargin))
+        self.mpl_plot.canvas.ax2.set_title(f'{meth} mole fractions: {title_text}', loc='right')
+        self.mpl_plot.canvas.ax2.legend(fontsize=8, loc=(1.04, 0.3))
         self.mpl_plot.canvas.ax2.tick_params(labelsize=8)
         self.mpl_plot.canvas.draw()
         self.mpl_plot.toolbar.update()
 
     def units(self):
+        """ Method returns abbreviated mole fraction units. """
         if self.mol_select.upper() == 'N2O':
             return 'ppb'
         return 'ppt'
 
     def onpick(self, event):
-        """ With a picker tolerance set in scatter(), the onpick method will
+        """ The picker tolerance set in scatter(), the onpick method will
             set and unset flags. """
         artist = event.artist
         point = event.ind
         # the picker may choose more than one point. Use first point.
         point = point.T[0]
         x, y = artist.get_offsets()[point].T
-        # picked from calibration figures (x units are in mole fraction)
+        # picked from calibration figures (x units are in mole fraction
+        # instead of date)
         calfig = True if x < 2000 else False
 
         # print(artist.properties())     # method to see what is in the artist
@@ -681,7 +687,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             artist.set_facecolors(fc)
 
         self.madechanges = True
-        # self.mpl_plot.canvas.draw()
         self.update_data_fig()
 
     def update_tables(self):
