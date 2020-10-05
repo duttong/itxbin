@@ -192,7 +192,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         FE3_runs.__init__(self)
         FE3_GCwerks.__init__(self)
         self.dbfile = self.basepath / 'fe3_db.csv'
-        self.db = self.return_db_file()
+        self.db = self.return_db()
         self.mols = [item[:-3] for item in self.db.columns if '_ht' in item]
         # additional columns and default values for db
         self.attribs = {'flag': False,
@@ -305,9 +305,13 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         return df
 
     def update_db(self):
+        """ Loads three streams of data. GCwerks results, FE3 meta data, and
+            the most recent version of the database. Merges GCwerks and FE3 meta
+            data and then preserves the data stored in the attribs columns when
+            extending and updating the db. """
 
         df = self.merge_gcwerks_and_metadata()
-        db = self.db_df()   # original saved db
+        db = self.load_db_file()   # original saved db
         db = db.loc[~db.duplicated()]
 
         # preserve data from original db into extended df
@@ -319,15 +323,16 @@ class FE3_db(FE3_runs, FE3_GCwerks):
 
         return df
 
-    def db_df(self):
+    def load_db_file(self):
         """" Returns the current saved FE3 db """
-        return pd.read_csv(self.dbfile, index_col=0, skipinitialspace=True, parse_dates=True)
+        self.db = pd.read_csv(self.dbfile, index_col=0, skipinitialspace=True, parse_dates=True)
+        return self.db
 
     def save_db_file(self):
         """ Save to csv file """
         self.db.to_csv(self.dbfile)
 
-    def return_db_file(self):
+    def return_db(self):
         """ Three possibilities:
             1) if the db file does not exist, create it from GCwerks data and
                the FE3 meta data.
@@ -345,12 +350,15 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             gcw_date = os.path.getmtime(self.gcwerksexport)
             out_date = os.path.getmtime(self.dbfile)
             if out_date >= gcw_date:
-                df = self.db_df()
+                print(f'Loading db: {self.dbfile}')
+                df = self.load_db_file()
             else:
+                print(f'Updating db: {self.dbfile}')
                 df = self.update_db()
                 self.save_db_file()
         else:
             # if db does not exist, create it.
+            print(f'Creating db: {self.dbfile}')
             df = self.merge_gcwerks_and_metadata()
             self.save_db_file()
 
