@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from statsmodels.nonparametric.smoothers_lowess import lowess
-import numpy.polynomial.polynomial as poly
 from scipy.optimize import curve_fit
 
 import fe3_incoming
@@ -75,34 +74,32 @@ class DataProcessing:
             curve_fit.
             Set scale0 to True to return x and y fits to 0 mole fraction. """
 
-        # polynomial degree determination
-        if fit_function.find('line') >= 0:
-            degree = 1
-        elif fit_function.find('quad') >= 0:
-            degree = 2
+        if len(x) == 0:
+            return [0, 0], [], []
+
+        minx, maxx = min(x), max(x)
+        if scale0:
+            minx = 0
+        range = maxx - minx
+        x_fit = np.linspace(minx-range*0.05, maxx+range*0.05, 100)
+
+        # calculate fit
+        if fit_function == 'linear':
+            coefs, _ = curve_fit(self.linear, x, y, p0=[0., 1.])
+            y_fit = self.linear(x_fit, *coefs)
+        elif fit_function == 'quadratic':
+            coefs, _ = curve_fit(self.quadratic, x, y, p0=[0., 1., .01])
+            y_fit = self.quadratic(x_fit, *coefs)
+        elif fit_function == 'cubic':
+            coefs, _ = curve_fit(self.cubic, x, y, p0=[0., 1., .01, .001])
+            y_fit = self.cubic(x_fit, *coefs)
+        elif fit_function == 'exponential':
+            coefs, _ = curve_fit(self.exponential, x, y, p0=[0., 1., .001], maxfev=20000)
+            y_fit = self.exponential(x_fit, *coefs)
         else:
-            degree = 3
-
-        if len(x) > 1:
-            # calculate fit
-            if fit_function.find('exp') >= 0:
-                coefs, pcov = curve_fit(self.exp_func, x, y, p0=[0., 1., .01])
-            else:
-                coefs = poly.polyfit(x, y, degree)
-
-            minx, maxx = min(x), max(x)
-            if scale0:
-                minx = 0
-            range = maxx - minx
-            x_fit = np.linspace(minx-range*0.05, maxx+range*0.05, 100)
-
-            if fit_function.find('exp') >= 0:
-                y_fit = self.exp_func(x_fit, *coefs)
-            else:
-                y_fit = poly.polyval(x_fit, coefs)
-        else:
-            coefs = [0, 0]
-            x_fit, y_fit = [], []
+            print(f'Unknown curve fit type: {fit_function} using linear instead.')
+            coefs, _ = curve_fit(self.linear, x, y, p0=[0., 1.])
+            y_fit = self.linear(x_fit, *coefs)
 
         return coefs, x_fit, y_fit
 
@@ -169,9 +166,24 @@ class DataProcessing:
     """
 
     @staticmethod
-    def exp_func(x, a, b, c):
+    def linear(x, *coefs):
+        """ linear fit function """
+        return coefs[0] + coefs[1] * x
+
+    @staticmethod
+    def quadratic(x, *coefs):
+        """ quadratic fit function """
+        return coefs[0] + coefs[1] * x + coefs[2] * x**2
+
+    @staticmethod
+    def cubic(x, *coefs):
+        """ cubic fit function """
+        return coefs[0] + coefs[1] * x + coefs[2] * x**2 + coefs[3] * x**3
+
+    @staticmethod
+    def exponential(x, *coefs):
         """ exponential fit function """
-        return a + b * np.exp(c * x)
+        return coefs[0] + coefs[1] * np.exp(coefs[2] * x)
 
     @staticmethod
     def parse_method(method):
@@ -220,7 +232,8 @@ class DataProcessing:
         # unc = f'{mol}_unc'
 
         # calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
-
+        cal = flags
+        print(cal)
         meth = self.calcurves.iloc[-2][f'{mol}_meth']
         coefs_str = self.calcurves.iloc[-2][f'{mol}_coefs'].split(';')
         c = np.array(coefs_str)
@@ -229,7 +242,7 @@ class DataProcessing:
         ply = np.poly1d(coefs)
         # print((p-1).r)
         if meth.find('exp') >= 0:
-            df[value] = self.exp_func(df[det], *coefs)
+            df[value] = self.func_exp(df[det], *coefs)
         else:
             # df[value] = poly.polyval(df[det], coefs)
             df[value] = df[det].apply(self.inv, args=[ply])
