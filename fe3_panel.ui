@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1200</width>
-    <height>810</height>
+    <height>824</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -225,7 +225,7 @@ QGroupBox::title {
             </layout>
            </widget>
           </item>
-          <item alignment="Qt::AlignTop">
+          <item>
            <widget class="QGroupBox" name="figures_box">
             <property name="styleSheet">
              <string notr="true">QGroupBox {
@@ -426,18 +426,21 @@ QGroupBox::title {
                </attribute>
               </widget>
              </item>
-             <item>
-              <widget class="QComboBox" name="comboBox_meth"/>
-             </item>
             </layout>
            </widget>
           </item>
           <item>
-           <widget class="QPushButton" name="button_export">
-            <property name="text">
-             <string>Export as .csv</string>
+           <spacer name="verticalSpacer">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
             </property>
-           </widget>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>40</height>
+             </size>
+            </property>
+           </spacer>
           </item>
          </layout>
         </item>
@@ -624,8 +627,30 @@ QGroupBox::title {
      <height>22</height>
     </rect>
    </property>
+   <property name="defaultUp">
+    <bool>true</bool>
+   </property>
+   <widget class="QMenu" name="menuFiles">
+    <property name="title">
+     <string>Files</string>
+    </property>
+    <addaction name="actionExport_Selected_Run"/>
+    <addaction name="separator"/>
+    <addaction name="actionDelete_Selected_Run"/>
+   </widget>
+   <addaction name="menuFiles"/>
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionDelete_Selected_Run">
+   <property name="text">
+    <string>Delete Selected Run</string>
+   </property>
+  </action>
+  <action name="actionExport_Selected_Run">
+   <property name="text">
+    <string>Export Selected Run</string>
+   </property>
+  </action>
  </widget>
  <customwidgets>
   <customwidget>
@@ -638,8 +663,8 @@ QGroupBox::title {
  <resources/>
  <connections/>
  <buttongroups>
-  <buttongroup name="buttonGroup_figs"/>
   <buttongroup name="buttonGroup_mols1"/>
+  <buttongroup name="buttonGroup_figs"/>
   <buttongroup name="buttonGroup_mols2"/>
  </buttongroups>
 </ui>
