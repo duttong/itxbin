@@ -34,8 +34,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.ssv_flask_port = 2     # port number flasks are analyzed on
         self.sub = pd.DataFrame()
         self.run_selected = ''
-        self.fits = ['one-to-one', 'linear', 'quadratic', 'cubic', 'exponetial']
-        self.methods = ['one-point', 'two-point', 'most recent cal curve']
+        self.fits = ['linear', 'quadratic', 'cubic', 'exponential']
+        self.methods = ['one-point', 'two-point']
         self.madechanges = False    # if True, save the DB when the app quits
         # different color for each SSV port (port 2 is for flask SSV)
         self.colors = {0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
@@ -75,9 +75,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.comboBox_calcurve.setCurrentIndex(self.fits.index('linear'))
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
 
-        self.comboBox_meth.addItems(self.methods)
-        self.comboBox_meth.setCurrentIndex(1)
-        self.comboBox_meth.currentIndexChanged.connect(self.update_data_fig)
+        self.actionDelete_Selected_Run.triggered.connect(self.delete_run)
 
         self.initialize_run_filtering()
 
@@ -94,12 +92,12 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
     def initialize_run_filtering(self):
         """ Code for selecting a subset of runs from runs_df
             box_runs: are the current list of runs to view
-            box_types: Select a run type like flask or other
+            box_types: Select a run type like flask or calibration
             box_dates: Choose a period of time for runs to be selected.
         """
         # initial box_types set to 'flask' (the run types are stored in runs_df)
-        runtypes = sorted(list(set(self.fe3data['type'])))
-        runtypes.append('all')
+        #runtypes = sorted(list(set(self.fe3data['type'])))
+        runtypes = ['flask', 'calibration', 'all']
         self.box_types.addItems(runtypes)
         idx = runtypes.index('flask')
         self.box_types.setCurrentIndex(idx)
@@ -124,6 +122,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # create 'series' subset of all dirs
         if type == 'all':
             series = self.fe3data.dir
+        if type == 'calibration':
+            series = self.fe3data.loc[self.fe3data.type == 'other'].dir
         else:
             series = self.fe3data.loc[self.fe3data.type == type].dir
 
@@ -202,11 +202,13 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.subset_fe3data()
 
+        runtype = self.box_types.currentText()
+
         dir = self.sub['dir'].values[0]
         meth = f'{self.mol_select}_meth'
         det = 'lowess' if self.detrend_lowess.isChecked() else 'p2p'
-        fit = self.comboBox_calcurve.currentText()
-        self.fe3data.loc[self.fe3data['dir'] == dir, meth] = f'{det};{fit}'
+
+        # self.fe3data.loc[self.fe3data['dir'] == dir, meth] = f'{det};{fit}'
 
         self.madechanges = True     # set to True to save changes
 
@@ -230,8 +232,16 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.detrend_lowess.toggled.connect(self.update_method_field)
 
         self.comboBox_calcurve.currentIndexChanged.disconnect()
-        self.comboBox_calcurve.setCurrentIndex(self.fits.index(fit))     # update pull down menu
+        try:
+            self.comboBox_calcurve.setCurrentIndex(self.fits.index(fit))     # update pull down menu
+        except ValueError:
+            self.comboBox_calcurve.setCurrentIndex(1)     # update pull down menu
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
+
+        # which cal curve to use for mole fraction calculation
+        fm = self.calcurve_run(self.run_selected, 'ffill')
+        bm = self.calcurve_run(self.run_selected, 'bfill')
+        self.methods = ['one-point', 'two-point', fm, bm]
 
         # choose which figure to display
         if self.fig_detrend.isChecked():
@@ -466,8 +476,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         for p in self.unique_ports(df, remove_flask_port=True):
             x = df.loc[(df['port'] == p) & (df[flags] == False), cal]
             y = df.loc[(df['port'] == p) & (df[flags] == False), det]
-            if fit.find('exponetial') >= 0:
-                resid = self.exp_func(x, *coefs) - y
+            if fit.find('exponential') >= 0:
+                resid = self.exponential(x, *coefs) - y
             else:
                 resid = poly.polyval(x, coefs) - y
             avg, std = resid.mean(), resid.std()
@@ -481,7 +491,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                     label=port_label)
 
         # ax2 (bottom figure) legend label
-        if fit.find('exponetial') >= 0:
+        if fit.find('exponential') >= 0:
             fitlabel = 'exponential fit\n' + r'$a + b e^{cx}$' + '\n'
             vars = ['a', 'b', 'c', 'd']
             for n, coef in enumerate(coefs):
@@ -547,14 +557,15 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.checkBox_one2one.setEnabled(False)
         self.comboBox_calcurve.setEnabled(False)
 
+        """
         meth = self.comboBox_meth.currentText()
-        # self.methods = ['one-point', 'two-point', 'most recent cal curve']
         if meth.find('one') >= 0:
             df = self.mf_onepoint(df, self.mol_select, self.ssv_norm_port)
         elif meth.find('two') >= 0:
             df = self.mf_twopoint(df, self.mol_select, self.ssv_norm_port, 3)
         elif meth.find('recent') >= 0:
             df = self.mf_recent_calcurve(df, self.mol_select, self.ssv_norm_port)
+        """
 
         self.mpl_plot.canvas.ax1.clear()
         self.mpl_plot.canvas.ax2.clear()
@@ -719,6 +730,26 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             self.table_ports.setItem(listrow, 0, cell0)
             self.table_ports.setItem(listrow, 1, cell1)
             self.table_ports.setItemDelegate(FloatDelegate(2, self.table_ports))
+
+    def delete_run(self):
+        msg = QtWidgets.QMessageBox()
+        msg.setWindowTitle('Deleting an FE3 run')
+        msg.setText('Permanently delete all data for this run?')
+        msg.setIcon(QtWidgets.QMessageBox.Warning)
+        msg.setStandardButtons(QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Yes)
+        msg.setDefaultButton(QtWidgets.QMessageBox.Cancel)
+
+        returnValue = msg.exec()
+        if returnValue == QtWidgets.QMessageBox.Yes:
+            print(f'Deleting {self.run_selected}. Not implemented yet.')
+
+            # update db
+            # self.fe3data = self.fe3data.loc[self.fe3data['dir'] != self.run_selected]
+            # self.fe3db.save_db_file()
+
+            # delete run directory
+            # yy = self.run_selected[2:4]
+            # p = self.fe3db.basepath / yy / self.run_selected
 
 
 class FloatDelegate(QtWidgets.QStyledItemDelegate):

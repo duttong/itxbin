@@ -147,10 +147,15 @@ class FE3_cal_curves(FE3_paths):
         self.calcurves_df = self.load()
 
     def load(self):
-        return pd.read_csv(self.calcurves_file, index_col='dir')
+        """ Load calcurve db and add a column for dir time """
+        df = pd.read_csv(self.calcurves_file, index_col='dir')
+        df['dir_time'] = pd.to_datetime(df.index, infer_datetime_format=True)
+        return df
 
     def save(self):
-        self.calcurves_df.to_csv(self.calcurves_file)
+        """ Save calcurve db """
+        df = self.calcurves_df.drop('dir_time', axis=1)
+        df.to_csv(self.calcurves_file)
 
 
 class FE3_GCwerks(FE3_paths):
@@ -192,13 +197,14 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         FE3_runs.__init__(self)
         FE3_GCwerks.__init__(self)
         self.dbfile = self.basepath / 'fe3_db.csv'
-        self.db = self.return_db()
-        self.mols = [item[:-3] for item in self.db.columns if '_ht' in item]
+        self.mols = self.mols_in_db()
         # additional columns and default values for db
         self.attribs = {'flag': False,
-                        'meth': 'lowess;quadratic',
+                        'methdet': 'lowess',
+                        'methcal': 'quadratic',
                         'value': np.nan,
                         'unc': np.nan}
+        self.db = self.return_db()
 
     @staticmethod
     def _port_id(row):
@@ -299,7 +305,10 @@ class FE3_db(FE3_runs, FE3_GCwerks):
 
         df = df.loc[~((df.type != 'flask') & (df.type != 'other'))]
         df = df.set_index('time')
-        df = df.drop(['index'], axis=1)
+        try:
+            df = df.drop(['index'], axis=1)
+        except KeyError:
+            pass
         df = df.tz_localize('utc')  # set time zone
 
         return df
@@ -322,6 +331,10 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         self.db = df
 
         return df
+
+    def mols_in_db(self):
+        df = pd.read_csv(self.dbfile, index_col=0, skipinitialspace=True, parse_dates=True, nrows=2)
+        return [item[:-3] for item in df.columns if '_ht' in item]
 
     def load_db_file(self):
         """" Returns the current saved FE3 db """

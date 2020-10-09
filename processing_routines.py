@@ -18,6 +18,14 @@ class DataProcessing:
         self.cals = self.fe3cals.cals
         self.calcurves = self.fe3curves.calcurves_df
 
+    @staticmethod
+    def dir_to_datetime(dir):
+        """ Returns a datatime from a run dir name.
+            for example: 20200207-183526
+        """
+        dt = pd.to_datetime(dir, infer_datetime_format=True)
+        return dt
+
     def detrend_response(self, df0, mol, ssv_norm_port, lowess=True):
         """ Method detrends the response data either with a lowess smooth or
             point-by-point linear interpolation.
@@ -110,8 +118,8 @@ class DataProcessing:
         dir_df = df.loc[df.dir == run].copy()
         dir_df = self.reduce_df(dir_df, mol)
 
-        meth_for_run = dir_df[f'{mol}_meth'].values[0]
-        detrend, fit_function = self.parse_method(meth_for_run)
+        detrend = dir_df[f'{mol}_methdet'].values[0]
+        fit_function = dir_df[f'{mol}_methcal'].values[0]
 
         lowess = True if detrend == 'lowess' else False
 
@@ -185,10 +193,8 @@ class DataProcessing:
         """ exponential fit function """
         return coefs[0] + coefs[1] * np.exp(coefs[2] * x)
 
-    @staticmethod
-    def parse_method(method):
-        detrend, fit_function = method.split(';')
-        return detrend, fit_function
+    """ The mole fraction methods below use a dataframe that already
+        has the det and cal columns added. """
 
     def mf_onepoint(self, df, mol, norm_port):
         """ Mole fraction calculation, one point cal through the norm_port
@@ -226,14 +232,29 @@ class DataProcessing:
         df[value] = (df1[det] - df1['b'])/df1['m']
         return df
 
+    def calcurve_run(self, dir, method='nearest'):
+        """ Returns a calcurve run dir
+            Valid methods: nearest, ffill, bfill
+            ffill steps back in time, bfill steps forward in time """
+        idx = self.calcurve_index(dir, method)
+        return self.calcurves.iloc[idx].name
+
+    def calcurve_index(self, dir, method='nearest'):
+        cc = self.calcurves.copy().reset_index().set_index('dir_time')
+
+        dt = pd.to_datetime(dir, infer_datetime_format=True)
+        idx = cc.index.get_loc(dt, method=method)
+        return(idx)
+
     def mf_recent_calcurve(self, df, mol, norm_port):
         det, cal = f'{mol}_det', f'{mol}_cal'
         value, flags = f'{mol}_value', f'{mol}_flag'
         # unc = f'{mol}_unc'
 
+        dir = df['dir'].values[0]
+        dt = self.run_to_datetime(dir)
+
         # calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
-        cal = flags
-        print(cal)
         meth = self.calcurves.iloc[-2][f'{mol}_meth']
         coefs_str = self.calcurves.iloc[-2][f'{mol}_coefs'].split(';')
         c = np.array(coefs_str)
