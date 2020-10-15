@@ -153,19 +153,38 @@ class DataProcessing:
             return
 
         run = dir_df['dir'].values[0]
-        meth = dir_df[f'{mol}_meth'].values[0]
+        meth = dir_df[f'{mol}_methcal'].values[0]
         # if the run is not in the calcurve database then add a line for it
         if run not in self.calcurves.index.values:
             self.calcurves = self.calcurves.append(pd.Series(name=run))
 
         # update calcurve method and save coefs
-        self.calcurves.loc[self.calcurves.index == run, f'{mol}_meth'] = meth
+        self.calcurves.loc[self.calcurves.index == run, f'{mol}_methcal'] = meth
         coefstr = ''.join(f'{i};' for i in coefs)
         coefstr = coefstr[0:-1]     # drop trailing ';'
         self.calcurves.loc[self.calcurves.index == run, f'{mol}_coefs'] = coefstr
         self.calcurves.sort_index(inplace=True)
         self.fe3curves.calcurves_df = self.calcurves
         self.fe3curves.save()
+
+    def nearest_calcurves(self, run, n=4):
+        """ Returns a list of the n nearest cal curves, split on either
+            side of the run date """
+        cc = self.calcurves.copy().reset_index().set_index('dir_time')
+        cc.sort_index(inplace=True)
+
+        dt = pd.to_datetime(run, infer_datetime_format=True)
+        idx = cc.index.get_loc(dt, method='ffill')
+
+        caldates = []
+        for i in range(1-n//2, n//2+1):
+            try:
+                c = cc.iloc[idx+i]['dir']
+                caldates.append(c)
+            except IndexError:
+                pass
+
+        return caldates
 
     """
     def save_calcurve_allmols(self, df, run, norm_port=1):
@@ -192,6 +211,14 @@ class DataProcessing:
     def exponential(x, *coefs):
         """ exponential fit function """
         return coefs[0] + coefs[1] * np.exp(coefs[2] * x)
+
+    def calcurve_from_coefs(self, mol, calrun):
+        cc = self.calcurves.copy().reset_index().set_index('dir_time')
+        cc.sort_index(inplace=True)
+
+        coefs = cc[cc['dir']==calrun][f'{mol}_coefs'].values
+        meth = cc[cc['dir']==calrun][f'{mol}_methcal'].values
+        print(meth, coefs)
 
     """ The mole fraction methods below use a dataframe that already
         has the det and cal columns added. """
@@ -231,20 +258,6 @@ class DataProcessing:
         df1['b'] = df1['r0'] - df1['m'] * cal0
         df[value] = (df1[det] - df1['b'])/df1['m']
         return df
-
-    def calcurve_run(self, dir, method='nearest'):
-        """ Returns a calcurve run dir
-            Valid methods: nearest, ffill, bfill
-            ffill steps back in time, bfill steps forward in time """
-        idx = self.calcurve_index(dir, method)
-        return self.calcurves.iloc[idx].name
-
-    def calcurve_index(self, dir, method='nearest'):
-        cc = self.calcurves.copy().reset_index().set_index('dir_time')
-
-        dt = pd.to_datetime(dir, infer_datetime_format=True)
-        idx = cc.index.get_loc(dt, method=method)
-        return(idx)
 
     def mf_recent_calcurve(self, df, mol, norm_port):
         det, cal = f'{mol}_det', f'{mol}_cal'
