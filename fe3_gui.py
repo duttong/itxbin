@@ -71,8 +71,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.checkBox_one2one.toggled.connect(self.update_data_fig)
         self.checkBox_scale0.toggled.connect(self.update_data_fig)
 
-        self.comboBox_calcurve.addItems(self.fits)
-        self.comboBox_calcurve.setCurrentIndex(self.fits.index('linear'))
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
 
         self.actionDelete_Selected_Run.triggered.connect(self.delete_run)
@@ -96,7 +94,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             box_dates: Choose a period of time for runs to be selected.
         """
         # initial box_types set to 'flask' (the run types are stored in runs_df)
-        #runtypes = sorted(list(set(self.fe3data['type'])))
+        # runtypes = sorted(list(set(self.fe3data['type'])))
         runtypes = ['flask', 'calibration', 'all']
         self.box_types.addItems(runtypes)
         idx = runtypes.index('flask')
@@ -198,50 +196,55 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.sub[cal] = self.sub['port_id'].apply(self.cal_column, args=[self.mol_select])
 
     def update_method_field(self):
-        """ Save changes to DB if the lowess or p2p detrend buttons are toggled. """
-
-        self.subset_fe3data()
-
-        runtype = self.box_types.currentText()
+        """ Save changes to DB if the lowess or p2p detrend
+            buttons are toggled. """
 
         dir = self.sub['dir'].values[0]
-        meth = f'{self.mol_select}_meth'
+        meth = f'{self.mol_select}_methdet'
         det = 'lowess' if self.detrend_lowess.isChecked() else 'p2p'
+        self.fe3data.loc[self.fe3data['dir'] == dir, meth] = f'{det}'
 
-        # self.fe3data.loc[self.fe3data['dir'] == dir, meth] = f'{det};{fit}'
+        meth = f'{self.mol_select}_methcal'
+        self.fe3data.loc[self.fe3data['dir'] == dir, meth] =    \
+            self.comboBox_calcurve.currentText()
 
-        self.madechanges = True     # set to True to save changes
-
+        self.madechanges = True     # set to True to save changes to db
         self.update_data_fig()
 
     def update_data_fig(self):
-        """ Creates a subset of the full GCwerks dataframe for the
-            selected run. """
+        """ Sets toggle and comboBoxes to stored values """
 
         self.subset_fe3data()
 
-        # use method column to set detrend and cal curve fields
-        meth = f'{self.mol_select}_meth'
-        det, fit = self.parse_method(self.sub[meth].values[0])
+        # use method columns to set detrend and cal curve fields
+        det = self.sub[f'{self.mol_select}_methdet'].values[0]
+        fit = self.sub[f'{self.mol_select}_methcal'].values[0]
+        type = self.box_types.currentText()
+
+        # update detrend toggle buttons
         self.detrend_lowess.disconnect()
         if det == 'lowess':
             self.detrend_lowess.setChecked(True)
         else:
             self.detrend_linear.setChecked(True)
-
         self.detrend_lowess.toggled.connect(self.update_method_field)
 
+        # update cal curve comboBox which depends on run type.
         self.comboBox_calcurve.currentIndexChanged.disconnect()
+        self.comboBox_calcurve.clear()
+        if type == 'flask':
+            # which cal curve to use for mole fraction calculation
+            methods = self.methods + self.nearest_calcurves(self.sub['dir'].values[0])
+            idx = methods.index(fit)
+            self.comboBox_calcurve.addItems(methods)
+        else:
+            idx = self.fits.index(fit)
+            self.comboBox_calcurve.addItems(self.fits)
         try:
-            self.comboBox_calcurve.setCurrentIndex(self.fits.index(fit))     # update pull down menu
+            self.comboBox_calcurve.setCurrentIndex(idx)     # update pull down menu
         except ValueError:
             self.comboBox_calcurve.setCurrentIndex(1)     # update pull down menu
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
-
-        # which cal curve to use for mole fraction calculation
-        fm = self.calcurve_run(self.run_selected, 'ffill')
-        bm = self.calcurve_run(self.run_selected, 'bfill')
-        self.methods = ['one-point', 'two-point', fm, bm]
 
         # choose which figure to display
         if self.fig_detrend.isChecked():
@@ -432,7 +435,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         flags = f'{self.mol_select}_flag'
         cal = f'{self.mol_select}_cal'
         det = f'{self.mol_select}_det'
-        meth = f'{self.mol_select}_meth'
+        type = self.box_types.currentText()
 
         self.checkBox_scale0.setEnabled(True)
         self.checkBox_one2one.setEnabled(True)
@@ -459,7 +462,12 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         y = good[det].values
 
         # which cal curve fit method?
-        detmethod, fit = self.parse_method(df[meth].values[0])
+        if type == 'flask':
+            fit = 'linear'
+            x_crvfit, y_crvfit = self.calcurve_from_coefs(self.mol_select, self.comboBox_calcurve.currentText())
+        else:
+            fit = self.sub[f'{self.mol_select}_methcal'].values[0]
+
         coefs, x_fit, y_fit = self.calculate_calcurve(fit, x, y, scale0=self.checkBox_scale0.isChecked())
         self.save_calcurve(df, self.mol_select, coefs)
 
