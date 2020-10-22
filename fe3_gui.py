@@ -2,8 +2,6 @@ from PyQt5 import QtCore, QtWidgets
 import pandas as pd
 import numpy as np
 import numpy.polynomial.polynomial as poly
-# from scipy.optimize import curve_fit
-# from datetime import date, datetime
 import matplotlib.pyplot as plt
 from matplotlib.dates import num2date, AutoDateFormatter, AutoDateLocator, DateFormatter
 # from pathlib import Path
@@ -17,21 +15,14 @@ np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
 
 class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing):
 
-    fe3cals = fe3_incoming.FE3_cals()
-    fe3curves = fe3_incoming.FE3_cal_curves()
-    fe3db = fe3_incoming.FE3_db()
-    MAX_N_SSVports = 10     # number of SSV ports for cal tanks
-    MAX_N_Flasks = 8        # number of SSV ports for flasks
-
     def __init__(self):
         super().__init__()
+        DataProcessing.__init__(self)
         self.fe3data = self.fe3db.db
         self.cals = self.fe3cals.cals
         self.calcurves = self.fe3curves.calcurves_df
         self.mols = [c[0:c.find('_ht')] for c in self.fe3data.columns if c.find('_ht') > 0]
         self.mol_select = 'CFC11'
-        self.ssv_norm_port = 1      # port number to normalize to
-        self.ssv_flask_port = 2     # port number flasks are analyzed on
         self.sub = pd.DataFrame()
         self.run_selected = ''
         self.fits = ['linear', 'quadratic', 'cubic', 'exponential']
@@ -347,8 +338,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         flags = f'{self.mol_select}_flag'
         det = f'{self.mol_select}_det'
 
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
-                                        lowess=self.detrend_lowess.isChecked())
+        lwc = self.detrend_lowess.isChecked()
+        df[det] = self.detrend_response(df, self.mol_select, lowess=lwc)
         port_list = self.portlist(df)
 
         self.checkBox_scale0.setEnabled(False)
@@ -451,9 +442,11 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax1.tick_params(axis='x', which='both', length=0)
 
         # add detrend column to df
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
-                                        lowess=self.detrend_lowess.isChecked())
+        lwc = self.detrend_lowess.isChecked()
+        df[det] = self.detrend_response(df, self.mol_select, lowess=lwc)
         self.sub = df.copy()  # save to sub
+
+        cc = self.comboBox_calcurve.currentText()
 
         # fit to unflagged data
         good = df.loc[df[flags] == False][[cal, det]].dropna()
@@ -461,23 +454,40 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         x = good[cal].values
         y = good[det].values
 
-        # which cal curve fit method?
+        mask = (df[flags] == False) & ((df['port'] == self.ssv_norm_port) | (df['port'] == self.second_cal_port))
+        good = df.loc[mask][[cal, det]].dropna()
+        good = good.sort_values([cal, det])
+        x = good[cal].values
+        y = good[det].values
+
+        # which type of run is displayed?
         if type == 'flask':
-            fit = 'linear'
-            x_crvfit, y_crvfit = self.calcurve_from_coefs(self.mol_select, self.comboBox_calcurve.currentText())
+            if cc == 'one-point':
+                fit = cc
+                coefs = []
+            elif cc == 'two-point':
+                fit = cc
+                coefs = []
+            else:
+                fit, coefs = self.calcurve_params(cc, self.mol_select)
+                xmin, xmax = min(x), max(x)
+                if self.checkBox_scale0.isChecked():
+                    xmin = 0
+                range = xmax - xmin
+                x_fit = np.linspace(min(x)-range*0.05, max(x)+range*0.05, 100)
+                y_fit = self.calcurve_values(cc, self.mol_select, x_fit)
         else:
             fit = self.sub[f'{self.mol_select}_methcal'].values[0]
-
-        coefs, x_fit, y_fit = self.calculate_calcurve(fit, x, y, scale0=self.checkBox_scale0.isChecked())
-        self.save_calcurve(df, self.mol_select, coefs)
+            coefs, x_fit, y_fit = self.calculate_calcurve(fit, x, y, scale0=self.checkBox_scale0.isChecked())
+            self.save_calcurve(df, self.mol_select, coefs)
 
         if len(x) > 1:
             # one-to-one fit
-            one2one_x = np.linspace(min(x_fit), max(x_fit), 100)
+            x_one2one = np.linspace(min(x_fit), max(x_fit), 100)
             calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
-            one2one_y = one2one_x / calval
+            y_one2one = x_one2one / calval
         else:
-            one2one_x, one2one_y = [], []
+            x_one2one, y_one2one = [], []
 
         # plot residuals
         self.mpl_plot.canvas.ax1.grid(True)
@@ -512,7 +522,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # add fits to figure
         self.mpl_plot.canvas.ax2.plot(x_fit, y_fit, 'k-', label=fitlabel)
         if self.checkBox_one2one.isChecked():
-            self.mpl_plot.canvas.ax2.plot(one2one_x, one2one_y, c='grey', ls='--', label='one-to-one')
+            self.mpl_plot.canvas.ax2.plot(x_one2one, y_one2one, c='grey', ls='--', label='one-to-one')
 
         # plot detrended response vs cals
         self.mpl_plot.canvas.ax2.grid(True)
@@ -565,6 +575,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.checkBox_one2one.setEnabled(False)
         self.comboBox_calcurve.setEnabled(False)
 
+        meth = self.comboBox_meth.currentText()
         """
         meth = self.comboBox_meth.currentText()
         if meth.find('one') >= 0:
