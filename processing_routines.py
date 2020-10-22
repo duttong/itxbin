@@ -6,17 +6,30 @@ from scipy.optimize import curve_fit
 import fe3_incoming
 
 
-class DataProcessing:
-    """ Class for FE3 data processing methods that will be used in both
-        display and routine or batch calculations. """
+class FE3config:
+    """ Base class with FE3 instrument specific variables also
+        used to load the various data sources.  """
 
     fe3cals = fe3_incoming.FE3_cals()
     fe3curves = fe3_incoming.FE3_cal_curves()
-    # fe3db = fe3_incoming.FE3_db()
+    fe3db = fe3_incoming.FE3_db()
 
     def __init__(self):
+        self.MAX_N_SSVports = 10     # number of SSV ports for cal tanks
+        self.MAX_N_Flasks = 8        # number of SSV ports for flasks
+        self.ssv_norm_port = 1      # port number to normalize to
+        self.ssv_flask_port = 2     # port number flasks are analyzed on
+        self.second_cal_port = 3    # port number for second calibration tank (two point cal)
         self.cals = self.fe3cals.cals
         self.calcurves = self.fe3curves.calcurves_df
+
+
+class DataProcessing(FE3config):
+    """ Class for FE3 data processing methods that will be used in both
+        display and routine or batch calculations. """
+
+    def __init__(self):
+        super().__init__()
 
     @staticmethod
     def dir_to_datetime(dir):
@@ -26,7 +39,7 @@ class DataProcessing:
         dt = pd.to_datetime(dir, infer_datetime_format=True)
         return dt
 
-    def detrend_response(self, df0, mol, ssv_norm_port, lowess=True):
+    def detrend_response(self, df0, mol, lowess=True):
         """ Method detrends the response data either with a lowess smooth or
             point-by-point linear interpolation.
             Returns the detrended series. """
@@ -37,7 +50,7 @@ class DataProcessing:
         flags = f'{mol}_flag'
         resp = f'{mol}_ht'      # hardcoded to ht
 
-        np_resp = df.loc[(df['port'] == ssv_norm_port) & (df[flags] == False)][resp]
+        np_resp = df.loc[(df['port'] == self.ssv_norm_port) & (df[flags] == False)][resp]
         if lowess:
             df[det] = self.make_lowess(np_resp)
         else:
@@ -111,7 +124,7 @@ class DataProcessing:
 
         return coefs, x_fit, y_fit
 
-    def calculate_calcurve_run(self, df, run, mol, ssv_norm_port=1, scale0=False, save=True):
+    def calculate_calcurve_run(self, df, run, mol, scale0=False, save=True):
         """ This method calculates a fit for a specific run (or directory) for
             a molecule and returns the coefs and x_fit, y_fit arrays. """
 
@@ -123,11 +136,11 @@ class DataProcessing:
 
         lowess = True if detrend == 'lowess' else False
 
-        # add cal and det columns to dir_df dataframe
+        # add cal and detrend columns to dir_df dataframe
         cal = f'{mol}_cal'
         det = f'{mol}_det'
         dir_df[cal] = dir_df['port_id'].apply(self.cal_column, args=[mol])
-        dir_df[det] = self.detrend_response(dir_df, mol, ssv_norm_port, lowess=lowess)
+        dir_df[det] = self.detrend_response(dir_df, mol, self.ssv_norm_port, lowess=lowess)
 
         # fit to unflagged data
         good = dir_df.loc[dir_df[f'{mol}_flag'] == False][[cal, det]].dropna()
@@ -186,10 +199,43 @@ class DataProcessing:
 
         return caldates
 
+    def calcurve_params(self, calrun, mol):
+        """ returns the fit function and coefficients of a calcurve
+            on the date of 'calrun' for the given molecule 'mol' """
+
+        cc = self.calcurves.copy().reset_index().set_index('dir_time')
+        cc.sort_index(inplace=True)
+
+        try:
+            c_lst = cc[cc['dir'] == calrun][f'{mol}_coefs'].values[0]
+            meth = cc[cc['dir'] == calrun][f'{mol}_methcal'].values[0]
+            # a floating point list of coefficients
+            coefs = [float(c) for c in c_lst.split(';')]
+            return meth, coefs
+        except IndexError:
+            # this occurs if calrun can't be found or a problem with calcurves db
+            print(calrun)
+            return 'unknown', []
+
+    def calcurve_values(self, calrun, mol, *x_values):
+        """ Takes a cal curve date and mol with a list of x values
+            and returns the y values for the cal curve function and coefficients
+            in the cal curve db. """
+
+        meth, coefs = self.calcurve_params(calrun, mol)
+        print(meth, coefs)
+        try:
+            f = getattr(self, meth)
+            y_values = f(*x_values, *coefs)
+        except AttributeError:
+            y_values = []
+
+        return y_values
+
     """
-    def save_calcurve_allmols(self, df, run, norm_port=1):
+    def save_calcurve_allmols(self, df, run):
         for mol in self.fe3db.mols:
-            self.calculate_calcurve_run(df, run, mol, ssv_norm_port=norm_port, save=True)
+            self.calculate_calcurve_run(df, run, mol, save=True)
     """
 
     @staticmethod
@@ -211,14 +257,6 @@ class DataProcessing:
     def exponential(x, *coefs):
         """ exponential fit function """
         return coefs[0] + coefs[1] * np.exp(coefs[2] * x)
-
-    def calcurve_from_coefs(self, mol, calrun):
-        cc = self.calcurves.copy().reset_index().set_index('dir_time')
-        cc.sort_index(inplace=True)
-
-        coefs = cc[cc['dir']==calrun][f'{mol}_coefs'].values
-        meth = cc[cc['dir']==calrun][f'{mol}_methcal'].values
-        print(meth, coefs)
 
     """ The mole fraction methods below use a dataframe that already
         has the det and cal columns added. """
