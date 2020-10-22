@@ -219,7 +219,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
 
     @staticmethod
     def _seq2list(df):
-        """ This method takes the seq string and returns flask ids and port
+        """ This method takes the sequence string and returns flask ids and port
             position in two lists. """
         seq = df.iloc[0].seq[1:]
         flasks = df.iloc[0].flasks
