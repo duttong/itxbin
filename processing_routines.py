@@ -245,7 +245,6 @@ class DataProcessing(FE3config):
             in the cal curve db. """
 
         meth, coefs = self.calcurve_params(calrun, mol)
-        print(meth, coefs)
         try:
             f = getattr(self, meth)
             y_values = f(*x_values, *coefs)

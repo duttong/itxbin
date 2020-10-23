@@ -1,13 +1,11 @@
 from PyQt5 import QtCore, QtWidgets
 import pandas as pd
 import numpy as np
-import numpy.polynomial.polynomial as poly
 import matplotlib.pyplot as plt
 from matplotlib.dates import num2date, AutoDateFormatter, AutoDateLocator, DateFormatter
 # from pathlib import Path
 
 import fe3_panel
-import fe3_incoming
 from processing_routines import DataProcessing
 
 np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
@@ -447,7 +445,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.sub = df.copy()  # save to sub
 
         cc = self.comboBox_calcurve.currentText()
-        # x, y = self.unflagged_data(fit, df, self.mol_select)
 
         # which type of run is displayed?
         # if flasks, then use the cal curves that have already been calculated
@@ -484,10 +481,11 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         for p in self.unique_ports(df, remove_flask_port=True):
             x = df.loc[(df['port'] == p) & (df[flags] == False), cal]
             y = df.loc[(df['port'] == p) & (df[flags] == False), det]
-            if fit.find('exponential') >= 0:
-                resid = self.exponential(x, *coefs) - y
+            if fit == 'one-point' or fit == 'two-points':
+                f = self.linear
             else:
-                resid = poly.polyval(x, coefs) - y
+                f = getattr(self, fit)
+            resid = f(x, *coefs) - y
             avg, std = resid.mean(), resid.std()
 
             c = self.colors[p % 10]
@@ -557,8 +555,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         det = f'{self.mol_select}_det'
         value = f'{self.mol_select}_value'
 
-        df[det] = self.detrend_response(df, self.mol_select, self.ssv_norm_port,
-                                        lowess=self.detrend_lowess.isChecked())
+        lws = self.detrend_lowess.isChecked()
+        df[det] = self.detrend_response(df, self.mol_select, lowess=lws)
         port_list = self.portlist(df)
 
         self.checkBox_scale0.setEnabled(False)
