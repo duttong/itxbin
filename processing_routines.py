@@ -90,10 +90,31 @@ class DataProcessing(FE3config):
                 keep.append(col)
         return df[keep]
 
-    def calculate_calcurve(self, fit_function, x, y, scale0=False):
+    def unflagged_data(self, fit_function, dir_df, mol):
+        """ Method returns the unflagged data depending on the fit_function. """
+
+        # determine which data to use
+        flag = f'{mol}_flag'
+        unflagged = (dir_df[flag] == False)
+        if fit_function == 'two-points':
+            mask = unflagged & ((dir_df['port'] == self.ssv_norm_port) | (dir_df['port'] == self.second_cal_port))
+        else:
+            mask = unflagged
+
+        cal = f'{mol}_cal'
+        det = f'{mol}_det'
+        good = dir_df.loc[mask][[cal, det]].dropna()
+        good = good.sort_values([cal, det])
+        x = good[cal].values
+        y = good[det].values
+        return x, y
+
+    def calculate_calcurve(self, fit_function, dir_df, mol, scale0=False):
         """ Method to fit x and y data to either polyfit or a function for
             curve_fit.
             Set scale0 to True to return x and y fits to 0 mole fraction. """
+
+        x, y = self.unflagged_data(fit_function, dir_df, mol)
 
         if len(x) == 0:
             return [0, 0], [], []
@@ -117,6 +138,14 @@ class DataProcessing(FE3config):
         elif fit_function == 'exponential':
             coefs, _ = curve_fit(self.exponential, x, y, p0=[0., 1., .001], maxfev=20000)
             y_fit = self.exponential(x_fit, *coefs)
+        elif fit_function == 'one-point':
+            cal = f'{mol}_cal'
+            calval = dir_df.loc[dir_df['port'] == self.ssv_norm_port, cal].values[0]
+            coefs = [0, 1/calval]
+            y_fit = self.linear(x_fit, *coefs)
+        elif fit_function == 'two-points':
+            coefs, _ = curve_fit(self.linear, x, y, p0=[0., 1.])
+            y_fit = self.linear(x_fit, *coefs)
         else:
             print(f'Unknown curve fit type: {fit_function} using linear instead.')
             coefs, _ = curve_fit(self.linear, x, y, p0=[0., 1.])
@@ -142,13 +171,7 @@ class DataProcessing(FE3config):
         dir_df[cal] = dir_df['port_id'].apply(self.cal_column, args=[mol])
         dir_df[det] = self.detrend_response(dir_df, mol, self.ssv_norm_port, lowess=lowess)
 
-        # fit to unflagged data
-        good = dir_df.loc[dir_df[f'{mol}_flag'] == False][[cal, det]].dropna()
-        good = good.sort_values([cal, det])
-        x = good[cal].values
-        y = good[det].values
-
-        coefs, x_fit, y_fit = self.calculate_calcurve(fit_function, x, y, scale0=scale0)
+        coefs, x_fit, y_fit = self.calculate_calcurve(fit_function, dir_df, mol, scale0=scale0)
 
         # saves to calcurve db
         if save:
@@ -214,7 +237,6 @@ class DataProcessing(FE3config):
             return meth, coefs
         except IndexError:
             # this occurs if calrun can't be found or a problem with calcurves db
-            print(calrun)
             return 'unknown', []
 
     def calcurve_values(self, calrun, mol, *x_values):

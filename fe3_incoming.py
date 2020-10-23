@@ -188,7 +188,8 @@ class FE3_cals(FE3_runs):
         self.cals = self.load_cals()
 
     def load_cals(self):
-        return pd.read_csv(self.calibration_values, index_col=0, skipinitialspace=True, parse_dates=True)
+        return pd.read_csv(self.calibration_values, index_col=0,
+                skipinitialspace=True, parse_dates=True)
 
 
 class FE3_db(FE3_runs, FE3_GCwerks):

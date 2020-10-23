@@ -26,7 +26,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.sub = pd.DataFrame()
         self.run_selected = ''
         self.fits = ['linear', 'quadratic', 'cubic', 'exponential']
-        self.methods = ['one-point', 'two-point']
+        self.methods = ['one-point', 'two-points']
         self.madechanges = False    # if True, save the DB when the app quits
         # different color for each SSV port (port 2 is for flask SSV)
         self.colors = {0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
@@ -447,44 +447,34 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.sub = df.copy()  # save to sub
 
         cc = self.comboBox_calcurve.currentText()
-
-        # fit to unflagged data
-        good = df.loc[df[flags] == False][[cal, det]].dropna()
-        good = good.sort_values([cal, det])
-        x = good[cal].values
-        y = good[det].values
-
-        mask = (df[flags] == False) & ((df['port'] == self.ssv_norm_port) | (df['port'] == self.second_cal_port))
-        good = df.loc[mask][[cal, det]].dropna()
-        good = good.sort_values([cal, det])
-        x = good[cal].values
-        y = good[det].values
+        # x, y = self.unflagged_data(fit, df, self.mol_select)
 
         # which type of run is displayed?
+        # if flasks, then use the cal curves that have already been calculated
+        # if other, then calculate and save the cal curve.
         if type == 'flask':
-            if cc == 'one-point':
+            if cc == 'one-point' or cc == 'two-points':
                 fit = cc
-                coefs = []
-            elif cc == 'two-point':
-                fit = cc
-                coefs = []
+                coefs, x_fit, y_fit = self.calculate_calcurve(cc, df, self.mol_select, scale0=self.checkBox_scale0.isChecked())
+                x, y = self.unflagged_data(fit, df, self.mol_select)
             else:
                 fit, coefs = self.calcurve_params(cc, self.mol_select)
-                xmin, xmax = min(x), max(x)
-                if self.checkBox_scale0.isChecked():
-                    xmin = 0
-                range = xmax - xmin
-                x_fit = np.linspace(min(x)-range*0.05, max(x)+range*0.05, 100)
+                x, y = self.unflagged_data(fit, df, self.mol_select)
+                xmin = 0 if self.checkBox_scale0.isChecked() else min(x)
+                range = max(x) - xmin
+                x_fit = np.linspace(xmin-range*0.05, max(x)+range*0.05, 100)
                 y_fit = self.calcurve_values(cc, self.mol_select, x_fit)
         else:
+            # not flask, calibration run instead. Calculate a cal curve instead.
             fit = self.sub[f'{self.mol_select}_methcal'].values[0]
-            coefs, x_fit, y_fit = self.calculate_calcurve(fit, x, y, scale0=self.checkBox_scale0.isChecked())
+            x, y = self.unflagged_data(fit, df, self.mol_select)
+            coefs, x_fit, y_fit = self.calculate_calcurve(fit, df, self.mol_select, scale0=self.checkBox_scale0.isChecked())
             self.save_calcurve(df, self.mol_select, coefs)
 
         if len(x) > 1:
             # one-to-one fit
-            x_one2one = np.linspace(min(x_fit), max(x_fit), 100)
             calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
+            x_one2one = np.linspace(min(x_fit), max(x_fit), 100)
             y_one2one = x_one2one / calval
         else:
             x_one2one, y_one2one = [], []
