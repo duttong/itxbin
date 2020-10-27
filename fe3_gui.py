@@ -259,7 +259,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.checkBox_scale0.setEnabled(False)
         self.checkBox_one2one.setEnabled(False)
-        self.comboBox_calcurve.setEnabled(False)
         self.fig_calibration.setChecked(False)
 
         self.mpl_plot.canvas.ax1.clear()
@@ -342,7 +341,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.checkBox_scale0.setEnabled(False)
         self.checkBox_one2one.setEnabled(False)
-        self.comboBox_calcurve.setEnabled(False)
 
         self.mpl_plot.canvas.ax1.clear()
         self.mpl_plot.canvas.ax2.clear()
@@ -428,7 +426,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.checkBox_scale0.setEnabled(True)
         self.checkBox_one2one.setEnabled(True)
-        self.comboBox_calcurve.setEnabled(True)
 
         self.mpl_plot.canvas.ax1.set_visible(True)
         self.mpl_plot.canvas.ax1.clear()
@@ -458,8 +455,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                 fit, coefs = self.calcurve_params(cc, self.mol_select)
                 x, y = self.unflagged_data(fit, df, self.mol_select)
                 xmin = 0 if self.checkBox_scale0.isChecked() else min(x)
-                range = max(x) - xmin
-                x_fit = np.linspace(xmin-range*0.05, max(x)+range*0.05, 100)
+                span = max(x) - xmin
+                x_fit = np.linspace(xmin-span*0.05, max(x)+span*0.05, 100)
                 y_fit = self.calcurve_values(cc, self.mol_select, x_fit)
         else:
             # not flask, calibration run instead. Calculate a cal curve instead.
@@ -561,19 +558,17 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.checkBox_scale0.setEnabled(False)
         self.checkBox_one2one.setEnabled(False)
-        self.comboBox_calcurve.setEnabled(False)
 
-        meth = self.comboBox_meth.currentText()
-        """
-        meth = self.comboBox_meth.currentText()
-        if meth.find('one') >= 0:
-            df = self.mf_onepoint(df, self.mol_select, self.ssv_norm_port)
-        elif meth.find('two') >= 0:
-            df = self.mf_twopoint(df, self.mol_select, self.ssv_norm_port, 3)
-        elif meth.find('recent') >= 0:
-            df = self.mf_recent_calcurve(df, self.mol_select, self.ssv_norm_port)
-        """
+        # which cal curve method to use.
+        meth = self.comboBox_calcurve.currentText()
+        if meth == 'one-point':
+            df = self.mf_onepoint(df, self.mol_select,)
+        elif meth == 'two-points':
+            df = self.mf_twopoint(df, self.mol_select)
+        else:
+            df = self.mf_recent_calcurve(df, self.mol_select)
 
+        # setup plot axes
         self.mpl_plot.canvas.ax1.clear()
         self.mpl_plot.canvas.ax2.clear()
         self.mpl_plot.canvas.ax1.set_visible(False)
