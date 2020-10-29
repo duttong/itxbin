@@ -176,7 +176,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             and molecule. """
 
         self.run_selected = self.box_runs.currentText()
-        self.sub = self.fe3data.loc[self.fe3data.dir == self.run_selected]
+        self.sub = self.fe3data.loc[self.fe3data['dir'] == self.run_selected]
         self.sub = self.reduce_df(self.sub, self.mol_select)
 
         # add column for cal tank values
@@ -566,7 +566,10 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             df = self.mf_twopoint(self.mol_select, df)
         else:
             df = self.mf_calcurve(self.mol_select, df, meth)
-            # scipy.optimize.least_squares(pr.quadratic, 1, args=(cc), bounds=(0,1000))
+
+        # update full dataframe
+        self.fe3data.loc[self.fe3data['dir'] == self.run_selected, value] = df[value]
+        self.madechanges = True
 
         # setup plot axes
         self.mpl_plot.canvas.ax1.clear()

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from statsmodels.nonparametric.smoothers_lowess import lowess
-from scipy.optimize import curve_fit, least_squares, minimize
+from scipy.optimize import curve_fit, least_squares
 
 import fe3_incoming
 
