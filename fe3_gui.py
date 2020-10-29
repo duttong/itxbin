@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.dates import num2date, AutoDateFormatter, AutoDateLocator, DateFormatter
-# from pathlib import Path
 
 import fe3_panel
 from processing_routines import DataProcessing
@@ -482,11 +481,11 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                 f = self.linear
             else:
                 f = getattr(self, fit)
-            resid = f(x, *coefs) - y
-            avg, std = resid.mean(), resid.std()
+            resid = f(x, *coefs) - y        # residual
 
             c = self.colors[p % 10]
             if p != 10:
+                avg, std = resid.mean(), resid.std()
                 port_label = f'({p}) {avg:0.3f} ± {std:0.3f}'
 
                 self.mpl_plot.canvas.ax1.scatter(x, resid,
@@ -562,11 +561,12 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # which cal curve method to use.
         meth = self.comboBox_calcurve.currentText()
         if meth == 'one-point':
-            df = self.mf_onepoint(df, self.mol_select,)
+            df = self.mf_onepoint(self.mol_select, df)
         elif meth == 'two-points':
-            df = self.mf_twopoint(df, self.mol_select)
+            df = self.mf_twopoint(self.mol_select, df)
         else:
-            df = self.mf_recent_calcurve(df, self.mol_select)
+            df = self.mf_calcurve(self.mol_select, df, meth)
+            # scipy.optimize.least_squares(pr.quadratic, 1, args=(cc), bounds=(0,1000))
 
         # setup plot axes
         self.mpl_plot.canvas.ax1.clear()

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from statsmodels.nonparametric.smoothers_lowess import lowess
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, least_squares, minimize
 
 import fe3_incoming
 
@@ -158,19 +158,9 @@ class DataProcessing(FE3config):
             a molecule and returns the coefs and x_fit, y_fit arrays. """
 
         dir_df = df.loc[df.dir == run].copy()
-        dir_df = self.reduce_df(dir_df, mol)
+        dir_df = self.add_det_cal_columns(dir_df, mol)
 
-        detrend = dir_df[f'{mol}_methdet'].values[0]
         fit_function = dir_df[f'{mol}_methcal'].values[0]
-
-        lowess = True if detrend == 'lowess' else False
-
-        # add cal and detrend columns to dir_df dataframe
-        cal = f'{mol}_cal'
-        det = f'{mol}_det'
-        dir_df[cal] = dir_df['port_id'].apply(self.cal_column, args=[mol])
-        dir_df[det] = self.detrend_response(dir_df, mol, self.ssv_norm_port, lowess=lowess)
-
         coefs, x_fit, y_fit = self.calculate_calcurve(fit_function, dir_df, mol, scale0=scale0)
 
         # saves to calcurve db
@@ -178,6 +168,23 @@ class DataProcessing(FE3config):
             self.save_calcurve(dir_df, mol, coefs)
 
         return coefs, x_fit, y_fit
+
+    def add_det_cal_columns(self, dir_df, mol):
+        """ Method to add the detrended response and cal tank value columns
+            to the dir_df dataframe. """
+
+        df = dir_df.copy()
+        # dir_df = self.reduce_df(dir_df, mol)
+
+        detrend = df[f'{mol}_methdet'].values[0]
+        lowess = True if detrend == 'lowess' else False
+
+        # add cal and detrend columns to dir_df dataframe
+        cal = f'{mol}_cal'
+        det = f'{mol}_det'
+        df[cal] = df['port_id'].apply(self.cal_column, args=[mol])
+        df[det] = self.detrend_response(df, mol, lowess=lowess)
+        return df
 
     def save_calcurve(self, dir_df, mol, coefs):
         """ Method to save a cal curve type (name) and its coefficients to a
@@ -279,72 +286,67 @@ class DataProcessing(FE3config):
         """ exponential fit function """
         return coefs[0] + coefs[1] * np.exp(coefs[2] * x)
 
-    """ The mole fraction methods below use a dataframe that already
+    """ The mole fraction methods below use a run/dir dataframe that already
         has the det and cal columns added. """
 
-    def mf_onepoint(self, df, mol, norm_port):
+    def mf_onepoint(self, mol, dir_df):
         """ Mole fraction calculation, one point cal through the norm_port
             Todo: add uncertainty estimate """
         det, cal = f'{mol}_det', f'{mol}_cal'
         value = f'{mol}_value'
         # unc = f'{mol}_unc'
-        calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
-        df[value] = df[det] * calvalue
-        return df
+        # normalizing cal tank value
+        calvalue = dir_df.loc[(dir_df['port'] == self.ssv_norm_port)][cal].values[0]
+        dir_df[value] = dir_df[det] * calvalue
+        return dir_df
 
-    def mf_twopoint(self, df, mol, *ports):
+    def mf_twopoint(self, mol, dir_df):
         """ Mole fraction calculation, two point cal through the norm_port and
             a second port (p1).
             Todo: add uncertainty estimate """
-        p0, p1 = ports
+        p0, p1 = self.ssv_norm_port, self.second_cal_port
         # column names
         det, cal = f'{mol}_det', f'{mol}_cal'
         value, flags = f'{mol}_value', f'{mol}_flag'
         # unc = f'{mol}_unc'
 
-        df1 = df.copy()     # temporary dataframe
-        cal0 = df.loc[(df['port'] == p0)][cal].values[0]  # cal val on p0
-        cal1 = df.loc[(df['port'] == p1)][cal].values[0]  # cal val on p1
+        dir_df1 = dir_df.copy()     # temporary dataframe
+        cal0 = dir_df.loc[(dir_df['port'] == p0)][cal].values[0]  # cal val on p0
+        cal1 = dir_df.loc[(dir_df['port'] == p1)][cal].values[0]  # cal val on p1
         # detrended response on p0
-        df1['r0'] = df.loc[(df['port'] == p0) & (df[flags] == False)][det]
-        df1['r0'] = df1['r0'].interpolate()
+        dir_df1['r0'] = dir_df.loc[(dir_df['port'] == p0) & (dir_df[flags] == False)][det]
+        dir_df1['r0'] = dir_df1['r0'].interpolate()
         # detrended response on p1
-        df1['r1'] = df.loc[(df['port'] == p1) & (df[flags] == False)][det]
-        df1['r1'] = df1['r1'].interpolate()
+        dir_df1['r1'] = dir_df.loc[(dir_df['port'] == p1) & (dir_df[flags] == False)][det]
+        dir_df1['r1'] = dir_df1['r1'].interpolate()
         # slope
-        df1['m'] = (df1['r0']-df1['r1']) / (cal0-cal1)
+        dir_df1['m'] = (dir_df1['r0']-dir_df1['r1']) / (cal0-cal1)
         # intercept
-        df1['b'] = df1['r0'] - df1['m'] * cal0
-        df[value] = (df1[det] - df1['b'])/df1['m']
-        return df
+        dir_df1['b'] = dir_df1['r0'] - dir_df1['m'] * cal0
+        dir_df[value] = (dir_df1[det] - dir_df1['b'])/dir_df1['m']
+        return dir_df
 
-    def mf_recent_calcurve(self, df, mol, norm_port):
-        det, cal = f'{mol}_det', f'{mol}_cal'
-        value, flags = f'{mol}_value', f'{mol}_flag'
+    def mf_calcurve(self, mol, dir_df, caldate):
+        """ Method uses a specified calibration date (caldate). The fit type
+            and coefficients are stored in the calibration db. """
+        value = f'{mol}_value'
         # unc = f'{mol}_unc'
 
-        dir = df['dir'].values[0]
-        dt = self.run_to_datetime(dir)
-
-        # calvalue = df.loc[(df['port'] == norm_port)][cal].values[0]
-        meth = self.calcurves.iloc[-2][f'{mol}_meth']
-        coefs_str = self.calcurves.iloc[-2][f'{mol}_coefs'].split(';')
-        c = np.array(coefs_str)
-
-        coefs = c.astype(np.float)[::-1]
-        ply = np.poly1d(coefs)
-        # print((p-1).r)
-        if meth.find('exp') >= 0:
-            df[value] = self.func_exp(df[det], *coefs)
-        else:
-            # df[value] = poly.polyval(df[det], coefs)
-            df[value] = df[det].apply(self.inv, args=[ply])
+        df = dir_df.copy()
+        df[value] = df.apply(self.solve, args=([caldate, mol]), axis=1)
         return df
 
-    def inv(self, y, p):
-        # print(y, y is np.nan, y == np.nan)
-        try:
-            roots = (p - y).r
-            return max(roots)
-        except np.linalg.LinAlgError:
+    def solve(self, df, caldate, mol):
+        """ Method to be called by pandas apply function """
+        det = df[f'{mol}_det']      # detrended response
+        if pd.isna(det):
             return np.nan
+
+        meth, coefs = self.calcurve_params(caldate, mol)
+        f = getattr(self, meth)     # cal curve function
+
+        cc = coefs.copy()
+        cc[0] -= det            # subtract y value from constant offset
+        initial_guess = 300     # works well
+        res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
+        return res.x[0]
