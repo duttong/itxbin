@@ -60,7 +60,7 @@ class DataProcessing(FE3config):
         return df[det]
 
     @staticmethod
-    def make_lowess(series, frac=.4):
+    def make_lowess(series, frac=.25):
         # from https://gist.github.com/AllenDowney/818f6153ef316aee80467c51faee80f8
         endog = series.values
         exog = series.index.values
@@ -116,8 +116,14 @@ class DataProcessing(FE3config):
 
         x, y = self.unflagged_data(fit_function, dir_df, mol)
 
+        # no data to fit to
         if len(x) == 0:
-            return [0, 0], [], []
+            if fit_function == 'linear':
+                return [0, 0], [], []
+            elif fit_function == 'quadratic' or fit_function == 'exponential':
+                return [0, 0, 0], [], []
+            else:
+                return [0, 0, 0, 0], [], []
 
         minx, maxx = min(x), max(x)
         if scale0:
@@ -215,6 +221,7 @@ class DataProcessing(FE3config):
             side of the run date """
         cc = self.calcurves.copy().reset_index().set_index('dir_time')
         cc.sort_index(inplace=True)
+        # print(cc.index)
 
         dt = pd.to_datetime(run, infer_datetime_format=True)
         idx = cc.index.get_loc(dt, method='ffill')
