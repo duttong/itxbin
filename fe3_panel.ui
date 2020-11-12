@@ -220,6 +220,26 @@ QGroupBox::title {
                  </attribute>
                 </widget>
                </item>
+               <item row="4" column="1">
+                <widget class="QRadioButton" name="button_CFC11b">
+                 <property name="text">
+                  <string>CFC-11 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="5" column="1">
+                <widget class="QRadioButton" name="button_CFC113b">
+                 <property name="text">
+                  <string>CFC-113 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
               </layout>
              </item>
             </layout>
@@ -599,6 +619,26 @@ QGroupBox::title {
                  </attribute>
                 </widget>
                </item>
+               <item row="4" column="1">
+                <widget class="QRadioButton" name="button_CFC11b_2">
+                 <property name="text">
+                  <string>CFC-11 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols2</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="5" column="1">
+                <widget class="QRadioButton" name="button_CFC113b_2">
+                 <property name="text">
+                  <string>CFC-113 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols2</string>
+                 </attribute>
+                </widget>
+               </item>
               </layout>
              </item>
             </layout>
@@ -663,8 +703,8 @@ QGroupBox::title {
  <resources/>
  <connections/>
  <buttongroups>
-  <buttongroup name="buttonGroup_mols1"/>
   <buttongroup name="buttonGroup_figs"/>
+  <buttongroup name="buttonGroup_mols1"/>
   <buttongroup name="buttonGroup_mols2"/>
  </buttongroups>
 </ui>
