@@ -74,6 +74,10 @@ class DataProcessing(FE3config):
     def cal_column(self, pid, mol):
         """ Returns the cal tank mole fraction value for the selected molecule (mol)
             identified by port_id. This method is usually called by 'apply' """
+
+        if mol[-1] == 'b':
+            mol = mol[:-1]
+
         try:
             val = self.cals.loc[pid, mol]
         except KeyError:
@@ -296,6 +300,23 @@ class DataProcessing(FE3config):
     """ The mole fraction methods below use a run/dir dataframe that already
         has the det and cal columns added. """
 
+    def molefraction_calc(self, dir_df, mol, meth):
+
+        df = dir_df.copy()
+
+        if meth == 'one-point':
+            df = self.mf_onepoint(self.mol_select, df)
+        elif meth == 'two-points':
+            df = self.mf_twopoint(self.mol_select, df)
+        elif meth.find('-') > 0:    # cal curves specified by cal run date
+            df = self.mf_calcurve(self.mol_select, df, meth)
+        else:
+            coefs, _, _ = self.calculate_calcurve(meth, df, self.mol_select)
+            value = f'{mol}_value'
+            df[value] = df.apply(self.solve_meth, args=([meth, coefs, self.mol_select]), axis=1)
+
+        return df
+
     def mf_onepoint(self, mol, dir_df):
         """ Mole fraction calculation, one point cal through the norm_port
             Todo: add uncertainty estimate """
@@ -340,16 +361,34 @@ class DataProcessing(FE3config):
         # unc = f'{mol}_unc'
 
         df = dir_df.copy()
-        df[value] = df.apply(self.solve, args=([caldate, mol]), axis=1)
+        df[value] = df.apply(self.solve_caldate, args=([caldate, mol]), axis=1)
         return df
 
-    def solve(self, df, caldate, mol):
-        """ Method to be called by pandas apply function """
+    def solve_caldate(self, df, caldate, mol):
+        """ Method to be called by pandas apply function
+            Calculates mole fraction using cal curve specified by caldate """
+
         det = df[f'{mol}_det']      # detrended response
         if pd.isna(det):
             return np.nan
 
         meth, coefs = self.calcurve_params(caldate, mol)
+        f = getattr(self, meth)     # cal curve function
+
+        cc = coefs.copy()
+        cc[0] -= det            # subtract y value from constant offset
+        initial_guess = 300     # works well
+        res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
+        return res.x[0]
+
+    def solve_meth(self, df, meth, coefs, mol):
+        """ Method to be called by pandas apply function
+            Calculates mole fraction using fitmethod and coefs """
+
+        det = df[f'{mol}_det']      # detrended response
+        if pd.isna(det):
+            return np.nan
+
         f = getattr(self, meth)     # cal curve function
 
         cc = coefs.copy()

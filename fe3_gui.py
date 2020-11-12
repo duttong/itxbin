@@ -67,6 +67,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
     def mol_clicked(self, button):
         self.mol_select = button.text().replace('-', '')
+        self.mol_select = self.mol_select.replace(' (b)', 'b')
         # make both buttons change together
         mainbutton = getattr(self, f'button_{self.mol_select}')
         mainbutton.setChecked(True)
@@ -223,13 +224,14 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if type == 'flask':
             # which cal curve to use for mole fraction calculation
             methods = self.methods + self.nearest_calcurves(self.sub['dir'].values[0])
+            fit = 'two-points' if fit == 'quadratic' else fit   # a fix if db is wrong
             idx = methods.index(fit)
             self.comboBox_calcurve.addItems(methods)
         else:
             idx = self.fits.index(fit)
             self.comboBox_calcurve.addItems(self.fits)
         try:
-            self.comboBox_calcurve.setCurrentIndex(idx)     # update pull down menu
+            self.comboBox_calcurve.setCurrentIndex(idx)   # update pull down menu
         except ValueError:
             self.comboBox_calcurve.setCurrentIndex(1)     # update pull down menu
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
@@ -448,8 +450,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         if type == 'flask':
             if cc == 'one-point' or cc == 'two-points':
                 fit = cc
-                coefs, x_fit, y_fit = self.calculate_calcurve(cc, df, self.mol_select, scale0=self.checkBox_scale0.isChecked())
                 x, y = self.unflagged_data(fit, df, self.mol_select)
+                coefs, x_fit, y_fit = self.calculate_calcurve(cc, df, self.mol_select, scale0=self.checkBox_scale0.isChecked())
             else:
                 fit, coefs = self.calcurve_params(cc, self.mol_select)
                 x, y = self.unflagged_data(fit, df, self.mol_select)
@@ -560,12 +562,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         # which cal curve method to use.
         meth = self.comboBox_calcurve.currentText()
-        if meth == 'one-point':
-            df = self.mf_onepoint(self.mol_select, df)
-        elif meth == 'two-points':
-            df = self.mf_twopoint(self.mol_select, df)
-        else:
-            df = self.mf_calcurve(self.mol_select, df, meth)
+        df = self.molefraction_calc(df, self.mol_select, meth)
 
         # update full dataframe
         self.fe3data.loc[self.fe3data['dir'] == self.run_selected, value] = df[value]
@@ -726,7 +723,8 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
             # second column is cal value
             try:
-                calvalue = self.cals.loc[f'{port_list[row]}', self.mol_select]
+                mol = self.mol_select if self.mol_select[-1] != 'b' else self.mol_select[:-1]
+                calvalue = self.cals.loc[f'{port_list[row]}', mol]
             except KeyError:
                 calvalue = ''
             cell1 = QtWidgets.QTableWidgetItem(f'{calvalue}')
