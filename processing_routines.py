@@ -313,7 +313,8 @@ class DataProcessing(FE3config):
         else:
             coefs, _, _ = self.calculate_calcurve(meth, df, self.mol_select)
             value = f'{mol}_value'
-            df[value] = df.apply(self.solve_meth, args=([meth, coefs, self.mol_select]), axis=1)
+            calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
+            df[value] = df.apply(self.solve_meth, args=([meth, coefs, mol, calval]), axis=1)
 
         return df
 
@@ -361,10 +362,12 @@ class DataProcessing(FE3config):
         # unc = f'{mol}_unc'
 
         df = dir_df.copy()
-        df[value] = df.apply(self.solve_caldate, args=([caldate, mol]), axis=1)
+        cal = f'{mol}_cal'
+        calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
+        df[value] = df.apply(self.solve_caldate, args=([caldate, mol, calval]), axis=1)
         return df
 
-    def solve_caldate(self, df, caldate, mol):
+    def solve_caldate(self, df, caldate, mol, initial_guess):
         """ Method to be called by pandas apply function
             Calculates mole fraction using cal curve specified by caldate """
 
@@ -377,11 +380,10 @@ class DataProcessing(FE3config):
 
         cc = coefs.copy()
         cc[0] -= det            # subtract y value from constant offset
-        initial_guess = 300     # works well
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
         return res.x[0]
 
-    def solve_meth(self, df, meth, coefs, mol):
+    def solve_meth(self, df, meth, coefs, mol, initial_guess):
         """ Method to be called by pandas apply function
             Calculates mole fraction using fitmethod and coefs """
 
@@ -393,6 +395,19 @@ class DataProcessing(FE3config):
 
         cc = coefs.copy()
         cc[0] -= det            # subtract y value from constant offset
-        initial_guess = 300     # works well
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
         return res.x[0]
+
+    def report(self, mol, run, df):
+        """ Data report for one molecule """
+        data = df.loc[df['dir'] == run]
+        flag = f'{mol}_flag'
+        mf = f'{mol}_value'
+
+        all = data.loc[data[flag] == False].groupby('port_id')[mf].agg(['mean', 'std', 'count'])
+        all.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
+        return all
+
+    def report_all(self, run, df):
+        data = df.loc[df['dir'] == run]
+        pass
