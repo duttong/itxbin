@@ -261,21 +261,26 @@ class FE3_db(FE3_runs, FE3_GCwerks):
         df['port_id'] = df.apply(self._port_id, axis=1)
         df['flask_port'] = ''
 
+        # create extra attribute columns
+        for mol in self.mols:
+            for k in self.attribs:
+                col = f'{mol}_{k}'
+                df[col] = self.attribs[k]
+
         # step through all flask runs and update port_id with flask_port
         flask_runs = df.loc[df.type == 'flask'].dir.unique()
         for run in flask_runs:
             port_id, port_num = self._seq2list(df.loc[df.dir == run])
             df.loc[df.dir == run, 'port_id'] = port_id
             df.loc[df.dir == run, 'flask_port'] = port_num
+            # the methcal column should be two-points for flasks and quadratic
+            # for other
+            for mol in self.mols:
+                col = f'{mol}_methcal'
+                df.loc[df.dir == run, col] = 'two-points'
 
         # don't need these columns anymore
         df.drop(columns=['ports', 'flasks', 'seq'], inplace=True)
-
-        # create extra attribute columns
-        for mol in self.mols:
-            for k in self.attribs:
-                col = f'{mol}_{k}'
-                df[col] = self.attribs[k]
 
         df = self.cleanup_db_df(df)
         self.db = df
