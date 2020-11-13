@@ -376,16 +376,16 @@ class DataProcessing(FE3config):
 
         df = dir_df.copy()
         cal = f'{mol}_cal'
-        calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
+        det = f'{mol}_det'
         meth, coefs = self.calcurve_params(caldate, mol)
-        df[value] = df.apply(self.solve_meth, args=([mol, meth, coefs, calval]), axis=1)
+        calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
+        df[value] = df[det].apply(self.solve_meth, args=([meth, coefs, calval]))
         return df[value]
 
-    def solve_meth(self, df, mol, meth, coefs, initial_guess):
+    def solve_meth(self, det, meth, coefs, initial_guess):
         """ Method to be called by pandas apply function
             Calculates mole fraction using fit method and coefs """
 
-        det = df[f'{mol}_det']      # detrended response
         if pd.isna(det):
             return np.nan
 
