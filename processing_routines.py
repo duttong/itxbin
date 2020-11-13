@@ -308,19 +308,20 @@ class DataProcessing(FE3config):
     """ The mole fraction methods below use a run/dir dataframe that already
         has the det and cal columns added. """
 
-    def molefraction_calc(self, dir_df, mol, meth):
+    def molefraction_calc(self, dir_df, mol):
 
         df = dir_df.copy()
+        value = f'{mol}_value'
+        meth = df[f'{mol}_methcal'].values[0]
 
         if meth == 'one-point':
-            df = self.mf_onepoint(mol, df)
+            df[value] = self.mf_onepoint(mol, df)
         elif meth == 'two-points':
-            df = self.mf_twopoint(mol, df)
+            df[value] = self.mf_twopoint(mol, df)
         elif meth.find('-') > 0:    # cal curves specified by cal run date
-            df = self.mf_calcurve(mol, df, meth)
+            df[value] = self.mf_calcurve(mol, df, meth)
         else:
             coefs, _, _ = self.calculate_calcurve(meth, df, mol)
-            value = f'{mol}_value'
             calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
             df[value] = df.apply(self.solve_meth, args=([meth, coefs, mol, calval]), axis=1)
 
@@ -335,7 +336,7 @@ class DataProcessing(FE3config):
         # normalizing cal tank value
         calvalue = dir_df.loc[(dir_df['port'] == self.ssv_norm_port)][cal].values[0]
         dir_df[value] = dir_df[det] * calvalue
-        return dir_df
+        return dir_df[value]
 
     def mf_twopoint(self, mol, dir_df):
         """ Mole fraction calculation, two point cal through the norm_port and
@@ -361,7 +362,7 @@ class DataProcessing(FE3config):
         # intercept
         dir_df1['b'] = dir_df1['r0'] - dir_df1['m'] * cal0
         dir_df[value] = (dir_df1[det] - dir_df1['b'])/dir_df1['m']
-        return dir_df
+        return dir_df[value]
 
     def mf_calcurve(self, mol, dir_df, caldate):
         """ Method uses a specified calibration date (caldate). The fit type
@@ -373,7 +374,7 @@ class DataProcessing(FE3config):
         cal = f'{mol}_cal'
         calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
         df[value] = df.apply(self.solve_caldate, args=([caldate, mol, calval]), axis=1)
-        return df
+        return df[value]
 
     def solve_caldate(self, df, caldate, mol, initial_guess):
         """ Method to be called by pandas apply function

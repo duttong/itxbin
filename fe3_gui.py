@@ -540,23 +540,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         """ Figure used to display mole fractions """
         self.checkBox_scale0.setEnabled(False)
         self.checkBox_one2one.setEnabled(False)
-
-        df = self.sub.copy()
-        flags = f'{self.mol_select}_flag'
-        det = f'{self.mol_select}_det'
-        value = f'{self.mol_select}_value'
-
-        df[det] = self.detrend_response(df, self.mol_select)
-        port_list = self.portlist(df)
-
-        # which cal curve method to use.
-        meth = self.comboBox_calcurve.currentText()
-        df = self.molefraction_calc(df, self.mol_select, meth)
-
-        # update full dataframe
-        self.fe3data.loc[self.fe3data['dir'] == self.run_selected, value] = df[value]
-        self.madechanges = True
-
         # setup plot axes
         self.mpl_plot.canvas.ax1.clear()
         self.mpl_plot.canvas.ax2.clear()
@@ -565,6 +548,19 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # this is needed for refreshing from shared xaxis from the calibration fig
         shax = self.mpl_plot.canvas.ax1.get_shared_x_axes()
         shax.remove(self.mpl_plot.canvas.ax1)
+
+        df = self.sub.copy()
+        flags = f'{self.mol_select}_flag'
+        value = f'{self.mol_select}_value'
+        port_list = self.portlist(df)
+
+        # which cal curve method to use.
+        meth = self.comboBox_calcurve.currentText()
+        df = self.molefraction_calc(df, self.mol_select)
+
+        # update full dataframe with new mole fractions
+        self.fe3data.loc[self.fe3data['dir'] == self.run_selected, value] = df[value]
+        self.madechanges = True
 
         # non flask data ports
         for p in self.unique_ports(df, remove_flask_port=True):
