@@ -401,7 +401,7 @@ class DataProcessing(FE3config):
         f = getattr(self, meth)     # cal curve function
         cc = coefs.copy()
         cc[0] -= det            # subtract y value from constant offset
-        res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
+        res = least_squares(f, x0=initial_guess, args=(cc), bounds=(-2, 3000))
         return res.x[0]
 
     def report(self, mol, run, df):
