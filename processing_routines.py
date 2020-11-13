@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy.optimize import curve_fit, least_squares
+from functools import reduce
 
 import fe3_incoming
 
@@ -385,7 +386,7 @@ class DataProcessing(FE3config):
 
     def solve_meth(self, df, meth, coefs, mol, initial_guess):
         """ Method to be called by pandas apply function
-            Calculates mole fraction using fitmethod and coefs """
+            Calculates mole fraction using fit method and coefs """
 
         det = df[f'{mol}_det']      # detrended response
         if pd.isna(det):
@@ -408,6 +409,10 @@ class DataProcessing(FE3config):
         all.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
         return all
 
-    def report_all(self, run, df):
-        data = df.loc[df['dir'] == run]
-        pass
+    def report_all(self, run, df, mols):
+        dfs = []
+        for mol in mols:
+            rpt = self.report(mol, run, df)
+            dfs.append(rpt)
+        rpt = reduce(lambda x, y: pd.merge(x, y, on='port_id'), dfs)
+        return rpt
