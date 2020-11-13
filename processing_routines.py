@@ -124,7 +124,7 @@ class DataProcessing(FE3config):
         y = good[det].values
         return x, y
 
-    def calculate_calcurve(self, fit_function, dir_df, mol, scale0=False):
+    def calculate_calcurve(self, dir_df, mol, fit_function, scale0=False):
         """ Method to fit x and y data to either polyfit or a function for
             curve_fit.
             Set scale0 to True to return x and y fits to 0 mole fraction. """
@@ -182,7 +182,7 @@ class DataProcessing(FE3config):
         dir_df = self.add_det_cal_columns(dir_df, mol)
 
         fit_function = dir_df[f'{mol}_methcal'].values[0]
-        coefs, x_fit, y_fit = self.calculate_calcurve(fit_function, dir_df, mol, scale0=scale0)
+        coefs, x_fit, y_fit = self.calculate_calcurve(dir_df, mol, fit_function, scale0=scale0)
 
         # saves to calcurve db
         if save:
@@ -309,25 +309,29 @@ class DataProcessing(FE3config):
         has the det and cal columns added. """
 
     def molefraction_calc(self, dir_df, mol):
+        """ Calculates mole fraction for a molecule based on the method
+            stored in the dataframe. """
 
         df = dir_df.copy()
         value = f'{mol}_value'
         meth = df[f'{mol}_methcal'].values[0]
 
         if meth == 'one-point':
-            df[value] = self.mf_onepoint(mol, df)
+            df[value] = self.mf_onepoint(df, mol)
         elif meth == 'two-points':
-            df[value] = self.mf_twopoint(mol, df)
-        elif meth.find('-') > 0:    # cal curves specified by cal run date
-            df[value] = self.mf_calcurve(mol, df, meth)
+            df[value] = self.mf_twopoint(df, mol)
+        elif meth.find('-') > 0:    # cal curves specified by a cal run date
+            df[value] = self.mf_calcurve(df, mol, meth)
         else:
-            coefs, _, _ = self.calculate_calcurve(meth, df, mol)
+            coefs, _, _ = self.calculate_calcurve(df, mol, meth)
+            # use the ssv_norm_port cal value as an intial guess
             calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
-            df[value] = df.apply(self.solve_meth, args=([meth, coefs, mol, calval]), axis=1)
+            df[value] = df.apply(self.solve_meth, args=([mol, meth, coefs, calval]), axis=1)
 
+        # return and updated copy of the df
         return df
 
-    def mf_onepoint(self, mol, dir_df):
+    def mf_onepoint(self, dir_df, mol):
         """ Mole fraction calculation, one point cal through the norm_port
             ToDo: add uncertainty estimate """
         det, cal = f'{mol}_det', f'{mol}_cal'
@@ -338,7 +342,7 @@ class DataProcessing(FE3config):
         dir_df[value] = dir_df[det] * calvalue
         return dir_df[value]
 
-    def mf_twopoint(self, mol, dir_df):
+    def mf_twopoint(self, dir_df, mol):
         """ Mole fraction calculation, two point cal through the norm_port and
             a second port (p1).
             ToDo: add uncertainty estimate """
@@ -364,7 +368,7 @@ class DataProcessing(FE3config):
         dir_df[value] = (dir_df1[det] - dir_df1['b'])/dir_df1['m']
         return dir_df[value]
 
-    def mf_calcurve(self, mol, dir_df, caldate):
+    def mf_calcurve(self, dir_df, mol, caldate):
         """ Method uses a specified calibration date (caldate). The fit type
             and coefficients are stored in the calibration db. """
         value = f'{mol}_value'
@@ -373,25 +377,11 @@ class DataProcessing(FE3config):
         df = dir_df.copy()
         cal = f'{mol}_cal'
         calval = df.loc[df['port'] == self.ssv_norm_port, cal].values[0]
-        df[value] = df.apply(self.solve_caldate, args=([caldate, mol, calval]), axis=1)
+        meth, coefs = self.calcurve_params(caldate, mol)
+        df[value] = df.apply(self.solve_meth, args=([mol, meth, coefs, calval]), axis=1)
         return df[value]
 
-    def solve_caldate(self, df, caldate, mol, initial_guess):
-        """ Method to be called by pandas apply function
-            Calculates mole fraction using cal curve specified by caldate """
-
-        det = df[f'{mol}_det']      # detrended response
-        if pd.isna(det):
-            return np.nan
-
-        meth, coefs = self.calcurve_params(caldate, mol)
-        f = getattr(self, meth)     # cal curve function
-        cc = coefs.copy()
-        cc[0] -= det            # subtract y value from constant offset
-        res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
-        return res.x[0]
-
-    def solve_meth(self, df, meth, coefs, mol, initial_guess):
+    def solve_meth(self, df, mol, meth, coefs, initial_guess):
         """ Method to be called by pandas apply function
             Calculates mole fraction using fit method and coefs """
 
