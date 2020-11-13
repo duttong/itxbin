@@ -40,7 +40,7 @@ class DataProcessing(FE3config):
         dt = pd.to_datetime(dir, infer_datetime_format=True)
         return dt
 
-    def detrend_response(self, df0, mol, lowess=True):
+    def detrend_response(self, df0, mol):
         """ Method detrends the response data either with a lowess smooth or
             point-by-point linear interpolation.
             Returns the detrended series. """
@@ -52,6 +52,11 @@ class DataProcessing(FE3config):
         resp = f'{mol}_ht'      # hardcoded to ht
 
         np_resp = df.loc[(df['port'] == self.ssv_norm_port) & (df[flags] == False)][resp]
+
+        # get the detrend method from dataframe column
+        detrend = df[f'{mol}_methdet'].values[0]
+        lowess = True if detrend == 'lowess' else False
+
         if lowess:
             df[det] = self.make_lowess(np_resp)
         else:
@@ -84,6 +89,11 @@ class DataProcessing(FE3config):
         except KeyError:
             val = np.nan
         return val
+
+    def list_flask_runs(self, duration='1Y'):
+        """ Returns a list of flask analysis dates """
+        flask_runs = self.fe3db.db.last(duration).loc[self.fe3db.db['type'] == 'flask']['dir'].unique()
+        return sorted(flask_runs)
 
     @staticmethod
     def reduce_df(df, mol):
@@ -187,14 +197,11 @@ class DataProcessing(FE3config):
         df = dir_df.copy()
         # dir_df = self.reduce_df(dir_df, mol)
 
-        detrend = df[f'{mol}_methdet'].values[0]
-        lowess = True if detrend == 'lowess' else False
-
         # add cal and detrend columns to dir_df dataframe
         cal = f'{mol}_cal'
         det = f'{mol}_det'
         df[cal] = df['port_id'].apply(self.cal_column, args=[mol])
-        df[det] = self.detrend_response(df, mol, lowess=lowess)
+        df[det] = self.detrend_response(df, mol)
         return df
 
     def save_calcurve(self, dir_df, mol, coefs):
@@ -306,13 +313,13 @@ class DataProcessing(FE3config):
         df = dir_df.copy()
 
         if meth == 'one-point':
-            df = self.mf_onepoint(self.mol_select, df)
+            df = self.mf_onepoint(mol, df)
         elif meth == 'two-points':
-            df = self.mf_twopoint(self.mol_select, df)
+            df = self.mf_twopoint(mol, df)
         elif meth.find('-') > 0:    # cal curves specified by cal run date
-            df = self.mf_calcurve(self.mol_select, df, meth)
+            df = self.mf_calcurve(mol, df, meth)
         else:
-            coefs, _, _ = self.calculate_calcurve(meth, df, self.mol_select)
+            coefs, _, _ = self.calculate_calcurve(meth, df, mol)
             value = f'{mol}_value'
             calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
             df[value] = df.apply(self.solve_meth, args=([meth, coefs, mol, calval]), axis=1)
@@ -321,7 +328,7 @@ class DataProcessing(FE3config):
 
     def mf_onepoint(self, mol, dir_df):
         """ Mole fraction calculation, one point cal through the norm_port
-            Todo: add uncertainty estimate """
+            ToDo: add uncertainty estimate """
         det, cal = f'{mol}_det', f'{mol}_cal'
         value = f'{mol}_value'
         # unc = f'{mol}_unc'
@@ -333,7 +340,7 @@ class DataProcessing(FE3config):
     def mf_twopoint(self, mol, dir_df):
         """ Mole fraction calculation, two point cal through the norm_port and
             a second port (p1).
-            Todo: add uncertainty estimate """
+            ToDo: add uncertainty estimate """
         p0, p1 = self.ssv_norm_port, self.second_cal_port
         # column names
         det, cal = f'{mol}_det', f'{mol}_cal'
@@ -378,7 +385,6 @@ class DataProcessing(FE3config):
 
         meth, coefs = self.calcurve_params(caldate, mol)
         f = getattr(self, meth)     # cal curve function
-
         cc = coefs.copy()
         cc[0] -= det            # subtract y value from constant offset
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
@@ -393,7 +399,6 @@ class DataProcessing(FE3config):
             return np.nan
 
         f = getattr(self, meth)     # cal curve function
-
         cc = coefs.copy()
         cc[0] -= det            # subtract y value from constant offset
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(0, 3000))
@@ -405,11 +410,13 @@ class DataProcessing(FE3config):
         flag = f'{mol}_flag'
         mf = f'{mol}_value'
 
-        all = data.loc[data[flag] == False].groupby('port_id')[mf].agg(['mean', 'std', 'count'])
+        functions = ['mean', 'std', 'count']
+        all = data.loc[data[flag] == False].groupby('port_id')[mf].agg(functions)
         all.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
         return all
 
     def report_all(self, run, df, mols):
+        """ Data report for a list of molecules (mols) """
         dfs = []
         for mol in mols:
             rpt = self.report(mol, run, df)

@@ -177,12 +177,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             and molecule. """
 
         self.run_selected = self.box_runs.currentText()
-        self.sub = self.fe3data.loc[self.fe3data['dir'] == self.run_selected]
-        self.sub = self.reduce_df(self.sub, self.mol_select)
-
-        # add column for cal tank values
-        cal = f'{self.mol_select}_cal'
-        self.sub[cal] = self.sub['port_id'].apply(self.cal_column, args=[self.mol_select])
+        df = self.fe3data.loc[self.fe3data['dir'] == self.run_selected]
+        df = self.reduce_df(df, self.mol_select)
+        self.sub = self.add_det_cal_columns(df, self.mol_select)
 
     def update_method_field(self):
         """ Save changes to DB if the lowess or p2p detrend
@@ -336,8 +333,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         flags = f'{self.mol_select}_flag'
         det = f'{self.mol_select}_det'
 
-        lwc = self.detrend_lowess.isChecked()
-        df[det] = self.detrend_response(df, self.mol_select, lowess=lwc)
         port_list = self.portlist(df)
 
         self.checkBox_scale0.setEnabled(False)
@@ -436,11 +431,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.mpl_plot.canvas.ax1.set_position([0.11, 0.70, .64, .24])
         self.mpl_plot.canvas.ax2.set_position([0.11, 0.08, .64, .60])
         self.mpl_plot.canvas.ax1.tick_params(axis='x', which='both', length=0)
-
-        # add detrend column to df
-        lwc = self.detrend_lowess.isChecked()
-        df[det] = self.detrend_response(df, self.mol_select, lowess=lwc)
-        self.sub = df.copy()  # save to sub
 
         cc = self.comboBox_calcurve.currentText()
 
@@ -548,17 +538,16 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
     def molefractions_fig(self, title_text):
         """ Figure used to display mole fractions """
+        self.checkBox_scale0.setEnabled(False)
+        self.checkBox_one2one.setEnabled(False)
+
         df = self.sub.copy()
         flags = f'{self.mol_select}_flag'
         det = f'{self.mol_select}_det'
         value = f'{self.mol_select}_value'
 
-        lws = self.detrend_lowess.isChecked()
-        df[det] = self.detrend_response(df, self.mol_select, lowess=lws)
+        df[det] = self.detrend_response(df, self.mol_select)
         port_list = self.portlist(df)
-
-        self.checkBox_scale0.setEnabled(False)
-        self.checkBox_one2one.setEnabled(False)
 
         # which cal curve method to use.
         meth = self.comboBox_calcurve.currentText()
