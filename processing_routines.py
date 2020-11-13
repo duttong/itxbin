@@ -314,7 +314,13 @@ class DataProcessing(FE3config):
 
         df = dir_df.copy()
         value = f'{mol}_value'
+        det = f'{mol}_det'
         meth = df[f'{mol}_methcal'].values[0]
+        print(mol, meth)
+
+        # add detrended responses and cal tank values if missing
+        if det not in df.columns:
+            df = self.add_det_cal_columns(df, mol)
 
         if meth == 'one-point':
             df[value] = self.mf_onepoint(df, mol)
@@ -326,7 +332,10 @@ class DataProcessing(FE3config):
             coefs, _, _ = self.calculate_calcurve(df, mol, meth)
             # use the ssv_norm_port cal value as an intial guess
             calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
-            df[value] = df.apply(self.solve_meth, args=([mol, meth, coefs, calval]), axis=1)
+            if pd.isna(calval):
+                df[value] = np.nan
+            else:
+                df[value] = df[det].apply(self.solve_meth, args=([meth, coefs, calval]))
 
         # return and updated copy of the df
         return df
