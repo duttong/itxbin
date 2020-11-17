@@ -291,9 +291,22 @@ class DataProcessing(FE3config):
         return coefs[0] + coefs[1] * x
 
     @staticmethod
+    def linear_inv(y, *coefs):
+        return (y - coefs[0]) / coefs[1]
+
+    @staticmethod
     def quadratic(x, *coefs):
         """ quadratic fit function """
         return coefs[0] + coefs[1] * x + coefs[2] * x**2
+
+    @staticmethod
+    def quadratic_inv(y, *coefs):
+        c, b, a = coefs
+        r0 = -b + np.sqrt(b**2 - 4*a*(c-y))
+        r0 /= 2*a
+        # r1 = -b - np.sqrt(b**2 - 4*a*(c-y))
+        # r1 /= 2*a
+        return r0
 
     @staticmethod
     def cubic(x, *coefs):
@@ -398,9 +411,16 @@ class DataProcessing(FE3config):
         if pd.isna(det):
             return np.nan
 
-        f = getattr(self, meth)     # cal curve function
         cc = coefs.copy()
-        cc[0] -= det            # subtract y value from constant offset
+
+        # closed form solutions are faster than using the numerical method.
+        if meth == 'linear':
+            return self.linear_inv(det, *cc)
+        elif meth == 'quadratic':
+            return self.quadratic_inv(det, *cc)
+
+        f = getattr(self, meth)     # cal curve function
+        cc[0] -= det                # subtract y value from constant offset
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(-2, 3000))
         return res.x[0]
 
