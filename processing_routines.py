@@ -90,6 +90,34 @@ class DataProcessing(FE3config):
             val = np.nan
         return val
 
+    def portlist(self, df):
+        """ Creates a list of tanks on the SSV for each port """
+        plist = []
+        for p in range(self.MAX_N_SSVports):
+            if p == 0:
+                val = df.loc[df['port'] == 10, 'port_id'][0]
+            elif p == 2:
+                val = 'Stop port'
+            else:
+                try:
+                    val = df.loc[df['port'] == p, 'port_id'][0]
+                except IndexError:
+                    val = ''
+            plist.append(val)
+
+        return plist
+
+    def flasklist(self, df):
+        """ Creates a list of flask_id on the flask SSV """
+        flist = []
+        for p in range(self.MAX_N_Flasks):
+            try:
+                val = df.loc[df['flask_port'] == p, 'port_id'][0]
+            except IndexError:
+                val = ''
+            flist.append(val)
+        return flist
+
     def list_flask_runs(self, duration='1Y'):
         """ Returns a list of flask analysis dates """
         flask_runs = self.fe3db.db.last(duration).loc[self.fe3db.db['type'] == 'flask']['dir'].unique()
@@ -444,9 +472,9 @@ class DataProcessing(FE3config):
         mf = f'{mol}_value'
 
         functions = ['mean', 'std', 'count']
-        all = data.loc[data[flag] == False].groupby('port_id')[mf].agg(functions)
-        all.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
-        return all
+        rpt = data.loc[data[flag] == False].groupby('port_id')[mf].agg(functions)
+        rpt.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
+        return rpt
 
     def report_all(self, df, run, mols):
         """ Data report for a list of molecules (mols) """

@@ -49,9 +49,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.table_ports.setColumnCount(2)
         self.table_ports.setRowCount(self.MAX_N_SSVports)
         self.table_ports.setHorizontalHeaderLabels(('SSV ports', 'Tank value'))
-        self.table_flasks.setColumnCount(1)
+        self.table_flasks.setColumnCount(4)
         self.table_flasks.setRowCount(self.MAX_N_Flasks)
-        self.table_flasks.setHorizontalHeaderLabels(('Flask ID',))
+        self.table_flasks.setHorizontalHeaderLabels(('Flask ID', 'Mean', 'std', 'Num'))
 
         # display control
         self.fig_response.setChecked(True)
@@ -153,35 +153,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             except ValueError:
                 pass
         return sorted(ports)
-
-    def portlist(self, df):
-        """ Creates a list of tanks on the SSV for each port """
-        plist = []
-        for p in range(self.MAX_N_SSVports):
-            if p == 0:
-                val = df.loc[df['port'] == 10, 'port_id'][0]
-            elif p == 2:
-                val = 'Stop port'
-            else:
-                try:
-                    val = df.loc[df['port'] == p, 'port_id'][0]
-                except IndexError:
-                    val = ''
-            plist.append(val)
-
-        return plist
-
-    def flasklist(self, df):
-        """ Creates a list of flask_id on the flask SSV """
-        sub = df.dropna()   # all flask_port are nan unless there is a flask on
-        flist = []
-        for p in range(self.MAX_N_Flasks):
-            try:
-                val = sub.loc[sub['flask_port'] == p, 'port_id'][0]
-            except IndexError:
-                val = ''
-            flist.append(val)
-        return flist
 
     def subset_fe3data(self):
         """ a subset of the full FE3 dataframe based on the selected run
@@ -706,12 +677,23 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         """ Updates text in flask and port data tables """
         port_list = self.portlist(self.sub)
         flask_list = self.flasklist(self.sub)
+        rpt = self.report(self.sub, self.run_selected, self.mol_select)
 
-        # flask id numbers
+        # flask id numbers and mole fraction stats
         for row in range(self.MAX_N_Flasks):
             cell = QtWidgets.QTableWidgetItem(f'{flask_list[row]}')
             cell.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table_flasks.setItem(row, 0, cell)
+            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 0]}')
+            cell.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.table_flasks.setItem(row, 1, cell)
+            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 1]}')
+            cell.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.table_flasks.setItem(row, 2, cell)
+            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 2]}')
+            cell.setTextAlignment(QtCore.Qt.AlignCenter)
+            self.table_flasks.setItem(row, 3, cell)
+            self.table_flasks.setItemDelegate(FloatDelegate(2, self.table_flasks))
 
         self.table_ports.setHorizontalHeaderLabels(('SSV ports', f'{self.mol_select} value'))
 
