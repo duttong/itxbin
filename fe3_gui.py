@@ -84,7 +84,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         """
         # initial box_types set to 'flask' (the run types are stored in runs_df)
         # runtypes = sorted(list(set(self.fe3data['type'])))
-        runtypes = ['flask', 'calibration', 'all']
+        runtypes = ['flask', 'calibration']
         self.box_types.addItems(runtypes)
         idx = runtypes.index('flask')
         self.box_types.setCurrentIndex(idx)
@@ -107,8 +107,6 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         dates = self.box_dates.currentText()
 
         # create 'series' subset of all dirs
-        if type == 'all':
-            series = self.fe3data.dir
         if type == 'calibration':
             series = self.fe3data.loc[self.fe3data.type == 'other'].dir
         else:
@@ -121,7 +119,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         elif dates == 'last-year':
             series = series.last('Y')
 
-        runs = series.drop_duplicates().tolist()    # use the dir (directory) column
+        runs = series.unique().tolist()
         runs.sort(reverse=True)
         self.box_runs.currentIndexChanged.disconnect()
         self.box_runs.clear()
@@ -205,7 +203,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         # use method columns to set detrend and cal curve fields
         det = self.sub[f'{self.mol_select}_methdet'].values[0]
         fit = self.sub[f'{self.mol_select}_methcal'].values[0]
-        type = self.box_types.currentText()
+        type = self.sub.loc[self.sub['dir'] == self.run_selected, 'type'].values[0]
 
         # update detrend toggle buttons
         self.detrend_lowess.disconnect()
@@ -227,6 +225,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         else:
             idx = self.fits.index(fit)
             self.comboBox_calcurve.addItems(self.fits)
+
         try:
             self.comboBox_calcurve.setCurrentIndex(idx)   # update pull down menu
         except ValueError:

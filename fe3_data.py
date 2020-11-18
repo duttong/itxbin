@@ -12,8 +12,10 @@ if __name__ == '__main__':
     opt = argparse.ArgumentParser(
         description='Program for processing FE3 data.'
     )
-    opt.add_argument('--batch', dest='duration',
-        help='Batch process a portion of FE3 data (durations can be 1M, 2M, 3M, 1Y, etc.')
+    opt.add_argument('--export', dest='exp_duration', metavar='Duration',
+        help='Export summary data for flask runs (duration such as 2W, 1M, 2M, 1Y, etc.)')
+    opt.add_argument('--batch', dest='batch_duration', metavar='Duration',
+        help='Batch process a portion of FE3 data (duration such as 2W, 1M, 2M, 1Y, etc.')
 
     options = opt.parse_args()
 
@@ -22,8 +24,10 @@ if __name__ == '__main__':
     frontend = gui.FE3_Process()
 
     # batch processing
-    if options.duration:
-        frontend.flask_batch(duration=options.duration)
+    if options.batch_duration:
+        frontend.flask_batch(duration=options.batch_duration)
+    elif options.exp_duration:
+        frontend.flask_export(duration=options.exp_duration)
     else:
         # display application
         frontend.show()

@@ -441,7 +441,7 @@ class DataProcessing(FE3config):
                 self.fe3db.db.loc[self.fe3db.db['dir'] == run, value] = df[value]
         self.fe3db.save_db_file()
 
-    def report(self, mol, run, df):
+    def report(self, df, run, mol):
         """ Data report for one molecule """
         data = df.loc[df['dir'] == run]
         flag = f'{mol}_flag'
@@ -452,11 +452,24 @@ class DataProcessing(FE3config):
         all.columns = [f'{mol}_mean', f'{mol}_std', f'{mol}_N']
         return all
 
-    def report_all(self, run, df, mols):
+    def report_all(self, df, run, mols):
         """ Data report for a list of molecules (mols) """
         dfs = []
         for mol in mols:
-            rpt = self.report(mol, run, df)
+            rpt = self.report(df, run, mol)
             dfs.append(rpt)
         rpt = reduce(lambda x, y: pd.merge(x, y, on='port_id'), dfs)
         return rpt
+
+    def export_run(self, df, run):
+        rpt = self.report_all(df, run, self.fe3db.mols)
+        file = f'{run}_summary.csv'
+        print(f'Writing: {file}')
+        rpt.to_csv(file, float_format='%.3f')
+
+    def flask_export(self, duration='1M'):
+        df = self.fe3db.db.last(duration)
+        df = df.loc[df['type'] == 'flask']
+        runs = df['dir'].unique()
+        for run in runs:
+            self.export_run(df, run)
