@@ -453,7 +453,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             # not flask, calibration run instead. Calculate a cal curve instead.
             fit = self.sub[f'{self.mol_select}_methcal'].values[0]
             x, y = self.unflagged_data(fit, df, self.mol_select)
-            coefs, x_fit, y_fit = self.calculate_calcurve(fit, df, self.mol_select, scale0=self.checkBox_scale0.isChecked())
+            coefs, x_fit, y_fit = self.calculate_calcurve(df, self.mol_select, fit, scale0=self.checkBox_scale0.isChecked())
             self.save_calcurve(df, self.mol_select, coefs)
 
         if len(x) > 1:

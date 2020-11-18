@@ -411,16 +411,16 @@ class DataProcessing(FE3config):
         if pd.isna(det):
             return np.nan
 
-        cc = coefs.copy()
-
         # closed form solutions are faster than using the numerical method.
         if meth == 'linear':
-            return self.linear_inv(det, *cc)
+            return self.linear_inv(det, *coefs)
         elif meth == 'quadratic':
-            return self.quadratic_inv(det, *cc)
+            return self.quadratic_inv(det, *coefs)
+        else:
+            cc = coefs.copy()
+            cc[0] -= det                # subtract y value from constant offset
 
         f = getattr(self, meth)     # cal curve function
-        cc[0] -= det                # subtract y value from constant offset
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(-2, 3000))
         return res.x[0]
 
