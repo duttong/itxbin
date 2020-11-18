@@ -144,15 +144,15 @@ class FE3_cal_curves(FE3_paths):
     def __init__(self):
         super().__init__()
         self.calcurves_file = self.basepath / 'fe3_calcurves.csv'
-        self.calcurves_df = self.load()
+        self.calcurves_df = self.load_cal_curves()
 
-    def load(self):
+    def load_cal_curves(self):
         """ Load calcurve db and add a column for dir time """
         df = pd.read_csv(self.calcurves_file, index_col='dir')
         df['dir_time'] = pd.to_datetime(df.index, infer_datetime_format=True)
         return df
 
-    def save(self):
+    def save_cal_curves(self):
         """ Save calcurve db """
         df = self.calcurves_df.drop('dir_time', axis=1)
         df.to_csv(self.calcurves_file)
@@ -192,9 +192,10 @@ class FE3_cals(FE3_runs):
                 skipinitialspace=True, parse_dates=True)
 
 
-class FE3_db(FE3_runs, FE3_GCwerks):
+class FE3_db(FE3_cal_curves, FE3_runs, FE3_GCwerks):
 
     def __init__(self):
+        FE3_cal_curves.__init__(self)
         FE3_runs.__init__(self)
         FE3_GCwerks.__init__(self)
         self.dbfile = self.basepath / 'fe3_db.csv'
@@ -273,11 +274,10 @@ class FE3_db(FE3_runs, FE3_GCwerks):
             port_id, port_num = self._seq2list(df.loc[df.dir == run])
             df.loc[df.dir == run, 'port_id'] = port_id
             df.loc[df.dir == run, 'flask_port'] = port_num
-            # the methcal column should be two-points for flasks and quadratic
-            # for other
+            # Set the last cal run as the default
             for mol in self.mols:
                 col = f'{mol}_methcal'
-                df.loc[df.dir == run, col] = 'two-points'
+                df.loc[df.dir == run, col] = self.calcurves_df.index[-1]
 
         # don't need these columns anymore
         df.drop(columns=['ports', 'flasks', 'seq'], inplace=True)
@@ -349,6 +349,7 @@ class FE3_db(FE3_runs, FE3_GCwerks):
 
     def save_db_file(self):
         """ Save to csv file """
+        print(f'Saving changes to {self.dbfile}')
         self.db.to_csv(self.dbfile)
 
     def return_db(self):

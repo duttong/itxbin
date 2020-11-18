@@ -295,7 +295,10 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
                     marker='s', color=facecolors, edgecolors=edgecolors,
                     s=self.markersize, picker=1)
                 # numbered flask markers
-                label = df.loc[df['flask_port'] == n].port_id.values[0]
+                try:
+                    label = df.loc[df['flask_port'] == n].port_id.values[0]
+                except IndexError:
+                    label = ''
                 self.mpl_plot.canvas.ax2.scatter(x, y,
                     marker=self.markers[n],
                     color=self.flasktextcolor, label=label)

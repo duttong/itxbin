@@ -110,7 +110,11 @@ class DataProcessing(FE3config):
 
         # determine which data to use
         flag = f'{mol}_flag'
-        unflagged = (dir_df[flag] == False)
+        try:
+            unflagged = (dir_df[flag] == False)
+        except TypeError:
+            print(flag)
+            print(dir_df[flag])
         if fit_function == 'two-points':
             mask = unflagged & ((dir_df['port'] == self.ssv_norm_port) | (dir_df['port'] == self.second_cal_port))
         else:
@@ -226,7 +230,7 @@ class DataProcessing(FE3config):
         self.calcurves.loc[self.calcurves.index == run, f'{mol}_coefs'] = coefstr
         self.calcurves.sort_index(inplace=True)
         self.fe3curves.calcurves_df = self.calcurves
-        self.fe3curves.save()
+        self.fe3curves.save_cal_curves()
 
     def nearest_calcurves(self, run, n=4):
         """ Returns a list of the n nearest cal curves, split on either
@@ -261,7 +265,7 @@ class DataProcessing(FE3config):
             # a floating point list of coefficients
             coefs = [float(c) for c in c_lst.split(';')]
             return meth, coefs
-        except IndexError:
+        except (IndexError, AttributeError):
             # this occurs if calrun can't be found or a problem with calcurves db
             return 'unknown', []
 
@@ -279,12 +283,6 @@ class DataProcessing(FE3config):
 
         return y_values
 
-    """
-    def save_calcurve_allmols(self, df, run):
-        for mol in self.fe3db.mols:
-            self.calculate_calcurve_run(df, run, mol, save=True)
-    """
-
     @staticmethod
     def linear(x, *coefs):
         """ linear fit function """
@@ -292,7 +290,11 @@ class DataProcessing(FE3config):
 
     @staticmethod
     def linear_inv(y, *coefs):
-        return (y - coefs[0]) / coefs[1]
+        try:
+            res = (y - coefs[0]) / coefs[1]
+        except ZeroDivisionError:
+            res = np.nan
+        return res
 
     @staticmethod
     def quadratic(x, *coefs):
@@ -320,38 +322,6 @@ class DataProcessing(FE3config):
 
     """ The mole fraction methods below use a run/dir dataframe that already
         has the det and cal columns added. """
-
-    def molefraction_calc(self, dir_df, mol):
-        """ Calculates mole fraction for a molecule based on the method
-            stored in the dataframe. """
-
-        df = dir_df.copy()
-        value = f'{mol}_value'
-        det = f'{mol}_det'
-        meth = df[f'{mol}_methcal'].values[0]
-        print(mol, meth)
-
-        # add detrended responses and cal tank values if missing
-        if det not in df.columns:
-            df = self.add_det_cal_columns(df, mol)
-
-        if meth == 'one-point':
-            df[value] = self.mf_onepoint(df, mol)
-        elif meth == 'two-points':
-            df[value] = self.mf_twopoint(df, mol)
-        elif meth.find('-') > 0:    # cal curves specified by a cal run date
-            df[value] = self.mf_calcurve(df, mol, meth)
-        else:
-            coefs, _, _ = self.calculate_calcurve(df, mol, meth)
-            # use the ssv_norm_port cal value as an intial guess
-            calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
-            if pd.isna(calval):
-                df[value] = np.nan
-            else:
-                df[value] = df[det].apply(self.solve_meth, args=([meth, coefs, calval]))
-
-        # return and updated copy of the df
-        return df
 
     def mf_onepoint(self, dir_df, mol):
         """ Mole fraction calculation, one point cal through the norm_port
@@ -410,6 +380,12 @@ class DataProcessing(FE3config):
 
         if pd.isna(det):
             return np.nan
+        try:
+            if not coefs:
+                return np.nan
+        except ValueError:
+            print(coefs)
+            #quit()
 
         # closed form solutions are faster than using the numerical method.
         if meth == 'linear':
@@ -423,6 +399,47 @@ class DataProcessing(FE3config):
         f = getattr(self, meth)     # cal curve function
         res = least_squares(f, x0=initial_guess, args=(cc), bounds=(-2, 3000))
         return res.x[0]
+
+    def molefraction_calc(self, dir_df, mol):
+        """ Calculates mole fraction for a molecule based on the method
+            stored in the dataframe. """
+
+        df = dir_df.copy()
+        value = f'{mol}_value'
+        det = f'{mol}_det'
+        meth = df[f'{mol}_methcal'].values[0]
+        print(f'analysis data: {dir_df["dir"].values[0]}, {mol}, cal curve date: {meth}')
+
+        # add detrended responses and cal tank values if missing
+        if det not in df.columns:
+            df = self.add_det_cal_columns(df, mol)
+
+        if meth == 'one-point':
+            df[value] = self.mf_onepoint(df, mol)
+        elif meth == 'two-points':
+            df[value] = self.mf_twopoint(df, mol)
+        elif meth.find('-') > 0:    # cal curves specified by a cal run date
+            df[value] = self.mf_calcurve(df, mol, meth)
+        else:
+            coefs, _, _ = self.calculate_calcurve(df, mol, meth)
+            coefs = list(coefs)     # np.array to list
+            # use the ssv_norm_port cal value as an intial guess
+            calval = df.loc[df['port'] == self.ssv_norm_port, f'{mol}_cal'].values[0]
+            df[value] = np.nan if pd.isna(calval) else \
+                df[det].apply(self.solve_meth, args=([meth, coefs, calval]))
+
+        # return an updated copy of the df
+        return df
+
+    def flask_batch(self, duration='1M'):
+        """ Batch process flask runs for the past duration. """
+        for run in self.list_flask_runs(duration=duration):
+            df = self.fe3db.db.loc[self.fe3db.db['dir'] == run]
+            for mol in self.fe3db.mols:
+                df = self.molefraction_calc(df, mol)
+                value = f'{mol}_value'
+                self.fe3db.db.loc[self.fe3db.db['dir'] == run, value] = df[value]
+        self.fe3db.save_db_file()
 
     def report(self, mol, run, df):
         """ Data report for one molecule """
