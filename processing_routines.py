@@ -457,9 +457,8 @@ class DataProcessing(FE3config):
         rpt = reduce(lambda x, y: pd.merge(x, y, on='port_id'), dfs)
         return rpt
 
-    def export_run(self, run):
+    def export_run(self, run, file):
         rpt = self.report_all(self.fe3db.db, run, self.fe3db.mols)
-        file = f'{run}_summary.csv'
         print(f'Writing: {file}')
         rpt.to_csv(file, float_format='%.3f')
 
@@ -468,4 +467,5 @@ class DataProcessing(FE3config):
         df = df.loc[df['type'] == 'flask']
         runs = df['dir'].unique()
         for run in runs:
-            self.export_run(run)
+            file = f'{run}_summary.csv'
+            self.export_run(run, file)

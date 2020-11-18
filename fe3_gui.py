@@ -78,7 +78,15 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         self.update_data_fig()
 
     def export_csv(self, button):
-        self.export_run(self.run_selected)
+        options = QtWidgets.QFileDialog.Options()
+        options |= QtWidgets.QFileDialog.DontUseNativeDialog
+        default_file = f'{self.run_selected}_summary.csv'
+        file, _ = QtWidgets.QFileDialog.getSaveFileName(self,
+            'QtWidgets.QFileDialog.getSaveFileName()',
+            default_file,
+            'CSV Files (*.csv);;All Files (*)', options=options)
+        if file:
+            self.export_run(self.run_selected, file)
 
     # Run selection code below
     def initialize_run_filtering(self):
