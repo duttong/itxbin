@@ -61,7 +61,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
 
         self.comboBox_calcurve.currentIndexChanged.connect(self.update_method_field)
 
-        self.actionDelete_Selected_Run.triggered.connect(self.delete_run)
+        self.button_exportcsv.clicked.connect(self.export_csv)
+
+        # self.actionDelete_Selected_Run.triggered.connect(self.delete_run)
 
         self.initialize_run_filtering()
 
@@ -74,6 +76,9 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         altbutton = getattr(self, f'button_{self.mol_select}_2')
         altbutton.setChecked(True)
         self.update_data_fig()
+
+    def export_csv(self, button):
+        self.export_run(self.run_selected)
 
     # Run selection code below
     def initialize_run_filtering(self):

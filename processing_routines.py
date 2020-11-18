@@ -380,12 +380,8 @@ class DataProcessing(FE3config):
 
         if pd.isna(det):
             return np.nan
-        try:
-            if not coefs:
-                return np.nan
-        except ValueError:
-            print(coefs)
-            #quit()
+        if not coefs:
+            return np.nan
 
         # closed form solutions are faster than using the numerical method.
         if meth == 'linear':
@@ -461,8 +457,8 @@ class DataProcessing(FE3config):
         rpt = reduce(lambda x, y: pd.merge(x, y, on='port_id'), dfs)
         return rpt
 
-    def export_run(self, df, run):
-        rpt = self.report_all(df, run, self.fe3db.mols)
+    def export_run(self, run):
+        rpt = self.report_all(self.fe3db.db, run, self.fe3db.mols)
         file = f'{run}_summary.csv'
         print(f'Writing: {file}')
         rpt.to_csv(file, float_format='%.3f')
@@ -472,4 +468,4 @@ class DataProcessing(FE3config):
         df = df.loc[df['type'] == 'flask']
         runs = df['dir'].unique()
         for run in runs:
-            self.export_run(df, run)
+            self.export_run(run)
