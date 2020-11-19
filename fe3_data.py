@@ -31,7 +31,8 @@ if __name__ == '__main__':
     else:
         # display application
         frontend.show()
-        frontend.button_CFC11.setChecked(True)
+        frontend.button_CFC11b.setChecked(True)
+        frontend.button_CFC11b_2.setChecked(True)
         app.exec_()
 
     if frontend.madechanges:

@@ -680,20 +680,31 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
         rpt = self.report(self.sub, self.run_selected, self.mol_select)
 
         # flask id numbers and mole fraction stats
+        self.table_flasks.setHorizontalHeaderLabels(('Flask ID', f'{self.mol_select} Mean', 'std', 'Num'))
         for row in range(self.MAX_N_Flasks):
             cell = QtWidgets.QTableWidgetItem(f'{flask_list[row]}')
             cell.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table_flasks.setItem(row, 0, cell)
-            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 0]}')
+
+            try:
+                idx = rpt.index.get_loc(flask_list[row])
+                mean, std, N = rpt.iloc[idx, 0], rpt.iloc[idx, 1], rpt.iloc[idx, 2]
+            except KeyError:
+                mean, std, N = '', '', ''
+
+            cell = QtWidgets.QTableWidgetItem(f'{mean}')
             cell.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table_flasks.setItem(row, 1, cell)
-            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 1]}')
+
+            cell = QtWidgets.QTableWidgetItem(f'{std}')
             cell.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table_flasks.setItem(row, 2, cell)
-            cell = QtWidgets.QTableWidgetItem(f'{rpt.iloc[row, 2]}')
+
+            cell = QtWidgets.QTableWidgetItem(f'{N}')
             cell.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table_flasks.setItem(row, 3, cell)
-            self.table_flasks.setItemDelegate(FloatDelegate(2, self.table_flasks))
+
+        self.table_flasks.setItemDelegate(FloatDelegate(2, self.table_flasks))
 
         self.table_ports.setHorizontalHeaderLabels(('SSV ports', f'{self.mol_select} value'))
 
@@ -714,7 +725,7 @@ class FE3_Process(QtWidgets.QMainWindow, fe3_panel.Ui_MainWindow, DataProcessing
             listrow = row-1 if row != 0 else self.MAX_N_SSVports-1
             self.table_ports.setItem(listrow, 0, cell0)
             self.table_ports.setItem(listrow, 1, cell1)
-            self.table_ports.setItemDelegate(FloatDelegate(2, self.table_ports))
+        self.table_ports.setItemDelegate(FloatDelegate(2, self.table_ports))
 
     def delete_run(self):
         msg = QtWidgets.QMessageBox()
