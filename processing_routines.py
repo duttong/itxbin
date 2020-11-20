@@ -4,16 +4,16 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy.optimize import curve_fit, least_squares
 from functools import reduce
 
-import fe3_incoming
+import fe3_merge
 
 
 class FE3config:
     """ Base class with FE3 instrument specific variables also
         used to load the various data sources.  """
 
-    fe3cals = fe3_incoming.FE3_cals()
-    fe3curves = fe3_incoming.FE3_cal_curves()
-    fe3db = fe3_incoming.FE3_db()
+    fe3cals = fe3_merge.FE3_cals()
+    fe3curves = fe3_merge.FE3_cal_curves()
+    fe3db = fe3_merge.FE3_db()
 
     def __init__(self):
         self.MAX_N_SSVports = 10     # number of SSV ports for cal tanks
