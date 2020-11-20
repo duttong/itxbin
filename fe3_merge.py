@@ -13,7 +13,7 @@ import json
 class FE3_paths:
 
     def __init__(self):
-        self.basepath = Path('/Users/geoff/programing/agc1/results')
+        self.basepath = Path('/Users/geoff/programing/agc1')
 
 
 class FE3_runs(FE3_paths):
@@ -143,7 +143,7 @@ class FE3_cal_curves(FE3_paths):
 
     def __init__(self):
         super().__init__()
-        self.calcurves_file = self.basepath / 'fe3_calcurves.csv'
+        self.calcurves_file = self.basepath / 'results' / 'fe3_calcurves.csv'
         self.calcurves_df = self.load_cal_curves()
 
     def load_cal_curves(self):
@@ -165,7 +165,7 @@ class FE3_GCwerks(FE3_paths):
 
     def __init__(self):
         super().__init__()
-        self.gcwerksexport = self.basepath / 'fe3_gcwerks_all.csv'
+        self.gcwerksexport = self.basepath / 'results' / 'fe3_gcwerks_all.csv'
 
     def gcwerks_df(self, range='all'):
         # range can be a yyyy-mm-dd string to return a subset of the df
@@ -184,7 +184,7 @@ class FE3_cals(FE3_runs):
 
     def __init__(self):
         super().__init__()
-        self.calibration_values = self.basepath / 'fe3_cals.csv'
+        self.calibration_values = self.basepath / 'results' / 'fe3_cals.csv'
         self.cals = self.load_cals()
 
     def load_cals(self):
@@ -198,7 +198,7 @@ class FE3_db(FE3_cal_curves, FE3_runs, FE3_GCwerks):
         FE3_cal_curves.__init__(self)
         FE3_runs.__init__(self)
         FE3_GCwerks.__init__(self)
-        self.dbfile = self.basepath / 'fe3_db.csv'
+        self.dbfile = self.basepath / 'results' / 'fe3_db.csv'
         self.mols = self.mols_in_db()
         # additional columns and default values for db
         self.attribs = {'flag': False,
