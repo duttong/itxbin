@@ -24,4 +24,7 @@ calibration curves, and mole fractions.</p>
 <p>This file is created by Qt Designer and is the basis of the user interface (UI).
    Use designer to edit the UI and then compile with pyuic5.<br>
 
-   ><b>pyuic5 -o fe3_panel.py fe3_panel.ui</b></p>
+><b>pyuic5 -o fe3_panel.py fe3_panel.ui</b></p>
+
+<h3>mplwidget.py</h3>
+<p>A class used to combine a matplotlib figure into a PyQt application.</p>
