@@ -13,7 +13,7 @@ import json
 class FE3_paths:
 
     def __init__(self):
-        self.basepath = Path('/Users/geoff/programing/agc1')
+        self.basepath = Path('/Users/geoff/programing/agc1/results')
 
 
 class FE3_runs(FE3_paths):
