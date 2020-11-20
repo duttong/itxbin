@@ -1,0 +1,729 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>824</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>FE3 Data Processing</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="horizontalLayout">
+    <item>
+     <widget class="QTabWidget" name="tabWidget">
+      <property name="styleSheet">
+       <string notr="true"/>
+      </property>
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <widget class="QWidget" name="tab">
+       <attribute name="title">
+        <string>Data View</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayout_2">
+        <item>
+         <layout class="QVBoxLayout" name="layout_left">
+          <property name="sizeConstraint">
+           <enum>QLayout::SetDefaultConstraint</enum>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <item alignment="Qt::AlignTop">
+           <widget class="QGroupBox" name="runselction_box">
+            <property name="styleSheet">
+             <string notr="true">QGroupBox {
+background-color: rgb(223, 248, 250) ;
+}
+
+QGroupBox::title {
+    subcontrol-origin: padding;
+    subcontrol-position: left top;
+    background: transparent;
+}</string>
+            </property>
+            <property name="title">
+             <string>Run Selection</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_7">
+             <property name="topMargin">
+              <number>3</number>
+             </property>
+             <property name="bottomMargin">
+              <number>3</number>
+             </property>
+             <item>
+              <layout class="QVBoxLayout" name="layout_runselect">
+               <item>
+                <widget class="QComboBox" name="box_runs"/>
+               </item>
+               <item>
+                <widget class="QLabel" name="label_runtype">
+                 <property name="text">
+                  <string>Filter by run type</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="box_types"/>
+               </item>
+               <item>
+                <widget class="QLabel" name="label_rundate">
+                 <property name="text">
+                  <string>Filter by run date</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="box_dates"/>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item alignment="Qt::AlignTop">
+           <widget class="QGroupBox" name="gases_box">
+            <property name="styleSheet">
+             <string notr="true">QGroupBox {
+    background-color: rgb(255, 253, 231);
+}
+
+QGroupBox::title {
+    subcontrol-origin: padding;
+    subcontrol-position: left top;
+    background: transparent;
+}</string>
+            </property>
+            <property name="title">
+             <string>Gases</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_9">
+             <property name="topMargin">
+              <number>3</number>
+             </property>
+             <property name="bottomMargin">
+              <number>3</number>
+             </property>
+             <item>
+              <layout class="QGridLayout" name="layout_gasbuttons">
+               <property name="verticalSpacing">
+                <number>10</number>
+               </property>
+               <item row="2" column="1">
+                <widget class="QRadioButton" name="button_CFC12">
+                 <property name="text">
+                  <string>CFC-12</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="1" column="0">
+                <widget class="QRadioButton" name="button_CFC113">
+                 <property name="text">
+                  <string>CFC-113</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="5" column="0">
+                <widget class="QRadioButton" name="button_TCE">
+                 <property name="text">
+                  <string>TCE</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="1" column="1">
+                <widget class="QRadioButton" name="button_SF6">
+                 <property name="text">
+                  <string>SF6</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="0" column="1">
+                <widget class="QRadioButton" name="button_N2O">
+                 <property name="text">
+                  <string>N2O</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="2" column="0">
+                <widget class="QRadioButton" name="button_CHCl3">
+                 <property name="text">
+                  <string>CHCl3</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="0" column="0">
+                <widget class="QRadioButton" name="button_CFC11">
+                 <property name="enabled">
+                  <bool>true</bool>
+                 </property>
+                 <property name="text">
+                  <string>CFC-11</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="4" column="0">
+                <widget class="QRadioButton" name="button_CCl4">
+                 <property name="text">
+                  <string>CCl4</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="3" column="0">
+                <widget class="QRadioButton" name="button_MC">
+                 <property name="text">
+                  <string>MC</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="3" column="1">
+                <widget class="QRadioButton" name="button_h1211">
+                 <property name="text">
+                  <string>h1211</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="4" column="1">
+                <widget class="QRadioButton" name="button_CFC11b">
+                 <property name="text">
+                  <string>CFC-11 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+               <item row="5" column="1">
+                <widget class="QRadioButton" name="button_CFC113b">
+                 <property name="text">
+                  <string>CFC-113 (b)</string>
+                 </property>
+                 <attribute name="buttonGroup">
+                  <string notr="true">buttonGroup_mols1</string>
+                 </attribute>
+                </widget>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="figures_box">
+            <property name="styleSheet">
+             <string notr="true">QGroupBox {
+    background-color: rgb(212, 255, 223)
+}
+
+QGroupBox::title {
+    subcontrol-origin: padding;
+    subcontrol-position: left top;
+    background: transparent;
+}</string>
+            </property>
+            <property name="title">
+             <string>Figure Selection</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayout_10">
+             <property name="topMargin">
+              <number>3</number>
+             </property>
+             <property name="bottomMargin">
+              <number>3</number>
+             </property>
+             <item>
+              <widget class="QRadioButton" name="fig_response">
+               <property name="font">
+                <font>
+                 <weight>75</weight>
+                 <bold>true</bold>
+                </font>
+               </property>
+               <property name="text">
+                <string>Response</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_figs</string>
+               </attribute>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="fig_detrend">
+               <property name="font">
+                <font>
+                 <weight>75</weight>
+                 <bold>true</bold>
+                </font>
+               </property>
+               <property name="styleSheet">
+                <string notr="true"/>
+               </property>
+               <property name="text">
+                <string>Detrend</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_figs</string>
+               </attribute>
+              </widget>
+             </item>
+             <item>
+              <widget class="QGroupBox" name="groupBox">
+               <property name="title">
+                <string/>
+               </property>
+               <property name="flat">
+                <bool>true</bool>
+               </property>
+               <layout class="QVBoxLayout" name="verticalLayout_2">
+                <property name="topMargin">
+                 <number>1</number>
+                </property>
+                <property name="bottomMargin">
+                 <number>1</number>
+                </property>
+                <item>
+                 <layout class="QGridLayout" name="gridLayout_1">
+                  <item row="0" column="1">
+                   <widget class="QRadioButton" name="detrend_lowess">
+                    <property name="font">
+                     <font>
+                      <pointsize>10</pointsize>
+                     </font>
+                    </property>
+                    <property name="text">
+                     <string>Lowess</string>
+                    </property>
+                    <property name="iconSize">
+                     <size>
+                      <width>12</width>
+                      <height>12</height>
+                     </size>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="0" column="0">
+                   <widget class="QRadioButton" name="detrend_linear">
+                    <property name="font">
+                     <font>
+                      <pointsize>10</pointsize>
+                     </font>
+                    </property>
+                    <property name="text">
+                     <string>Point-to-point</string>
+                    </property>
+                    <property name="iconSize">
+                     <size>
+                      <width>12</width>
+                      <height>12</height>
+                     </size>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </item>
+             <item>
+              <widget class="Line" name="line_2">
+               <property name="lineWidth">
+                <number>3</number>
+               </property>
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="fig_calibration">
+               <property name="font">
+                <font>
+                 <weight>75</weight>
+                 <bold>true</bold>
+                </font>
+               </property>
+               <property name="text">
+                <string>Calibration curve</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_figs</string>
+               </attribute>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="comboBox_calcurve"/>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBox_scale0">
+               <property name="font">
+                <font>
+                 <pointsize>10</pointsize>
+                </font>
+               </property>
+               <property name="text">
+                <string>Scale to zero</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBox_one2one">
+               <property name="font">
+                <font>
+                 <pointsize>10</pointsize>
+                </font>
+               </property>
+               <property name="text">
+                <string>One-to-One line</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="Line" name="line_3">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Minimum" vsizetype="Fixed">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="lineWidth">
+                <number>3</number>
+               </property>
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QRadioButton" name="fig_molefractions">
+               <property name="font">
+                <font>
+                 <weight>75</weight>
+                 <bold>true</bold>
+                </font>
+               </property>
+               <property name="text">
+                <string>Mole fractions</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_figs</string>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <spacer name="verticalSpacer">
+            <property name="orientation">
+             <enum>Qt::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>20</width>
+              <height>40</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QPushButton" name="button_exportcsv">
+            <property name="text">
+             <string>Export run results to .csv</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="display_layout">
+          <item>
+           <widget class="MplWidget" name="mpl_plot" native="true">
+            <property name="sizePolicy">
+             <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>0</verstretch>
+             </sizepolicy>
+            </property>
+            <property name="font">
+             <font>
+              <pointsize>12</pointsize>
+              <weight>50</weight>
+              <bold>false</bold>
+             </font>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_2">
+       <attribute name="title">
+        <string>Ports and Flasks</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayout_3">
+        <item>
+         <layout class="QVBoxLayout" name="verticalLayout"/>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="gases_box_2">
+          <property name="styleSheet">
+           <string notr="true">QGroupBox {
+    background-color: rgb(255, 253, 231);
+}
+
+QGroupBox::title {
+    subcontrol-origin: padding;
+    subcontrol-position: left top;
+    background: transparent;
+}</string>
+          </property>
+          <property name="title">
+           <string>FE3 Gases</string>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_11">
+           <item>
+            <layout class="QGridLayout" name="layout_gasbuttons_2">
+             <property name="verticalSpacing">
+              <number>10</number>
+             </property>
+             <item row="2" column="1">
+              <widget class="QRadioButton" name="button_CFC12_2">
+               <property name="text">
+                <string>CFC-12</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QRadioButton" name="button_CFC113_2">
+               <property name="text">
+                <string>CFC-113</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="5" column="0">
+              <widget class="QRadioButton" name="button_TCE_2">
+               <property name="text">
+                <string>TCE</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QRadioButton" name="button_SF6_2">
+               <property name="text">
+                <string>SF6</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QRadioButton" name="button_N2O_2">
+               <property name="text">
+                <string>N2O</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QRadioButton" name="button_CHCl3_2">
+               <property name="text">
+                <string>CHCl3</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="0" column="0">
+              <widget class="QRadioButton" name="button_CFC11_2">
+               <property name="enabled">
+                <bool>true</bool>
+               </property>
+               <property name="text">
+                <string>CFC-11</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="4" column="0">
+              <widget class="QRadioButton" name="button_CCl4_2">
+               <property name="text">
+                <string>CCl4</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QRadioButton" name="button_MC_2">
+               <property name="text">
+                <string>MC</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="3" column="1">
+              <widget class="QRadioButton" name="button_h1211_2">
+               <property name="text">
+                <string>h1211</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QRadioButton" name="button_CFC11b_2">
+               <property name="text">
+                <string>CFC-11 (b)</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+             <item row="5" column="1">
+              <widget class="QRadioButton" name="button_CFC113b_2">
+               <property name="text">
+                <string>CFC-113 (b)</string>
+               </property>
+               <attribute name="buttonGroup">
+                <string notr="true">buttonGroup_mols2</string>
+               </attribute>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <spacer name="verticalSpacer_2">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTableWidget" name="table_flasks"/>
+        </item>
+        <item>
+         <widget class="QTableWidget" name="table_ports"/>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1200</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="defaultUp">
+    <bool>true</bool>
+   </property>
+   <widget class="QMenu" name="menuFiles">
+    <property name="title">
+     <string>Files</string>
+    </property>
+    <addaction name="actionExport_Selected_Run"/>
+    <addaction name="separator"/>
+    <addaction name="actionDelete_Selected_Run"/>
+   </widget>
+   <addaction name="menuFiles"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionDelete_Selected_Run">
+   <property name="text">
+    <string>Delete Selected Run</string>
+   </property>
+  </action>
+  <action name="actionExport_Selected_Run">
+   <property name="text">
+    <string>Export Selected Run</string>
+   </property>
+  </action>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>MplWidget</class>
+   <extends>QWidget</extends>
+   <header>mplwidget.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+ <buttongroups>
+  <buttongroup name="buttonGroup_figs"/>
+  <buttongroup name="buttonGroup_mols2"/>
+  <buttongroup name="buttonGroup_mols1"/>
+ </buttongroups>
+</ui>
