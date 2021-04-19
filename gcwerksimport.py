@@ -1,4 +1,4 @@
-#! /home/hats/gdutton/anaconda3/bin/python
+#! /usr/bin/env python
 
 import argparse
 from datetime import date
@@ -9,7 +9,7 @@ import os
 import shutil
 import gzip
 
-from itx_import import ITX
+import itx_import
 
 
 class GCwerks_Import:
@@ -28,7 +28,7 @@ class GCwerks_Import:
             Apply filters and smoothing
         """
         print(itx_file.name)
-        itx = ITX(itx_file)
+        itx = itx_import.ITX(itx_file)
 
         # apply spike filter before SG smoothing
         if ('s', True) in self.options.items():
@@ -44,28 +44,31 @@ class GCwerks_Import:
         proc = run([self.chromatogram_import, '-gcdir', self.gcdir],
             input=itx.write(stdout=False), text=True, capture_output=True)
 
-        itx.compress_to_Z(itx_file)
+        itx_import.compress_to_Z(itx_file)
 
-    def recursive_itx_import(self, types=['*.itx', '*.itx.gz']):
+    def import_recursive_itx(self, types=['*.itx', '*.itx.gz']):
         """ Recursive glob finds all itx files in the incoming path.
             This method also uses multiprocessing
         """
+        loaded = False
         #num_workers = mp.cpu_count()
         num_workers = 10    # faster
         pool = mp.Pool(num_workers)
         for type in types:
             for file in self.incoming.rglob(type):
+                loaded = True
                 pool.apply_async(self.import_itx, args=(file,))
         pool.close()
         pool.join()
+        return loaded
 
-    def main(self):
-        self.recursive_itx_import()
-
-        # updates integration and mixing ratios
-        run(['/hats/gc/gcwerks-3/bin/run-index', '-gcdir', self.gcdir])
-        run(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', self.gcdir])
-        run(['/hats/gc/gcwerks-3/bin/gccalc', '-gcdir', self.gcdir])
+    def main(self, import_method, *args, **kwargs):
+        loaded = import_method(*args, **kwargs)
+        if loaded:
+            # updates integration and mixing ratios
+            run(['/hats/gc/gcwerks-3/bin/run-index', '-gcdir', self.gcdir])
+            run(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', self.gcdir])
+            run(['/hats/gc/gcwerks-3/bin/gccalc', '-gcdir', self.gcdir])
 
 
 if __name__ == '__main__':
@@ -107,4 +110,4 @@ if __name__ == '__main__':
             werks.main()
     else:
         werks = GCwerks_Import(options.site, options)
-        werks.main()
+        werks.main(werks.import_recursive_itx)
