@@ -1,4 +1,4 @@
-#! /home/hats/gdutton/anaconda3/bin/python
+#! /usr/bin/env python
 
 import argparse
 import pandas as pd
@@ -11,7 +11,7 @@ class FE3_Process(GCwerks_export):
 
     def __init__(self, inst='agc1', prefix='fe3'):
         super().__init__(inst, prefix)
-        self.results_file = '/hats/gc/agc1/results/fe3_all.csv'
+        self.results_file = '/hats/gc/agc1/results/fe3_gcwerks_all.csv'
 
     def read_results(self, year='all'):
         df = pd.read_csv(self.results_file, skipinitialspace=True, parse_dates=[0])
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     )
     opt.add_argument('mol', nargs='?', default='all',
         help=f'Select a single molecule to export or default \
-        to "all".  Valid mol variables: {sorted(fe3.mols)}')
+        to "all".  Valid mol variables: {sorted(fe3.gcwerks_peaks())}')
     opt.add_argument('-year', action='store', type=int,
         help=f"Export this year's data.")
 

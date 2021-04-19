@@ -1,4 +1,5 @@
-#! /home/hats/gdutton/anaconda3/bin/python
+#! /usr/bin/env python
+
 ''' Added the 'wide_spike_filter' routine.  GSD 150102
     Improved the speed of parse_chroms() by factor of 3.  GSD 150218
     Capture IndexError on wide spike filter.  GSD 150508
@@ -16,7 +17,21 @@ from datetime import date
 
 import gmd_smoothing
 
-VERSION = 1.23
+VERSION = 1.24
+
+
+def compress_to_Z(file):
+    sfile = str(file)    # file is a pathlib filetype
+    # rename .gz file to .Z files
+    if sfile[-3:] == '.gz':
+        file.rename(sfile[:-2]+'Z')
+        return
+    elif sfile[-2:] == '.Z':
+        return
+    # compress .itx file to .Z
+    with open(sfile, 'rb') as f_in, gzip.open(sfile+'.Z', 'wb') as f_out:
+        shutil.copyfileobj(f_in, f_out)
+        os.remove(sfile)
 
 
 class ITX():
@@ -184,17 +199,6 @@ class ITX():
         else:
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
-
-    @staticmethod
-    def compress_to_Z(file):
-        sfile = str(file)    # file is a pathlib filetype
-        # rename .gz file to .Z files
-        if sfile[-3:] == '.gz':
-            file.rename(sfile[:-2]+'Z')
-        # compress .itx file to .Z
-        with open(sfile, 'rb') as f_in, gzip.open(sfile+'.Z', 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-            os.remove(sfile)
 
     def display(self, ch):
         import matplotlib.pyplot as plt
