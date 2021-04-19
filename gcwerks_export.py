@@ -75,6 +75,7 @@ class GCwerks_export:
             report_peak = Path(f'/tmp/peak_{mol}.txt')
             with open(report_peak, 'w') as f:
                 f.write(mol)
+        chmod(report_peak, 0o0664)
 
         # create gcexport command and send results to a file
         gcexport = Path('/hats/gc/gcwerks-3/bin/gcexport')
