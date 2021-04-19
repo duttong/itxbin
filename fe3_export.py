@@ -33,7 +33,7 @@ if __name__ == '__main__':
         help=f'Select a single molecule to export or default \
         to "all".  Valid mol variables: {sorted(fe3.gcwerks_peaks())}')
     opt.add_argument('-year', action='store', type=int,
-        help=f"Export this year's data.")
+        help="Export this year's data.")
 
     options = opt.parse_args()
 
@@ -41,5 +41,5 @@ if __name__ == '__main__':
         fe3.export_years(options.mol, start_year=options.year, end_year=options.year)
         quit()
 
-    #fe3.export_years(options.mol)
+    # fe3.export_years(options.mol)
     fe3.export_onefile()
