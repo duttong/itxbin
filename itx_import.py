@@ -198,6 +198,7 @@ class ITX():
             for c in range(self.chans):
                 self.savitzky_golay(c, winsize=winsize, order=order)
         else:
+            # print(f'Savitzky Golay {ch} {winsize} {order}')
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
 
