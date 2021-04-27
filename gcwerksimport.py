@@ -5,9 +5,6 @@ from datetime import date
 from pathlib import Path
 from subprocess import run
 import multiprocessing as mp
-import os
-import shutil
-import gzip
 
 import itx_import
 
@@ -51,7 +48,7 @@ class GCwerks_Import:
             This method also uses multiprocessing
         """
         loaded = False
-        #num_workers = mp.cpu_count()
+        # num_workers = mp.cpu_count()
         num_workers = 10    # faster
         pool = mp.Pool(num_workers)
         for type in types:
@@ -104,8 +101,8 @@ if __name__ == '__main__':
     options = opt.parse_args()
 
     if options.site.lower() == 'all':
-        for s in cats_sites:
-            werks = GCWerks_Import(s, options)
+        for s in ('brw', 'nwr', 'mlo', 'smo', 'spo'):
+            werks = GCwerks_Import(s, options)
             print(f'Working on {s}')
             werks.main()
     else:
