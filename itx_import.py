@@ -15,7 +15,7 @@ import os
 import shutil
 from datetime import date
 
-import gmd_smoothing
+# import gmd_smoothing
 
 VERSION = 1.24
 
@@ -161,7 +161,7 @@ class ITX():
         return groups
 
     def wide_spike_filter(self, ch, start=40):
-        #import matplotlib.pyplot as plt
+        # import matplotlib.pyplot as plt
         """ Removes spikes that are wider than one-point (ie the other spike filter)
               that occur after the 'start' time (seconds after injection).
             Finds spikes using 2nd derivative.  Spikes are about 2 seconds wide.
@@ -170,14 +170,15 @@ class ITX():
 
         if ch == 'all':
             for c in range(self.chans):
-                self.wide_spike_filter(c, start=args.ws_start)
+                self.wide_spike_filter(c, start=start)
         else:
+            # print(f'wide filter, {ch} {start}')
             y = self.chroms[ch, :]
             ydd = abs(np.gradient(np.gradient(y)))       # abs of 2nd derivative
-            #plt.plot(ydd)
-            #plt.show()
+            # plt.plot(ydd)
+            # plt.show()
             startpt = int(start)*self.datafreq
-            idx = [i for i,v in enumerate(ydd[startpt:]) if v > thresh]      # index of spikes
+            idx = [i for i, v in enumerate(ydd[startpt:]) if v > thresh]      # index of spikes
             groups = self.findgroups(idx)           # group of spikes
             for spike in groups:
                 pt0 = startpt + (spike[0]-1)
@@ -187,7 +188,7 @@ class ITX():
                 # replace spike with a line
                 m = (self.chroms[ch, pt1] - self.chroms[ch, pt0]) / float(pt1-pt0)
                 b = self.chroms[ch, pt0] - m*pt0
-                self.chroms[ch, pt0:pt1] = [m*x+b for x in range(pt0,pt1)]
+                self.chroms[ch, pt0:pt1] = [m*x+b for x in range(pt0, pt1)]
 
     def savitzky_golay(self, ch, winsize=21, order=4):
         """ applies the savitzky golay smoothing algo """
@@ -214,9 +215,9 @@ class ITX():
         ax.set_ylabel('Response (hz)')
         ax.set_xlabel('Time (s)')
         ax.legend()
-        #bx = fig.add_subplot(212)
-        #bx.plot(np.diff(self.org[ch, :]))
-        #bx.set_xlabel('Time (s)')
+        # bx = fig.add_subplot(212)
+        # bx.plot(np.diff(self.org[ch, :]))
+        # bx.set_xlabel('Time (s)')
         plt.show()
 
 
