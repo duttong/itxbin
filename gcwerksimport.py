@@ -31,6 +31,9 @@ class GCwerks_Import:
         if ('s', True) in self.options.items():
             itx.spike_filter('all')
 
+        if int(self.options['ws_start']) > -1:
+            itx.wide_spike_filter('all', start=int(self.options['ws_start']))
+
         # apply Savitzky Golay smoothing
         if ('g', True) in self.options.items():
             win = self.options['SGwin']
