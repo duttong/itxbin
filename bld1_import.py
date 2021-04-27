@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     yyyy = date.today().year
     SGwin, SGorder = 37, 1      # Savitzky Golay default variables
-    WSTART = -1                 # Wide spike filter start time
+    WSTART = 25                 # Wide spike filter start time
 
     parser = argparse.ArgumentParser(
         description='Import chromatograms in the Igor Text File (.itx) format for the BLD1 instrument.')
