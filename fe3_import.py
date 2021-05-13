@@ -60,12 +60,15 @@ if __name__ == '__main__':
 
     yyyy = date.today().year
     SGwin, SGorder = 21, 4      # Savitzky Golay default variables
+    WSTART = -1
     site = 'agc1'
 
     parser = argparse.ArgumentParser(
         description='Import chromatograms in the Igor Text File (.itx) format for the FE3 instrument.')
     parser.add_argument('-s', action='store_true', default=False,
         help='Apply 1-point spike filter (default is False)')
+    parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
+        help='Apply wide spike filter (default off)')
     parser.add_argument('-g', action='store_true', default=True,
         help='Apply Savitzky Golay smoothing (default is True)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win',
