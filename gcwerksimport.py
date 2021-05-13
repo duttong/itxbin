@@ -24,8 +24,8 @@ class GCwerks_Import:
         """ Import a single ITX file (all chroms) into GCwerks
             Apply filters and smoothing
         """
-        print(itx_file.name)
         itx = itx_import.ITX(itx_file)
+        print(itx_file)
 
         # apply spike filter before SG smoothing
         if ('s', True) in self.options.items():
@@ -41,7 +41,7 @@ class GCwerks_Import:
             itx.savitzky_golay('all', winsize=win, order=ord)
 
         # sends the itx data to the chromatogram_import program
-        proc = run([self.chromatogram_import, '-gcdir', self.gcdir],
+        run([self.chromatogram_import, '-gcdir', self.gcdir],
             input=itx.write(stdout=False), text=True, capture_output=True)
 
         itx_import.compress_to_Z(itx_file)
@@ -80,15 +80,10 @@ if __name__ == '__main__':
     opt = argparse.ArgumentParser(
         description="Imports itx files into GCwerks."
     )
-    """
-    removed options
-    opt.add_argument('--all', action="store_true", default=False,
-                     help="re-import all itx files in chroms_itx directory.")
-    opt.add_argument('-W', action="store", dest='ws_start', default=WSTART,
-                     help='Apply wide spike filter (default off)')
-    """
     opt.add_argument('-s', action="store_true", default=False,
                      help='Apply 1-point spike filter (default=False)')
+    opt.add_argument('-W', action="store", dest='ws_start', default=WSTART,
+                     help='Apply wide spike filter (default off)')
     opt.add_argument('-g', action="store_true", default=False,
                      help='Apply Savitzky Golay smoothing (default off)')
     opt.add_argument('-gw', action="store", dest='SGwin', metavar='Win',
@@ -99,6 +94,8 @@ if __name__ == '__main__':
                      help='Sets Savitzky Golay order of fit (default = '+str(SGorder)+')')
     opt.add_argument("--year", action="store", default=yyyy, dest="year",
                      help=f"the year (default is current year: {yyyy})")
+    opt.add_argument('-reimport', action='store_true', default=False,
+                     help='Reimport all itx files including .Z archived.')
     opt.add_argument("site", help="A station or 'all' for all CATS sites.")
 
     options = opt.parse_args()
@@ -110,4 +107,8 @@ if __name__ == '__main__':
             werks.main()
     else:
         werks = GCwerks_Import(options.site, options)
-        werks.main(werks.import_recursive_itx)
+        if options.reimport:
+            types = ('*.itx', '*.itx.gz', '*.itx.Z')
+            werks.main(import_method=inst.import_recursive_itx, types=types)
+        else:
+            werks.main(werks.import_recursive_itx)
