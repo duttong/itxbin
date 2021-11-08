@@ -24,7 +24,7 @@ class GCwerks_export:
         if export_path == 'default':
             self.export_path = Path(f'{self.gcdir}/results')
         else:
-            self.export_path = export_path
+            self.export_path = Path(export_path)
 
     def gcwerks_peaks(self):
         """ Returns a list of peaks integrated by GCwerks. The routine reads
@@ -48,10 +48,12 @@ class GCwerks_export:
                 return False
         return True
 
-    def gcwerks_export(self, mol, mindate=False, maxdate=False, csv=True, mk2yrfile=False):
+    def gcwerks_export(self, mol, mindate=False, maxdate=False, csv=True, mk2yrfile=False, report='/hats/gc/itxbin/report.conf'):
         """ Exports GCwerks data to a .csv file. Set mol="all" for one file
             with all of the molecules listed in peaks.list
-            mindate and maxdate can be of the form YYMMDD """
+            mindate and maxdate can be of the form YYMMDD 
+            use report for a custom output report format (added 210901)
+        """
 
         if not self.valid_mol(mol):
             return False
@@ -80,7 +82,7 @@ class GCwerks_export:
         # create gcexport command and send results to a file
         gcexport = Path('/hats/gc/gcwerks-3/bin/gcexport')
         cmd = f'{gcexport} -gcdir {self.gcdir} -peaklist {report_peak} '
-        cmd += '-format /hats/gc/itxbin/report.conf '
+        cmd += f'-format {report} '
         cmd += '-missingvalue -999 '
         if mindate is not False:
             cmd += f'-mindate {mindate} '
@@ -92,7 +94,11 @@ class GCwerks_export:
         with open(results_file, 'w') as f:
             gcw = Popen(shlex.split(cmd), stdout=PIPE, stderr=DEVNULL)
             run('uniq', stdin=gcw.stdout, stdout=f)
-        chmod(results_file, 0o0664)
+        
+        try:
+            chmod(results_file, 0o0664)
+        except PermissionError:
+            pass
 
         if mk2yrfile:
             self.create_2year_file(results_file)
@@ -115,12 +121,12 @@ class GCwerks_export:
         df.to_csv(outfile, index=True)
         chmod(outfile, 0o0664)
 
-    def export_onefile(self, csv=True):
+    def export_onefile(self, csv=True, report='/hats/gc/itxbin/report.conf'):
         """ Exports all data (all mols for all years) to a single file. """
         years = self.gcwerks_years()
         mindate = f'{years[0]}0101'
         maxdate = f'{str(today.year)[2:4]}1231.2359'
-        self.gcwerks_export('all', mindate=mindate, maxdate=maxdate, csv=csv)
+        self.gcwerks_export('all', mindate=mindate, maxdate=maxdate, csv=csv, report=report)
 
     def short_mol_name(self, mol):
         """ Returns the replacement name for a molecule used in
