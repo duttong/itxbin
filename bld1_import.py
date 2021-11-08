@@ -11,7 +11,8 @@ class BLD1_import(GCwerks_Import):
 
     def __init__(self, args):
         self.site = 'bld1'
-        super().__init__(self.site, args)
+        incoming_dir = 'incoming'   # was chroms_itx now incoming on 211108
+        super().__init__(self.site, args, incoming_dir)
 
     @staticmethod
     def itx_portnumbers(files):
