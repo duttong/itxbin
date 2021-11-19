@@ -5,7 +5,7 @@ from datetime import date
 import multiprocessing as mp
 
 import itx_import
-from gcwerksimport import GCwerks_Import
+from gcwerks_import import GCwerks_Import
 
 
 class FE3_import(GCwerks_Import):
