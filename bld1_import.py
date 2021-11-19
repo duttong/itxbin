@@ -1,9 +1,15 @@
 #! /usr/bin/env python
 
+""" 
+    211119: Added methods to create a meta data file with run sequence information.
+"""
+
 import argparse
 from datetime import date
+from pathlib import Path
+import json
 
-from gcwerksimport import GCwerks_Import
+from gcwerks_import import GCwerks_Import
 
 
 class BLD1_import(GCwerks_Import):
@@ -14,11 +20,37 @@ class BLD1_import(GCwerks_Import):
         incoming_dir = 'incoming'   # was chroms_itx now incoming on 211108
         super().__init__(self.site, args, incoming_dir)
 
-    @staticmethod
-    def itx_portnumbers(files):
-        ports = [file.name.split('.')[1] for file in files]
-        return list(set(ports))
+    def create_metafiles(self):
+        p = Path(self.incoming)
+        for dir_ in p.glob('*-*'):
+            self.sequence2metafile(dir_)
 
+    def itxport(self, filename):
+        n = filename.name
+        try:
+            base, port, _ = n.split('.')
+        except ValueError:
+            base, port, _, _ = n.split('.')
+        return f'{int(port):x}'    # returns a hex number
+
+    def sequence2metafile(self, directory):
+        metafile = f'{directory}/meta_{directory.name}.json'
+        if Path(metafile).exists():
+            return
+        
+        p = Path(directory)
+        ssv = []
+        for file in sorted(p.glob('*itx*')):
+            ssv.append(self.itxport(file))
+
+        s = ''.join(i for i in ssv)
+        # HARDCODED. should be fixed in stratcore software!
+        stands = {1: 'port1', 2: 'port2', 3: 'port3', 4: 'port4', 5: 'port5', 6: 'port6', 7: 'port7', 8: 'port8'}
+
+        with open(metafile, 'w') as f:
+            print(f'creating {metafile}')
+            obj = [s, stands]
+            json.dump(obj, f, indent=2)
 
 if __name__ == '__main__':
 
@@ -53,3 +85,5 @@ if __name__ == '__main__':
         inst.main(import_method=inst.import_recursive_itx, types=types)
     else:
         inst.main(import_method=inst.import_recursive_itx)
+
+    inst.create_metafiles()
