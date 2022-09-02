@@ -5,41 +5,27 @@
     Capture IndexError on wide spike filter.  GSD 150508
     Now uses python3  GSD 170104
     linted GSD 191212
+    
+    Added smoothfile option and pathlib. 220901    
 '''
+VERSION = 2.00
 
 import argparse
 import numpy as np
+import pandas as pd
 import gzip
-import os.path
-import os
+from pathlib import Path
 import shutil
 from datetime import date
-
-# import gmd_smoothing
-
-VERSION = 1.24
+import re
 
 
-def compress_to_Z(file):
-    sfile = str(file)    # file is a pathlib filetype
-    # rename .gz file to .Z files
-    if sfile[-3:] == '.gz':
-        file.rename(sfile[:-2]+'Z')
-        return
-    elif sfile[-2:] == '.Z':
-        return
-    # compress .itx file to .Z
-    with open(sfile, 'rb') as f_in, gzip.open(sfile+'.Z', 'wb') as f_out:
-        shutil.copyfileobj(f_in, f_out)
-        os.remove(sfile)
-
-
-class ITX():
+class ITX:
     """ Igor Pro Text File Class """
 
     def __init__(self, itxfile, saveorig=False):
         self.file = str(itxfile)
-        if os.path.getsize(self.file) < 100:
+        if itxfile.stat().st_size < 100:
             print(f'File too small: {self.file}')
             self.data = None
             return
@@ -60,6 +46,25 @@ class ITX():
             return [line.strip().decode() for line in gzip.GzipFile(self.file)]
         else:
             return [line.strip() for line in open(self.file)]
+
+    @staticmethod
+    def compress_to_Z(file):
+        """ Compresses a file using gzip and renames to use .Z extention 
+            file is a pathlib object
+        """
+        sfile = file.name
+        
+        # rename .gz file to .Z files
+        if sfile[-3:] == '.gz':
+            file.rename(f'{sfile[:-2]}Z')
+            return
+        elif sfile[-2:] == '.Z':
+            return
+
+        # compress .itx file to .Z
+        with open(file, 'rb') as f_in, gzip.open(f'{sfile}.Z', 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+            file.unlink()
 
     def countchans(self):
         """ Returns the number of columns of data.
@@ -99,11 +104,11 @@ class ITX():
 
     def chromname(self):
         """ returns a string used for GCwerks file naming.  Format:  YYMMDD.HHMM.X """
-        time, date, ssv = self.wavenote()
-        mn, dd, yyyy = date.split('-')
+        time, ddate, ssv = self.wavenote()
+        mn, dd, yyyy = ddate.split('-')
         hh, mm, ss = time.split(':')
         return f'{yyyy[2:4]}{mn}{dd}.{hh}{mm}.{ssv}'
-
+    
     def parse_chroms(self):
         """ parses data into chroms array """
         lastrow = self.chans + 2
@@ -201,7 +206,7 @@ class ITX():
             # print(f'Savitzky Golay {ch} {winsize} {order}')
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
-
+            
     def display(self, ch):
         import matplotlib.pyplot as plt
         num = self.chroms.shape[1]
@@ -221,6 +226,101 @@ class ITX():
         # bx.set_xlabel('Time (s)')
         plt.show()
 
+        
+class ITX_smoothfile:
+    """ Class to read and parse the smoothing parameters file. This file provides a table
+        of parameters to apply to ITX chromatograms per channel and by a date range. 
+        
+        The method smoothfile_parameters returns a pandas dataframe with the parameters and dates.
+    """
+    
+    def __init__(self, smoothfile):
+        self.smoothfile = smoothfile
+        self.params_df = self.smoothfile_parameters()
+        
+    def process_smoothfile(self, line):
+        """ Parses a line in the smoothing setup file and returns a dictionary with smoothing options.
+            A typical line with smoothing parameters:
+                220801: -c 0 -g -gw 61 -go 4 -W 52
+            valid_options = ['-c', '-s', '-W', '-g', '-gw', '-go']
+        """
+        pt = line.find(':')
+        date = line[:pt]
+        # split command up at spaces and digits
+        opts = re.split('\s+|(\d+)', line[pt+1:])
+        # clean up the list (remove Nones and '')
+        opts = [o for o in opts if o != None and o != '']
+
+        opts_dict = {}
+        opts_dict['date'] = date
+
+        # get channel (required option)
+        chan = 0
+        try:
+            chan = opts[opts.index('-c')+1]
+        except ValueError:
+            print('missing option -c using "-c 0" (channel 0)')
+        opts_dict['chan'] = int(chan)
+
+        # apply Savitzky Golay smoothing
+        opts_dict['sg'] = False
+        if '-g' in opts:
+            opts_dict['sg'] = True
+            opts_dict['sg_win'] = 51
+            opts_dict['sg_ord'] = 4
+            if '-gw' in opts:
+                sg_win = opts[opts.index('-gw')+1]
+                opts_dict['sg_win'] = int(sg_win)
+            if '-go' in opts:
+                sg_ord = opts[opts.index('-go')+1]
+                opts_dict['sg_ord'] = int(sg_ord)
+            #print(f'Savitzky Golay filter, {sg_win}, {sg_ord} on channel {chan} starting on {date}')
+
+        # apply 1 second spike filter
+        opts_dict['spike'] = False
+        if '-s' in opts:
+            opts_dict['spike'] = True
+            #print(f'spike filter on channel {chan} starting on {date}')
+
+        # apply wide spike filter
+        opts_dict['wide_spike'] = False
+        if '-W' in opts:
+            opts_dict['wide_spike'] = True
+            wide_start = opts[opts.index('-W')+1]
+            opts_dict['wide_start'] = int(wide_start)
+            #print(f'wide spike filter on channel {chan} start_time = {wide_start} starting on {date}')
+
+        return opts_dict
+
+    def smoothfile_parameters(self):
+        """ load smoothfile parameters and return a dataframe """
+
+        print(self.smoothfile)
+        with open(self.smoothfile) as file:
+            df_line = []
+            n = 0
+            while (line := file.readline().lstrip().rstrip()):
+                # skip comment lines starting with #
+                if line[0] != '#':
+                    params = self.process_smoothfile(line)
+                    df_line.append(pd.DataFrame(params, index=[n]))
+                    n += 1
+
+        df = pd.concat(df_line)
+
+        # Either 6 or 8 character dates are allowed. They have to be consistant throughout the smoothfile.
+        dateformat = len(df.iloc[0]['date'])
+        if dateformat == 6:
+            df['dt'] = pd.to_datetime(df['date'], format='%y%m%d')
+        else:
+            df['dt'] = pd.to_datetime(df['date'], format='%Y%m%d')
+
+        df = df.set_index('dt')
+        df = df.drop('date', axis=1)
+        df = df.sort_index()
+
+        return df    
+
 
 if __name__ == '__main__':
 
@@ -228,30 +328,54 @@ if __name__ == '__main__':
     WSTART = -1                 # Wide spike filter start time
     yyyy = date.today().year
 
-    parser = argparse.ArgumentParser(description='Import chromatograms \
-        in the Igor Text File (.itx) format')
-    parser.add_argument('-s', action="store_true", default=False,
-                        help='Apply 1-point spike filter (default=False)')
-    parser.add_argument('-W', action="store", dest='ws_start', default=WSTART, type=int,
+    parser = argparse.ArgumentParser(description='Smooth and display chromatograms \
+        that are in the Igor Pro Text file format (.itx).')
+    parser.add_argument('-s', action='store_true', default=False,
+                        help='Apply 1-point spike filter (default off)')
+    parser.add_argument('-W', action='store', dest='ws_start', default=WSTART, type=int,
                         help='Apply wide spike filter (default off)')
-    parser.add_argument('-g', action="store_true", default=False,
-                        help='Apply Savitzky Golay smoothing (default=False)')
-    parser.add_argument('-gw', action="store", dest='SGwin', metavar='Win',
-                        default=SGwin, type=int,
-                        help='Sets Savitzky Golay smoothing window (default = '+str(SGwin)+' points)')
-    parser.add_argument('-go', action="store", dest='SGorder', metavar='Order',
-                        default=SGorder, type=int,
-                        help='Sets Savitzky Golay order of fit (default = '+str(SGorder)+')')
-    parser.add_argument('-d', action="store", dest='chan', type=int, default=-1,
+    parser.add_argument('-g', action='store_true', default=False,
+                        help='Apply Savitzky Golay smoothing (default off)')
+    parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win', default=SGwin, type=int,
+                        help=f'Sets Savitzky Golay smoothing window (default = {SGwin} points)')
+    parser.add_argument('-go', action="store", dest='SGorder', metavar='Order', default=SGorder, type=int,
+                        help=f'Sets Savitzky Golay order of fit (default = {SGorder})')
+    parser.add_argument('-file', action='store', dest='smoothfile', type=str,
+                        help='Use the smoothing parameters defined in this file.')
+    parser.add_argument('-d', action='store', dest='chan', type=int, default=-1,
                         help='Display original chrom and exported data for a channel')
     parser.add_argument(dest='itxfile', help='ITX chromatogram file to process')
 
     args = parser.parse_args()
-
+    itxfile = Path(args.itxfile)
+    
     if args.chan >= 0:
-        chroms = ITX(args.itxfile, saveorig=True)
+        # keeps a copy of the original data to compare when displayed
+        chroms = ITX(itxfile, saveorig=True)
     else:
-        chroms = ITX(args.itxfile)
+        chroms = ITX(itxfile)
+
+    # use either the smoothfile or the parameters defined on the command line (one or the other)
+    if args.smoothfile:
+        sm = ITX_smoothfile(Path(args.smoothfile))
+        itxtime = pd.to_datetime(chroms.name[:11], format='%y%m%d.%H%M')
+
+        for ch in range(chroms.chans):
+            # find the smoothing parameter date appropriate for the itxfile
+            params = sm.params_df.loc[(sm.params_df.index < itxtime) & (sm.params_df.chan == ch)].iloc[-1]
+            
+            if params.spike:
+                chroms.spike_filter(ch)
+            if params.wide_spike:
+                chroms.wide_spike_filter(ch, start=params.wide_start)
+            if params.sg:
+                chroms.savitzky_golay(ch, winsize=params.sg_win, order=params.sg_ord)
+                
+        # display chrom?
+        if args.chan >= 0:
+            chroms.display(args.chan)
+        quit()
+
 
     # apply spike filter before SG smoothing
     if args.s:
