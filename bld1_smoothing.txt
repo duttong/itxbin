@@ -9,7 +9,7 @@
 # gw is Savitzky Golay window size in points
 # go os the Savitzky Golay polynomial order (choose 2 or 4)
 # 
-210101: -c0 -g -gw 61 -go4
-210101: -c1 -g -gw 61 -go4
+210101: -c0 -g -gw 61 -go 4 -W 45
+210101: -c1 -g -gw 61 -go 4
 220801: -c0 -g -gw 61 -go 4 -W 52
 220801: -c1 -g -gw 61 -go 4
