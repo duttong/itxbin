@@ -71,7 +71,8 @@ class GCwerks_Import:
         # sends the itx data to the chromatogram_import program
         run([self.chromatogram_import, '-gcdir', self.gcdir], input=itx.write(stdout=False), text=True, capture_output=True)
 
-        itx_import.compress_to_Z(itx_file)
+        #print(f'compress {itx_file}')
+        itx.compress_to_Z(itx_file)
 
     def import_recursive_itx(self, types=['*.itx', '*.itx.gz']):
         """ Recursive glob finds all itx files in the incoming path.
@@ -139,6 +140,7 @@ if __name__ == '__main__':
         werks = GCwerks_Import(options.site, options)
         if options.smoothfile:
             werks.load_smoothfile(options.smoothfile)
+            
         if options.reimport:
             types = ('*.itx', '*.itx.gz', '*.itx.Z')
             werks.main(import_method=werks.import_recursive_itx, types=types)

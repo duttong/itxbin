@@ -52,17 +52,16 @@ class ITX:
         """ Compresses a file using gzip and renames to use .Z extention 
             file is a pathlib object
         """
-        sfile = file.name
-        
+
         # rename .gz file to .Z files
-        if sfile[-3:] == '.gz':
-            file.rename(f'{sfile[:-2]}Z')
+        if file.suffix == '.gz':
+            file.rename(file.with_suffix('.Z'))
             return
-        elif sfile[-2:] == '.Z':
+        elif file.suffix == '.Z':
             return
 
         # compress .itx file to .Z
-        with open(file, 'rb') as f_in, gzip.open(f'{sfile}.Z', 'wb') as f_out:
+        with open(file, 'rb') as f_in, gzip.open(f'{file}.Z', 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
             file.unlink()
 
