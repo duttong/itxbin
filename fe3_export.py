@@ -9,9 +9,9 @@ from gcwerks_export import GCwerks_export
 class FE3_Process(GCwerks_export):
     """ Class hardcoded for the FE3 instrument """
 
-    def __init__(self, inst='agc1', prefix='fe3'):
+    def __init__(self, inst='fe3', prefix='fe3'):
         super().__init__(inst, prefix)
-        self.results_file = '/hats/gc/agc1/results/fe3_gcwerks_all.csv'
+        self.results_file = f'/hats/gc/{inst}/results/fe3_gcwerks_all.csv'
 
     def read_results(self, year='all'):
         df = pd.read_csv(self.results_file, skipinitialspace=True, parse_dates=[0])

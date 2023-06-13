@@ -36,13 +36,15 @@ class FE3_import(GCwerks_Import):
             if (len(portsused) == 1) & (portsused[0] == self.exclude_port):
                 print(f'Only push port runs. Excluding: {dir}')
                 for file in files:
-                    itx_import.compress_to_Z(file)
+                    itx = itx_import.ITX(file)
+                    itx.compress_to_Z(file)
 
             # import files except the first exclude=N files.
             else:
                 loaded = True
                 for file in files[0:exclude]:
-                    itx_import.compress_to_Z(file)
+                    itx = itx_import.ITX(file) 
+                    itx.compress_to_Z(file)
                 for file in files[exclude:]:
                     pool.apply_async(self.import_itx, args=(file,))
         pool.close()
@@ -61,7 +63,7 @@ if __name__ == '__main__':
     yyyy = date.today().year
     SGwin, SGorder = 21, 4      # Savitzky Golay default variables
     WSTART = -1
-    site = 'agc1'
+    site = 'fe3'
 
     parser = argparse.ArgumentParser(
         description='Import chromatograms in the Igor Text File (.itx) format for the FE3 instrument.')
