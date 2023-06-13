@@ -22,10 +22,13 @@ class GCwerks_Import:
         # GCWerks program to ingest external chromatogram data
         self.chromatogram_import = Path('/hats/gc/gcwerks-3/bin/chromatogram_import')
         
-        if options.smoothfile:
-            self.usesmoothfile = True
-            sm = itx_import.ITX_smoothfile(Path(options.smoothfile))
-            self.params_df = sm.params_df
+        try:
+            if options.smoothfile:
+                self.usesmoothfile = True
+                sm = itx_import.ITX_smoothfile(Path(options.smoothfile))
+                self.params_df = sm.params_df
+        except AttributeError:
+            pass
             
         # if any command line filtering/smoothing options are set, don't use smoothfile
         if ('s', True) in self.options.items():
