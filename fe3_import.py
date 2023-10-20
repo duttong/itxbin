@@ -61,6 +61,7 @@ class FE3_import(GCwerks_Import):
 if __name__ == '__main__':
 
     yyyy = date.today().year
+    box_win = 50
     SGwin, SGorder = 21, 4      # Savitzky Golay default variables
     WSTART = -1
     site = 'fe3'
@@ -71,7 +72,9 @@ if __name__ == '__main__':
         help='Apply 1-point spike filter (default is False)')
     parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
         help='Apply wide spike filter (default off)')
-    parser.add_argument('-g', action='store_true', default=True,
+    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', default=box_win,
+        help=f'Apply a Box smooth with window width in points')
+    parser.add_argument('-g', action='store_true', default=False,
         help='Apply Savitzky Golay smoothing (default is True)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win',
         default=SGwin, type=int,
