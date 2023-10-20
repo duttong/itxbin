@@ -6,7 +6,8 @@
     Now uses python3  GSD 170104
     linted GSD 191212
     
-    Added smoothfile option and pathlib. 220901    
+    Added smoothfile option and pathlib. 220901
+    Added box smooth algo. Need to check that it works through the smooth file. 231020
 '''
 VERSION = 2.00
 
@@ -18,6 +19,10 @@ from pathlib import Path
 import shutil
 from datetime import date
 import re
+
+# smoothing algos
+from scipy.ndimage import convolve1d
+from scipy.signal import savgol_filter
 
 
 class ITX:
@@ -196,8 +201,7 @@ class ITX:
 
     def savitzky_golay(self, ch, winsize=21, order=4):
         """ applies the savitzky golay smoothing algo """
-        from scipy.signal import savgol_filter
-
+        
         if ch == 'all':
             for c in range(self.chans):
                 self.savitzky_golay(c, winsize=winsize, order=order)
@@ -205,7 +209,38 @@ class ITX:
             # print(f'Savitzky Golay {ch} {winsize} {order}')
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
-            
+
+    def box_smooth(self, ch, winsize=25):
+        """ applies a box smooth of winsize points on a single channel (ch) or 'all' channels """
+        
+        box_kernel = np.ones(winsize) / winsize
+
+        if ch == 'all':
+            for c in range(self.chans):
+                self.chroms[c] = list(convolve1d(self.chroms[c], box_kernel, mode='nearest'))
+        else:
+            self.chroms[ch] = list(convolve1d(self.chroms[ch], box_kernel, mode='nearest'))
+
+    """ Need to finish this
+    def variable_window_smooth(self, ch, winsize):
+        box_kernel0 = np.ones(winsize) / winsize
+        box_kernel1 = np.ones(winsize*2) / (winsize*2)
+        box_kernel2 = np.ones(winsize*4) / (winsize*4)
+        p1 = 2000
+        p2 = 5000
+
+        self.chroms[ch][:p1] = list(convolve1d(self.chroms[ch][:p1], box_kernel0, mode='nearest'))
+        self.chroms[ch][p1:p2] = list(convolve1d(self.chroms[ch][p1:p2], box_kernel1, mode='nearest'))
+        self.chroms[ch][p2:] = list(convolve1d(self.chroms[ch][p2:], box_kernel2, mode='nearest'))
+    
+    def running_average(self, ch, winsize):
+        if ch == 'all':
+            for c in range(self.chans):
+                self.variable_window_smooth(c, winsize)
+        else:
+            self.variable_window_smooth(ch, winsize)
+    """
+           
     def display(self, ch):
         import matplotlib.pyplot as plt
         num = self.chroms.shape[1]
@@ -220,6 +255,9 @@ class ITX:
         ax.set_ylabel('Response (hz)')
         ax.set_xlabel('Time (s)')
         ax.legend()
+        #ax.set_ylim([164000, 172000])
+        #ax.axvline(x=2000/20, color='gainsboro')
+        #ax.axvline(x=5000/20, color='gainsboro')
         # bx = fig.add_subplot(212)
         # bx.plot(np.diff(self.org[ch, :]))
         # bx.set_xlabel('Time (s)')
@@ -241,7 +279,7 @@ class ITX_smoothfile:
         """ Parses a line in the smoothing setup file and returns a dictionary with smoothing options.
             A typical line with smoothing parameters:
                 220801: -c 0 -g -gw 61 -go 4 -W 52
-            valid_options = ['-c', '-s', '-W', '-g', '-gw', '-go']
+            valid_options = ['-c', '-s', '-W', '-b', '-g', '-gw', '-go']
         """
         pt = line.find(':')
         date = line[:pt]
@@ -274,6 +312,10 @@ class ITX_smoothfile:
                 sg_ord = opts[opts.index('-go')+1]
                 opts_dict['sg_ord'] = int(sg_ord)
             #print(f'Savitzky Golay filter, {sg_win}, {sg_ord} on channel {chan} starting on {date}')
+
+        # box smoothing
+        if '-b' in opts:
+            opts_dict['boxwidth'] = opts[opts.index('-b')+1]
 
         # apply 1 second spike filter
         opts_dict['spike'] = False
@@ -333,6 +375,8 @@ if __name__ == '__main__':
                         help='Apply 1-point spike filter (default off)')
     parser.add_argument('-W', action='store', dest='ws_start', default=WSTART, type=int,
                         help='Apply wide spike filter (default off)')
+    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int,
+                        help=f'Apply a Box smooth with window width in points')
     parser.add_argument('-g', action='store_true', default=False,
                         help='Apply Savitzky Golay smoothing (default off)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win', default=SGwin, type=int,
@@ -387,6 +431,9 @@ if __name__ == '__main__':
     # apply Savitzky Golay smoothing
     if args.g:
         chroms.savitzky_golay('all', winsize=args.SGwin, order=args.SGorder)
+    if args.boxwidth:
+        #chroms.box_smooth('all', args.boxwidth)
+        chroms.box_smooth('all', args.boxwidth)
 
     # display chrom?
     if args.chan >= 0:

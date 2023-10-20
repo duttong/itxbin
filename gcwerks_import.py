@@ -33,6 +33,8 @@ class GCwerks_Import:
         # if any command line filtering/smoothing options are set, don't use smoothfile
         if ('s', True) in self.options.items():
             self.usesmoothfile = False
+        if 'boxwidth' in self.options.items():
+            self.usesmoothfile = False
         if ('g', True) in self.options.items():
             self.usesmoothfile = False
         if int(self.options['ws_start']) > -1:
@@ -59,12 +61,17 @@ class GCwerks_Import:
                     itx.wide_spike_filter(ch, start=params.wide_start)
                 if params.sg:
                     itx.savitzky_golay(ch, winsize=params.sg_win, order=params.sg_ord)
+                elif params.boxwidth:
+                    itx.box_smooth(ch, winsize=params.boxwidth)
         else:
             # apply spike filter before SG smoothing
             if ('s', True) in self.options.items():
                 itx.spike_filter('all')
             if int(self.options['ws_start']) > -1:
                 itx.wide_spike_filter('all', start=int(self.options['ws_start']))
+            # apply Box smoothing
+            if 'boxwidth' in self.options:
+                itx.box_smooth('all', winsize=self.options['boxwidth'])
             # apply Savitzky Golay smoothing
             if ('g', True) in self.options.items():
                 _win = self.options['SGwin']
