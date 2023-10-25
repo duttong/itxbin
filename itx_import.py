@@ -432,7 +432,6 @@ if __name__ == '__main__':
     if args.g:
         chroms.savitzky_golay('all', winsize=args.SGwin, order=args.SGorder)
     if args.boxwidth:
-        #chroms.box_smooth('all', args.boxwidth)
         chroms.box_smooth('all', args.boxwidth)
 
     # display chrom?

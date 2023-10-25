@@ -81,7 +81,6 @@ class GCwerks_Import:
         # sends the itx data to the chromatogram_import program
         run([self.chromatogram_import, '-gcdir', self.gcdir], input=itx.write(stdout=False), text=True, capture_output=True)
 
-        #print(f'compress {itx_file}')
         itx.compress_to_Z(itx_file)
 
     def import_recursive_itx(self, types=['*.itx', '*.itx.gz']):
@@ -125,6 +124,8 @@ if __name__ == '__main__':
                      help='Apply 1-point spike filter (default off)')
     opt.add_argument('-W', action='store', dest='ws_start', default=WSTART,
                      help='Apply wide spike filter (default off)')
+    opt.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int,
+                     help=f'Apply a Box smooth with window width in points')
     opt.add_argument('-g', action='store_true', default=False,
                      help='Apply Savitzky Golay smoothing (default off)')
     opt.add_argument('-gw', action='store', dest='SGwin', metavar='Win', default=SGwin, type=int,
