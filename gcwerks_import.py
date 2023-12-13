@@ -64,13 +64,13 @@ class GCwerks_Import:
                 elif params.boxwidth:
                     itx.box_smooth(ch, winsize=params.boxwidth)
         else:
-            # apply spike filter before SG smoothing
+            # apply spike filters before smoothing
             if ('s', True) in self.options.items():
                 itx.spike_filter('all')
             if int(self.options['ws_start']) > -1:
                 itx.wide_spike_filter('all', start=int(self.options['ws_start']))
             # apply Box smoothing
-            if 'boxwidth' in self.options:
+            if self.options['boxwidth'] is not None:
                 itx.box_smooth('all', winsize=self.options['boxwidth'])
             # apply Savitzky Golay smoothing
             if ('g', True) in self.options.items():
@@ -141,7 +141,7 @@ if __name__ == '__main__':
     opt.add_argument('site', help='A station or "all" for all CATS sites.')
 
     options = opt.parse_args()
-    
+        
     if options.site.lower() == 'all':
         for s in ('brw', 'nwr', 'mlo', 'smo', 'spo'):
             werks = GCwerks_Import(s, options)
