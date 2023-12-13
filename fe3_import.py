@@ -61,7 +61,7 @@ class FE3_import(GCwerks_Import):
 if __name__ == '__main__':
 
     yyyy = date.today().year
-    box_win = 50
+    box_win = 25
     SGwin, SGorder = 21, 4      # Savitzky Golay default variables
     WSTART = -1
     site = 'fe3'
@@ -72,10 +72,10 @@ if __name__ == '__main__':
         help='Apply 1-point spike filter (default is False)')
     parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
         help='Apply wide spike filter (default off)')
-    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', default=box_win,
+    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', default=box_win, type=int,
         help=f'Apply a Box smooth with window width in points')
     parser.add_argument('-g', action='store_true', default=False,
-        help='Apply Savitzky Golay smoothing (default is True)')
+        help='Apply Savitzky Golay smoothing (default is False)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win',
         default=SGwin, type=int,
         help=f'Sets Savitzky Golay smoothing window (default = {SGwin} points)')
@@ -90,7 +90,7 @@ if __name__ == '__main__':
         help=f'Valid station code (default is {site})')
 
     args = parser.parse_args()
-
+    
     fe3 = FE3_import(args.site, args)
     if args.reimport:
         types = ('*.itx', '*.itx.gz', '*.itx.Z')
