@@ -17,15 +17,31 @@ class FE3_instrument:
     def __init__(self):
  
         self.instrument = 59    # FE3 instrument number
-        self.fe3db_chans = {
-            'a':['CFC11', 'CFC113', 'CHCl3', 'CH3CCl3', 'CCl4', 'TCE'],
-            'b':['SF6', 'N2O'],
-            'c':['CFC12', 'h1211', 'CFC11', 'CFC113']}
-        
-        self.mols = list(set([item for sublist in self.fe3db_chans.values() for item in sublist]))
-        self.mols.sort()
+        self.param_num = {}     # db parameter numbers
+        self.fe3db_chans = {}   # db channel identifier and gases
+        self.mols = []          # list of molecules on FE3
 
-        self.param_num = self.fe3_param_numbers(self.mols)
+        # query the db for fe3 parameters        
+        cmd = f'SELECT display_name, param_num, channel \
+            FROM hats.analyte_list where inst_num = {self.instrument}'
+        q = db.doquery(cmd)
+
+        # Iterate over the list of returned dicts
+        for item in q:
+            display_name = item['display_name']     # molecule name
+            ch = item['channel']
+
+            if display_name not in self.param_num:
+                self.param_num[display_name] = item['param_num']
+                self.mols.append(display_name)
+
+            # add missing channel key
+            if ch not in self.fe3db_chans:
+                self.fe3db_chans[ch] = []
+            # append to list for each channel key
+            self.fe3db_chans[ch].append(display_name)
+
+        self.mols.sort()
         self.runtypes_df = self.fe3_run_types()
         self.detrend_df = self.fe3_detrend_methods()
 
