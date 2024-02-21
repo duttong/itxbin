@@ -24,29 +24,24 @@ class FE3_instrument:
         # query the db for fe3 parameters        
         cmd = f'SELECT display_name, param_num, channel \
             FROM hats.analyte_list where inst_num = {self.instrument}'
-        q = db.doquery(cmd)
+        df = pd.DataFrame(db.doquery(cmd))
 
-        # Iterate over the list of returned dicts
-        for item in q:
-            display_name = item['display_name']     # molecule name
-            ch = item['channel']
+        # a dict of channels and a list of molecules.
+        for ch in df.channel.unique():
+            self.fe3db_chans[ch] = list(df.loc[df.channel == ch].display_name)
 
-            if display_name not in self.param_num:
-                self.param_num[display_name] = item['param_num']
-                self.mols.append(display_name)
+        # a dict of molecules and parameter number
+        for mol in df.display_name.unique():
+            self.param_num[mol] = int(list(df.loc[df.display_name == mol].param_num)[0])
 
-            # add missing channel key
-            if ch not in self.fe3db_chans:
-                self.fe3db_chans[ch] = []
-            # append to list for each channel key
-            self.fe3db_chans[ch].append(display_name)
-
+        self.mols = list(df.display_name.unique())
         self.mols.sort()
         self.runtypes_df = self.fe3_run_types()
         self.detrend_df = self.fe3_detrend_methods()
 
     def fe3_param_numbers(self, mols: list) -> dict:
-        """ paramater numbers for the gases FE3 measures, retrieved from the DB """
+        """ paramater numbers for the gases FE3 measures, retrieved from the DB 
+            NOTE: this info is now coming from the hats.analyte_list """
         pnum = {}
         for mol in mols:
             cmd = f"SELECT * FROM gmd.parameter WHERE formula='{mol}';"
