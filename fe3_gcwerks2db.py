@@ -7,8 +7,6 @@ sys.path.append('/ccg/src/db/')
 
 import fe3_merge
 import db_utils.db_conn as db_conn
-
-# HATS db class created by John Mund
 db = db_conn.HATS_ng()
 
 class FE3_instrument:
@@ -16,7 +14,7 @@ class FE3_instrument:
 
     def __init__(self):
  
-        self.instrument = 59    # FE3 instrument number
+        self.instrument = 193   # FE3 instrument number (changed 240520)
         self.param_num = {}     # db parameter numbers
         self.fe3db_chans = {}   # db channel identifier and gases
         self.mols = []          # list of molecules on FE3
