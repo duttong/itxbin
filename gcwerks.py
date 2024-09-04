@@ -6,7 +6,7 @@ from PyQt5 import QtWidgets, QtGui, QtCore
 
 GCWERKS_PATH = '/hats/gc/gcwerks-3/bin/gcwerks'
 CATS_SITES = {'brw', 'sum', 'nwr', 'mlo', 'smo', 'spo'}
-GOOD_SITES = sorted(CATS_SITES | {'std', 'stdhp', 'bld1', 'fe3', 'pr1'})
+GOOD_SITES = sorted(CATS_SITES | {'std', 'stdhp', 'bld1', 'fe3', 'pr1', 'm4'})
 
 def launch_gcwerks(site):
     if site == 'pr1':
