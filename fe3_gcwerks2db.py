@@ -2,6 +2,7 @@
 
 import argparse
 import pandas as pd
+from pandas.tseries.offsets import DateOffset
 import sys
 sys.path.append('/ccg/src/db/')
 
@@ -166,7 +167,15 @@ if __name__ == '__main__':
     elif options.yyyy:
         df = df.loc[df.index.year == int(options.yyyy)]
     else:
-        df = df.last('2M')
+        # Determine the most recent date in the DataFrame index
+        last_date = df.index.max()
+
+        # Calculate the date 2 months earlier using DateOffset
+        start_date = last_date - DateOffset(months=2)
+
+        # Filter the DataFrame to include rows from the last 2 months
+        df = df.loc[start_date:]        
+        #df = df.last('2M') # depricated
 
     fe3.gcwerks_2_hatsdb(df.reset_index())
     print(f'Execution time {time.time()-t0:3.3f} seconds on {df.shape[0]} records.')
