@@ -8,7 +8,7 @@ sys.path.append('/ccg/src/db/')
 
 import fe3_merge
 from fe3_gcwerks2db import FE3_instrument
-import db_utils.db_conn as db_conn
+import db_utils.db_conn as db_conn # type: ignore
 
 # HATS db class created by John Mund
 db = db_conn.HATS_ng()
