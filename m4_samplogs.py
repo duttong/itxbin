@@ -153,87 +153,81 @@ class M4_SampleLogs(M4_base):
         return df
 
     def merged_rundata(self, duration='2ME', save=True):
-        """ Merge pressure files with chromatogram file names """
+        """Merge pressure files with chromatogram file names."""
         
-        valid_sites = ['alt', 'amy', 'bld', 'brw', 'cgo', 'hfm', 'kum', 'lef', 'mhd', 'mko',
-                        'mlo', 'nwr', 'psa', 'rpb', 'smo', 'spo', 'sum', 'thd', 'wis']
+        valid_sites = [
+            'alt', 'amy', 'bld', 'brw', 'cgo', 'hfm', 'kum', 'lef', 'mhd', 'mko',
+            'mlo', 'nwr', 'psa', 'rpb', 'smo', 'spo', 'sum', 'thd', 'wis'
+        ]
         
+        # Determine the start date based on the duration argument.
         if duration.lower() == 'all':
             start_date = pd.to_datetime(self.m4_start_date, format='%Y%m%d')
         else:
-            # Convert the string (e.g., "2ME") into a DateOffset
             offset = pd.tseries.frequencies.to_offset(duration)
-            # Use today's date as the reference
             start_date = pd.Timestamp.today() - offset
         print(f'Merging run-index and .xl files since {start_date}')
-                
-        xls = self.load_all_xl_files()
-        xls = xls.loc[start_date:]
-        xls.reset_index(inplace=True)
-        runs = self.load_runindex()
-        runs = runs.loc[start_date:]
-        runs.reset_index(inplace=True)
         
-        # Merge with a tolerance of self.merge_delta
+        # Load data and filter rows based on the start date.
+        xls = self.load_all_xl_files().loc[start_date:].reset_index()
+        runs = self.load_runindex().loc[start_date:].reset_index()
+        
+        # Merge data using an asof merge with the specified tolerance.
         mm = pd.merge_asof(
             runs,
             xls,
             left_on='dt_run',
             right_on='dt_sync',
             tolerance=pd.Timedelta(self.merge_delta),
-            direction='nearest'  # or 'backward'/'forward' depending on your need
-        )
-        mm = mm.dropna(subset=['dt_sync'])
+            direction='nearest'
+        ).dropna(subset=['dt_sync'])
         
-        # Define a regex pattern that only matches strings with all three parts:
-        #   - site: one or more alphanumeric characters before the first underscore
-        #   - sample_time: a pattern like "06_jan_25" (day, month, year)
-        #   - tank: digits and hyphens after a '#'
-        pattern = r'^(?P<site>[A-Za-z0-9]{3})_?(?P<sample_time>(?:\d{1,2}_)?[A-Za-z]{3}_[0-9]{2})_?#(?P<tank>[\w-]+)$'
-
-        mask = mm['info'].str.lower().str[0:3].isin(valid_sites)
-        extracted = mm.loc[mask, 'info'].str.extract(pattern)
-
-        # The extract will return NaN for groups that don't match the pattern.
-        # Now assign the results to new columns in the original dataframe.
-        mm.loc[mask, 'site'] = extracted['site']
-        mm.loc[mask, 'sample_time'] = extracted['sample_time']
-        mm.loc[mask, 'tank'] = extracted['tank']
-
-        # Convert sample_time (currently in "DD_mon_YY" format, e.g., "06_jan_25") to YYMMDD format.
-        # To handle the month abbreviation, we first title-case the string.
-        mm.loc[mask, 'sample_time'] = (
-            pd.to_datetime(mm.loc[mask, 'sample_time'].str.title(), format='%d_%b_%y', errors='coerce')
+        # Extract site, sample_time, and tank info from the 'info' column
+        pattern = (
+            r'^(?P<site>[A-Za-z0-9]{3})_?'
+            r'(?P<sample_time>(?:\d{1,2}_)?[A-Za-z]{3}_[0-9]{2})_?'
+            r'#(?P<tank>[\w-]+)$'
+        )
+        mask_valid = mm['info'].str.lower().str[:3].isin(valid_sites)
+        extracted = mm.loc[mask_valid, 'info'].str.extract(pattern)
+        mm.loc[mask_valid, ['site', 'sample_time', 'tank']] = extracted[['site', 'sample_time', 'tank']]
+        
+        # Convert sample_time to YYMMDD format (e.g., "06_jan_25" -> "250106")
+        mm.loc[mask_valid, 'sample_time'] = (
+            pd.to_datetime(mm.loc[mask_valid, 'sample_time'].str.title(),
+                        format='%d_%b_%y', errors='coerce')
             .dt.strftime('%y%m%d')
         )
-
-        mm.loc[~mask, 'tank'] = mm.loc[~mask, 'info']
         
-        # Label tank type as zero
-        mm.loc[mm['info'].str.contains('zero', case=False, na=False), 'tank'] = mm['info']
-        mm.loc[mm['info'].str.contains('zero', case=False, na=False), 'samptype'] = 'zero'
+        # For rows that don't have a valid site, set 'tank' to the original 'info'
+        mm.loc[~mask_valid, 'tank'] = mm.loc[~mask_valid, 'info']
         
-        # Label tank as std for port 14
+        # Label tanks that contain 'zero' in the 'info' column.
+        zero_mask = mm['info'].str.contains('zero', case=False, na=False)
+        mm.loc[zero_mask, 'tank'] = mm.loc[zero_mask, 'info']
+        mm.loc[zero_mask, 'samptype'] = 'zero'
+        
+        # Label standard tanks where ssvpos is '14'
         mm.loc[mm['ssvpos'] == '14', 'samptype'] = 'std'
-        # Set samptype to pfp if the tank is like nn-xxxx
-        mm.loc[mm['tank'].str.match(r'^\d{1,2}-(\d{4}|x{4})$', na=False), 'samptype'] = 'pfp'
         
-        mask = mm['samptype'] == 'flask'
-        # Create two new columns directly using the string split results for flask runs
-        flask_pair_split = mm.loc[mask, 'tank'].str.split('-', expand=True)
-        mm.loc[mask, 'flask_id'] = flask_pair_split[0].astype(str)
-        mm.loc[mask, 'pair_id'] = flask_pair_split[1].astype(str)
+        # Label tanks matching a specific pattern as 'pfp'
+        pfp_mask = mm['tank'].str.match(r'^\d{1,2}-(\d{4}|x{4})$', na=False)
+        mm.loc[pfp_mask, 'samptype'] = 'pfp'
         
-        # add run_type_num (used for table insertion)
-        mapping = self.run_type_num()
-        mm['run_type_num'] = mm['samptype'].str.lower().map(mapping)
+        # Process flask runs: split the tank string into flask_id and pair_id.
+        flask_mask = mm['samptype'] == 'flask'
+        if flask_mask.any():
+            flask_split = mm.loc[flask_mask, 'tank'].str.split('-', expand=True)
+            mm.loc[flask_mask, 'flask_id'] = flask_split[0].astype(str)
+            mm.loc[flask_mask, 'pair_id'] = flask_split[1].astype(str)
         
-        # add ccgg_event_num for pfps (used for table insertion)
+        # Map run type and compute ccgg event number.
+        mm['run_type_num'] = mm['samptype'].str.lower().map(self.run_type_num())
         mm['ccgg_event_num'] = mm.apply(lambda row: self.fetch_ccgg_event_num(row), axis=1)
         
         if save:
             self.save_samplelogs(mm)
-        
+            
         return mm
     
     def fetch_ccgg_event_num(self, row):
