@@ -61,20 +61,16 @@ class FE3_DataProg2db(FE3_instrument):
         except ValueError:
             flask_port = None     # null
 
-        cmd = f"""update hats.ng_analysis 
-                    set run_time = '{run_time}', run_type_num = {run_type}, port = {port}, port_info = '{port_info}',
-                    pair_id_num = '{pair_id_num}', flask_id = '{flask_id}', flask_port = '{flask_port}'
-                    where num = {analysis_num}; """
-
-        '''
-        # use NULL values if flask_port is None type (this is a difference between sql and python)
-        if flask_port is None:
-            cmd = f"""update hats.ng_analysis 
-                        set run_time = '{run_time}', run_type_num = {run_type}, port = {port},
-                        port_info = '{port_info}', pair_id_num = NULL, flask_id = NULL, flask_port = NULL
-                        where num = {analysis_num}; """
-        '''
-
+        cmd = f"""UPDATE hats.ng_analysis 
+          SET run_time = '{run_time}', 
+              run_type_num = {run_type}, 
+              port = {port}, 
+              port_info = '{port_info}',
+              pair_id_num = '{pair_id_num}', 
+              flask_id = '{flask_id}', 
+              flask_port = '{flask_port}'
+          WHERE num = {analysis_num} and inst_num = {self.instrument} """
+          
         # use NULL instead of 'None' for mysql
         cmd = cmd.replace("'None'", "NULL")
         

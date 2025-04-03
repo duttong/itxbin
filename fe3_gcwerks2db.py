@@ -7,7 +7,7 @@ import sys
 sys.path.append('/ccg/src/db/')
 
 import fe3_merge
-import db_utils.db_conn as db_conn
+import db_utils.db_conn as db_conn # type: ignore
 db = db_conn.HATS_ng()
 
 class FE3_instrument:
@@ -175,7 +175,6 @@ if __name__ == '__main__':
 
         # Filter the DataFrame to include rows from the last 2 months
         df = df.loc[start_date:]        
-        #df = df.last('2M') # depricated
 
     fe3.gcwerks_2_hatsdb(df.reset_index())
     print(f'Execution time {time.time()-t0:3.3f} seconds on {df.shape[0]} records.')
