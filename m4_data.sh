@@ -21,9 +21,12 @@ GCDIR=/hats/gc/m4
 /hats/gc/gcwerks-3/bin/gcimport -gcdir $GCDIR
 /hats/gc/gcwerks-3/bin/run-index -gcdir $GCDIR
 
+# update sample logs
 /hats/gc/itxbin/m4_samplogs.py -i
 
+# use sample logs in GCwerks
 /hats/gc/gcwerks-3/bin/gcupdate -gcdir $GCDIR
 /hats/gc/gcwerks-3/bin/gccalc -gcdir $GCDIR
 
-/hats/gc/itxbin/m4_export.py 
+# export the last two months from GCwerks and insert to db
+/hats/gc/itxbin/m4_gcwerks2db.py -x
