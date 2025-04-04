@@ -383,30 +383,6 @@ class M4_SampleLogs(M4_base):
         """
         self.db.doquery(sql)
 
-    def return_analysis_nums(self, df):
-        """
-        Loops over each row in the DataFrame and queries the database
-        for the primary key (num) based on analysis_time and inst_num.
-        Returns the DataFrame with a new 'analysis_num' column.
-        """
-        analysis_nums = []
-        
-        for _, row in df.iterrows():
-            # Adjust the formatting of analysis_time if necessary.
-            query = f"SELECT num FROM hats.ng_analysis WHERE analysis_time = '{row.dt_run}' AND inst_num = {self.inst_num}"
-            result = self.db.doquery(query)
-            
-            if result:
-                # Depending on the return type, extract the num value.
-                num_value = result[0][0] if isinstance(result[0], (list, tuple)) else result[0]['num']
-                analysis_nums.append(num_value)
-            else:
-                analysis_nums.append(None)
-        
-        # Add the primary keys as a new column in the DataFrame.
-        df['analysis_num'] = analysis_nums
-        return df
-    
     def insert_ancillary_data(self, df):
         """
         Inserts or updates rows in hats.ng_analysis using a batch upsert.
@@ -504,8 +480,6 @@ if __name__ == '__main__':
     else:
         df = m4.merged_rundata(duration=options.duration)
         
-    print(df.shape)
-    
     if options.insert:
         pd.set_option('future.no_silent_downcasting', True)
         #df = df.set_index('dt_x', drop=False)

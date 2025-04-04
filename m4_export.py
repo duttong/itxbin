@@ -43,6 +43,7 @@ class M4_base:
         return analytes_dict
     
     def m4_molecules(self):
+        """ Returns a list of analytes or molecules (no parameter number) """
         analytes = self.m4_analytes()
         return analytes.keys()
 
@@ -54,6 +55,31 @@ class M4_base:
         results['std'] = 8
         return results
 
+    def return_analysis_nums(self, df, time_col='dt_run'):
+        """
+        Loops over each row in the DataFrame and queries the database
+        for the primary key (num) based on analysis_time and inst_num.
+        Returns the DataFrame with a new 'analysis_num' column.
+        """
+        analysis_nums = []
+        
+        for _, row in df.iterrows():
+            # Adjust the formatting of analysis_time if necessary.
+            dt = row[time_col]
+            query = f"SELECT num FROM hats.ng_analysis WHERE analysis_time = '{dt}' AND inst_num = {self.inst_num}"
+            result = self.db.doquery(query)
+            
+            if result:
+                # Depending on the return type, extract the num value.
+                num_value = result[0][0] if isinstance(result[0], (list, tuple)) else result[0]['num']
+                analysis_nums.append(num_value)
+            else:
+                analysis_nums.append(None)
+        
+        # Add the primary keys as a new column in the DataFrame.
+        df['analysis_num'] = analysis_nums
+        return df
+    
     @staticmethod
     def convert_date_format(date_str):
         """
