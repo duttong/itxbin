@@ -159,7 +159,7 @@ def main():
     for n, gas in enumerate(molecules):
         df = m4.load_gcwerks(gas, start_date)
         m4.insert_mole_fractions(df)
-        print(f'{df.shape[0]} rows inserted for parameter {gas} into hats.ng_mole_fractions')
+        print(f'{df.shape[0]} rows inserted/updated for parameter {gas} into hats.ng_mole_fractions')
 
 
 if __name__ == '__main__':

@@ -15,7 +15,9 @@ class M4_base:
     gc_dir = Path("/hats/gc/m4")
     export_dir = gc_dir / "results"
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        # Call the next initializer in the cooperative chain (if there is one)
+        super().__init__(*args, **kwargs)
         sys.path.append('/ccg/src/db/')
         import db_utils.db_conn as db_conn # type: ignore
         self.db = db_conn.HATS_ng()
