@@ -199,8 +199,19 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             QMessageBox.information(self, "No Data", f"No data found for parameter number: {selected_param_num}")
             return
 
-        # Convert analysis_datetime to datetime objects.
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
+        # smooth the data using LOWESS for parameter_num
+        smoothed_data = self.calculate_lowess_smoothed(df, gap_hours=3, min_points=8)
+        df.set_index('analysis_datetime', inplace=True, drop=False)
+        df = pd.merge(df, smoothed_data[['smoothed', 'segment']], left_index=True, right_index=True, how='left')
+        df['smoothed'] = df['smoothed'].interpolate(method='linear', limit_direction='both')
+        df['segment'] = df['segment'].interpolate(method='linear', limit_direction='both')
+
+        # create a gap between segments
+        is_transition = df['segment'].ne(df['segment'].shift())
+        is_transition &= df['segment'].shift().notna()
+        df.loc[is_transition, 'smoothed'] = np.nan
+        
+        df['ratio_a'] = df['area'] / df['smoothed']
         
         # Swap keys and values in run_type_map
         run_type_map = {v: k for k, v in self.run_type_num().items()}  # {"Standard": 1, "Sample": 2, ...}
@@ -225,12 +236,8 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             sub = df.loc[df['run_type_num'] == rnum]
             ax.scatter(sub['analysis_datetime'], sub['area'], label=rlabel, color=color_map[rnum])
         
-        # Ensure smoothed LOWESS data is plotted correctly for all segments
-        if self.STANDARD_RUN_TYPE_NUM in df['run_type_num'].unique():
-            smoothed_data = self.calculate_lowess_smoothed(df, gap_hours=3, min_points=8)
-            if not smoothed_data.empty:
-                for seg_id, seg_data in smoothed_data.groupby('segment'):
-                    ax.plot(seg_data.index, seg_data['smoothed'], color='#e04c19', linewidth=1)
+        # Plot the smoothed data
+        ax.plot(df.index, df['smoothed'], color='#e04c19', linewidth=1)
 
         # Set the major and minor locators for better scaling
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
