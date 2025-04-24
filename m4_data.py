@@ -9,7 +9,7 @@ import matplotlib.dates as mdates
 import numpy as np
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QComboBox, QPushButton, QLabel, QMessageBox, QMainWindow
 )
@@ -55,7 +55,6 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
 
         # Automatically load data for the default duration ("1 month")
         self.duration_combo.setCurrentText("1 month")
-        #self.load_data()
 
     def populate_parameters(self):
         """Fetch parameters from the database and populate the combo box."""
@@ -130,7 +129,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         # Filter data for the specified run_type_num
         resp = data.loc[data['run_type_num'] == self.STANDARD_RUN_TYPE_NUM][['analysis_datetime', 'area']].copy()
         resp.set_index('analysis_datetime', inplace=True)
-        resp.loc[resp['area'] < 0.1, 'area'] = np.nan  # Set area < 0.1 to NaN
+        #resp.loc[resp['area'] < 0.1, 'area'] = np.nan  # Set area < 0.1 to NaN
         resp = resp.dropna()  # Drop NaN values
         
         # Ensure unique indices by resetting the index and reassigning it
@@ -157,7 +156,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             n = len(seg_data)
             if n < min_points:
                 continue
-            # Use either 30% or enough to hit min_points
+            # Use either 20% or enough to hit min_points
             frac = max(min_points / n, 0.3)
             frac = min(frac, 1.0)  # frac must be <= 1.0
 
@@ -169,9 +168,6 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             y = seg_data['area'].values
             smoothed = lowess(y, x, frac=frac, return_sorted=False)
             
-            # Debugging: Print lengths of seg_data.index and smoothed
-            #print(f"Segment {seg_id}: len(seg_data.index) = {len(seg_data.index)}, len(smoothed) = {len(smoothed)}")
-
             # Ensure lengths of seg_data.index and smoothed match before assignment
             if len(seg_data.index) == len(smoothed):
                 # Align indices explicitly before assignment to avoid mismatches
@@ -207,7 +203,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
 
         # Hardcode colors for specific run_type_num values
         color_map = {
-            1: "#1f77b4",  # Blue for Flask
+            1: "#73a9d8",  # Blue for Flask
             4: "#ff7f0e",  # Orange for Other
             5: "#2ca02c",  # Green for PFP
             6: "#dd89f9",  # Purple for Zero
@@ -227,7 +223,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         
         # Ensure smoothed LOWESS data is plotted correctly for all segments
         if self.STANDARD_RUN_TYPE_NUM in df['run_type_num'].unique():
-            smoothed_data = self.calculate_lowess_smoothed(df, gap_hours=3, min_points=8)
+            smoothed_data = self.calculate_lowess_smoothed(df, gap_hours=3, min_points=4)
             if not smoothed_data.empty:
                 for seg_id, seg_data in smoothed_data.groupby('segment'):
                     ax.plot(seg_data.index, seg_data['smoothed'], color='#e04c19', linewidth=1)
@@ -279,7 +275,6 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
                 print("Unable to activate zoom mode:", e)
 
         # Use a QTimer to delay the activation slightly to ensure the toolbar is ready
-        from PyQt5.QtCore import QTimer
         QTimer.singleShot(100, activate_zoom)
 
         # Revert back to using plt.show() to display the plot
