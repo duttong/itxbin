@@ -29,6 +29,9 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         6: "#dd89f9",  # Zero
         7: "#c7811b",  # Tank
         8: "#505c5c",  # Standard
+        "Response": "#e04c19",  # Response
+        "Ratio": "#1f77b4",  # Ratio
+        "Mole Fraction": "#2ca02c",  # Mole Fraction
     }
     RADIO_OPTIONS = ("Response", "Ratio", "Mole Fraction")
 
@@ -109,11 +112,10 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             }.get(duration, "1 MONTH")
 
             query = f"""
-                SELECT analysis_datetime, area, run_type_num,
-                       parameter_num, mole_fraction
+                SELECT analysis_datetime, area, run_type_num, parameter_num, mole_fraction
                 FROM hats.ng_data_view
                 WHERE inst_num = {self.inst_num}
-                  AND analysis_datetime BETWEEN DATE_SUB(NOW(), INTERVAL {interval}) AND NOW()
+                    AND analysis_datetime BETWEEN DATE_SUB(NOW(), INTERVAL {interval}) AND NOW()
                 ORDER BY analysis_datetime DESC;
             """
             df = pd.DataFrame(self.db.doquery(query))
@@ -128,9 +130,9 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         std = df[df['run_type_num'] == self.STANDARD_RUN_TYPE][['analysis_datetime','area']].copy()
         std['analysis_datetime'] = pd.to_datetime(std['analysis_datetime'])
         std.set_index('analysis_datetime', inplace=True)
-        std.loc[std['area'] < 0.1, 'area'] = np.nan
+        #std.loc[std['area'] < 0.1, 'area'] = np.nan
         std.dropna(inplace=True)
-        std = std.loc[~std.index.duplicated()]
+        #std = std.loc[~std.index.duplicated()]
         std.sort_index(inplace=True)
         std['time_diff'] = std.index.to_series().diff()
         std['segment'] = (std['time_diff'] > pd.Timedelta(hours=gap_hours)).cumsum()
@@ -158,9 +160,9 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         )
         df['smoothed'] = df['smoothed'].interpolate(limit_direction='both')
         df['segment'] = df['segment'].interpolate(limit_direction='both')
+        df['ratio'] = df['area'] / df['smoothed']
         change = df['segment'].ne(df['segment'].shift()) & df['segment'].shift().notna()
         df.loc[change, 'smoothed'] = np.nan
-        df['ratio'] = df['area'] / df['smoothed']
         self.current_df = df
 
         if self.fig is None:
@@ -173,6 +175,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
 
         self._draw_plot(self.ax, df, self.RADIO_OPTIONS[0])
         self._format_axes(self.ax, df, name, num)
+        
         plt.show()
 
     def _prepare_dataframe(self):
@@ -212,13 +215,13 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             else:
                 y = sub['mole_fraction']
             ax.scatter(sub.index, y, label=label_str,
-                       color=self.COLOR_MAP.get(rnum, 'gray'))
+                        color=self.COLOR_MAP.get(rnum, 'gray'))
         if label == "Response":
-            ax.plot(df.index, df['smoothed'], color='#e04c19', linewidth=1)
-
+            ax.plot(df.index, df['smoothed'], color=self.COLOR_MAP.get('Response'), linewidth=1)
+            
     def _format_axes(self, ax, df, name, num):
         ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         lo = df.index.min().strftime('%Y-%m-%d %H:%M')
         hi = df.index.max().strftime('%Y-%m-%d %H:%M')
         ax.set_xlabel(f"Analysis Datetime ({lo} to {hi})")
@@ -245,11 +248,17 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
         num = self.parameter_combo.currentData()
         self._draw_plot(self.ax, df, label)
         self._format_axes(self.ax, df, name, num)
+        
+        self.ax.relim()
+        self.ax.autoscale_view(scalex=False, scaley=True)
+        #self.ax.margins(y=0.05)
         self.ax.set_xlim(x_min, x_max)
+        
         self.fig.canvas.draw_idle()
 
 
 if __name__ == "__main__":
+    
     app = QApplication(sys.argv)
     panel = DataLoadPanel()
     panel.show()
