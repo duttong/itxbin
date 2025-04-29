@@ -11,6 +11,7 @@ from m4_export import M4_base
 class M4_SampleLogs(M4_base):
     
     TIME_OFFSET = 15.5   # minutes after the run starts and the press data is logged.
+    RUN_TIME_GAP = 2.0   # hours. Minimum time between runs to be considered a new run.
 
     def __init__(self):
         super().__init__()
@@ -225,6 +226,12 @@ class M4_SampleLogs(M4_base):
         mm['run_type_num'] = mm['samptype'].str.lower().map(self.run_type_num())
         mm['ccgg_event_num'] = mm.apply(lambda row: self.fetch_ccgg_event_num(row), axis=1)
         
+        # Estimate and create a run_time column. This is the time the GSPC sequence started.
+        mm['time_diff'] = mm['dt_run'].diff()
+        mm['segment'] = (mm['time_diff'] > pd.Timedelta(hours=self.RUN_TIME_GAP)).cumsum()
+        mm['run_time'] = mm.groupby('segment')['dt_run'].transform('first')
+        mm.loc[mm['segment'] == 0, 'run_time'] = pd.NaT  # set the first segment to NaT in case the load only partial data
+        
         if save:
             self.save_samplelogs(mm)
             
@@ -325,6 +332,7 @@ class M4_SampleLogs(M4_base):
         sql_insert = """
         INSERT INTO hats.ng_analysis (
             analysis_time,
+            run_time,
             inst_num,
             run_type_num,
             port,
@@ -333,10 +341,11 @@ class M4_SampleLogs(M4_base):
             flask_id, 
             ccgg_event_num
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
             run_type_num = VALUES(run_type_num),
+            run_time     = VALUES(run_time),
             port         = VALUES(port),
             port_info    = VALUES(port_info),
             pair_id_num  = VALUES(pair_id_num),
@@ -348,21 +357,24 @@ class M4_SampleLogs(M4_base):
         df = df.fillna('')
         params = []
 
-        for idx, row in df.iterrows():
-            p = (
-                row.dt_run,        # analysis_time
-                self.inst_num,     # inst_num (M4)
-                row.run_type_num,  # run_type_num
-                row.ssvpos ,       # port (mapped from df['ssvpos'])
-                row.tank,          # tank
-                row.pair_id,       # pair_id
-                row.flask_id,      # flask_id
-                row.ccgg_event_num # ccgg_event_num
-            )
-            params.append(p)
+        for _, row in df.iterrows():
+            # Skip rows where run_time is NaT (this is the first run in the loaded dataframe and maybe a partial run)
+            if row.run_time is not pd.NaT:
+                p = (
+                    row.dt_run,        # analysis_time
+                    row.run_time,      # run_time
+                    self.inst_num,     # inst_num (M4)
+                    row.run_type_num,  # run_type_num
+                    row.ssvpos,        # port (mapped from df['ssvpos'])
+                    row.tank,          # tank
+                    row.pair_id,       # pair_id
+                    row.flask_id,      # flask_id
+                    row.ccgg_event_num # ccgg_event_num
+                )
+                params.append(p)
 
-            if self.db.doMultiInsert(sql_insert, params): 
-                params=[]
+                if self.db.doMultiInsert(sql_insert, params): 
+                    params=[]
 
         # Process any remaining rows in the final batch:
         self.db.doMultiInsert(sql_insert, params, all=True)
