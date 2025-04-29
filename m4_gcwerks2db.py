@@ -131,7 +131,7 @@ def main():
     m4 = m4_export.M4_base()
 
     parser = argparse.ArgumentParser(description='Insert M4 GCwerks data into HATS db for selected date range. If no start_date \
-                                    is specifide then work on the last 30 days of data.')
+                                    is specified then work on the last 30 days of data.')
     parser.add_argument('date', nargs='?', default=get_default_date(), help='Date in the format YYMM')
     parser.add_argument('-m', '--molecules', type=str, default=m4.molecules,
                         help='Comma-separated list of molecules. Add quotes around the list if spaces are used. Default all molecules.')
