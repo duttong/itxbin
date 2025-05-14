@@ -71,6 +71,7 @@ class M4_GCwerks(m4_export.M4_base):
         """
         Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
         This function uses db.doMultiInsert to perform the insertions.
+        NOTE: detrend_method_num is hardcoded to 2 (Lowess) and qc_status is set to "P" (Preliminary).
         """
         sql_insert = """
             INSERT INTO hats.ng_mole_fractions (
@@ -79,9 +80,10 @@ class M4_GCwerks(m4_export.M4_base):
                 area,
                 height,
                 retention_time,
+                detrend_method_num,
                 qc_status
             ) VALUES (
-                %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 analysis_num   = VALUES(analysis_num),
@@ -89,6 +91,7 @@ class M4_GCwerks(m4_export.M4_base):
                 area           = VALUES(area),
                 height         = VALUES(height),
                 retention_time = VALUES(retention_time),
+                detrend_method_num = VALUES(detrend_method_num),
                 qc_status      = VALUES(qc_status)
             """
 
@@ -102,6 +105,7 @@ class M4_GCwerks(m4_export.M4_base):
                 row.area,            # area
                 row.ht,              # height
                 row.rt,              # retention time
+                2,                   # detrend method number (default to 2 = Lowess)
                 "P"                  # Preliminary QC status flag
             )
             params.append(p)
