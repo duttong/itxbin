@@ -30,3 +30,6 @@ GCDIR=/hats/gc/m4
 
 # export the last two months from GCwerks and insert to db
 /hats/gc/itxbin/m4_gcwerks2db.py -x
+
+# calculate mole fractions
+/hats/gc/itxbin/m4_batch.py -p all -i

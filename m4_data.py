@@ -112,7 +112,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
             }.get(duration, "1 MONTH")
 
             query = f"""
-                SELECT analysis_datetime, area, run_type_num, parameter_num, mole_fraction
+                SELECT analysis_datetime, run_time, area, run_type_num, parameter_num, mole_fraction
                 FROM hats.ng_data_view
                 WHERE inst_num = {self.inst_num}
                     AND analysis_datetime BETWEEN DATE_SUB(NOW(), INTERVAL {interval}) AND NOW()
