@@ -125,7 +125,7 @@ class FE3_GCwerks2db(FE3_instrument):
             port = int(r.port)      # SSV port
 
             # analysis time and inst_num uniquely defines a record in hats.ng_analysis table.
-            cmd = f"select num from hats.ng_analysis where 
+            cmd = f"select num from hats.ng_analysis where \
                 inst_num = {self.inst_num} and analysis_time = '{a_time}'"
             n = db.doquery(cmd)
 
