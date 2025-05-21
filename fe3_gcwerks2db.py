@@ -137,7 +137,6 @@ class FE3_GCwerks2db(FE3_instrument):
                 analysis_num = n[0]['num']
 
             # With analysis_num found or inserted, insert or update GCwerks results.
-            #print(analysis_num)
             self.insert_ng_mole_fractions(analysis_num, r)
 
 
