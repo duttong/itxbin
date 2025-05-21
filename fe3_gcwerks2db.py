@@ -15,14 +15,14 @@ class FE3_instrument:
 
     def __init__(self):
  
-        self.instrument = 193   # FE3 instrument number (changed 240520)
+        self.inst_num = 193   # FE3 instrument number (changed 240520)
         self.param_num = {}     # db parameter numbers
         self.fe3db_chans = {}   # db channel identifier and gases
         self.mols = []          # list of molecules on FE3
 
         # query the db for fe3 parameters        
         cmd = f'SELECT display_name, param_num, channel \
-            FROM hats.analyte_list where inst_num = {self.instrument}'
+            FROM hats.analyte_list where inst_num = {self.inst_num}'
         df = pd.DataFrame(db.doquery(cmd))
 
         # a dict of channels and a list of molecules.
@@ -124,13 +124,14 @@ class FE3_GCwerks2db(FE3_instrument):
             a_time = str(r.time)    # analysis time
             port = int(r.port)      # SSV port
 
-            # analysis time uniquely defines a record in hats.ng_analysis table.
-            cmd = f"select num from hats.ng_analysis where analysis_time = '{a_time}'"
+            # analysis time and inst_num uniquely defines a record in hats.ng_analysis table.
+            cmd = f"select num from hats.ng_analysis where 
+                inst_num = {self.inst_num} and analysis_time = '{a_time}'"
             n = db.doquery(cmd)
 
             if n is None:
                 # No record found. Create new record.
-                analysis_num = self.insert_ng_analysis(a_time, port, self.instrument)
+                analysis_num = self.insert_ng_analysis(a_time, port, self.inst_num)
                 print(f'new row: {analysis_num} at {a_time}')
             else:
                 analysis_num = n[0]['num']
