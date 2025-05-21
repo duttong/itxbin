@@ -90,8 +90,8 @@ class FE3_DataProg2db(FE3_instrument):
             r = row[1]
             a_time = str(r.time)[0:19]    # analysis time
 
-            # analysis time uniquely defines a record in hats.ng_analysis table.
-            cmd = f"select num from hats.ng_analysis where analysis_time = '{a_time}'"
+            # analysis time and inst_num uniquely defines a record in hats.ng_analysis table.
+            cmd = f"select num from hats.ng_analysis where analysis_time = '{a_time}' and inst_num = {self.inst_num}"
             n = db.doquery(cmd)
 
             if n is None:
