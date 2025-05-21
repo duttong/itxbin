@@ -1,10 +1,10 @@
 #! /usr/bin/env python
 
 import argparse
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from subprocess import run
-import multiprocessing as mp
+from multiprocessing import Pool, cpu_count
 import pandas as pd
 
 import itx_import
@@ -44,8 +44,8 @@ class GCwerks_Import:
         """ Import a single ITX file (all chroms) into GCwerks
             Apply filters and smoothing
         """
-        itx = itx_import.ITX(itx_file)   # load itx file
         print(itx_file)
+        itx = itx_import.ITX(itx_file)   # load itx file
         
         # use either smoothfile or command line options (one or the other).
         if self.usesmoothfile:
@@ -83,21 +83,24 @@ class GCwerks_Import:
 
         itx.compress_to_Z(itx_file)
 
-    def import_recursive_itx(self, types=['*.itx', '*.itx.gz']):
-        """ Recursive glob finds all itx files in the incoming path.
-            This method also uses multiprocessing
-        """
-        loaded = False
-        # num_workers = mp.cpu_count()
-        num_workers = 10    # faster
-        pool = mp.Pool(num_workers)
-        for type in types:
-            for file in self.incoming.rglob(type):
-                loaded = True
-                pool.apply_async(self.import_itx, args=(file,))
-        pool.close()
-        pool.join()
-        return loaded
+    def import_recursive_itx(self, types=None):
+        """Recursively import all .itx and .itx.gz files in self.incoming using multiprocessing."""
+        if types is None:
+            types = ['*.itx', '*.itx.gz']
+
+        # 1) collect files
+        files = [f for pat in types for f in self.incoming.rglob(pat)]
+        if not files:
+            return False
+
+        # 2) pick a reasonable worker count
+        n_workers = min(len(files), cpu_count())
+
+        # 3) process
+        with Pool(n_workers) as pool:
+            pool.map(self.import_itx, files)
+
+        return True
         
     def load_smoothfile(self, file):
         pass
@@ -107,9 +110,21 @@ class GCwerks_Import:
         if loaded:
             # updates integration and mixing ratios
             run(['/hats/gc/gcwerks-3/bin/run-index', '-gcdir', self.gcdir])
-            run(['/hats/gc/gcwerks-3/bin/gcupdate', '-gcdir', self.gcdir])
+            
+            # compute last month’s YYMM
+            today = date.today()
+            first_of_this_month = today.replace(day=1)
+            last_month_date = first_of_this_month - timedelta(days=1)
+            yymm = last_month_date.strftime("%y%m")
+            
+            run([
+                '/hats/gc/gcwerks-3/bin/gcupdate',
+                '-gcdir', self.gcdir,
+                yymm
+            ])
+            
             run(['/hats/gc/gcwerks-3/bin/gccalc', '-gcdir', self.gcdir])
-
+            
 
 if __name__ == '__main__':
 
