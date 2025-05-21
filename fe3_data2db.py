@@ -69,7 +69,7 @@ class FE3_DataProg2db(FE3_instrument):
               pair_id_num = '{pair_id_num}', 
               flask_id = '{flask_id}', 
               flask_port = '{flask_port}'
-          WHERE num = {analysis_num} and inst_num = {self.instrument} """
+          WHERE num = {analysis_num} and inst_num = {self.inst_num} """
           
         # use NULL instead of 'None' for mysql
         cmd = cmd.replace("'None'", "NULL")
