@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 from datetime import date
 import re
+from io import StringIO
 
 # smoothing algos
 from scipy.ndimage import convolve1d
@@ -71,14 +72,18 @@ class ITX:
             file.unlink()
 
     def countchans(self):
-        """ Returns the number of columns of data.
-            It is currently hard coded to line 20 of an itx file.
-        """
-        try:
-            cols = len(self.data[20].split())
-        except IndexError:
-            cols = 0
-        return cols
+        """ Dynamically find number of channels (columns) from the first data line between BEGIN and END."""
+        in_data = False
+        for line in self.data:
+            if line.strip() == 'BEGIN':
+                in_data = True
+                continue
+            if in_data:
+                if line.strip() == 'END':
+                    break
+                # Found the first data line, count columns
+                return len(line.split())
+        return 0  # If no valid data found
 
     def wavenote(self):
         """ returns date and time of injection and the SSV positions.
@@ -114,24 +119,36 @@ class ITX:
         return f'{yyyy[2:4]}{mn}{dd}.{hh}{mm}.{ssv}'
     
     def parse_chroms(self):
-        """ parses data into chroms array """
+        """Parses data into chroms array efficiently, handles float->int fallback."""
         lastrow = self.chans + 2
-        raw = self.data[4:-lastrow]     # string data for all channels
-        try:
-            return np.array([[int(x) for x in r.split()] for r in raw]).transpose()
-        except ValueError:
-            # handle some early fe3 files that were floats instead of ints
-            return np.array([[int(float(x)*1000) for x in r.split()] for r in raw]).transpose()
+        raw_lines = self.data[4:-lastrow]
 
+        # Join into one big string for NumPy parsing
+        raw_str = '\n'.join(raw_lines)
+
+        try:
+            arr = np.fromstring(raw_str, sep=' ', dtype=int).reshape(-1, self.chans)
+        except ValueError:
+            # Handle floats by parsing as float, scaling, and converting to int
+            arr = (np.fromstring(raw_str, sep=' ', dtype=float) * 1000).astype(int).reshape(-1, self.chans)
+
+        return arr.T  # Return shape: [channels, points]
+    
     def write(self, stdout=True):
-        """ writes chroms to a string.
-            The string can be sent with subprocess.run to GCwerks.
-            Write to stdout if piping processes together.
-        """
+        """Writes chroms to a string for subprocess input. Vectorized for speed."""
         output = f'name {self.name}\nhz {self.datafreq}\n'
-        for r in range(self.chroms.shape[1]):
-            line = ''.join([str(self.chroms[c, r])+' ' for c in range(self.chans)])
-            output += f'{line}\n'
+
+        # Format the chroms array as a space-separated string
+        # Step 1: Transpose so rows are time points (shape: [n_points, n_chans])
+        # Step 2: Use np.savetxt to convert to string
+        buf = StringIO()
+        np.savetxt(buf, self.chroms.T, fmt='%d', delimiter=' ', newline='\n')
+        chrom_str = buf.getvalue()
+
+        output += chrom_str
+        if not chrom_str.endswith('\n'):
+            output += '\n'
+
         if stdout:
             print(output)
         return output
