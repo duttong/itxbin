@@ -54,23 +54,32 @@ class ITX:
                 return [line.strip() for line in f]
 
     @staticmethod
-    def compress_to_Z(file):
-        """ Compresses a file using gzip and renames to use .Z extention 
-            file is a pathlib object
+    def compress_to_Z(file: Path) -> None:
         """
+        Compress a file using gzip and rename the result with a `.Z` extension.
 
-        # rename .gz file to .Z files
+        If the file is already `.gz`, it will be renamed to `.Z`.
+        If it is `.Z`, no action is taken.
+        Otherwise, the file is compressed and the original is deleted.
+        """
         if file.suffix == '.gz':
             file.rename(file.with_suffix('.Z'))
             return
-        elif file.suffix == '.Z':
+
+        if file.suffix == '.Z':
             return
 
-        # compress .itx file to .Z
-        with open(file, 'rb') as f_in, gzip.open(f'{file}.Z', 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
-            file.unlink()
+        z_path = file.with_suffix('.Z')
 
+        # Avoid accidental overwrite
+        if z_path.exists():
+            raise FileExistsError(f"Destination file already exists: {z_path}")
+
+        with file.open('rb') as f_in, gzip.open(z_path, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+        file.unlink()
+    
     def countchans(self):
         """ Dynamically find number of channels (columns) from the first data line between BEGIN and END."""
         in_data = False
