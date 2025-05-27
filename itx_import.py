@@ -9,7 +9,7 @@
     Added smoothfile option and pathlib. 220901
     Added box smooth algo. Need to check that it works through the smooth file. 231020
 '''
-VERSION = 2.00
+VERSION = 2.10
 
 import argparse
 import numpy as np
