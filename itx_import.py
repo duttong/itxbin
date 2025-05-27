@@ -45,13 +45,13 @@ class ITX:
             self.org = np.copy(self.chroms)     # save original data
 
     def load(self):
-        """ Loads content of file into memory.
-            Handles gziped files too.
-        """
-        if self.file[-3:] == '.gz' or self.file[-2:] == '.Z':
-            return [line.strip().decode() for line in gzip.GzipFile(self.file)]
+        """Loads the file into memory. Supports plain and gzip-compressed files."""
+        if self.file.endswith('.gz') or self.file.endswith('.Z'):
+            with gzip.open(self.file, 'rt') as f:  # 't' mode decodes text properly
+                return [line.strip() for line in f]
         else:
-            return [line.strip() for line in open(self.file)]
+            with open(self.file, 'r') as f:
+                return [line.strip() for line in f]
 
     @staticmethod
     def compress_to_Z(file):
