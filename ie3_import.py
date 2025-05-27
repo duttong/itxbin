@@ -17,6 +17,7 @@ if __name__ == '__main__':
     yyyy = date.today().year
     SGwin, SGorder = 81, 4      # Savitzky Golay default variables
     WSTART = -1
+    BOXWIDTH = 11  # Default box width for smoothing
     site = 'smo'
 
     parser = argparse.ArgumentParser(
@@ -25,8 +26,8 @@ if __name__ == '__main__':
         help='Apply 1-point spike filter (default is False)')
     parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
         help='Apply wide spike filter (default off)')
-    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int,
-        help=f'Apply a Box smooth with window width')
+    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int, default=BOXWIDTH,
+        help=f'Apply a Box smooth with window width (default = {BOXWIDTH})')
     parser.add_argument('-g', action='store_true', default=False,
         help='Apply Savitzky Golay smoothing (default is False)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win',
@@ -44,9 +45,9 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    fe3 = IE3_import(args.site, args)
+    ie3 = IE3_import(args.site, args)
     if args.reimport:
         types = ('*.itx', '*.itx.gz', '*.itx.Z')
-        fe3.main(import_method=fe3.import_recursive_itx, types=types)
+        ie3.main(import_method=ie3.import_recursive_itx, types=types)
     else:
-        fe3.main(import_method=fe3.import_recursive_itx)
+        ie3.main(import_method=ie3.import_recursive_itx)
