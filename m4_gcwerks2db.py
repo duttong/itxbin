@@ -63,7 +63,7 @@ class M4_GCwerks(m4_export.M4_base):
         # parameter and event numbers
         df['pnum'] = self.analytes[gas].strip()
         
-        self.return_analysis_nums(df)       # add analysis_num to dataframe
+        df = self.return_analysis_nums(df)       # add analysis_num to dataframe
         
         return df
     
@@ -86,13 +86,9 @@ class M4_GCwerks(m4_export.M4_base):
                 %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
-                analysis_num   = VALUES(analysis_num),
-                parameter_num  = VALUES(parameter_num),
                 area           = VALUES(area),
                 height         = VALUES(height),
-                retention_time = VALUES(retention_time),
-                detrend_method_num = VALUES(detrend_method_num),
-                qc_status      = VALUES(qc_status)
+                retention_time = VALUES(retention_time)
             """
 
         df = df.fillna('')

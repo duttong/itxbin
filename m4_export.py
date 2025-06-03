@@ -79,29 +79,39 @@ class M4_base:
         return results
 
     def return_analysis_nums(self, df, time_col='dt_run'):
-        """
-        Loops over each row in the DataFrame and queries the database
-        for the primary key (num) based on analysis_time and inst_num.
-        Returns the DataFrame with a new 'analysis_num' column.
-        """
-        analysis_nums = []
-        
-        for _, row in df.iterrows():
-            # Adjust the formatting of analysis_time if necessary.
-            dt = row[time_col]
-            query = f"SELECT num FROM hats.ng_analysis WHERE analysis_time = '{dt}' AND inst_num = {self.inst_num}"
-            result = self.db.doquery(query)
-            
-            if result:
-                # Depending on the return type, extract the num value.
-                num_value = result[0][0] if isinstance(result[0], (list, tuple)) else result[0]['num']
-                analysis_nums.append(num_value)
-            else:
-                analysis_nums.append(None)
-        
-        # Add the primary keys as a new column in the DataFrame.
-        df['analysis_num'] = analysis_nums
-        return df
+        # 1) Copy and ensure df[time_col] is datetime64
+        df = df.copy()
+        df[time_col] = pd.to_datetime(df[time_col])
+
+        # If df is empty, just add the column and return
+        if df.empty:
+            df['analysis_num'] = None
+            return df
+
+        # 2) Determine the min/max run times so we only pull what's needed
+        min_time = df[time_col].min().strftime('%Y-%m-%d %H:%M:%S')
+        max_time = df[time_col].max().strftime('%Y-%m-%d %H:%M:%S')
+    
+        sql = (
+            "SELECT analysis_time, num "
+            "FROM hats.ng_analysis "
+            f"WHERE inst_num = {self.inst_num} "
+            f"  AND analysis_time >= '{min_time}' "
+            f"  AND analysis_time <= '{max_time}';"
+        )
+
+        db_df = pd.DataFrame(self.db.doquery(sql))
+
+        # Now merge back onto the original df:
+        out = df.merge(
+            db_df,
+            how='left',
+            left_on=time_col,
+            right_on='analysis_time'
+        ).rename(columns={'num': 'analysis_num'})
+
+        out.drop(columns=['analysis_time'], inplace=True)
+        return out
     
     @staticmethod
     def convert_date_format(date_str):
