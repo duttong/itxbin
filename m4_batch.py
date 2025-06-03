@@ -193,8 +193,6 @@ class M4_Processing(M4_base):
             .sort_values('analysis_datetime')
         )
 
-        #print(out.loc[out['run_time'] == '2024-04-10 13:35:00'])
-        
         # explicitly select just the 'smoothed' column for the group operation which is the std
         out['smoothed'] = (
             out
