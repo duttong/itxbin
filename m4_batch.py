@@ -39,7 +39,12 @@ class M4_Processing(M4_base):
         self.status_label = None
     
     def load_data(self, pnum, start_date=None, end_date=None):
-        """Load data from the database with date filtering."""
+        """Load data from the database with date filtering.
+        Args:
+            pnum (int): Parameter number to filter data.
+            start_date (str, optional): Start date in YYMM format. Defaults to None.
+            end_date (str, optional): End date in YYMM format. Defaults to None.
+        """
         
         if end_date is None:
             end_date = datetime.today()
@@ -55,14 +60,16 @@ class M4_Processing(M4_base):
         end_date_str = end_date.strftime("%Y-%m-%d")
 
         print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
-        # todo: use flags!
+        # todo: use flags - using low_flow flag
         query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, area, mole_fraction
+            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
+                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
                 AND area != 0
-                AND detrend_method_num != 3     # no detrend = 3
+                AND detrend_method_num != 3
+                AND low_flow != 1
                 AND analysis_datetime BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
@@ -77,9 +84,12 @@ class M4_Processing(M4_base):
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['area']              = df['area'].astype(float)
+        df['net_pressure']      = df['net_pressure'].astype(float)
+        df['area']              = df['area']/df['net_pressure']
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df['parameter_num']     = pnum
         self.data = df.sort_values('analysis_datetime')
+        return self.data
 
     def _smooth_segment(self, seg, frac):
         # some of these filters are not needed.
@@ -96,7 +106,7 @@ class M4_Processing(M4_base):
             index=seg.index
         )
         
-    def calculate_smoothed_std(self, df, min_pts=8, frac=0.3):
+    def calculate_smoothed_std(self, df, min_pts=8, frac=0.5):
         """ Calculate smoothed standard deviation for the standard run type.
             This function uses LOWESS smoothing on the area data.
             min_pts is the minimum number of points required to perform smoothing.
@@ -120,7 +130,6 @@ class M4_Processing(M4_base):
         
         detrend_method = std['detrend_method_num'].iat[0]
 
-        frac = 0.5
         if detrend_method == 1:
             # point to point is the same as a small frac for LOWESS
             frac = 0.01
