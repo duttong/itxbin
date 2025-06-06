@@ -4,13 +4,11 @@ import matplotlib
 matplotlib.use("Qt5Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.widgets import RadioButtons
 import argparse
 import pandas as pd
 import numpy as np
 from statsmodels.nonparametric.smoothers_lowess import lowess
 from datetime import datetime, timedelta
-import warnings
 import time
 
 from m4_export import M4_base
@@ -70,7 +68,7 @@ class M4_Processing(M4_base):
                 AND area != 0
                 AND detrend_method_num != 3
                 AND low_flow != 1
-                AND analysis_datetime BETWEEN '{start_date_str}' AND '{end_date_str}'
+                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
         df = pd.DataFrame(self.db.doquery(query))
