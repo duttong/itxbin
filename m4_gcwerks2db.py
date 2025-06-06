@@ -4,30 +4,29 @@ import pandas as pd
 import argparse
 from datetime import datetime, timedelta
 
-import m4_export
+from logos_instruments import M4_Instrument
 
-class M4_GCwerks(m4_export.M4_base):
+class M4_GCwerks(M4_Instrument):
 
     def __init__(self):
         super().__init__()
         self.gcwerks_results = self.export_dir  # Path type
         self.sites = self.gml_sites()           # site codes and numbers
-        self.analytes = self.m4_analytes()      # M4 analytes (dict of molecule and parameter number)
 
-    def load_gcwerks(self, gas, start_date, stop_date='end'): 
+    def load_gcwerks(self, gas, t_start, t_stop='end'): 
         """ Loads GCwerks data for a given gas and returns it as a DataFrame.
             The data files should be stored at self.gcwerks_results path.
             Times should be in YYMM format.
         """
-        start_dt = pd.to_datetime(start_date, format='%y%m')
-        if stop_date == 'end':
+        start_dt = pd.to_datetime(t_start, format='%y%m')
+        if t_stop == 'end':
             stop_dt = pd.to_datetime(datetime.today())
         else:
-            stop_dt = pd.to_datetime(stop_date, format='%y%m') + pd.offsets.MonthEnd(0)
+            stop_dt = pd.to_datetime(t_stop, format='%y%m') + pd.offsets.MonthEnd(0)
 
-        if start_dt < pd.to_datetime(self.m4_start_date):
-            print(f'Start date "{start_date}" selected was too early, using "{self.m4_start_date}"')
-            start_dt = pd.to_datetime(self.m4_start_date)
+        if start_dt < pd.to_datetime(self.start_date):
+            print(f'Start date "{t_start}" selected was too early, using "{self.start_date}"')
+            start_dt = pd.to_datetime(self.start_date)
         
         if gas not in self.molecules:
             print(f'Incorrect gas {gas} name.')
@@ -46,7 +45,7 @@ class M4_GCwerks(m4_export.M4_base):
         df.set_index('dt_run', inplace=True, drop=False)
 
         # trim the dataframe to use start_date (start_dt is the datetime value)
-        if stop_date == 'end':
+        if t_stop == 'end':
             df = df.loc[start_dt:]
         else:
             df = df.loc[start_dt:stop_dt]
@@ -128,7 +127,7 @@ def parse_molecules(molecules):
 
 
 def main():
-    m4 = m4_export.M4_base()
+    m4 = M4_Instrument()
 
     parser = argparse.ArgumentParser(description='Insert M4 GCwerks data into HATS db for selected date range. If no start_date \
                                     is specified then work on the last 30 days of data.')
@@ -152,7 +151,8 @@ def main():
     print("Processing the following molecules: ", molecules)
 
     if args.extract:
-        exp = m4_export.M4_GCwerks_Export()
+        from m4_export import M4_GCwerks_Export
+        exp = M4_GCwerks_Export()
         exp.export_gc_data(start_date, molecules)
     
     m4 = M4_GCwerks()
