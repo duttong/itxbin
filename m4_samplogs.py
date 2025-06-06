@@ -1,14 +1,11 @@
 #! /usr/bin/env python
 
 import argparse
-from datetime import datetime
 import pandas as pd
-from pandas.tseries.offsets import DateOffset
-from pathlib import Path
 
-from m4_export import M4_base
+from logos_instruments import M4_Instrument
 
-class M4_SampleLogs(M4_base):
+class M4_SampleLogs(M4_Instrument):
     
     TIME_OFFSET = 15.5   # minutes after the run starts and the press data is logged.
     RUN_TIME_GAP = 2.0   # hours. Minimum time between runs to be considered a new run.
@@ -163,7 +160,7 @@ class M4_SampleLogs(M4_base):
         
         # Determine the start date based on the duration argument.
         if duration.lower() == 'all':
-            start_date = pd.to_datetime(self.m4_start_date, format='%Y%m%d')
+            start_date = pd.to_datetime(self.start_date, format='%Y%m%d')
         else:
             offset = pd.tseries.frequencies.to_offset(duration)
             start_date = pd.Timestamp.today() - offset

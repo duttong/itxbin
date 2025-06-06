@@ -14,10 +14,10 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QMessageBox
 )
 
-import m4_export
+from logos_instruments import M4_Instrument
 
 
-class DataLoadPanel(QWidget, m4_export.M4_base):
+class DataLoadPanel(QWidget, M4_Instrument):
     """Panel for loading data and plotting area response with LOWESS smoothing."""
 
     # Constants
@@ -36,7 +36,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
     RADIO_OPTIONS = ("Response", "Ratio", "Mole Fraction")
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        super().__init__()
         self.setWindowTitle("Data Loader Panel")
         self.setFixedSize(200, 200)
 
@@ -85,7 +85,7 @@ class DataLoadPanel(QWidget, m4_export.M4_base):
 
     def _populate_parameters(self):
         try:
-            params = self.m4_analytes()
+            params = self.analytes
             self.parameter_combo.clear()
             for name, num in params.items():
                 self.parameter_combo.addItem(name, num)

@@ -8,140 +8,12 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-class M4_base:
-    inst_num = 192
-    m4_start_date = '20231223'         # data before this date is not used.
-    gcexport_path = "/hats/gc/gcwerks-3/bin/gcexport"
-    gc_dir = Path("/hats/gc/m4")
-    export_dir = gc_dir / "results"
+from logos_instruments import M4_Instrument
 
-    def __init__(self, *args, **kwargs):
-        # Call the next initializer in the cooperative chain (if there is one)
-        super().__init__(*args, **kwargs)
-        sys.path.append('/ccg/src/db/')
-        import db_utils.db_conn as db_conn # type: ignore
-        self.db = db_conn.HATS_ng()
-        self.molecules = self.m4_molecules()
-        
-    def gml_sites(self):
-        """ Returns a dictionary of site codes and site numbers from gmd.site."""
-        sql = "SELECT num, code FROM gmd.site;"
-        df = pd.DataFrame(self.db.doquery(sql))
-        site_dict = dict(zip(df['code'], df['num']))
-        return site_dict
-
-    def m4_standards(self):
-        """ Returns a dictionary of standards files and a key used in the HATS db."""
-        sql = "SELECT num, serial_number, std_ID FROM hats.standards"
-        df = pd.DataFrame(self.db.doquery(sql))
-        standards_dict = df.set_index('std_ID')[['num', 'serial_number']].T.to_dict('list')
-        return standards_dict
-
-    def m4_analytes(self):
-        """Returns a dictionary of M4 analytes and parameter numbers."""
-        sql = f"SELECT param_num, display_name FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
-        df = pd.DataFrame(self.db.doquery(sql))
-        analytes_dict = dict(zip(df['display_name'], df['param_num']))
-        return analytes_dict
-    
-    def m4_molecules(self):
-        """ Returns a list of analytes or molecules (no parameter number) """
-        analytes = self.m4_analytes()
-        return analytes.keys()
-    
-    def m4_scale_values(self, tank, pnum):
-        """
-        Returns a dictionary of scale values for a given tank and parameter number.
-        """
-        # Extract only the digits before the first "_" in the tank variable
-        match = re.search(r'(\d+)[^\d_]*_', tank)
-        tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
-        
-        sql = f"""
-            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments 
-            where serial_number like '%{tank}%'
-            and inst_num = {self.inst_num} 
-            and scale_num = (select idx from reftank.scales where parameter_num = {pnum});
-        """
-        df = pd.DataFrame(self.db.doquery(sql))
-        if not df.empty:
-            return df.iloc[0].to_dict()
-        else:
-            Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
-            return None
-
-    def run_type_num(self):
-        """ Run types defined in the hats.ng_run_types table """
-        sql = "SELECT * FROM hats.ng_run_types;"
-        r = self.db.doquery(sql)
-        results = {entry['name'].lower(): entry['num'] for entry in r}
-        results['std'] = 8
-        return results
-
-    def return_analysis_nums(self, df, time_col='dt_run'):
-        # 1) Copy and ensure df[time_col] is datetime64
-        df = df.copy()
-        df[time_col] = pd.to_datetime(df[time_col])
-
-        # If df is empty, just add the column and return
-        if df.empty:
-            df['analysis_num'] = None
-            return df
-
-        # 2) Determine the min/max run times so we only pull what's needed
-        min_time = df[time_col].min().strftime('%Y-%m-%d %H:%M:%S')
-        max_time = df[time_col].max().strftime('%Y-%m-%d %H:%M:%S')
-    
-        sql = (
-            "SELECT analysis_time, num "
-            "FROM hats.ng_analysis "
-            f"WHERE inst_num = {self.inst_num} "
-            f"  AND analysis_time >= '{min_time}' "
-            f"  AND analysis_time <= '{max_time}';"
-        )
-
-        db_df = pd.DataFrame(self.db.doquery(sql))
-
-        # Now merge back onto the original df:
-        out = df.merge(
-            db_df,
-            how='left',
-            left_on=time_col,
-            right_on='analysis_time'
-        ).rename(columns={'num': 'analysis_num'})
-
-        out.drop(columns=['analysis_time'], inplace=True)
-        return out
-    
-    @staticmethod
-    def convert_date_format(date_str):
-        """
-        Converts a date string from 'YYYYMMDD' or 'YYYYMMDD.HHMM' format to 'YYMM' format.
-        If the date is already in 'YYMM' format, it returns the date as is.
-
-        Parameters:
-        date_str (str): The date string in 'YYYYMMDD', 'YYYYMMDD.HHMM', or 'YYMM' format.
-
-        Returns:
-        str: The date string in 'YYMM' format.
-        """
-        # Check if the length of the date string is 4 and assume it is in 'YYMM' format
-        if len(date_str) == 4:
-            return date_str
-        
-        # Extract the first 6 characters which correspond to 'YYYYMM'
-        yyyymm = date_str[:6]
-        
-        # Convert to 'YYMM'
-        yymm = yyyymm[2:]
-        
-        return yymm
-
-class M4_GCwerks_Export(M4_base):
+class M4_GCwerks_Export(M4_Instrument):
 
     def __init__(self):
         super().__init__()
-        self.gcdir = '/hats/gc/m4'
 
     def export_gc_data(self, start_date, molecules, progress=None):
         """
@@ -157,7 +29,7 @@ class M4_GCwerks_Export(M4_base):
                 filename = f"data_{molecule}.csv"
                 params = f"time runtype tank stdtank port psamp {molecule}.area {molecule}.ht {molecule}.rt {molecule}.w"
                 # params_extra = f"{params} {molecule}.skew {molecule}.rl.a {molecule}.rl.ht {molecule}.rl.report {molecule}.c.a {molecule}.c.ht {molecule}.c.report"
-                command = f"{self.gcexport_path} {self.gcdir} -csv -nonan -mindate {start_date} {params} > {self.export_dir}/{filename}"
+                command = f"{self.gcexport_path} {self.gc_dir} -csv -nonan -mindate {start_date} {params} > {self.export_dir}/{filename}"
 
                 # Execute the command and redirect output to /dev/null
                 process = subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -198,15 +70,15 @@ class M4_GCwerks_Export(M4_base):
         default_molecules = list(m4_export.molecules)
         
         parser = argparse.ArgumentParser(description='Export Perseus data with specified start date.')
-        parser.add_argument('start_date', type=str, nargs='?', default='2201',
-                            help='Start date in the format YYMM (default: 2201)')
+        parser.add_argument('start_date', type=str, nargs='?', default=m4_export.start_date,
+                            help=f'Start date in the format YYMM (default: {m4_export.start_date}). ')
         parser.add_argument('-m', '--molecules', type=str, default=default_molecules,
                             help='Comma-separated list of molecules. Add quotes around the list if spaces are used. Default all molecules.')
         parser.add_argument('--list', action='store_true', help='List all available molecule names.')
 
         args = parser.parse_args()
         if args.list:
-            print(f"Valid molecule names: {', '.join(m4_export.molecules)}")
+            print(f"Valid molecule names: {default_molecules}")
             quit()
 
         molecules = m4_export.parse_molecules(args.molecules)     # returns a list of molecules

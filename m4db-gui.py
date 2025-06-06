@@ -179,6 +179,29 @@ class M4_DBGUI():
         time.sleep(2)
         progress_callback(0)
 
+    @staticmethod
+    def convert_date_format(date_str):
+        """
+        Converts a date string from 'YYYYMMDD' or 'YYYYMMDD.HHMM' format to 'YYMM' format.
+        If the date is already in 'YYMM' format, it returns the date as is.
+
+        Parameters:
+        date_str (str): The date string in 'YYYYMMDD', 'YYYYMMDD.HHMM', or 'YYMM' format.
+
+        Returns:
+        str: The date string in 'YYMM' format.
+        """
+        # Check if the length of the date string is 4 and assume it is in 'YYMM' format
+        if len(date_str) == 4:
+            return date_str
+        
+        # Extract the first 6 characters which correspond to 'YYYYMM'
+        yyyymm = date_str[:6]
+        
+        # Convert to 'YYMM'
+        yymm = yyyymm[2:]
+        
+        return yymm
 
     class OutputWrapper:
         def __init__(self, text_edit):

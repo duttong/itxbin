@@ -11,10 +11,9 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 from datetime import datetime, timedelta
 import time
 
-from m4_export import M4_base
+from logos_instruments import M4_Instrument
 
-
-class M4_Processing(M4_base):
+class M4_Processing(M4_Instrument):
     """Class for processing M4 data."""
     
     STANDARD_RUN_TYPE = 8
@@ -163,7 +162,7 @@ class M4_Processing(M4_base):
 
             # only call m4_scale_values once per tank
             if ref_tank not in scale_cache:
-                scale_cache[ref_tank] = self.m4_scale_values(ref_tank, pnum)
+                scale_cache[ref_tank] = self.scale_values(ref_tank, pnum)
             coefs = scale_cache[ref_tank]
 
             if coefs is None:
@@ -324,7 +323,7 @@ def main():
         df = m4.merge_smoothed_data()
 
         # get analyte names
-        analytes = m4.m4_analytes()
+        analytes = m4.analytes
         inv = {int(v): k for k, v in analytes.items()}
         title_text = f"{inv.get(pnum, 'Unknown')} ({pnum})"
 
