@@ -322,7 +322,8 @@ class M4_SampleLogs(M4_base):
             These routines work on the whole df. Make sure df is trimmed to the pertinent data. """
         self.insert_ng_analysis(df)
         self.update_pfp_flask_port(df)
-        self.return_analysis_nums(df)
+        df = self.return_analysis_nums(df)
+        return df
 
     def insert_ng_analysis(self, df):
         """
@@ -495,7 +496,7 @@ if __name__ == '__main__':
     if options.insert:
         pd.set_option('future.no_silent_downcasting', True)
         #df = df.set_index('dt_x', drop=False)
-        m4.ng_analysis(df)
+        df = m4.ng_analysis(df)
         m4.insert_ancillary_data(df)
         print(f'Inserted or updated {df.shape[0]} rows in hats.ng_analysis and ng_ancillary_data.')
     
