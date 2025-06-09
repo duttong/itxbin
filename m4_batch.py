@@ -289,8 +289,7 @@ def main():
 
     if args.parameter_num.lower() == "all":
         # Process all analytes
-        analytes = m4.m4_analytes()
-        for analyte_name, pnum in analytes.items():
+        for analyte_name, pnum in m4.analytes.items():
             print(f"Processing analyte: {analyte_name} (Parameter {pnum})")
             m4.load_data(
                 pnum=pnum,
