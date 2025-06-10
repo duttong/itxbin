@@ -2,15 +2,13 @@ import sys
 import pandas as pd
 import re
 from pathlib import Path
+from datetime import datetime, timedelta
+
 
 class LOGOS_Instruments:
-    def __init__(self, instrument=None):
-        self.instrument = instrument
-        self.instruments = {'m4':192,'fe3':193,'bld1':999}
-        self.inst_num = self.instruments.get(instrument, 0)
-        if self.inst_num == 0:
-            raise ValueError(f"Instrument '{instrument}' not recognized. Available instruments: {list(self.instruments.keys())}")
-        
+    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 999} 
+
+    def __init__(self):
         # gcwerks-3 path
         self.gcexport_path = "/hats/gc/gcwerks-3/bin/gcexport"
         
@@ -19,8 +17,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
     """ Class for accessing HATS database functions related to instruments. 
         Tailored to works on 'next generation' or 'ng_' tables."""
         
-    def __init__(self, instrument=None):
-        super().__init__(instrument)
+    def __init__(self):
+        super().__init__()
 
         # database connection
         sys.path.append('/ccg/src/db/')
@@ -136,27 +134,78 @@ class HATS_DB_Functions(LOGOS_Instruments):
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
-    def __init__(self, instrument='m4'):
-        super().__init__(instrument)
-        if self.inst_num != 192:
-            raise ValueError("This class is specifically for M4 instruments (inst_num = 192).")
-        
+    def __init__(self):
+        super().__init__()
+        self.inst_id = 'm4'
+        self.inst_num = 192
         self.start_date = '20231223'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/m4")
         self.export_dir = self.gc_dir / "results"
 
         self.molecules = self.query_molecules()
         self.analytes = self.query_analytes()
+        
+    def load_data(self, pnum, channel=None, start_date=None, end_date=None):
+        """Load data from the database with date filtering.
+        Args:
+            pnum (int): Parameter number to filter data.
+            start_date (str, optional): Start date in YYMM format. Defaults to None.
+            end_date (str, optional): End date in YYMM format. Defaults to None.
+        """
+        
+        if end_date is None:
+            end_date = datetime.today()
+        else:
+            end_date = datetime.strptime(end_date, "%y%m")
+
+        if start_date is None:
+            start_date = end_date - timedelta(days=60)
+        else:
+            start_date = datetime.strptime(start_date, "%y%m")
+
+        start_date_str = start_date.strftime("%Y-%m-01")
+        end_date_str = end_date.strftime("%Y-%m-31")
+
+        print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
+        # todo: use flags - using low_flow flag
+        query = f"""
+            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
+                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num
+            FROM hats.ng_data_view
+            WHERE inst_num = {self.inst_num}
+                AND parameter_num = {pnum}
+                AND area != 0
+                AND detrend_method_num != 3
+                AND low_flow != 1
+                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+            ORDER BY analysis_datetime;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            print(f"No data found for parameter {pnum} in the specified date range.")
+            self.data = pd.DataFrame()
+            return
+        
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
+        df['run_time']          = pd.to_datetime(df['run_time'])
+        df['run_type_num']      = df['run_type_num'].astype(int)
+        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
+        df['area']              = df['area'].astype(float)
+        df['net_pressure']      = df['net_pressure'].astype(float)
+        df['area']              = df['area']/df['net_pressure']
+        df['mole_fraction']     = df['mole_fraction'].astype(float)
+        df['parameter_num']     = pnum
+        self.data = df.sort_values('analysis_datetime')
+        return self.data
 
 
 class FE3_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
-    def __init__(self, instrument='fe3'):
-        super().__init__(instrument)
-        if self.inst_num != 193:
-            raise ValueError("This class is specifically for FE3 instruments (inst_num = 193).")
-        
+    def __init__(self):
+        super().__init__()
+        self.inst_id = 'fe3'
+        self.inst_num = 193
         self.start_date = '20191217'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/fe3")
         self.export_dir = self.gc_dir / "results"
@@ -164,15 +213,77 @@ class FE3_Instrument(HATS_DB_Functions):
         self.molecules = self.query_molecules()
         self.analytes = self.query_analytes()
 
+        # code to handle CFC11 and CFC113 on two channels
+        new = {}
+        for name, num in self.analytes.items():
+            if name in ('CFC11', 'CFC113'):
+                # rename to (a) then duplicate with (c)
+                new[f"{name} (a)"] = num
+            else:
+                new[name] = num
+        self.analytes = new
+        self.analytes['CFC11 (c)'] = self.analytes['CFC11 (a)']
+        self.analytes['CFC113 (c)'] = self.analytes['CFC113 (a)']
+
+    def load_data(self, pnum, channel=None, start_date=None, end_date=None):
+        """Load data from the database with date filtering.
+        Args:
+            pnum (int): Parameter number to filter data.
+            start_date (str, optional): Start date in YYMM format. Defaults to None.
+            end_date (str, optional): End date in YYMM format. Defaults to None.
+        """
+        
+        if end_date is None:
+            end_date = datetime.today()
+        else:
+            end_date = datetime.strptime(end_date, "%y%m")
+
+        if start_date is None:
+            start_date = end_date - timedelta(days=60)
+        else:
+            start_date = datetime.strptime(start_date, "%y%m")
+
+        start_date_str = start_date.strftime("%Y-%m-01")
+        end_date_str = end_date.strftime("%Y-%m-%d")
+
+        print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
+        # todo: use flags
+        channel_str = f"AND channel = '{channel}'" if channel else ""
+        query = f"""
+            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
+                height, mole_fraction, channel, flag, sample_id, pair_id_num
+            FROM hats.ng_data_view
+            WHERE inst_num = {self.inst_num}
+                AND parameter_num = {pnum}
+                {channel_str}
+                AND height != 0
+                AND detrend_method_num != 3
+                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+            ORDER BY analysis_datetime;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            print(f"No data found for parameter {pnum} in the specified date range.")
+            self.data = pd.DataFrame()
+            return
+        
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
+        df['run_time']          = pd.to_datetime(df['run_time'])
+        df['run_type_num']      = df['run_type_num'].astype(int)
+        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
+        df['height']            = df['height'].astype(float)
+        df['mole_fraction']     = df['mole_fraction'].astype(float)
+        df['parameter_num']     = pnum
+        self.data = df.sort_values('analysis_datetime')
+        return self.data
 
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     
-    def __init__(self, instrument='bld1'):
-        super().__init__(instrument)
-        if self.inst_num != 999: 
-            raise ValueError("This class is specifically for BLD1 (Stratcore) instruments (inst_num = 999).")
-        
+    def __init__(self):
+        super().__init__()
+        self.inst_id = 'bld1'
+        self.inst_num = 999
         self.start_date = '20191217'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/bld1")
         self.export_dir = self.gc_dir / "results"

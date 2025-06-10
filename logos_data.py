@@ -7,7 +7,7 @@ import argparse
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QComboBox, QPushButton, QRadioButton,
     QButtonGroup, QScrollArea, QSizePolicy, QSpacerItem
 )
@@ -16,166 +16,20 @@ from PyQt5.QtCore import Qt, QDateTime
 import logos_instruments as li
 
 
-class M4_Processing(li.M4_Instrument):
-    """
-    (For the purpose of this example, we’re only using the .m4_analytes() and
-     .run_type_num() methods from M4_base.  We’ll override load_data(...) so
-     that it returns a dummy DataFrame with a 'run_time' column that we can
-     illustrate with.  In your real code, you already have load_data(...) as
-     shown in your post.)
-    """
-    def __init__(self):
-        super().__init__()
-
-    def run_type_num(self):
-        """
-        Return a dict: { run_type_name: run_type_num, … }.  This is exactly
-        what M4_base.run_type_num() would do in your real code.
-        """
-        return {
-            "Flask": 1,
-            "Other": 4,
-            "PFP": 5,
-            "Zero": 6,
-            "Tank": 7,
-            "Standard": 8
-        }
-
-    def load_data(self, pnum, start_date=None, end_date=None):
-        """Load data from the database with date filtering.
-        Args:
-            pnum (int): Parameter number to filter data.
-            start_date (str, optional): Start date in YYMM format. Defaults to None.
-            end_date (str, optional): End date in YYMM format. Defaults to None.
-        """
-        
-        if end_date is None:
-            end_date = datetime.today()
-        else:
-            end_date = datetime.strptime(end_date, "%y%m")
-
-        if start_date is None:
-            start_date = end_date - timedelta(days=60)
-        else:
-            start_date = datetime.strptime(start_date, "%y%m")
-
-        start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-%d")
-
-        print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
-        # todo: use flags - using low_flow flag
-        query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
-                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num
-            FROM hats.ng_data_view
-            WHERE inst_num = {self.inst_num}
-                AND parameter_num = {pnum}
-                AND area != 0
-                AND detrend_method_num != 3
-                AND low_flow != 1
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
-            ORDER BY analysis_datetime;
-        """
-        df = pd.DataFrame(self.db.doquery(query))
-        if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
-            self.data = pd.DataFrame()
-            return
-        
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
-        df['run_time']          = pd.to_datetime(df['run_time'])
-        df['run_type_num']      = df['run_type_num'].astype(int)
-        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
-        df['area']              = df['area'].astype(float)
-        df['net_pressure']      = df['net_pressure'].astype(float)
-        df['area']              = df['area']/df['net_pressure']
-        df['mole_fraction']     = df['mole_fraction'].astype(float)
-        df['parameter_num']     = pnum
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
-
-class FE3_Processing(li.FE3_Instrument):
-    """
-    Placeholder for FE3 processing logic.
-    In your real code, you would implement the necessary methods here.
-    """
-    def __init__(self):
-        super().__init__()
-        # Initialize any specific attributes or methods for FE3 processing
-
-    def load_data(self, pnum, start_date=None, end_date=None):
-        """Load data from the database with date filtering.
-        Args:
-            pnum (int): Parameter number to filter data.
-            start_date (str, optional): Start date in YYMM format. Defaults to None.
-            end_date (str, optional): End date in YYMM format. Defaults to None.
-        """
-        
-        if end_date is None:
-            end_date = datetime.today()
-        else:
-            end_date = datetime.strptime(end_date, "%y%m")
-
-        if start_date is None:
-            start_date = end_date - timedelta(days=60)
-        else:
-            start_date = datetime.strptime(start_date, "%y%m")
-
-        start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-%d")
-
-        print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
-        # todo: use flags - using low_flow flag
-        query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
-                height, mole_fraction, flag, sample_id, pair_id_num
-            FROM hats.ng_data_view
-            WHERE inst_num = {self.inst_num}
-                AND parameter_num = {pnum}
-                AND height != 0
-                AND detrend_method_num != 3
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
-            ORDER BY analysis_datetime;
-        """
-        df = pd.DataFrame(self.db.doquery(query))
-        if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
-            self.data = pd.DataFrame()
-            return
-        
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
-        df['run_time']          = pd.to_datetime(df['run_time'])
-        df['run_type_num']      = df['run_type_num'].astype(int)
-        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
-        df['height']            = df['height'].astype(float)
-        df['mole_fraction']     = df['mole_fraction'].astype(float)
-        df['parameter_num']     = pnum
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
-        
-class BLD1_Processing(li.BLD1_Instrument):
-    """
-    Placeholder for BLD1 processing logic.
-    In your real code, you would implement the necessary methods here.
-    """
-    def __init__(self):
-        super().__init__()
-        # Initialize any specific attributes or methods for BLD1 processing
-
-class MainWindow(QMainWindow, li.HATS_DB_Functions):
-    def __init__(self, processor, instrument, instrument_id):
+class MainWindow(QMainWindow):
+    def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
-        super().__init__(instrument=instrument_id)
-        self.processor = processor     # e.g. an M4_Processing() instance
+        super().__init__()
         self.instrument = instrument   # e.g. an M4_Instrument("m4") instance
-        self.instrument_id = instrument_id
 
-        self.setWindowTitle(f"{self.instrument_id.upper()} Data Processing (Demo)")
+        self.setWindowTitle(f"{self.instrument.inst_id.upper()} Data Processing Application")
 
         # Keep track of analytes and run_times
         self.analytes     = self.instrument.analytes
         self.current_pnum = None
+        self.current_channel = None  # channel is optional, e.g. for FE3
         self.current_run_times = []   # will be a sorted list of QDateTime strings
+        self.current_run_time = None  # currently selected run_time (QDateTime string)
 
         # Set up the UI
         self.init_ui()
@@ -194,7 +48,7 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
         left_layout.setSpacing(12)
         left_pane.setLayout(left_layout)
 
-        # ── 1) DATA RANGE SELECTION ──
+        # ── DATA RANGE SELECTION ──
         date_gb = QGroupBox("Date Range (by Month)")
         date_layout = QHBoxLayout()
         date_gb.setLayout(date_layout)
@@ -202,8 +56,12 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
         # Start: Year / Month
         self.start_year_cb = QComboBox()
         self.start_month_cb = QComboBox()
+        current_year = datetime.now().year
+        current_month = datetime.now().month
+        start_year = (datetime.now() - timedelta(days=60)).year  # 2 months ago
+        start_month = (datetime.now() - timedelta(days=60)).month  # 2 months ago
         # Fill years (e.g. 2020..2025) and months (Jan..Dec)
-        for y in range(2020, datetime.now().year + 1):
+        for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
             self.start_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.start_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
@@ -211,10 +69,15 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
         # End: Year / Month
         self.end_year_cb = QComboBox()
         self.end_month_cb = QComboBox()
-        for y in range(2020, datetime.now().year + 1):
+        for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
             self.end_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.end_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
+        self.end_year_cb.setCurrentText(str(current_year))
+        self.end_month_cb.setCurrentIndex(current_month - 1)
+        # Set default start date to the instrument's start date
+        self.start_year_cb.setCurrentText(str(start_year))
+        self.start_month_cb.setCurrentIndex(int(start_month) - 1)
 
         # “Apply” button
         self.apply_date_btn = QPushButton("Apply ▶")
@@ -231,41 +94,14 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
         date_layout.addSpacing(12)
         date_layout.addWidget(self.apply_date_btn)
 
-        # Place the “date_gb” above your run‐type/run‐date filters:
-        #left_layout.addWidget(date_gb)
-    
-        # 1) Run Selection GroupBox
+        # Run Selection GroupBox
         run_gb = QGroupBox("Run Selection")
         run_layout = QVBoxLayout()
         run_layout.setSpacing(6)
         run_gb.setLayout(run_layout)
-
-        # 1.a) Filter by run type dropdown
-        run_type_label = QLabel("Filter by run type:")
-        self.run_type_cb = QComboBox()
-        # Insert a “All” option at top
-        self.run_type_cb.addItem("All", userData=None)
-        #for name, rnum in sorted(self.run_type_map.items()):
-        #    self.run_type_cb.addItem(name, userData=rnum)
-        #self.run_type_cb.setCurrentIndex(0)
-        #self.run_type_cb.currentIndexChanged.connect(self.on_filter_changed)
-
-        #run_layout.addWidget(run_type_label)
-        #run_layout.addWidget(self.run_type_cb)
-
-        # 1.b) Filter by run date dropdown
-        #date_filter_label = QLabel("Filter by run date:")
-        #self.date_filter_cb = QComboBox()
-        #for label in ("last-two-weeks", "last-month", "all"):
-        #    self.date_filter_cb.addItem(label)
-        #self.date_filter_cb.setCurrentIndex(0)
-        #self.date_filter_cb.currentIndexChanged.connect(self.on_filter_changed)
-
-        #run_layout.addWidget(date_filter_label)
-        #run_layout.addWidget(self.date_filter_cb)
         run_layout.addWidget(date_gb)
 
-        # 1.c) Actual run_time selector + Prev/Next buttons
+        # Actual run_time selector + Prev/Next buttons
         runsel_hbox = QHBoxLayout()
         self.prev_btn = QPushButton("◀")
         self.prev_btn.clicked.connect(self.on_prev_run)
@@ -282,18 +118,18 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
 
         left_layout.addWidget(run_gb)
 
-        # 2) Molecule/Analyte Selection GroupBox
-        analyte_gb = QGroupBox("Gases / Molecules")
+        # Molecule/Analyte Selection GroupBox
+        analyte_gb = QGroupBox("Analyte Selection")
         analyte_layout = QVBoxLayout()
         analyte_layout.setSpacing(6)
         analyte_gb.setLayout(analyte_layout)
 
         self.analyte_widget = QWidget()
-        self.analyte_layout = QVBoxLayout()
+        self.analyte_layout = QGridLayout()
         self.analyte_layout.setSpacing(4)
         self.analyte_widget.setLayout(self.analyte_layout)
 
-        # If there are more than 10 analytes, we’ll switch to a QComboBox below.
+        # If there are more than 12 analytes, we’ll switch to a QComboBox below.
         self.populate_analyte_controls()
         analyte_layout.addWidget(self.analyte_widget)
 
@@ -320,29 +156,35 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
             first_name = list(self.analytes.keys())[0]
             self.set_current_analyte(first_name)
 
-    def on_apply_month_range(self):
-        # 1) Read selection from the four combo boxes
-        sy = int(self.start_year_cb.currentText())
+    def get_load_range(self):
+        # Read selection from the four combo boxes
+        sy = self.start_year_cb.currentText()
         sm = self.start_month_cb.currentIndex() + 1   # Jan→1, Feb→2, etc.
-        ey = int(self.end_year_cb.currentText())
+        ey = self.end_year_cb.currentText()
         em = self.end_month_cb.currentIndex() + 1
 
-        # 2) Build start/end strings
-        from calendar import monthrange
-        last_day = monthrange(ey, em)[1]  # e.g. 28, 29, 30, or 31
-        start_sql = f"{sy:04d}-{sm:02d}-01"
-        end_sql   = f"{ey:04d}-{em:02d}-{last_day:02d}"
-
-        # 3) Reload data for the current analyte with that range
-        df = self.m4.load_data(
+        # Build start/end strings of the form YYMM
+        start_sql = f"{sy[2:4]}{sm:02d}"
+        end_sql   = f"{ey[2:4]}{em:02d}"
+        return start_sql, end_sql
+    
+    def on_apply_month_range(self):
+        start_sql, end_sql = self.get_load_range()
+        # Reload data for the current analyte with that range
+        df = self.instrument.load_data(
             pnum=self.current_pnum,
+            channel=self.current_channel,
             start_date=start_sql,
             end_date=end_sql
         )
 
-        # 4) Populate run_cb just like set_current_analyte() does
+        # Populate run_cb just like set_current_analyte() does
         if df is not None and not df.empty:
             times = sorted(df["run_time"].unique())
+            # may need to limit to the last 50 runs:
+            if len(times) > 50:
+                print(f">>> Warning: more than 50 runs found, limiting to the last 50.")
+                times = times[-50:]
             self.current_run_times = [
                 QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy/MM/dd HH:mm:ss")
                 for t in times
@@ -362,8 +204,9 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
 
     def populate_analyte_controls(self):
         """
-        If there are ≤ 10 analytes → show radio buttons.
-        If > 10 analytes → show a QComboBox instead.
+        If there are ≤ 12 analytes → show radio buttons in two columns,
+        first 6 in the left, next 6 in the right.
+        If > 12 analytes → show a QComboBox instead.
         """
         # Clear any existing widgets in analyte_layout
         for i in reversed(range(self.analyte_layout.count())):
@@ -372,28 +215,42 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
                 w.setParent(None)
 
         names = list(self.analytes.keys())
-        if len(names) <= 10:
-            # Use radio buttons
+        if len(names) <= 12:
+            # Use radio buttons in two columns: first 5 left, rest right
             self.radio_group = QButtonGroup(self)
-            for name in names:
+            left  = names[:6]
+            right = names[6:]
+
+            # Left column (column 0)
+            for row, name in enumerate(left):
                 rb = QRadioButton(name)
-                self.analyte_layout.addWidget(rb)
+                self.analyte_layout.addWidget(rb, row, 0)
                 self.radio_group.addButton(rb)
                 rb.toggled.connect(self.on_analyte_radio_toggled)
+
+            # Right column (column 1)
+            for row, name in enumerate(right):
+                rb = QRadioButton(name)
+                self.analyte_layout.addWidget(rb, row, 1)
+                self.radio_group.addButton(rb)
+                rb.toggled.connect(self.on_analyte_radio_toggled)
+
             # Select the first radio button by default
-            first_rb = self.radio_group.buttons()[0]
-            first_rb.setChecked(True)
+            buttons = self.radio_group.buttons()
+            if buttons:
+                buttons[0].setChecked(True)
+
         else:
             # Use a QComboBox
             self.analyte_combo = QComboBox()
             for name in names:
                 self.analyte_combo.addItem(name)
             self.analyte_combo.currentTextChanged.connect(self.on_analyte_combo_changed)
-            self.analyte_layout.addWidget(self.analyte_combo)
+            self.analyte_layout.addWidget(self.analyte_combo, 0, 0)
 
     def on_analyte_radio_toggled(self):
         """
-        Called whenever one of the ≤10 radio buttons toggles to “checked.”
+        Called whenever one of the ≤12 radio buttons toggles to “checked.”
         We only react when it becomes checked.
         """
         rb = self.sender()
@@ -403,23 +260,32 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
 
     def on_analyte_combo_changed(self, name):
         """
-        Called whenever the QComboBox selection changes (for >10 analytes).
+        Called whenever the QComboBox selection changes (for >12 analytes).
         """
         self.set_current_analyte(name)
 
     def set_current_analyte(self, analyte_name):
         """
-        1) Remember the current pnum
-        2) Call load_data(...) with that pnum
-        3) Populate run_times in the .run_cb
-        4) Optionally trigger the first run to be displayed.
+        Check to see if channel is in analyte_name.
+        Preserve the current_run_time when switching analytes.
         """
+        # Extract channel if present in analyte_name
+        if '(' in analyte_name and ')' in analyte_name:
+            self.current_channel = analyte_name.split('(')[1].split(')')[0].strip()
+        else:
+            self.current_channel = None
+
         pnum = self.analytes[analyte_name]
         self.current_pnum = pnum
+        print(f">>> Setting current analyte: {analyte_name} (pnum={pnum}, channel={self.current_channel})")
 
-        # (Re)load data for this analyte
-        df = self.processor.load_data(
-            pnum=pnum
+        start_sql, end_sql = self.get_load_range()
+        # (Re)load data for this analyte and the load range
+        df = self.instrument.load_data(
+            pnum=pnum,
+            channel=self.current_channel,
+            start_date=start_sql,
+            end_date=end_sql
         )
 
         # Extract unique run_time values (as Python datetime)
@@ -440,8 +306,13 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
             self.run_cb.addItem(s)
         self.run_cb.blockSignals(False)
 
-        # If there is at least one run_time, select the first by default
-        if self.current_run_times:
+        # Preserve the current_run_time if it exists in the new analyte's run_times
+        if self.current_run_time in self.current_run_times:
+            idx = self.current_run_times.index(self.current_run_time)
+            self.run_cb.setCurrentIndex(idx)
+            self.on_run_changed(idx)
+        elif self.current_run_times:
+            # Default to the first run_time if the current_run_time is not found
             self.run_cb.setCurrentIndex(0)
             self.on_run_changed(0)
 
@@ -499,8 +370,9 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
         """
         if index < 0 or index >= len(self.current_run_times):
             return
-        run_str = self.current_run_times[index]
-        print(f">>> Selected run_time: {run_str}")
+        self.current_run_time = self.current_run_times[index]
+
+        print(f">>> Selected run_time: {self.current_run_time}")
         # TODO: Convert run_str back to a datetime, then filter self.m4.data to that run_time,
         # and redraw the matplotlib canvas here.
 
@@ -521,60 +393,46 @@ class MainWindow(QMainWindow, li.HATS_DB_Functions):
             self.run_cb.setCurrentIndex(idx + 1)
 
 
-_processor_map = {
-    "m4": M4_Processing,
-    "fe3": FE3_Processing,
-    "bld1": BLD1_Processing
-}
-
-def get_processor_for(instrument_id: str):
+def get_instrument_for(instrument_id: str):
     """
-    Look up the Processor class and the matching Instrument class, instantiate both,
-    and return (processor_instance, instrument_instance).
+    Look up the Instrument class, instantiate.
     """
-    inst = instrument_id.lower()
-    if inst not in _processor_map:
-        raise ValueError(
-            f"Invalid instrument '{instrument_id}'. "
-            f"Valid choices: {list(_processor_map.keys())}"
-        )
-
-    # 1) Instantiate the Processor:
-    processor_cls = _processor_map[inst]
-    processor = processor_cls()  # e.g. M4_Processing()
-
-    # 2) Instantiate the Instrument class from logos_instruments:
+    inst = instrument_id.upper()
+    
     try:
-        instrument_cls = getattr(li, f"{inst.upper()}_Instrument")
+        instrument_cls = getattr(li, f"{inst}_Instrument")
     except AttributeError:
         raise ValueError(
-            f"Could not find class '{inst.upper()}_Instrument' in logos_instruments.py"
+            f"Could not find class '{inst}_Instrument' in logos_instruments.py"
         )
 
-    # Pass in instrument=instrument_id so that HATS_DB_Functions sets inst_num correctly:
-    instrument = instrument_cls(instrument=instrument_id)
+    instrument = instrument_cls()
 
-    return processor, instrument
+    return instrument
 
 def main():
+    logos_instance = li.LOGOS_Instruments()
+    insts = list(logos_instance.INSTRUMENTS.keys())  # valid LOGOS instruments
+
     parser = argparse.ArgumentParser(description="Data Processing Application")
     parser.add_argument(
-        "--instrument",
+        "-i", "--instrument",
         type=str,
-        choices=list(_processor_map.keys()),  # ["m4", "fe3", "bld1"]
+        choices=insts,  # Use the instruments list
         default="m4",
-        help="Specify which instrument (m4, fe3, or bld1)"
+        help=f"Specify which instrument {insts} to use (default: m4)"
     )
+    
     args = parser.parse_args()
-
+    
     try:
-        processor, instrument = get_processor_for(args.instrument)
+        instrument = get_instrument_for(args.instrument)
     except ValueError as e:
         print(e)
         sys.exit(1)
 
     app = QApplication(sys.argv)
-    w = MainWindow(processor, instrument, args.instrument)
+    w = MainWindow(instrument)
     w.resize(1000, 600)
     w.show()
     sys.exit(app.exec_())
