@@ -53,6 +53,11 @@ class FastNavigationToolbar(NavigationToolbar):
 
         # make our overlay on top of the canvas
         self._overlay = RubberBandOverlay(canvas, pen)
+        
+        canvas.mpl_connect(
+            'resize_event',
+            lambda evt: self._overlay.setGeometry(0, 0, canvas.width(), canvas.height())
+        )
 
     def draw_rubberband(self, event, x0, y0, x1, y1):
             # 1) make the overlay match the canvas size
