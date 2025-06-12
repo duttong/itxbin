@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 import argparse
+
+from PyQt5 import QtCore, QtGui
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
@@ -14,8 +16,75 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDateTime
 
 import logos_instruments as li
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.patches as mpatches
+from matplotlib import rcParams
+from matplotlib import pyplot as plt
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
+class RubberBandOverlay(QWidget):
+    def __init__(self, parent, pen):
+        super().__init__(parent)
+        self.pen = pen
+        self.rect = QtCore.QRectF()
+        # Transparent background, don’t steal mouse events
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.hide()
 
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.setCompositionMode(QtGui.QPainter.RasterOp_SourceXorDestination)
+        painter.setPen(self.pen)
+        painter.drawRect(self.rect)
+        painter.end()
+
+class FastNavigationToolbar(NavigationToolbar):
+    def __init__(self, canvas, parent):
+        super().__init__(canvas, parent)
+        # disable the built-in rubberband (a QWidget we don’t use)
+        self.rubberband = None
+
+        # build the dashed-pen
+        pen = QtGui.QPen(self.palette().color(QtGui.QPalette.Highlight))
+        pen.setStyle(QtCore.Qt.DashLine)
+
+        # make our overlay on top of the canvas
+        self._overlay = RubberBandOverlay(canvas, pen)
+
+    def draw_rubberband(self, event, x0, y0, x1, y1):
+            # 1) make the overlay match the canvas size
+            w, h = self.canvas.width(), self.canvas.height()
+            self._overlay.setGeometry(0, 0, w, h)
+
+            # 2) flip the y coordinates so (0,0) is top-left
+            y0i = h - y0
+            y1i = h - y1
+
+            # 3) build & normalize the rect in widget coords
+            self._overlay.rect = QtCore.QRectF(
+                QtCore.QPointF(x0, y0i),
+                QtCore.QPointF(x1, y1i)
+            ).normalized()
+
+            # 4) show & repaint
+            self._overlay.show()
+            self._overlay.update()
+
+    def press_zoom(self, event):
+        self._old_aa = rcParams['lines.antialiased']
+        rcParams['lines.antialiased'] = False
+        super().press_zoom(event)
+
+    def release_zoom(self, event):
+        # first let the base class do the zoom…
+        super().release_zoom(event)
+        rcParams['lines.antialiased'] = self._old_aa
+        # …then hide our overlay
+        self._overlay.hide()
+        
 class MainWindow(QMainWindow):
     def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
@@ -30,6 +99,7 @@ class MainWindow(QMainWindow):
         self.current_channel = None  # channel is optional, e.g. for FE3
         self.current_run_times = []   # will be a sorted list of QDateTime strings
         self.current_run_time = None  # currently selected run_time (QDateTime string)
+        self.data = pd.DataFrame()  # Placeholder for loaded data
 
         # Set up the UI
         self.init_ui()
@@ -40,6 +110,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         h_main = QHBoxLayout()
         central.setLayout(h_main)
+
+        # Create a matplotlib figure and canvas
+        self.figure = Figure()
+        self.canvas = FigureCanvas(self.figure)
 
         # Left pane: all controls (run selection, analyte selection)
         left_pane = QWidget()
@@ -135,16 +209,42 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(analyte_gb)
 
+        # Plot Type Selection GroupBox
+        plot_gb = QGroupBox("Plot Type Selection")
+        plot_layout = QVBoxLayout()
+        plot_layout.setSpacing(6)
+        plot_gb.setLayout(plot_layout)
+
+        self.plot_radio_group = QButtonGroup(self)
+        resp_rb = QRadioButton("Response")
+        ratio_rb = QRadioButton("Ratio")
+        mole_fraction_rb = QRadioButton("Mole Fraction")
+
+        plot_layout.addWidget(resp_rb)
+        plot_layout.addWidget(ratio_rb)
+        plot_layout.addWidget(mole_fraction_rb)
+
+        self.plot_radio_group.addButton(resp_rb)
+        self.plot_radio_group.addButton(ratio_rb)
+        self.plot_radio_group.addButton(mole_fraction_rb)
+
+        # Set "Resp" as the default selected option
+        resp_rb.setChecked(True)
+
+        left_layout.addWidget(plot_gb)
+
         # Stretch to push everything to the top
         left_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        # Right pane: placeholder for a plot (e.g. a matplotlib canvas)
-        right_placeholder = QGroupBox("Plot Area (placeholder)")
+        # Right pane: matplotlib figure for plotting
+        right_placeholder = QGroupBox("Plot Area")
         right_layout = QVBoxLayout()
         right_placeholder.setLayout(right_layout)
-        placeholder_label = QLabel("(plots go here)")
-        placeholder_label.setAlignment(Qt.AlignCenter)
-        right_layout.addWidget(placeholder_label)
+        right_layout.addWidget(self.canvas)
+
+        # Add a NavigationToolbar for the figure
+        self.toolbar = FastNavigationToolbar(self.canvas, self)
+        right_layout.addWidget(self.toolbar)
 
         # Add both panes to the main hbox
         h_main.addWidget(left_pane, stretch=0)
@@ -156,6 +256,111 @@ class MainWindow(QMainWindow):
             first_name = list(self.analytes.keys())[0]
             self.set_current_analyte(first_name)
 
+        # Default plot for "Response"
+        self.plot_response()
+
+    def plot_response(self):
+        """
+        Plot 'Response' (self.data.area vs self.data.analysis_datetime).
+        """
+        if self.data.empty:
+            print("No data available for plotting.")
+            return
+        
+        sel = pd.to_datetime(self.current_run_time, utc=True)
+        self.run = self.data.loc[self.data['run_time'] == sel]
+        if self.run.empty:
+            print(f"No data for run_time: {self.current_run_time}")
+            return
+        
+        resp = self.instrument.response_type
+        if self.instrument.inst_id == 'm4':
+            colors = self.run['run_type_num'].map(self.instrument.COLOR_MAP).fillna('gray')
+            run_map = {v: k for k, v in self.instrument.run_type_num().items()}
+            legend_handles = [
+                mpatches.Patch(color=col, label=run_map[rt])
+                for rt, col in self.instrument.COLOR_MAP.items()
+                if isinstance(rt, int) and rt in run_map
+            ]
+        elif self.instrument.inst_id == 'fe3':
+            colors = self.run['port'].map(self.instrument.COLOR_MAP).fillna('gray')
+            run_map = {0: 'Flask0', 1: 'Flask1', 2: 'Flask2', 3: 'Flask3', 4: 'Flask4',
+                    5: 'Flask5', 6: 'Flask6', 7: 'Flask7', 8: 'Flask8', 9: 'Flask9'}
+            legend_handles = [
+                mpatches.Patch(color=col, label=run_map[rt])
+                for rt, col in self.instrument.COLOR_MAP.items()
+                if isinstance(rt, int) and rt in run_map
+            ]
+        
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.scatter(self.run['analysis_datetime'], self.run[resp], marker='o', c=colors)
+        ax.set_title(f"{self.current_run_time} - Response: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        ax.set_xlabel("Analysis Datetime")
+        ax.xaxis.set_tick_params(rotation=30)
+        ax.set_ylabel(resp)
+        ax.legend(handles=legend_handles, title="Run Types")
+        self.canvas.draw()
+        
+    def plot_responseNEW(self):
+        df = self.data.copy()
+        if df.empty:
+            print("No data available for plotting.")
+            return
+        print(df.tail())
+        inv = {int(v): k for k, v in self.instrument.analytes.items()}
+        title_text = f"{inv.get(self.current_pnum, 'Unknown')} ({self.current_pnum})"
+        
+        colors = df['run_type_num'].map(self.instrument.COLOR_MAP).fillna('gray')
+        run_map = {v: k for k, v in self.instrument.run_type_num().items()}
+        legend_handles = [
+            mpatches.Patch(color=col, label=run_map[rt])
+            for rt, col in self.instrument.COLOR_MAP.items()
+            if isinstance(rt, int) and rt in run_map
+        ]
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 12))
+        fig.suptitle(title_text, fontsize=16)
+
+        ax1.set_title("Area vs Analysis DateTime")
+        ax1.set_xlabel("Analysis DateTime")
+        ax1.set_ylabel("Area")
+        ax1.xaxis.set_tick_params(rotation=45)
+        ax1.grid(True)
+        ax1.scatter(
+            df['analysis_datetime'],
+            df['area'],
+            c=self.instrument.COLOR_MAP.get(self.current_pnum, 'blue'),
+            marker='o', linewidths=0, alpha=0.8,
+            label="Raw area"
+        )
+        color_cycle = ['red', 'green']
+        for i, (_, grp) in enumerate(df.groupby('run_time')):
+            ax1.plot(
+                grp['analysis_datetime'],
+                #grp['smoothed'],
+                color=color_cycle[i % 2],
+                linewidth=1
+            )
+        ax1.legend(handles=legend_handles, title="Run Types")
+
+        """
+        ax2.set_title("Normalized Area")
+        ax2.set_xlabel("Analysis DateTime")
+        ax2.set_ylabel("Normalized Area")
+        ax2.grid(True)
+        ax2.scatter(
+            df['analysis_datetime'],
+            df['normalized_area'],
+            c=colors,
+            marker='o', linewidths=0, alpha=0.8,
+            label="Mole Fraction"
+        )
+        ax2.legend(handles=legend_handles, title="Run Types") """
+
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        plt.show()
+        
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()
@@ -171,7 +376,7 @@ class MainWindow(QMainWindow):
     def on_apply_month_range(self):
         start_sql, end_sql = self.get_load_range()
         # Reload data for the current analyte with that range
-        df = self.instrument.load_data(
+        self.data = self.instrument.load_data(
             pnum=self.current_pnum,
             channel=self.current_channel,
             start_date=start_sql,
@@ -179,14 +384,14 @@ class MainWindow(QMainWindow):
         )
 
         # Populate run_cb just like set_current_analyte() does
-        if df is not None and not df.empty:
-            times = sorted(df["run_time"].unique())
+        if self.data is not None and not self.data.empty:
+            times = sorted(self.data["run_time"].unique())
             # may need to limit to the last 50 runs:
             if len(times) > 50:
                 print(f">>> Warning: more than 50 runs found, limiting to the last 50.")
                 times = times[-50:]
             self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy/MM/dd HH:mm:ss")
+                QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy-MM-dd HH:mm:ss")
                 for t in times
             ]
         else:
@@ -199,8 +404,11 @@ class MainWindow(QMainWindow):
         self.run_cb.blockSignals(False)
 
         if self.current_run_times:
-            self.run_cb.setCurrentIndex(0)
-            self.on_run_changed(0)
+            last_idx = len(self.current_run_times) - 1
+            self.run_cb.setCurrentIndex(last_idx)
+            self.on_run_changed(last_idx)
+            
+        self.plot_response()
 
     def populate_analyte_controls(self):
         """
@@ -281,7 +489,7 @@ class MainWindow(QMainWindow):
 
         start_sql, end_sql = self.get_load_range()
         # (Re)load data for this analyte and the load range
-        df = self.instrument.load_data(
+        self.data = self.instrument.load_data(
             pnum=pnum,
             channel=self.current_channel,
             start_date=start_sql,
@@ -289,16 +497,20 @@ class MainWindow(QMainWindow):
         )
 
         # Extract unique run_time values (as Python datetime)
-        if df is not None and not df.empty:
-            times = sorted(df["run_time"].unique())
-            # Convert to QDateTime strings for display:
+        if self.data is not None and not self.data.empty:
+            times = sorted(self.data["run_time"].unique())
+            # Convert to QDateTime strings for display in UTC:
             self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy/MM/dd HH:mm:ss")
+                # ensure t is treated as UTC when computing the epoch seconds
+                QDateTime.fromSecsSinceEpoch(
+                    int(t.replace(tzinfo=timezone.utc).timestamp()),
+                    Qt.UTC
+                ).toString("yyyy-MM-dd HH:mm:ss 'UTC'")
                 for t in times
             ]
         else:
             self.current_run_times = []
-
+    
         # Fill the run_cb combo with these run_time strings
         self.run_cb.blockSignals(True)
         self.run_cb.clear()
@@ -312,9 +524,10 @@ class MainWindow(QMainWindow):
             self.run_cb.setCurrentIndex(idx)
             self.on_run_changed(idx)
         elif self.current_run_times:
-            # Default to the first run_time if the current_run_time is not found
-            self.run_cb.setCurrentIndex(0)
-            self.on_run_changed(0)
+            # Default to the last run_time if the current_run_time is not found
+            last_idx = len(self.current_run_times) - 1
+            self.run_cb.setCurrentIndex(last_idx)
+            self.on_run_changed(last_idx)
 
     def current_run_type_filter(self):
         """
@@ -330,39 +543,6 @@ class MainWindow(QMainWindow):
         """
         return self.date_filter_cb.currentText()
 
-    def on_filter_changed(self, _=None):
-        """
-        Called whenever run_type_cb or date_filter_cb changes.
-        We simply reload data for the current analyte and re-populate run_times.
-        """
-        # If no analyte has been chosen yet, do nothing
-        if self.current_pnum is None:
-            return
-
-        df = self.m4.load_data(
-            pnum=self.current_pnum
-        )
-        if df is not None and not df.empty:
-            times = sorted(df["run_time"].unique())
-            self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy/MM/dd HH:mm:ss")
-                for t in times
-            ]
-        else:
-            self.current_run_times = []
-
-        # Update combo box
-        self.run_cb.blockSignals(True)
-        self.run_cb.clear()
-        for s in self.current_run_times:
-            self.run_cb.addItem(s)
-        self.run_cb.blockSignals(False)
-
-        # Select the first run if possible
-        if self.current_run_times:
-            self.run_cb.setCurrentIndex(0)
-            self.on_run_changed(0)
-
     def on_run_changed(self, index):
         """
         Called whenever the user picks a different run_time in run_cb. 
@@ -373,8 +553,7 @@ class MainWindow(QMainWindow):
         self.current_run_time = self.current_run_times[index]
 
         print(f">>> Selected run_time: {self.current_run_time}")
-        # TODO: Convert run_str back to a datetime, then filter self.m4.data to that run_time,
-        # and redraw the matplotlib canvas here.
+        self.plot_response()
 
     def on_prev_run(self):
         """
@@ -433,7 +612,7 @@ def main():
 
     app = QApplication(sys.argv)
     w = MainWindow(instrument)
-    w.resize(1000, 600)
+    w.resize(1400, 800)
     w.show()
     sys.exit(app.exec_())
     
