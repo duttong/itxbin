@@ -1,8 +1,10 @@
 import sys
 import pandas as pd
+import numpy as np
 import re
 from pathlib import Path
 from datetime import datetime, timedelta
+import calendar
 
 
 class LOGOS_Instruments:
@@ -134,6 +136,26 @@ class HATS_DB_Functions(LOGOS_Instruments):
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
+    STANDARD_RUN_TYPE = 8
+    COLOR_MAP_RUN_TYPE = {
+        1: "#1f77b4",  # Flask
+        4: "#ff7f0e",  # Other
+        5: "#2ca02c",  # PFP
+        6: "#dd89f9",  # Zero
+        7: "#c7811b",  # Tank
+        8: "#505c5c",  # Standard
+        "Response": "#e04c19",  # Response
+        "Ratio": "#1f77b4",  # Ratio
+        "Mole Fraction": "#2ca02c",  # Mole Fraction
+    }
+    
+    COLOR_MAP = {
+        # SSV ports (0-16)
+        0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'hotpink',
+        5: 'purple', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
+        10: 'cornflowerblue', 11: 'green', 12: 'red', 13: 'cyan', 14: 'pink',
+        15: 'teal', 16: 'orange'}
+    
     def __init__(self):
         super().__init__()
         self.inst_id = 'm4'
@@ -144,11 +166,14 @@ class M4_Instrument(HATS_DB_Functions):
 
         self.molecules = self.query_molecules()
         self.analytes = self.query_analytes()
-        
+        self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
+        self.response_type = 'area'
+                
     def load_data(self, pnum, channel=None, start_date=None, end_date=None):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
+            channel (str, optional): Channel to filter data. Defaults to None.
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
@@ -157,6 +182,8 @@ class M4_Instrument(HATS_DB_Functions):
             end_date = datetime.today()
         else:
             end_date = datetime.strptime(end_date, "%y%m")
+        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
+        end_date = end_date.replace(day=last_day)
 
         if start_date is None:
             start_date = end_date - timedelta(days=60)
@@ -164,13 +191,13 @@ class M4_Instrument(HATS_DB_Functions):
             start_date = datetime.strptime(start_date, "%y%m")
 
         start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-31")
+        end_date_str = end_date.strftime("%Y-%m-%d")
 
         print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
-                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num
+            SELECT analysis_datetime, run_time, run_type_num, port, port_info, detrend_method_num, 
+                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
@@ -186,21 +213,55 @@ class M4_Instrument(HATS_DB_Functions):
             self.data = pd.DataFrame()
             return
         
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
-        df['run_time']          = pd.to_datetime(df['run_time'])
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
+        df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
+        df['port']              = df['port'].astype(int)
         df['area']              = df['area'].astype(float)
         df['net_pressure']      = df['net_pressure'].astype(float)
-        df['area']              = df['area']/df['net_pressure']
+        df['area']              = df['area']/df['net_pressure']         # response per pressure
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df['parameter_num']     = pnum
+        df['port_idx']          = df['port'].astype(int)        # used for plotting
+ 
+        # base port label on port_info and port number
+        df['port_label'] = (
+            df['port_info'].fillna('').str.strip() + ' (' +
+            df['port'].astype(int).astype(str) + ')'
+        )
+
+        # flask_port label
+        mask = (df['run_type_num'] == 1)
+        df.loc[mask, 'port_label'] = (
+            df.loc[mask, 'site'] + ' ' +
+            df.loc[mask, 'pair_id_num'].astype(int).astype(str) + '-' +
+            df.loc[mask, 'sample_id'].astype(int).astype(str) + ' (' +
+            df.loc[mask, 'port'].astype(int).astype(str) + ')'
+        )
+
+        # clean up any stray spaces
+        df['port_label'] = df['port_label'] \
+                            .str.replace(r'\s+', ' ', regex=True) \
+                            .str.strip()
+            
         self.data = df.sort_values('analysis_datetime')
         return self.data
 
 
 class FE3_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
+    
+    STANDARD_RUN_TYPE = 1       # port number the standard is run on.
+    WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
+    # color map made for a combination of SSV and Flask ports.
+    COLOR_MAP = {
+        # SSV ports (0-9)
+        0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
+        5: 'gray', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
+        # Flask ports (10-19)
+        10: 'cornflowerblue', 11: 'green', 12: 'red', 13: 'cyan', 14: 'pink',
+        15: 'gray', 16: 'orange', 17: 'darkgreen', 18: 'darkred', 19: 'lightgreen'}
     
     def __init__(self):
         super().__init__()
@@ -212,6 +273,8 @@ class FE3_Instrument(HATS_DB_Functions):
         
         self.molecules = self.query_molecules()
         self.analytes = self.query_analytes()
+        self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
+        self.response_type = 'height'
 
         # code to handle CFC11 and CFC113 on two channels
         new = {}
@@ -229,6 +292,7 @@ class FE3_Instrument(HATS_DB_Functions):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
+            channel (str, optional): Channel to filter data. Defaults to None.
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
@@ -237,6 +301,8 @@ class FE3_Instrument(HATS_DB_Functions):
             end_date = datetime.today()
         else:
             end_date = datetime.strptime(end_date, "%y%m")
+        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
+        end_date = end_date.replace(day=last_day)
 
         if start_date is None:
             start_date = end_date - timedelta(days=60)
@@ -250,13 +316,14 @@ class FE3_Instrument(HATS_DB_Functions):
         # todo: use flags
         channel_str = f"AND channel = '{channel}'" if channel else ""
         query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
-                height, mole_fraction, channel, flag, sample_id, pair_id_num
+            SELECT analysis_datetime, run_time, run_type_num, port, port_info, flask_port, detrend_method_num, 
+                height, mole_fraction, channel, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
                 {channel_str}
                 AND height != 0
+                AND run_type_num != {self.WARMUP_RUN_TYPE}
                 AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
@@ -267,13 +334,36 @@ class FE3_Instrument(HATS_DB_Functions):
             self.data = pd.DataFrame()
             return
         
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
-        df['run_time']          = pd.to_datetime(df['run_time'])
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
+        df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df['parameter_num']     = pnum
+        df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
+        
+        # base port label on port_info and port number
+        df['port_label'] = (
+            df['port_info'].fillna('').str.strip() + ' (' +
+            df['port'].astype(int).astype(str) + ')'
+        )
+
+        # flask_port label
+        mask = df['flask_port'].notna()
+        df.loc[mask, 'port_label'] = (
+            df.loc[mask, 'site'] + ' ' +
+            df.loc[mask, 'pair_id_num'].astype(int).astype(str) + '-' +
+            df.loc[mask, 'sample_id'].astype(int).astype(str) + ' (' +
+            df.loc[mask, 'flask_port'].astype(int).astype(str) + ')'
+        )
+
+        # clean up any stray spaces
+        df['port_label'] = df['port_label'] \
+                            .str.replace(r'\s+', ' ', regex=True) \
+                            .str.strip()
+                            
+        
         self.data = df.sort_values('analysis_datetime')
         return self.data
 

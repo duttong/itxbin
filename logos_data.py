@@ -279,24 +279,26 @@ class MainWindow(QMainWindow):
             return
         
         resp = self.instrument.response_type
-        if self.instrument.inst_id == 'm4':
-            colors = self.run['run_type_num'].map(self.instrument.COLOR_MAP).fillna('gray')
-            run_map = {v: k for k, v in self.instrument.run_type_num().items()}
-            legend_handles = [
-                mpatches.Patch(color=col, label=run_map[rt])
-                for rt, col in self.instrument.COLOR_MAP.items()
-                if isinstance(rt, int) and rt in run_map
-            ]
-        elif self.instrument.inst_id == 'fe3':
-            colors = self.run['port'].map(self.instrument.COLOR_MAP).fillna('gray')
-            run_map = {0: 'Flask0', 1: 'Flask1', 2: 'Flask2', 3: 'Flask3', 4: 'Flask4',
-                    5: 'Flask5', 6: 'Flask6', 7: 'Flask7', 8: 'Flask8', 9: 'Flask9'}
-            legend_handles = [
-                mpatches.Patch(color=col, label=run_map[rt])
-                for rt, col in self.instrument.COLOR_MAP.items()
-                if isinstance(rt, int) and rt in run_map
-            ]
-        
+        colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
+        ports_in_run = sorted(self.run['port_idx'].dropna().unique())          
+
+        port_label_map = (
+            self.run
+            .loc[self.run['port_idx'].notna(), ['port_idx','port_label']]
+            .drop_duplicates()
+            .set_index('port_idx')['port_label']
+            .to_dict()
+        )
+            
+        legend_handles = []
+        for port in ports_in_run:
+            # lookup color (default to gray if missing)
+            col = self.instrument.COLOR_MAP.get(port, 'gray')
+            label = port_label_map.get(port, str(port))
+            legend_handles.append(
+                mpatches.Patch(color=col, label=label)
+            )
+    
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.scatter(self.run['analysis_datetime'], self.run[resp], marker='o', c=colors)
@@ -557,7 +559,7 @@ class MainWindow(QMainWindow):
             return
         self.current_run_time = self.current_run_times[index]
 
-        print(f">>> Selected run_time: {self.current_run_time}")
+        #print(f">>> Selected run_time: {self.current_run_time}")
         self.plot_response()
 
     def on_prev_run(self):
@@ -600,10 +602,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Data Processing Application")
     parser.add_argument(
-        "-i", "--instrument",
+        "instrument",
         type=str,
         choices=insts,  # Use the instruments list
-        default="m4",
         help=f"Specify which instrument {insts} to use (default: m4)"
     )
     
