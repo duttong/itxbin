@@ -122,14 +122,18 @@ class MainWindow(QMainWindow):
 
         # Left pane: all controls (run selection, analyte selection)
         left_pane = QWidget()
+        left_pane.setMinimumWidth(420)  # Set fixed width
+        left_pane.setMaximumWidth(420)  # Set fixed width
         left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        left_layout.setSpacing(12)
+        left_layout.setContentsMargins(4, 4, 4, 4)  # Reduce margins
+        left_layout.setSpacing(6)  # Reduce spacing between widgets
         left_pane.setLayout(left_layout)
 
         # ── DATA RANGE SELECTION ──
         date_gb = QGroupBox("Date Range (by Month)")
         date_layout = QHBoxLayout()
+        date_layout.setContentsMargins(2, 2, 2, 2)  # Reduce margins inside the group box
+        date_layout.setSpacing(4)  # Reduce spacing inside the group box
         date_gb.setLayout(date_layout)
 
         # Start: Year / Month
@@ -252,8 +256,8 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.toolbar)
 
         # Add both panes to the main hbox
-        h_main.addWidget(left_pane, stretch=0)
-        h_main.addWidget(right_placeholder, stretch=1)
+        h_main.addWidget(left_pane, stretch=0)  # Fixed width for left pane
+        h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
 
         # Kick off by selecting the first analyte by default
         # (This will load data and populate run_times)
@@ -266,18 +270,18 @@ class MainWindow(QMainWindow):
 
     def plot_response(self):
         """
-        Plot 'Response' (self.data.area vs self.data.analysis_datetime).
+        Plot 'Response' (self.data.area vs self.data.analysis_datetime) with the legend outside the plotting area.
         """
         if self.data.empty:
             print("No data available for plotting.")
             return
-        
+
         sel = pd.to_datetime(self.current_run_time, utc=True)
         self.run = self.data.loc[self.data['run_time'] == sel]
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
-        
+
         resp = self.instrument.response_type
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())          
@@ -306,7 +310,16 @@ class MainWindow(QMainWindow):
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(resp)
-        ax.legend(handles=legend_handles, title="Run Types")
+
+        box = ax.get_position()  
+        ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
+        ax.legend(
+            handles=legend_handles,
+            loc='center left',            # legend’s “anchor point”
+            bbox_to_anchor=(1.02, 0.8),    # (x, y) in axis-fraction coordinates
+            fontsize=9,
+            frameon=False
+        )
         self.canvas.draw()
         
     def plot_responseNEW(self):
