@@ -297,8 +297,8 @@ class MainWindow(QMainWindow):
             yvar = self.instrument.response_type
             tlabel = 'Response'
         elif yparam == 'ratio':
-            yvar = self.instrument.ratio_type
-            tlabel = 'Ratio'
+            yvar = 'normalized_resp'
+            tlabel = 'Ratio (Normalized Response)'
         elif yparam == 'mole_fraction':
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
