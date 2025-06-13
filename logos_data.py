@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         # Create a matplotlib figure and canvas
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
+        self.current_plot_type = 0
 
         # Left pane: all controls (run selection, analyte selection)
         left_pane = QWidget()
@@ -233,12 +234,12 @@ class MainWindow(QMainWindow):
         plot_layout.addWidget(ratio_rb)
         plot_layout.addWidget(mole_fraction_rb)
 
-        self.plot_radio_group.addButton(resp_rb)
-        self.plot_radio_group.addButton(ratio_rb)
-        self.plot_radio_group.addButton(mole_fraction_rb)
-
+        self.plot_radio_group.addButton(resp_rb, id=0)
+        self.plot_radio_group.addButton(ratio_rb, id=1)
+        self.plot_radio_group.addButton(mole_fraction_rb, id=2)
         # Set "Resp" as the default selected option
         resp_rb.setChecked(True)
+        self.plot_radio_group.idClicked[int].connect(self.on_plot_type_changed)
 
         left_layout.addWidget(plot_gb)
 
@@ -266,9 +267,18 @@ class MainWindow(QMainWindow):
             self.set_current_analyte(first_name)
 
         # Default plot for "Response"
-        self.plot_response()
+        #self.gc_plot()
 
-    def plot_response(self):
+    def on_plot_type_changed(self, id: int):
+        if id == 0:
+            self.gc_plot('resp')
+        elif id == 1:
+            self.gc_plot('ratio')
+        else:
+            self.gc_plot('mole_fraction')
+        self.current_plot_type = id
+    
+    def gc_plot(self, yparam='resp'):
         """
         Plot 'Response' (self.data.area vs self.data.analysis_datetime) with the legend outside the plotting area.
         """
@@ -276,13 +286,26 @@ class MainWindow(QMainWindow):
             print("No data available for plotting.")
             return
 
-        sel = pd.to_datetime(self.current_run_time, utc=True)
+        ts_str = self.current_run_time.split(" (")[0]
+        sel = pd.to_datetime(ts_str, utc=True)
         self.run = self.data.loc[self.data['run_time'] == sel]
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
 
-        resp = self.instrument.response_type
+        if yparam == 'resp':
+            yvar = self.instrument.response_type
+            tlabel = 'Response'
+        elif yparam == 'ratio':
+            yvar = self.instrument.ratio_type
+            tlabel = 'Ratio'
+        elif yparam == 'mole_fraction':
+            yvar = 'mole_fraction'
+            tlabel = 'Mole Fraction'
+        else:
+            print(f"Unknown yparam: {yparam}")
+            return
+                
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())          
 
@@ -305,11 +328,11 @@ class MainWindow(QMainWindow):
     
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.scatter(self.run['analysis_datetime'], self.run[resp], marker='o', c=colors)
-        ax.set_title(f"{self.current_run_time} - Response: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
+        ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
-        ax.set_ylabel(resp)
+        ax.set_ylabel(tlabel)
 
         box = ax.get_position()  
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
@@ -321,66 +344,7 @@ class MainWindow(QMainWindow):
             frameon=False
         )
         self.canvas.draw()
-        
-    def plot_responseNEW(self):
-        df = self.data.copy()
-        if df.empty:
-            print("No data available for plotting.")
-            return
-        print(df.tail())
-        inv = {int(v): k for k, v in self.instrument.analytes.items()}
-        title_text = f"{inv.get(self.current_pnum, 'Unknown')} ({self.current_pnum})"
-        
-        colors = df['run_type_num'].map(self.instrument.COLOR_MAP).fillna('gray')
-        run_map = {v: k for k, v in self.instrument.run_type_num().items()}
-        legend_handles = [
-            mpatches.Patch(color=col, label=run_map[rt])
-            for rt, col in self.instrument.COLOR_MAP.items()
-            if isinstance(rt, int) and rt in run_map
-        ]
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 12))
-        fig.suptitle(title_text, fontsize=16)
-
-        ax1.set_title("Area vs Analysis DateTime")
-        ax1.set_xlabel("Analysis DateTime")
-        ax1.set_ylabel("Area")
-        ax1.xaxis.set_tick_params(rotation=45)
-        ax1.grid(True)
-        ax1.scatter(
-            df['analysis_datetime'],
-            df['area'],
-            c=self.instrument.COLOR_MAP.get(self.current_pnum, 'blue'),
-            marker='o', linewidths=0, alpha=0.8,
-            label="Raw area"
-        )
-        color_cycle = ['red', 'green']
-        for i, (_, grp) in enumerate(df.groupby('run_time')):
-            ax1.plot(
-                grp['analysis_datetime'],
-                #grp['smoothed'],
-                color=color_cycle[i % 2],
-                linewidth=1
-            )
-        ax1.legend(handles=legend_handles, title="Run Types")
-
-        """
-        ax2.set_title("Normalized Area")
-        ax2.set_xlabel("Analysis DateTime")
-        ax2.set_ylabel("Normalized Area")
-        ax2.grid(True)
-        ax2.scatter(
-            df['analysis_datetime'],
-            df['normalized_area'],
-            c=colors,
-            marker='o', linewidths=0, alpha=0.8,
-            label="Mole Fraction"
-        )
-        ax2.legend(handles=legend_handles, title="Run Types") """
-
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.show()
-        
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()
@@ -402,21 +366,29 @@ class MainWindow(QMainWindow):
             start_date=start_sql,
             end_date=end_sql
         )
-
-        # Populate run_cb just like set_current_analyte() does
+        
+        # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
+            # 1) get all unique times
             times = sorted(self.data["run_time"].unique())
-            # may need to limit to the last 50 runs:
-            if len(times) > 50:
-                print(f">>> Warning: more than 50 runs found, limiting to the last 50.")
-                times = times[-50:]
+
+            # 2) build sets of times that need a suffix
+            cal_times = set(self.data.loc[self.data['run_type_num'] == 2, 'run_time'])
+            pfp_times = set(self.data.loc[self.data['run_type_num'] == 5, 'run_time'])
+
+            # 3) build your display strings, appending (Cal) and/or (PFP)
             self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(int(t.timestamp())).toString("yyyy-MM-dd HH:mm:ss")
+                QDateTime.fromSecsSinceEpoch(
+                    int(t.replace(tzinfo=timezone.utc).timestamp()),
+                    Qt.UTC
+                ).toString("yyyy-MM-dd HH:mm:ss")
+                + (" (Cal)" if t in cal_times else "")
+                + (" (PFP)" if t in pfp_times else "")
                 for t in times
             ]
         else:
             self.current_run_times = []
-
+    
         self.run_cb.blockSignals(True)
         self.run_cb.clear()
         for s in self.current_run_times:
@@ -428,7 +400,7 @@ class MainWindow(QMainWindow):
             self.run_cb.setCurrentIndex(last_idx)
             self.on_run_changed(last_idx)
             
-        self.plot_response()
+        self.on_plot_type_changed(self.current_plot_type)
 
     def populate_analyte_controls(self):
         """
@@ -518,19 +490,26 @@ class MainWindow(QMainWindow):
 
         # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
+            # 1) get all unique times
             times = sorted(self.data["run_time"].unique())
-            # Convert to QDateTime strings for display in UTC:
+
+            # 2) build sets of times that need a suffix
+            cal_times = set(self.data.loc[self.data['run_type_num'] == 2, 'run_time'])
+            pfp_times = set(self.data.loc[self.data['run_type_num'] == 5, 'run_time'])
+
+            # 3) build your display strings, appending (Cal) and/or (PFP)
             self.current_run_times = [
-                # ensure t is treated as UTC when computing the epoch seconds
                 QDateTime.fromSecsSinceEpoch(
                     int(t.replace(tzinfo=timezone.utc).timestamp()),
                     Qt.UTC
-                ).toString("yyyy-MM-dd HH:mm:ss 'UTC'")
+                ).toString("yyyy-MM-dd HH:mm:ss")
+                + (" (Cal)" if t in cal_times else "")
+                + (" (PFP)" if t in pfp_times else "")
                 for t in times
             ]
         else:
             self.current_run_times = []
-    
+            
         # Fill the run_cb combo with these run_time strings
         self.run_cb.blockSignals(True)
         self.run_cb.clear()
@@ -573,7 +552,8 @@ class MainWindow(QMainWindow):
         self.current_run_time = self.current_run_times[index]
 
         #print(f">>> Selected run_time: {self.current_run_time}")
-        self.plot_response()
+        self.on_plot_type_changed(self.current_plot_type)
+        #self.gc_plot()
 
     def on_prev_run(self):
         """
