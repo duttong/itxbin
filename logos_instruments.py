@@ -154,7 +154,11 @@ class M4_Instrument(HATS_DB_Functions):
         0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'hotpink',
         5: 'purple', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
         10: 'cornflowerblue', 11: 'green', 12: 'red', 13: 'cyan', 14: 'pink',
-        15: 'teal', 16: 'orange'}
+        15: 'teal', 16: 'orange',
+        # PFPs (20-32)
+        20: 'cornflowerblue', 21: 'green', 22: 'red', 23: 'cyan', 24: 'hotpink',
+        25: 'purple', 26: 'orange', 27: 'darkgreen', 28: 'darkred', 29: 'lightgreen',
+        30: 'black', 31: 'coral', 32: 'lightblue'}
     
     def __init__(self):
         super().__init__()
@@ -196,7 +200,7 @@ class M4_Instrument(HATS_DB_Functions):
         print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port, port_info, detrend_method_num, 
+            SELECT analysis_datetime, run_time, run_type_num, port, port_info, flask_port, detrend_method_num, 
                 area, mole_fraction, net_pressure, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
@@ -218,13 +222,19 @@ class M4_Instrument(HATS_DB_Functions):
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['port']              = df['port'].astype(int)
+        df['flask_port']        = df['flask_port'].astype(int, errors='ignore')  # handle NaN gracefully
         df['area']              = df['area'].astype(float)
         df['net_pressure']      = df['net_pressure'].astype(float)
         df['area']              = df['area']/df['net_pressure']         # response per pressure
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int)        # used for plotting
- 
+
+        df['port_idx'] = df['port'].astype(int)
+        df.loc[df['run_type_num'] == 5, 'port_idx'] = (
+            df.loc[df['run_type_num'] == 5, 'flask_port'] + 20      # PFP ports are offset by 20
+        )
+        
         # base port label on port_info and port number
         df['port_label'] = (
             df['port_info'].fillna('').str.strip() + ' (' +
@@ -238,6 +248,14 @@ class M4_Instrument(HATS_DB_Functions):
             df.loc[mask, 'pair_id_num'].astype(int).astype(str) + '-' +
             df.loc[mask, 'sample_id'].astype(int).astype(str) + ' (' +
             df.loc[mask, 'port'].astype(int).astype(str) + ')'
+        )
+
+        # pfp label
+        mask = (df['run_type_num'] == 5)
+        df.loc[mask, 'port_label'] = (
+            df.loc[mask, 'site'] + ' ' +
+            df.loc[mask, 'sample_id'].astype(str) + ' (' +
+            df.loc[mask, 'flask_port'].astype(int).astype(str) + ')'
         )
 
         # clean up any stray spaces
@@ -260,8 +278,8 @@ class FE3_Instrument(HATS_DB_Functions):
         0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
         5: 'gray', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
         # Flask ports (10-19)
-        10: 'cornflowerblue', 11: 'green', 12: 'red', 13: 'cyan', 14: 'pink',
-        15: 'gray', 16: 'orange', 17: 'darkgreen', 18: 'darkred', 19: 'lightgreen'}
+        10: 'cornflowerblue', 11: 'blue', 12: 'red', 13: 'cyan', 14: 'pink',
+        15: 'gray', 16: 'orange', 17: 'darkgreen', 18: 'darkred', 19: 'purple'}
     
     def __init__(self):
         super().__init__()
