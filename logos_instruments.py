@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
-
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
     INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 999} 
@@ -132,6 +132,88 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
+class Normalizing():
+    
+    def __init__(self, std_run_type=8, response_type='area'):
+        self.STANDARD_RUN_TYPE = std_run_type
+        self.response_type = response_type
+
+    def _smooth_segment(self, seg, frac):
+        # some of these filters are not needed.
+        # 1) drop bad rows
+        #seg = seg.dropna(subset=['ts','area']).sort_values('ts')
+        # 2) consolidate duplicates
+        #seg = seg.groupby('ts', as_index=False)['area'].mean()
+        # 3) skip tiny segments
+        if len(seg) < 3 or seg['ts'].max() == seg['ts'].min():
+            return pd.Series(seg[self.response_type].values, index=seg.index)
+        # 4) do LOWESS
+        return pd.Series(
+            lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False),
+            index=seg.index
+        )
+    
+    def calculate_smoothed_std(self, df, min_pts=8, frac=0.5):
+        """ Calculate smoothed standard deviation for the standard run type.
+            This function uses LOWESS smoothing on the area data.
+            min_pts is the minimum number of points required to perform smoothing.
+            frac is the fraction of points used for smoothing.
+            The smoothed values are returned in a new column 'smoothed'.
+        """
+        std = (
+            df.loc[df['run_type_num'] == self.STANDARD_RUN_TYPE,
+                    ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]]
+                .dropna()
+                .sort_values('analysis_datetime')
+                .copy()
+        )
+        
+        # Not enough points to smooth
+        if len(std) < min_pts:
+            std['smoothed'] = np.nan
+            return std[['analysis_datetime','run_time','smoothed']]
+
+        std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
+        
+        detrend_method = std['detrend_method_num'].iat[0]
+
+        if detrend_method == 1:
+            # point to point is the same as a small frac for LOWESS
+            frac = 0.01
+
+        std['smoothed'] = (
+            std
+            .groupby('run_time', group_keys=False)[['ts', self.response_type]]
+            .apply(lambda seg: self._smooth_segment(seg, frac))
+        )
+
+        return std[['analysis_datetime','run_time','smoothed']]
+
+    def merge_smoothed_data(self, df):
+        # smoothed std or reference tank injection
+        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.5)
+
+        out = (
+            df
+            .merge(std, on=['analysis_datetime','run_time'], how='left')
+            .sort_values('analysis_datetime')
+        )
+
+        # explicitly select just the 'smoothed' column for the group operation which is the std
+        out['smoothed'] = (
+            out
+            .groupby('run_time', group_keys=False)['smoothed']
+            .apply(lambda s: s
+                .interpolate(method='linear', limit_direction='both')
+                .ffill()
+                .bfill()
+            )
+        )
+
+        out['normalized_resp'] = out[self.response_type] / out['smoothed']
+                
+        return out
+
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
@@ -182,6 +264,8 @@ class M4_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
+        norm = Normalizing(self.STANDARD_RUN_TYPE, self.response_type)
+        
         if end_date is None:
             end_date = datetime.today()
         else:
@@ -227,13 +311,22 @@ class M4_Instrument(HATS_DB_Functions):
         df['net_pressure']      = df['net_pressure'].astype(float)
         df['area']              = df['area']/df['net_pressure']         # response per pressure
         df['mole_fraction']     = df['mole_fraction'].astype(float)
+        df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int)        # used for plotting
-
+ 
         df['port_idx'] = df['port'].astype(int)
         df.loc[df['run_type_num'] == 5, 'port_idx'] = (
             df.loc[df['run_type_num'] == 5, 'flask_port'] + 20      # PFP ports are offset by 20
         )
+        
+        df = self.add_port_labels(df)
+        
+        self.data = df.sort_values('analysis_datetime')
+        return self.data
+        
+    def add_port_labels(self, df):
+        """ Helper function to add port labels to the dataframe. """
         
         # base port label on port_info and port number
         df['port_label'] = (
@@ -262,9 +355,8 @@ class M4_Instrument(HATS_DB_Functions):
         df['port_label'] = df['port_label'] \
                             .str.replace(r'\s+', ' ', regex=True) \
                             .str.strip()
-            
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
+        
+        return df            
 
 
 class FE3_Instrument(HATS_DB_Functions):
@@ -315,6 +407,8 @@ class FE3_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
+        norm = Normalizing(self.STANDARD_RUN_TYPE, self.response_type)
+        
         if end_date is None:
             end_date = datetime.today()
         else:
@@ -358,9 +452,17 @@ class FE3_Instrument(HATS_DB_Functions):
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
         df['mole_fraction']     = df['mole_fraction'].astype(float)
+        df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
+        df = self.add_port_labels(df)
+
+        self.data = df.sort_values('analysis_datetime')
+        return self.data
+        
+    def add_port_labels(self, df):
+        """ Helper function to add port labels to the dataframe. """
         # base port label on port_info and port number
         df['port_label'] = (
             df['port_info'].fillna('').str.strip() + ' (' +
@@ -380,10 +482,9 @@ class FE3_Instrument(HATS_DB_Functions):
         df['port_label'] = df['port_label'] \
                             .str.replace(r'\s+', ' ', regex=True) \
                             .str.strip()
-                            
-        
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
+
+        return df
+            
 
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
