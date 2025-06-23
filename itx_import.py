@@ -69,7 +69,7 @@ class ITX:
         if file.suffix == '.Z':
             return
 
-        z_path = file.with_suffix('.Z')
+        z_path = file.with_suffix('.itx.Z')
 
         # Avoid accidental overwrite
         if z_path.exists():
