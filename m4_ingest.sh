@@ -9,7 +9,7 @@ GSPC=/hats/gc/m4/MassHunter/GCMS/M4\ GSPC\ Files
 # CLEANUP: delete old data
 # ——————————————————————————————————————————————————————————————
 echo "Cleaning up files older than ${DAYS} days in $INCOMING"
-find "$INCOMING" -mindepth 1 -mtime +$DAYS -exec rm -rf {} + &
+find "$INCOMING" -mindepth 1 -mtime +$DAYS -exec rm -rf {} +
 
 # ——————————————————————————————————————————————————————————————
 # COPY: recent RAW and GSPC in parallel
@@ -19,7 +19,7 @@ for SRC in "$RAW" "$GSPC"; do
     echo "Syncing recent files from $SRC → $INCOMING"
     cd "$SRC"
     find . -mindepth 1 -maxdepth 1 -mtime -"$DAYS" -print0 \
-      | rsync -rlt --whole-file --quiet --from0 --files-from=- ./ "$INCOMING/"
+      | rsync -rlt --whole-file --quite--from0 --files-from=- ./ "$INCOMING/"
     echo "Done syncing $SRC"
   } &
 done
