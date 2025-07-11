@@ -183,17 +183,18 @@ class M4_SampleLogs(M4_Instrument):
         # Extract site, sample_time, and tank info from the 'info' column
         pattern = (
             r'^(?P<site>[A-Za-z0-9]{3})_?'
-            r'(?P<sample_time>(?:\d{1,2}_)?[A-Za-z]{3}_[0-9]{2})_?'
+            r'(?P<sample_time>(?:\d{1,2}[-_])?[A-Za-z]{3}[-_][0-9]{2})_?'
             r'#(?P<tank>[\w-]+)$'
         )
         mask_valid = mm['info'].str.lower().str[:3].isin(valid_sites)
         extracted = mm.loc[mask_valid, 'info'].str.extract(pattern)
         mm.loc[mask_valid, ['site', 'sample_time', 'tank']] = extracted[['site', 'sample_time', 'tank']]
+        #print(mm.loc[mm['site'] == 'mlo'][['info', 'sample_time', 'tank']])
         
-        # Convert sample_time to YYMMDD format (e.g., "06_jan_25" -> "250106")
-        mm.loc[mask_valid, 'sample_time'] = (
-            pd.to_datetime(mm.loc[mask_valid, 'sample_time'].str.title(),
-                        format='%d_%b_%y', errors='coerce')
+        # Title-case and normalize everything to dashes:
+        mm['norm'] = mm['sample_time'].str.title().str.replace('_', '-', regex=False)
+        mm['sample_time'] = (
+            pd.to_datetime(mm['norm'], format='%d-%b-%y', errors='coerce')
             .dt.strftime('%y%m%d')
         )
         
@@ -211,7 +212,7 @@ class M4_SampleLogs(M4_Instrument):
         # Label tanks matching a specific pattern as 'pfp'
         pfp_mask = mm['tank'].str.match(r'^\d{1,2}-(\d{4}|x{4})$', na=False)
         mm.loc[pfp_mask, 'samptype'] = 'pfp'
-        
+
         # Process flask runs: split the tank string into flask_id and pair_id.
         flask_mask = mm['samptype'] == 'flask'
         if flask_mask.any():
@@ -256,13 +257,14 @@ class M4_SampleLogs(M4_Instrument):
             else:
                 id_filter = f"{pfp}-{flask_id}"
 
+            #print(flask, pfp, flask_id, site_id, id_filter, row['sample_time'])
+
             sql = f"""
                 SELECT num FROM ccgg.flask_event 
                 WHERE date = '{row['sample_time']}'
                 AND site_num = {site_id}
                 AND id LIKE '{id_filter}';
             """
-
             result = self.db.doquery(sql)
             return result[0]['num'] if result else None
 
