@@ -19,7 +19,7 @@ for SRC in "$RAW" "$GSPC"; do
     echo "Syncing recent files from $SRC → $INCOMING"
     cd "$SRC"
     find . -mindepth 1 -maxdepth 1 -mtime -"$DAYS" -print0 \
-      | rsync -rlt --whole-file --quite--from0 --files-from=- ./ "$INCOMING/"
+      | rsync -rlt --whole-file --quite --from0 --files-from=- ./ "$INCOMING/"
     echo "Done syncing $SRC"
   } &
 done
