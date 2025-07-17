@@ -18,6 +18,8 @@ if __name__ == '__main__':
     SGwin, SGorder = 81, 4      # Savitzky Golay default variables
     WSTART = -1
     BOXWIDTH = 11  # Default box width for smoothing
+    O2_LOCK_CHANS = [0,1,2]
+    O2_LOCK_TIME = [60, 70, 60] # Retention times for O2 leading edge in seconds
     site = 'smo'
 
     parser = argparse.ArgumentParser(
@@ -28,6 +30,8 @@ if __name__ == '__main__':
         help='Apply wide spike filter (default off)')
     parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int, default=BOXWIDTH,
         help=f'Apply a Box smooth with window width (default = {BOXWIDTH})')
+    parser.add_argument('-lock', action='store_true', default=True,
+        help='Lock the oxygen peak to a specific retention time (default is False)')
     parser.add_argument('-g', action='store_true', default=False,
         help='Apply Savitzky Golay smoothing (default is False)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win',
@@ -44,6 +48,8 @@ if __name__ == '__main__':
         help=f'Valid station code (default is {site})')
 
     args = parser.parse_args()
+    args.O2_LOCK_CHANS = O2_LOCK_CHANS
+    args.O2_LOCK_TIMES = O2_LOCK_TIME
 
     ie3 = IE3_import(args.site, args)
     if args.reimport:

@@ -72,8 +72,8 @@ class ITX:
         z_path = file.with_suffix('.itx.Z')
 
         # Avoid accidental overwrite
-        if z_path.exists():
-            raise FileExistsError(f"Destination file already exists: {z_path}")
+        #if z_path.exists():
+        #    raise FileExistsError(f"Destination file already exists: {z_path}")
 
         with file.open('rb') as f_in, gzip.open(z_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
@@ -198,7 +198,7 @@ class ITX:
     def wide_spike_filter(self, ch, start=40):
         # import matplotlib.pyplot as plt
         """ Removes spikes that are wider than one-point (ie the other spike filter)
-              that occur after the 'start' time (seconds after injection).
+            that occur after the 'start' time (seconds after injection).
             Finds spikes using 2nd derivative.  Spikes are about 2 seconds wide.
         """
         thresh = 3000
@@ -266,7 +266,64 @@ class ITX:
         else:
             self.variable_window_smooth(ch, winsize)
     """
-           
+
+    def o2_lock(self, channels, ref_times, threshold=1000, roll_window=10):
+        """
+        Align specified channels in itx.chroms so that their O₂ leading‐edge
+        (where d(signal)/dt crosses `threshold`) lands at each given ref_time.
+        Shifts by integer samples and pads out‐of‐bounds with the first/last point.
+        
+        Parameters
+        ----------
+        itx : object
+            Must have attributes:
+            - chroms: np.ndarray, shape (n_channels, n_samples)
+            - datafreq: float, samples per second
+        channels : list of int
+            Channel indices (0‐based) to align.
+        ref_times : list of float
+            Desired alignment times in seconds, same order as `channels`.
+        threshold : float, optional
+            Derivative threshold for O₂‐edge detection (default=1000).
+        roll_window : int, optional
+            Window length for smoothing the derivative (default=10).
+        """
+        # build a DataFrame [time × channels]
+        n_ch, n_samp = self.chroms.shape
+        t = np.linspace(0, n_samp/self.datafreq, n_samp)
+        col_names = [f"chan{i}" for i in range(n_ch)]
+        df = pd.DataFrame(self.chroms.T, index=t, columns=col_names)
+        
+        # smoothed derivative
+        ddt_s = df.diff().rolling(window=roll_window, center=True).mean()
+        
+        # detect actual peak times
+        peak_times = {}
+        for idx in channels:
+            col = col_names[idx]
+            hits = ddt_s[col] > threshold
+            peak_times[idx] = hits.idxmax() if hits.any() else np.nan
+        
+        # prepare new array and sampling rate
+        fs = self.datafreq
+        new_chroms = self.chroms.copy()
+        
+        # shift each channel
+        for idx, t_ref in zip(channels, ref_times):
+            t_peak = peak_times[idx]
+            if np.isfinite(t_peak):
+                # compute shift in samples
+                shift_samp = int(round((t_peak - t_ref) * fs))
+                orig = self.chroms[idx]
+                # build shifted‐index and clip to [0, n_samp-1]
+                ind = np.arange(n_samp) + shift_samp
+                ind_clip = np.clip(ind, 0, n_samp-1)
+                new_chroms[idx] = orig[ind_clip]
+            # else: leave that channel unchanged
+        
+        # overwrite the original array
+        self.chroms = new_chroms
+
     def display(self, ch):
         import matplotlib.pyplot as plt
         num = self.chroms.shape[1]
