@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QComboBox, QPushButton, QRadioButton,
-    QButtonGroup, QScrollArea, QSizePolicy, QSpacerItem
+    QButtonGroup, QScrollArea, QSizePolicy, QSpacerItem, QCheckBox
 )
 from PyQt5.QtCore import Qt, QDateTime
 
@@ -42,8 +42,9 @@ class RubberBandOverlay(QWidget):
         painter.end()
 
 class FastNavigationToolbar(NavigationToolbar):
-    def __init__(self, canvas, parent):
-        super().__init__(canvas, parent)
+    def __init__(self, canvas, main_window):
+        super().__init__(canvas, main_window)
+        self.main_window = main_window  # Store a reference to the MainWindow
         # disable the built-in rubberband (a QWidget we don’t use)
         self.rubberband = None
 
@@ -84,11 +85,17 @@ class FastNavigationToolbar(NavigationToolbar):
         super().press_zoom(event)
 
     def release_zoom(self, event):
-        # first let the base class do the zoom…
+        # First let the base class handle the zoom
         super().release_zoom(event)
         rcParams['lines.antialiased'] = self._old_aa
-        # …then hide our overlay
+        # Hide the overlay
         self._overlay.hide()
+
+        # Use the stored reference to MainWindow
+        if self.main_window.lock_y_axis_cb.isChecked():
+            ax = self.canvas.figure.gca()
+            self.main_window.y_axis_limits = ax.get_ylim()
+            print("Y-Axis limits saved after zoom:", self.main_window.y_axis_limits)
         
 class MainWindow(QMainWindow):
     def __init__(self, instrument):
@@ -105,6 +112,7 @@ class MainWindow(QMainWindow):
         self.current_run_times = []   # will be a sorted list of QDateTime strings
         self.current_run_time = None  # currently selected run_time (QDateTime string)
         self.data = pd.DataFrame()  # Placeholder for loaded data
+        self.y_axis_limits = None  # Store y-axis limits when locked
 
         # Set up the UI
         self.init_ui()
@@ -237,11 +245,30 @@ class MainWindow(QMainWindow):
         self.plot_radio_group.addButton(resp_rb, id=0)
         self.plot_radio_group.addButton(ratio_rb, id=1)
         self.plot_radio_group.addButton(mole_fraction_rb, id=2)
-        # Set "Resp" as the default selected option
         resp_rb.setChecked(True)
         self.plot_radio_group.idClicked[int].connect(self.on_plot_type_changed)
 
-        left_layout.addWidget(plot_gb)
+        # Options GroupBox
+        options_gb = QGroupBox("Options")
+        options_layout = QVBoxLayout()
+        options_layout.setSpacing(6)
+        options_gb.setLayout(options_layout)
+
+        self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")
+        self.lock_y_axis_cb.setChecked(False)
+        self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
+        options_layout.addWidget(self.lock_y_axis_cb)
+
+        # Combine plot_gb and options_gb into a single group box
+        combined_gb = QGroupBox("Plot and Options")
+        combined_layout = QHBoxLayout()
+        combined_layout.setSpacing(12)
+        combined_gb.setLayout(combined_layout)
+
+        combined_layout.addWidget(plot_gb, stretch=1)
+        combined_layout.addWidget(options_gb, stretch=1)
+
+        left_layout.addWidget(combined_gb)
 
         # Stretch to push everything to the top
         left_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -253,7 +280,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.canvas)
 
         # Add a NavigationToolbar for the figure
-        self.toolbar = FastNavigationToolbar(self.canvas, self)
+        self.toolbar = FastNavigationToolbar(self.canvas, self)  # Pass self explicitly
         right_layout.addWidget(self.toolbar)
 
         # Add both panes to the main hbox
@@ -277,6 +304,7 @@ class MainWindow(QMainWindow):
         else:
             self.gc_plot('mole_fraction')
         self.current_plot_type = id
+        self.lock_y_axis_cb.setChecked(False)
     
     def gc_plot(self, yparam='resp'):
         """
@@ -320,7 +348,6 @@ class MainWindow(QMainWindow):
 
         legend_handles = []
         for port in ports_in_run:
-            # Lookup color (default to gray if missing)
             col = self.instrument.COLOR_MAP.get(port, 'gray')
             label = port_label_map.get(port, str(port))
             legend_handles.append(
@@ -341,13 +368,19 @@ class MainWindow(QMainWindow):
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.legend(
             handles=legend_handles,
-            loc='center left',            # Legend’s “anchor point”
-            bbox_to_anchor=(1.02, 0.8),  # (x, y) in axis-fraction coordinates
+            loc='center left',
+            bbox_to_anchor=(1.02, 0.8),
             fontsize=9,
             frameon=False
         )
-        self.canvas.draw()
 
+        if self.lock_y_axis_cb.isChecked():
+            # Store the current y-axis limits when locked
+            ax.set_ylim(self.y_axis_limits)
+            print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
+        
+        self.canvas.draw()
+        
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()
@@ -553,10 +586,7 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.current_run_times):
             return
         self.current_run_time = self.current_run_times[index]
-
-        #print(f">>> Selected run_time: {self.current_run_time}")
-        self.on_plot_type_changed(self.current_plot_type)
-        #self.gc_plot()
+        self.gc_plot()  # Trigger plot update
 
     def on_prev_run(self):
         """
@@ -573,6 +603,18 @@ class MainWindow(QMainWindow):
         idx = self.run_cb.currentIndex()
         if idx < (self.run_cb.count() - 1):
             self.run_cb.setCurrentIndex(idx + 1)
+
+    def on_lock_y_axis_toggled(self, state):
+        """
+        Called when the lock_y_axis_cb checkbox is toggled.
+        """
+        ax = self.canvas.figure.gca()  # Get the current axis from the canvas
+        if state == Qt.Checked:
+            self.y_axis_limits = ax.get_ylim()  # Save the current y-axis limits
+            print("Y-Axis scale locked:", self.y_axis_limits)
+        else:
+            self.y_axis_limits = None  # Clear the saved limits
+            print("Y-Axis scale unlocked.")
 
 
 def get_instrument_for(instrument_id: str):
