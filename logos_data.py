@@ -280,7 +280,7 @@ class MainWindow(QMainWindow):
     
     def gc_plot(self, yparam='resp'):
         """
-        Plot 'Response' (self.data.area vs self.data.analysis_datetime) with the legend outside the plotting area.
+        Plot data with the legend sorted by analysis_datetime.
         """
         if self.data.empty:
             print("No data available for plotting.")
@@ -305,41 +305,44 @@ class MainWindow(QMainWindow):
         else:
             print(f"Unknown yparam: {yparam}")
             return
-                
+
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
-        ports_in_run = sorted(self.run['port_idx'].dropna().unique())          
+        ports_in_run = sorted(self.run['port_idx'].dropna().unique())
 
         port_label_map = (
             self.run
-            .loc[self.run['port_idx'].notna(), ['port_idx','port_label']]
+            .loc[self.run['port_idx'].notna(), ['analysis_datetime', 'port_idx', 'port_label']]
             .drop_duplicates()
+            .sort_values('analysis_datetime')  # Sort by analysis_datetime
             .set_index('port_idx')['port_label']
             .to_dict()
         )
-            
+
         legend_handles = []
         for port in ports_in_run:
-            # lookup color (default to gray if missing)
+            # Lookup color (default to gray if missing)
             col = self.instrument.COLOR_MAP.get(port, 'gray')
             label = port_label_map.get(port, str(port))
             legend_handles.append(
                 mpatches.Patch(color=col, label=label)
             )
-    
+
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
+        if yparam == 'resp':
+            ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
         ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel)
 
-        box = ax.get_position()  
+        box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.legend(
             handles=legend_handles,
-            loc='center left',            # legend’s “anchor point”
-            bbox_to_anchor=(1.02, 0.8),    # (x, y) in axis-fraction coordinates
+            loc='center left',            # Legend’s “anchor point”
+            bbox_to_anchor=(1.02, 0.8),  # (x, y) in axis-fraction coordinates
             fontsize=9,
             frameon=False
         )

@@ -19,8 +19,12 @@ class HATS_DB_Functions(LOGOS_Instruments):
     """ Class for accessing HATS database functions related to instruments. 
         Tailored to works on 'next generation' or 'ng_' tables."""
         
-    def __init__(self):
+    def __init__(self, inst_id=None):
         super().__init__()
+        self.inst_id = inst_id or 'fe3'  # Default to 'fe3' if no inst_id is provided
+        self.inst_num = self.INSTRUMENTS.get(self.inst_id)  # Lookup inst_num from INSTRUMENTS
+        if self.inst_num is None:
+            raise ValueError(f"Invalid instrument ID: {self.inst_id}")
 
         # database connection
         sys.path.append('/ccg/src/db/')
@@ -134,8 +138,9 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
 class Normalizing():
     
-    def __init__(self, std_run_type=8, response_type='area'):
-        self.STANDARD_RUN_TYPE = std_run_type
+    def __init__(self, std_run_type, run_type_column, response_type='area'):
+        self.run_type_column = run_type_column
+        self.standard_run_type = std_run_type
         self.response_type = response_type
 
     def _smooth_segment(self, seg, frac):
@@ -161,12 +166,16 @@ class Normalizing():
             The smoothed values are returned in a new column 'smoothed'.
         """
         std = (
-            df.loc[df['run_type_num'] == self.STANDARD_RUN_TYPE,
+            df.loc[df[self.run_type_column] == self.standard_run_type,
                     ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]]
                 .dropna()
                 .sort_values('analysis_datetime')
                 .copy()
         )
+        
+        # keep only those rows *after* the first in each run_time
+        # this is to avoid smoothing the first point in each run_time which is often an outlier
+        std = std[std.groupby('run_time').cumcount() > 0].copy()
         
         # Not enough points to smooth
         if len(std) < min_pts:
@@ -264,7 +273,7 @@ class M4_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
-        norm = Normalizing(self.STANDARD_RUN_TYPE, self.response_type)
+        norm = Normalizing(self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
@@ -289,7 +298,7 @@ class M4_Instrument(HATS_DB_Functions):
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
-                AND area != 0
+                #AND area != 0
                 AND detrend_method_num != 3
                 AND low_flow != 1
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
@@ -314,8 +323,7 @@ class M4_Instrument(HATS_DB_Functions):
         df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int)        # used for plotting
- 
-        df['port_idx'] = df['port'].astype(int)
+
         df.loc[df['run_type_num'] == 5, 'port_idx'] = (
             df.loc[df['run_type_num'] == 5, 'flask_port'] + 20      # PFP ports are offset by 20
         )
@@ -362,7 +370,7 @@ class M4_Instrument(HATS_DB_Functions):
 class FE3_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
-    STANDARD_RUN_TYPE = 1       # port number the standard is run on.
+    STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     # color map made for a combination of SSV and Flask ports.
     COLOR_MAP = {
@@ -407,7 +415,7 @@ class FE3_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
-        norm = Normalizing(self.STANDARD_RUN_TYPE, self.response_type)
+        norm = Normalizing(self.STANDARD_PORT_NUM, 'port', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
