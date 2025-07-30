@@ -69,8 +69,11 @@ class GCwerks_Import:
                 itx.spike_filter('all')
             if int(self.options['ws_start']) > -1:
                 itx.wide_spike_filter('all', start=int(self.options['ws_start']))
-            if self.options['O2_LOCK_CHANS'] and self.options['O2_LOCK_TIMES']:
-                itx.o2_lock(self.options['O2_LOCK_CHANS'], self.options['O2_LOCK_TIMES'])
+            try:
+                if self.options['O2_LOCK_CHANS'] and self.options['O2_LOCK_TIMES']:
+                    itx.o2_lock(self.options['O2_LOCK_CHANS'], self.options['O2_LOCK_TIMES'])
+            except KeyError:
+                pass
             # apply Box smoothing
             if self.options['boxwidth'] is not None:
                 itx.box_smooth('all', winsize=self.options['boxwidth'])
