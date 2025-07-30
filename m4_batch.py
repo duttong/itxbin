@@ -209,7 +209,7 @@ class M4_Processing(M4_Instrument):
     def insert_mole_fractions(self, df):
         """
         Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
-        This function uses db.doMultiInsert to perform the insertions.
+        Any non‑numeric mole_fraction (including blank strings) becomes NULL.
         """
         sql_insert = """
             INSERT INTO hats.ng_mole_fractions (
@@ -220,36 +220,35 @@ class M4_Processing(M4_Instrument):
                 %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
-                analysis_num   = VALUES(analysis_num),
-                parameter_num  = VALUES(parameter_num),
-                mole_fraction  = VALUES(mole_fraction)
-            """
+                mole_fraction = VALUES(mole_fraction)
+        """
 
-        df = df.fillna('')
+        # Coerce everything to float, invalid parses → NaN, then round
+        df = df.copy()
+        df['mole_fraction'] = (
+            pd.to_numeric(df['mole_fraction'], errors='coerce')
+            .round(5)
+        )
+
         params = []
-
         for _, row in df.iterrows():
-            try:
-                # Ensure mole_fraction is numeric, or set to None if conversion fails
-                mole_fraction = (
-                    round(float(row.mole_fraction), 5) if pd.notna(row.mole_fraction) else None
-                )
-                p = (
-                    row.analysis_num,  # analysis_num
-                    row.parameter_num,  # parameter_num
-                    mole_fraction       # mole_fraction (None if blank or NaN)
-                )
-            except (TypeError, ValueError) as e:
-                #print(f"Error {e} processing row: {row}")
-                continue
-            
-            params.append(p)
+            # Convert pandas NaN → Python None so INSERT writes a NULL
+            mf = row.mole_fraction
+            mole_fraction = None if pd.isna(mf) else float(mf)
 
-            if self.db.doMultiInsert(sql_insert, params): 
-                params=[]
+            params.append((
+                row.analysis_num,
+                row.parameter_num,
+                mole_fraction
+            ))
 
-        # Process any remaining rows in the final batch:
-        self.db.doMultiInsert(sql_insert, params, all=True)
+            # flush batch if doMultiInsert returns True
+            if self.db.doMultiInsert(sql_insert, params):
+                params = []
+
+        # any trailing rows
+        if params:
+            self.db.doMultiInsert(sql_insert, params, all=True)
 
 def main():
     parser = argparse.ArgumentParser(
