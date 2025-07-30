@@ -123,6 +123,10 @@ class M4_Processing(M4_Instrument):
             std['smoothed'] = np.nan
             return std[['analysis_datetime','run_time','smoothed']]
 
+        # keep only those rows *after* the first in each run_time
+        # this is to avoid smoothing the first point in each run_time which is often an outlier
+        std = std[std.groupby('run_time').cumcount() > 0].copy()
+        
         std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
         
         detrend_method = std['detrend_method_num'].iat[0]
