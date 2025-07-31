@@ -259,6 +259,11 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
+        self.toggle_grid_cb = QCheckBox("Toggle Grid")
+        self.toggle_grid_cb.setChecked(True)  # Default to showing grid
+        self.toggle_grid_cb.stateChanged.connect(self.on_toggle_grid_toggled)
+        options_layout.addWidget(self.toggle_grid_cb)
+
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("Plot and Options")
         combined_layout = QHBoxLayout()
@@ -303,8 +308,10 @@ class MainWindow(QMainWindow):
             self.gc_plot('ratio')
         else:
             self.gc_plot('mole_fraction')
-        self.current_plot_type = id
-        self.lock_y_axis_cb.setChecked(False)
+        
+        if id != self.current_plot_type:
+            self.current_plot_type = id
+            self.lock_y_axis_cb.setChecked(False)
     
     def gc_plot(self, yparam='resp'):
         """
@@ -364,6 +371,11 @@ class MainWindow(QMainWindow):
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel)
 
+        if self.toggle_grid_cb.isChecked():
+            ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+        else:
+            ax.grid(False)
+
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.legend(
@@ -383,10 +395,13 @@ class MainWindow(QMainWindow):
                 ax.set_ylim(self.y_axis_limits)
             #print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
         else:
-            ax.set_ylim(
-                self.run[yvar].min() * 0.95,
-                self.run[yvar].max() * 1.05
-            )
+            try:
+                ax.set_ylim(
+                    self.run[yvar].min() * 0.95,
+                    self.run[yvar].max() * 1.05
+                )
+            except ValueError:
+                pass  # In case of empty data, do not set limits
         
         self.canvas.draw()
         
@@ -590,12 +605,11 @@ class MainWindow(QMainWindow):
     def on_run_changed(self, index):
         """
         Called whenever the user picks a different run_time in run_cb. 
-        Right now, we just print it. Later, you’d update the plot on the right side.
         """
         if index < 0 or index >= len(self.current_run_times):
             return
         self.current_run_time = self.current_run_times[index]
-        self.gc_plot()  # Trigger plot update
+        self.on_plot_type_changed(self.current_plot_type)
 
     def on_prev_run(self):
         """
@@ -624,6 +638,13 @@ class MainWindow(QMainWindow):
         else:
             self.y_axis_limits = None  # Clear the saved limits
             #print("Y-Axis scale unlocked.")
+
+    def on_toggle_grid_toggled(self, state):
+        """
+        Called when the toggle_grid_cb checkbox is toggled.
+        """
+        self.on_plot_type_changed(self.current_plot_type)
+        #self.gc_plot()  # Update the plot to reflect grid state
 
 
 def get_instrument_for(instrument_id: str):
