@@ -44,58 +44,58 @@ class RubberBandOverlay(QWidget):
 class FastNavigationToolbar(NavigationToolbar):
     def __init__(self, canvas, main_window):
         super().__init__(canvas, main_window)
-        self.main_window = main_window  # Store a reference to the MainWindow
-        # disable the built-in rubberband (a QWidget we don’t use)
+        self.main_window = main_window
         self.rubberband = None
 
-        # build the dashed-pen
         pen = QtGui.QPen(self.palette().color(QtGui.QPalette.Highlight))
         pen.setStyle(QtCore.Qt.DashLine)
-
-        # make our overlay on top of the canvas
         self._overlay = RubberBandOverlay(canvas, pen)
-        
+
         canvas.mpl_connect(
-            'resize_event',
-            lambda evt: self._overlay.setGeometry(0, 0, canvas.width(), canvas.height())
+            "resize_event",
+            lambda evt: self._overlay.setGeometry(0, 0, canvas.width(), canvas.height()),
         )
 
     def draw_rubberband(self, event, x0, y0, x1, y1):
-            # 1) make the overlay match the canvas size
-            w, h = self.canvas.width(), self.canvas.height()
-            self._overlay.setGeometry(0, 0, w, h)
+        w, h = self.canvas.width(), self.canvas.height()
+        self._overlay.setGeometry(0, 0, w, h)
 
-            # 2) flip the y coordinates so (0,0) is top-left
-            y0i = h - y0
-            y1i = h - y1
+        y0i = h - y0
+        y1i = h - y1
 
-            # 3) build & normalize the rect in widget coords
-            self._overlay.rect = QtCore.QRectF(
-                QtCore.QPointF(x0, y0i),
-                QtCore.QPointF(x1, y1i)
-            ).normalized()
+        self._overlay.rect = QtCore.QRectF(
+            QtCore.QPointF(x0, y0i), QtCore.QPointF(x1, y1i)
+        ).normalized()
 
-            # 4) show & repaint
-            self._overlay.show()
-            self._overlay.update()
+        self._overlay.show()
+        self._overlay.update()
 
-    def press_zoom(self, event):
-        self._old_aa = rcParams['lines.antialiased']
-        rcParams['lines.antialiased'] = False
-        super().press_zoom(event)
-
-    def release_zoom(self, event):
-        # First let the base class handle the zoom
-        super().release_zoom(event)
-        rcParams['lines.antialiased'] = self._old_aa
-        # Hide the overlay
-        self._overlay.hide()
-
-        # Use the stored reference to MainWindow
+    def _save_y_limits_if_locked(self, context):
         if self.main_window.lock_y_axis_cb.isChecked():
             ax = self.canvas.figure.gca()
             self.main_window.y_axis_limits = ax.get_ylim()
-            print("Y-Axis limits saved after zoom:", self.main_window.y_axis_limits)
+            #print(f"Y-Axis limits saved after {context}:", self.main_window.y_axis_limits)
+
+    def press_zoom(self, event):
+        self._old_aa = rcParams["lines.antialiased"]
+        rcParams["lines.antialiased"] = False
+        super().press_zoom(event)
+
+    def release_zoom(self, event):
+        super().release_zoom(event)
+        rcParams["lines.antialiased"] = self._old_aa
+        self._overlay.hide()
+        self._save_y_limits_if_locked("zoom")
+
+    def press_pan(self, event):
+        self._old_aa = rcParams["lines.antialiased"]
+        rcParams["lines.antialiased"] = False
+        super().press_pan(event)
+
+    def release_pan(self, event):
+        super().release_pan(event)
+        rcParams["lines.antialiased"] = self._old_aa
+        self._save_y_limits_if_locked("pan")
         
 class MainWindow(QMainWindow):
     def __init__(self, instrument):
@@ -375,9 +375,18 @@ class MainWindow(QMainWindow):
         )
 
         if self.lock_y_axis_cb.isChecked():
-            # Store the current y-axis limits when locked
-            ax.set_ylim(self.y_axis_limits)
-            print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
+            # use the stored y-axis limits
+            if self.y_axis_limits is None:
+                # If no limits are set, use the current y-limits
+                self.y_axis_limits = ax.get_ylim()
+            else:
+                ax.set_ylim(self.y_axis_limits)
+            #print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
+        else:
+            ax.set_ylim(
+                self.run[yvar].min() * 0.95,
+                self.run[yvar].max() * 1.05
+            )
         
         self.canvas.draw()
         
@@ -611,10 +620,10 @@ class MainWindow(QMainWindow):
         ax = self.canvas.figure.gca()  # Get the current axis from the canvas
         if state == Qt.Checked:
             self.y_axis_limits = ax.get_ylim()  # Save the current y-axis limits
-            print("Y-Axis scale locked:", self.y_axis_limits)
+            #print("Y-Axis scale locked:", self.y_axis_limits)
         else:
             self.y_axis_limits = None  # Clear the saved limits
-            print("Y-Axis scale unlocked.")
+            #print("Y-Axis scale unlocked.")
 
 
 def get_instrument_for(instrument_id: str):
