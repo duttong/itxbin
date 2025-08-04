@@ -113,8 +113,18 @@ class MainWindow(QMainWindow):
         self.current_run_time = None  # currently selected run_time (QDateTime string)
         self.data = pd.DataFrame()  # Placeholder for loaded data
         self.y_axis_limits = None  # Store y-axis limits when locked
+        self.toggle_grid_cb = None  # Initialize toggle_grid_cb to avoid AttributeError
+        self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
 
         # Set up the UI
+        self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Initialize toggle_grid_cb
+        self.toggle_grid_cb.setChecked(True)  # Default to showing grid
+        self.toggle_grid_cb.stateChanged.connect(self.on_toggle_grid_toggled)
+
+        self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")  # Initialize lock_y_axis_cb
+        self.lock_y_axis_cb.setChecked(False)  # Default to unlocked
+        self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
+
         self.init_ui()
 
     def init_ui(self):
@@ -259,7 +269,7 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.toggle_grid_cb = QCheckBox("Toggle Grid")
+        self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Properly initialize toggle_grid_cb
         self.toggle_grid_cb.setChecked(True)  # Default to showing grid
         self.toggle_grid_cb.stateChanged.connect(self.on_toggle_grid_toggled)
         options_layout.addWidget(self.toggle_grid_cb)
@@ -342,6 +352,7 @@ class MainWindow(QMainWindow):
             return
 
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
+        #colors = self.run['sample_datetime'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
 
         port_label_map = (
@@ -476,9 +487,9 @@ class MainWindow(QMainWindow):
 
         names = list(self.analytes.keys())
         if len(names) <= 12:
-            # Use radio buttons in two columns: first 5 left, rest right
+            # Use radio buttons in two columns: first 6 left, rest right
             self.radio_group = QButtonGroup(self)
-            left  = names[:6]
+            left = names[:6]
             right = names[6:]
 
             # Left column (column 0)
@@ -494,6 +505,9 @@ class MainWindow(QMainWindow):
                 self.analyte_layout.addWidget(rb, row, 1)
                 self.radio_group.addButton(rb)
                 rb.toggled.connect(self.on_analyte_radio_toggled)
+
+            # Ensure the layout stretches properly to accommodate options_gb
+            self.analyte_layout.addWidget(QWidget(), len(left), 0, 1, 2)
 
             # Select the first radio button by default
             buttons = self.radio_group.buttons()
