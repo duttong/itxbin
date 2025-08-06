@@ -216,10 +216,23 @@ class M4_SampleLogs(M4_Instrument):
         # Process flask runs: split the tank string into flask_id and pair_id.
         flask_mask = mm['samptype'] == 'flask'
         if flask_mask.any():
-            flask_split = mm.loc[flask_mask, 'tank'].str.split('-', expand=True)
-            mm.loc[flask_mask, 'flask_id'] = flask_split[0].astype(str)
-            mm.loc[flask_mask, 'pair_id'] = flask_split[1].astype(str)
-        
+            tanks = mm.loc[flask_mask, 'tank'].astype(str)
+
+            # extract only if the entire string is digit-digit; else result is NaN
+            extracted = tanks.str.extract(r'^(\d+)-(\d+)$')  # columns 0=flask,1=pair
+
+            # fill invalid/missing with '0' and convert to int
+            flask_id = extracted[0].fillna('0').astype(int)
+            pair_id = extracted[1].fillna('0').astype(int)
+
+            # If the pattern didn't match, both should be zero. extracted gives NaN for both when it fails.
+            invalid = extracted.isna().any(axis=1)
+            flask_id.loc[invalid] = 0
+            pair_id.loc[invalid] = 0
+
+            mm.loc[flask_mask, 'flask_id'] = flask_id
+            mm.loc[flask_mask, 'pair_id'] = pair_id
+    
         # Map run type and compute ccgg event number.
         mm['run_type_num'] = mm['samptype'].str.lower().map(self.run_type_num())
         mm['ccgg_event_num'] = mm.apply(lambda row: self.fetch_ccgg_event_num(row), axis=1)
@@ -326,7 +339,7 @@ class M4_SampleLogs(M4_Instrument):
 
     def insert_ng_analysis(self, df):
         """
-        Inserts or updates rows in hats.ng_analysis using a batch upsert.
+        Inserts or updates rows in hats.ng_analysis using a batch insert.
         This function uses db.doMultiInsert to perform the insertions.
         """
         sql_insert = """
@@ -366,13 +379,13 @@ class M4_SampleLogs(M4_Instrument):
                     self.inst_num,     # inst_num (M4)
                     row.run_type_num,  # run_type_num
                     row.ssvpos,        # port (mapped from df['ssvpos'])
-                    row.tank,          # tank
+                    row.tank,          # tank (port_info)
                     row.pair_id,       # pair_id
                     row.flask_id,      # flask_id
                     row.ccgg_event_num # ccgg_event_num
                 )
                 params.append(p)
-
+    
                 if self.db.doMultiInsert(sql_insert, params): 
                     params=[]
 
@@ -461,7 +474,7 @@ class M4_SampleLogs(M4_Instrument):
                 row.pfp_press1,      # pfp_press1
                 row.pfp_press2,      # pfp_press2
                 row.pfp_press3       # pfp_press3
-            )
+            )           
             params.append(p)
 
             if self.db.doMultiInsert(sql_insert, params): 
@@ -494,7 +507,6 @@ if __name__ == '__main__':
         
     if options.insert:
         pd.set_option('future.no_silent_downcasting', True)
-        #df = df.set_index('dt_x', drop=False)
         df = m4.ng_analysis(df)
         m4.insert_ancillary_data(df)
         print(f'Inserted or updated {df.shape[0]} rows in hats.ng_analysis and ng_ancillary_data.')
