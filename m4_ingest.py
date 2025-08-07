@@ -142,7 +142,7 @@ def main():
     clean_incoming(args.incoming, threshold)
     sync_raw(args.raw, args.incoming, threshold)
     sync_gspc(args.gspc, args.incoming, threshold)
-    run_commands(args.incoming)
+    run_commands('/hats/gc/m4')
 
 
 if __name__ == "__main__":
