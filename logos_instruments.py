@@ -2,13 +2,14 @@ import sys
 import pandas as pd
 import numpy as np
 import re
+from functools import cached_property
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
-    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 999} 
+    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220} 
 
     def __init__(self):
         # gcwerks-3 path
@@ -56,6 +57,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         sql = "SELECT * FROM hats.ng_run_types;"
         r = self.doquery(sql)
         results = {entry['name'].lower(): entry['num'] for entry in r}
+        results['cal'] = 2
         results['std'] = 8
         return results
 
@@ -293,7 +295,7 @@ class M4_Instrument(HATS_DB_Functions):
         print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port, port_info, flask_port, detrend_method_num, 
+            SELECT analysis_datetime, run_time, sample_datetime, run_type_num, port, port_info, flask_port, detrend_method_num, 
                 area, mole_fraction, net_pressure, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
             WHERE inst_num = {self.inst_num}
@@ -312,6 +314,7 @@ class M4_Instrument(HATS_DB_Functions):
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
         df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
+        df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='raise', utc=True)
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['port']              = df['port'].astype(int)
@@ -383,29 +386,53 @@ class FE3_Instrument(HATS_DB_Functions):
     
     def __init__(self):
         super().__init__()
-        self.inst_id = 'fe3'
-        self.inst_num = 193
-        self.start_date = '20191217'         # data before this date is not used.
-        self.gc_dir = Path("/hats/gc/fe3")
-        self.export_dir = self.gc_dir / "results"
-        
-        self.molecules = self.query_molecules()
-        self.analytes = self.query_analytes()
-        self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
+        self.inst_id     = 'fe3'
+        self.inst_num    = 193
+        self.start_date  = '20191217'
+        self.gc_dir      = Path("/hats/gc/fe3")
+        self.export_dir  = self.gc_dir / "results"
         self.response_type = 'height'
 
-        # code to handle CFC11 and CFC113 on two channels
-        new = {}
-        for name, num in self.analytes.items():
-            if name in ('CFC11', 'CFC113'):
-                # rename to (a) then duplicate with (c)
-                new[f"{name} (a)"] = num
-            else:
-                new[name] = num
-        self.analytes = new
-        self.analytes['CFC11 (c)'] = self.analytes['CFC11 (a)']
-        self.analytes['CFC113 (c)'] = self.analytes['CFC113 (a)']
+        # query raw molecule/analyte dicts
+        self.molecules  = self.query_molecules()
+        raw_analytes    = self.query_analytes()
+        self.analytes_inv = {int(v): k for k, v in raw_analytes.items()}
 
+        # rename CFC11/113 to “(a)” and add “(c)”
+        self.analytes = {
+            (f"{name} (a)" if name in ('CFC11','CFC113') else name): num
+            for name, num in raw_analytes.items()
+        }
+        self.analytes.update({
+            'CFC11 (c)': self.analytes['CFC11 (a)'],
+            'CFC113 (c)': self.analytes['CFC113 (a)'],
+        })
+
+    @cached_property
+    def gc_channels(self) -> dict[str, list[str]]:
+        """channel → [display_name, …]"""
+        df = pd.DataFrame(self.db.doquery(
+            f"SELECT display_name, channel FROM hats.analyte_list WHERE inst_num = {self.inst_num}"
+        ))
+        return df.groupby('channel')['display_name'].apply(list).to_dict()
+
+    @cached_property
+    def molecule_channel_map(self) -> dict[str, str]:
+        """lowercase molecule → channel"""
+        return {
+            mol.lower(): ch
+            for ch, mols in self.gc_channels.items()
+            for mol in mols
+        }
+
+    def return_preferred_channel(self, gas: str) -> str | None:
+        gas_l = gas.lower()
+        # override for CFC11/113
+        if gas_l in ('cfc11','cfc113'):
+            return 'c'
+        # otherwise lookup in the precomputed map
+        return self.molecule_channel_map.get(gas_l)
+    
     def load_data(self, pnum, channel=None, start_date=None, end_date=None):
         """Load data from the database with date filtering.
         Args:
@@ -444,7 +471,7 @@ class FE3_Instrument(HATS_DB_Functions):
                 {channel_str}
                 AND height != 0
                 AND run_type_num != {self.WARMUP_RUN_TYPE}
-                AND detrend_method_num != 3
+                #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
@@ -473,26 +500,41 @@ class FE3_Instrument(HATS_DB_Functions):
         """ Helper function to add port labels to the dataframe. """
         # base port label on port_info and port number
         df['port_label'] = (
-            df['port_info'].fillna('').str.strip() + ' (' +
+            df['port_info'].fillna('unknown').str.strip() + ' (' +
             df['port'].astype(int).astype(str) + ')'
         )
 
-        # flask_port label
+        # flask_port label: if site is NaN, use port_info instead
         mask = df['flask_port'].notna()
+        # create a "prefix" that is site when present, otherwise port_info
+        prefix = (
+            df.loc[mask, 'site']
+            .fillna(df.loc[mask, 'port_info'])
+            .str.strip()
+        )
+        # now concatenate everything off that prefix
         df.loc[mask, 'port_label'] = (
-            df.loc[mask, 'site'] + ' ' +
-            df.loc[mask, 'pair_id_num'].astype(int).astype(str) + '-' +
-            df.loc[mask, 'sample_id'].astype(int).astype(str) + ' (' +
+            prefix + ' ' +
+            #df.loc[mask, 'port_info'].fillna('') +
+            df.loc[mask, 'pair_id_num'].fillna(0).astype(int).astype(str) + '-' +
+            df.loc[mask, 'sample_id'].fillna(0).astype(int).astype(str) + ' (' +
             df.loc[mask, 'flask_port'].astype(int).astype(str) + ')'
         )
 
         # clean up any stray spaces
-        df['port_label'] = df['port_label'] \
-                            .str.replace(r'\s+', ' ', regex=True) \
-                            .str.strip()
+        df['port_label'] = (
+            df['port_label']
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.strip()
+        )
+        
+        df['port_label'] = (
+            df['port_label']
+            .str.replace('0-0 (0)', '')
+            .str.strip()
+        )
 
         return df
-            
 
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
