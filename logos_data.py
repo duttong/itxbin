@@ -98,6 +98,7 @@ class FastNavigationToolbar(NavigationToolbar):
         self._save_y_limits_if_locked("pan")
         
 class MainWindow(QMainWindow):
+    
     def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
         super().__init__()
@@ -125,9 +126,17 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.setChecked(False)  # Default to unlocked
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
 
+        self.RUN_TYPE_MAP = {
+            "All": None,        # no filter
+            "Flasks": 1,        # run_type_num
+            "Calibrations": 2,
+            "PFPs": 5,
+        }
+
         self.init_ui()
 
     def init_ui(self):
+
         # Central widget + top‐level layout
         central = QWidget()
         self.setCentralWidget(central)
@@ -196,6 +205,17 @@ class MainWindow(QMainWindow):
         date_layout.addSpacing(12)
         date_layout.addWidget(self.apply_date_btn)
 
+        # Run Type Selection ComboBox  
+        self.runTypeCombo = QComboBox(self)
+        self.runTypeCombo.addItems(list(self.RUN_TYPE_MAP.keys()))
+        self.runTypeCombo.setCurrentText("All")
+        self.runTypeCombo.currentTextChanged.connect(self.on_apply_month_range)
+        
+        # If you have a grid/box layout:
+        runtype_row = QHBoxLayout()
+        runtype_row.addWidget(QLabel("Run Type:"))
+        runtype_row.addWidget(self.runTypeCombo)
+        
         # Run Selection GroupBox
         run_gb = QGroupBox("Run Selection")
         run_layout = QVBoxLayout()
@@ -217,6 +237,7 @@ class MainWindow(QMainWindow):
         runsel_hbox.addWidget(self.run_cb, stretch=1)
         runsel_hbox.addWidget(self.next_btn)
         run_layout.addLayout(runsel_hbox)
+        run_layout.addLayout(runtype_row)
 
         left_layout.addWidget(run_gb)
 
@@ -437,6 +458,15 @@ class MainWindow(QMainWindow):
             start_date=start_sql,
             end_date=end_sql
         )
+
+        # If runTypeCombo is set, filter the data by run_type_num
+        run_type = self.runTypeCombo.currentText()
+        run_type_num = self.RUN_TYPE_MAP.get(run_type, None)
+        if run_type_num is not None:
+            # Filter the DataFrame for the selected run_type_num
+            times = set(self.data.loc[self.data['run_type_num'] == run_type_num, 'run_time'])
+            self.data = self.data[self.data['run_time'].isin(times)]
+            #self.data = self.data[self.data['run_type_num'] == run_type_num]
         
         # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
@@ -561,6 +591,15 @@ class MainWindow(QMainWindow):
             start_date=start_sql,
             end_date=end_sql
         )
+       
+        # If runTypeCombo is set, filter the data by run_type_num
+        run_type = self.runTypeCombo.currentText()
+        run_type_num = self.RUN_TYPE_MAP.get(run_type, None)
+        if run_type_num is not None:
+            # Filter the DataFrame for the selected run_type_num
+            times = set(self.data.loc[self.data['run_type_num'] == run_type_num, 'run_time'])
+            self.data = self.data[self.data['run_time'].isin(times)]
+            #self.data = self.data[self.data['run_type_num'] == run_type_num]
 
         # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
@@ -615,7 +654,7 @@ class MainWindow(QMainWindow):
         (In your real code, you’d translate “last-two-weeks” → a concrete date range.)
         """
         return self.date_filter_cb.currentText()
-
+        
     def on_run_changed(self, index):
         """
         Called whenever the user picks a different run_time in run_cb. 
