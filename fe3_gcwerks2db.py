@@ -197,8 +197,9 @@ class FE3_Prepare(fe3_inst):
         
         if duration != 'all':
             last_date = w_df.index.max()
+            w_start_date = last_date - DateOffset(months=duration) - DateOffset(days=1)
             start_date = last_date - DateOffset(months=duration)
-            w_df = w_df[start_date:]
+            w_df = w_df[w_start_date:]
             r_df = r_df[start_date:]
 
         df = pd.merge_asof(w_df, r_df,
@@ -223,7 +224,7 @@ class FE3_Prepare(fe3_inst):
         clean['run_time'] = pd.to_datetime(df['dir'])
         
         t = self.run_type_num()
-        clean['run_type_num'] = df['type'].astype(str).map(t).astype(int)
+        clean['run_type_num'] = clean['type'].astype(str).map(t).astype(int)
     
         splits = clean['port_id'].apply(self.split_pairid_flaskid)
 
