@@ -235,6 +235,133 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df.rename(columns={'run_date': 'run_time'}, inplace=True)
         return df
 
+    def select_cal_and_compute_mf(
+        self,
+        df: pd.DataFrame,
+        curves: pd.DataFrame,
+        resp_col: str = "normalized_resp",
+        by: list | None = None,           # e.g., ['channel','serial_number'] if you keep multiple families
+        flag_col: str = "flag",
+        flagged_val: int = 1,
+        mf_min: float = 0.0,              # domain hint for choosing a sensible root
+        mf_max: float | None = None,      # set e.g. to an expected upper bound if you have one
+    ) -> pd.DataFrame:
+        """
+        For each row in df, attach the latest unflagged calibration with cal.run_time <= df.run_time,
+        then invert y = c0 + c1*x + c2*x^2 + c3*x^3 to get x = mf_calc from y=df[resp_col].
+
+        Returns a new DataFrame with columns: coef0..coef3, function (if present), and mf_calc.
+        Rows with no eligible older calibration (or non-invertible polynomials) get mf_calc = NaN.
+        """
+        if resp_col not in df.columns:
+            raise KeyError(f"df is missing '{resp_col}'")
+
+        out = df.copy()
+        curves = curves.copy()
+        
+        out['run_time']    = self._ensure_utc(out['run_time'])
+        curves['run_time'] = self._ensure_utc(curves['run_time'])
+
+        # Keep unflagged calibrations (flag != flagged_val OR NaN)
+        cal = curves.loc[curves[flag_col].ne(flagged_val) | curves[flag_col].isna(),
+                        ['run_time','serial_number','coef0','coef1','coef2','coef3'] + (['function'] if 'function' in curves else [])]
+
+        # Sort for merge_asof
+        by = list(by) if by else []
+        cal = cal.sort_values(by + ['run_time']).reset_index(drop=True)
+
+        # Build one row per (by..., run_time) to resolve calibration once per run group (fast)
+        unique_runs = out.drop_duplicates(subset=by + ['run_time'])[[*by, 'run_time']].sort_values(by + ['run_time'])
+
+        # As-of merge: latest cal where cal.run_time <= run.run_time, respecting 'by' partitions if any
+        cal_for_run = pd.merge_asof(
+            unique_runs,
+            cal,
+            on='run_time',
+            by=by if by else None,
+            direction='backward',
+            allow_exact_matches=True
+        )
+
+        # Attach coefficients back to every row by (by..., run_time)
+        out = out.merge(cal_for_run, on=[*by, 'run_time'], how='left', validate='many_to_one')
+
+        # --- Invert polynomial: resp -> mf ----------------------------------------------------------
+        r  = out[resp_col].astype(float)
+        c0 = out['coef0']
+        c1 = out['coef1']
+        c2 = out['coef2']
+        c3 = out['coef3']
+
+        # Helper: invert a single polynomial
+        def _invert_poly_to_mf(y, a0, a1, a2, a3):
+            # No calibration? (all NaN) or all-zero coefs -> NaN
+            if pd.isna(a0) and pd.isna(a1) and pd.isna(a2) and pd.isna(a3):
+                return np.nan
+            if (a0 == 0 or pd.isna(a0)) and (a1 == 0 or pd.isna(a1)) and (a2 == 0 or pd.isna(a2)) and (a3 == 0 or pd.isna(a3)):
+                return np.nan
+
+            # Treat near-zero with tolerance
+            z1 = np.isclose(a1, 0.0, rtol=0, atol=1e-14)
+            z2 = np.isclose(a2, 0.0, rtol=0, atol=1e-14)
+            z3 = np.isclose(a3, 0.0, rtol=0, atol=1e-14)
+
+            # Linear: y = a0 + a1*x
+            if z2 and z3:
+                if np.isclose(a1, 0.0, atol=1e-14):
+                    return np.nan
+                x = (y - a0) / a1
+                return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+
+            # Quadratic: y = a0 + a1*x + a2*x^2
+            if z3:
+                A, B, C = a2, a1, (a0 - y)
+                if np.isclose(A, 0.0, atol=1e-14):  # fallback to linear if a2 ~ 0
+                    if np.isclose(B, 0.0, atol=1e-14):
+                        return np.nan
+                    x = -C / B
+                    return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+                disc = B*B - 4*A*C
+                if disc < 0:
+                    return np.nan
+                sqrt_disc = np.sqrt(disc)
+                r1 = (-B + sqrt_disc) / (2*A)
+                r2 = (-B - sqrt_disc) / (2*A)
+                candidates = [r for r in (r1, r2)
+                            if (r >= mf_min) and (mf_max is None or r <= mf_max)]
+                if not candidates:
+                    return np.nan
+                # Heuristic: pick the smaller non-negative (often right for concave response curves)
+                return min(candidates)
+
+            # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
+            coeffs = [a3, a2, a1, a0 - y]
+            roots = np.roots(coeffs)
+            real_roots = [float(np.real(z)) for z in roots if np.isreal(z)]
+            # Filter by domain
+            real_roots = [x for x in real_roots if (x >= mf_min) and (mf_max is None or x <= mf_max)]
+            if not real_roots:
+                return np.nan
+            # Heuristic: smallest non-negative root is usually the physical solution domain for MF
+            return min(real_roots)
+
+        out['mole_fraction'] = [
+            _invert_poly_to_mf(y, a0, a1, a2, a3)
+            for y, a0, a1, a2, a3 in zip(r, c0, c1, c2, c3)
+        ]
+
+        return out
+        
+    @staticmethod
+    def _ensure_utc(s: pd.Series) -> pd.Series:
+        # Coerce to datetime first
+        s = pd.to_datetime(s, errors='coerce')
+        # If tz-aware, convert to UTC; if naive, localize as UTC
+        if pd.api.types.is_datetime64tz_dtype(s):
+            return s.dt.tz_convert('UTC')
+        else:
+            return s.dt.tz_localize('UTC')
+
 class Normalizing():
     
     def __init__(self, inst_id, std_run_type, run_type_column, response_type='area'):
@@ -348,7 +475,6 @@ class M4_Instrument(HATS_DB_Functions):
     
     def __init__(self):
         super().__init__()
-        HATS_DB_Functions.init()
         self.inst_id = 'm4'
         self.inst_num = 192
         self.start_date = '20231223'         # data before this date is not used.
@@ -632,133 +758,6 @@ class FE3_Instrument(HATS_DB_Functions):
 
         return df
     
-    def select_cal_and_compute_mf(
-        self,
-        df: pd.DataFrame,
-        curves: pd.DataFrame,
-        resp_col: str = "normalized_resp",
-        by: list | None = None,           # e.g., ['channel','serial_number'] if you keep multiple families
-        flag_col: str = "flag",
-        flagged_val: int = 1,
-        mf_min: float = 0.0,              # domain hint for choosing a sensible root
-        mf_max: float | None = None,      # set e.g. to an expected upper bound if you have one
-    ) -> pd.DataFrame:
-        """
-        For each row in df, attach the latest unflagged calibration with cal.run_time <= df.run_time,
-        then invert y = c0 + c1*x + c2*x^2 + c3*x^3 to get x = mf_calc from y=df[resp_col].
-
-        Returns a new DataFrame with columns: coef0..coef3, function (if present), and mf_calc.
-        Rows with no eligible older calibration (or non-invertible polynomials) get mf_calc = NaN.
-        """
-        if resp_col not in df.columns:
-            raise KeyError(f"df is missing '{resp_col}'")
-
-        out = df.copy()
-        curves = curves.copy()
-        
-        out['run_time']    = self._ensure_utc(out['run_time'])
-        curves['run_time'] = self._ensure_utc(curves['run_time'])
-
-        # Keep unflagged calibrations (flag != flagged_val OR NaN)
-        cal = curves.loc[curves[flag_col].ne(flagged_val) | curves[flag_col].isna(),
-                        ['run_time','serial_number','coef0','coef1','coef2','coef3'] + (['function'] if 'function' in curves else [])]
-
-        # Sort for merge_asof
-        by = list(by) if by else []
-        cal = cal.sort_values(by + ['run_time']).reset_index(drop=True)
-
-        # Build one row per (by..., run_time) to resolve calibration once per run group (fast)
-        unique_runs = out.drop_duplicates(subset=by + ['run_time'])[[*by, 'run_time']].sort_values(by + ['run_time'])
-
-        # As-of merge: latest cal where cal.run_time <= run.run_time, respecting 'by' partitions if any
-        cal_for_run = pd.merge_asof(
-            unique_runs,
-            cal,
-            on='run_time',
-            by=by if by else None,
-            direction='backward',
-            allow_exact_matches=True
-        )
-
-        # Attach coefficients back to every row by (by..., run_time)
-        out = out.merge(cal_for_run, on=[*by, 'run_time'], how='left', validate='many_to_one')
-
-        # --- Invert polynomial: resp -> mf ----------------------------------------------------------
-        r  = out[resp_col].astype(float)
-        c0 = out['coef0']
-        c1 = out['coef1']
-        c2 = out['coef2']
-        c3 = out['coef3']
-
-        # Helper: invert a single polynomial
-        def _invert_poly_to_mf(y, a0, a1, a2, a3):
-            # No calibration? (all NaN) or all-zero coefs -> NaN
-            if pd.isna(a0) and pd.isna(a1) and pd.isna(a2) and pd.isna(a3):
-                return np.nan
-            if (a0 == 0 or pd.isna(a0)) and (a1 == 0 or pd.isna(a1)) and (a2 == 0 or pd.isna(a2)) and (a3 == 0 or pd.isna(a3)):
-                return np.nan
-
-            # Treat near-zero with tolerance
-            z1 = np.isclose(a1, 0.0, rtol=0, atol=1e-14)
-            z2 = np.isclose(a2, 0.0, rtol=0, atol=1e-14)
-            z3 = np.isclose(a3, 0.0, rtol=0, atol=1e-14)
-
-            # Linear: y = a0 + a1*x
-            if z2 and z3:
-                if np.isclose(a1, 0.0, atol=1e-14):
-                    return np.nan
-                x = (y - a0) / a1
-                return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
-
-            # Quadratic: y = a0 + a1*x + a2*x^2
-            if z3:
-                A, B, C = a2, a1, (a0 - y)
-                if np.isclose(A, 0.0, atol=1e-14):  # fallback to linear if a2 ~ 0
-                    if np.isclose(B, 0.0, atol=1e-14):
-                        return np.nan
-                    x = -C / B
-                    return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
-                disc = B*B - 4*A*C
-                if disc < 0:
-                    return np.nan
-                sqrt_disc = np.sqrt(disc)
-                r1 = (-B + sqrt_disc) / (2*A)
-                r2 = (-B - sqrt_disc) / (2*A)
-                candidates = [r for r in (r1, r2)
-                            if (r >= mf_min) and (mf_max is None or r <= mf_max)]
-                if not candidates:
-                    return np.nan
-                # Heuristic: pick the smaller non-negative (often right for concave response curves)
-                return min(candidates)
-
-            # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
-            coeffs = [a3, a2, a1, a0 - y]
-            roots = np.roots(coeffs)
-            real_roots = [float(np.real(z)) for z in roots if np.isreal(z)]
-            # Filter by domain
-            real_roots = [x for x in real_roots if (x >= mf_min) and (mf_max is None or x <= mf_max)]
-            if not real_roots:
-                return np.nan
-            # Heuristic: smallest non-negative root is usually the physical solution domain for MF
-            return min(real_roots)
-
-        out['mole_fraction'] = [
-            _invert_poly_to_mf(y, a0, a1, a2, a3)
-            for y, a0, a1, a2, a3 in zip(r, c0, c1, c2, c3)
-        ]
-
-        return out
-        
-    @staticmethod
-    def _ensure_utc(s: pd.Series) -> pd.Series:
-        # Coerce to datetime first
-        s = pd.to_datetime(s, errors='coerce')
-        # If tz-aware, convert to UTC; if naive, localize as UTC
-        if pd.api.types.is_datetime64tz_dtype(s):
-            return s.dt.tz_convert('UTC')
-        else:
-            return s.dt.tz_localize('UTC')
-
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     

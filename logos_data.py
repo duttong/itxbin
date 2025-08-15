@@ -363,15 +363,22 @@ class MainWindow(QMainWindow):
             print(f"No data for run_time: {self.current_run_time}")
             return
 
+        sub_info = ''
         if yparam == 'resp':
             yvar = self.instrument.response_type
             tlabel = 'Response'
+            if self.instrument.inst_id == 'm4':
+                units = f'({yvar} per psi)'
+            else:
+                units = f'({yvar})'
         elif yparam == 'ratio':
             yvar = 'normalized_resp'
             tlabel = 'Ratio (Normalized Response)'
+            units = ''
         elif yparam == 'mole_fraction':
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
+            units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
             # if mole_fraction is missing, compute it
             mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
             if mf_mask.any():
@@ -379,13 +386,17 @@ class MainWindow(QMainWindow):
                 if curves.empty:
                     print("No calibration curves available for mole fraction calculation.")
                 else:
-                    target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
+                    if self.instrument.inst_id == 'fe3':
+                        target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
+                    elif self.instrument.inst_id == 'm4':
+                        target_serial = self.run.loc[self.run['run_type_num'] == self.instrument.STANDARD_RUN_TYPE, 'port_info'].unique()
                     if len(target_serial) != 1:
                         print(f"Expected one target serial number, found: {target_serial}")
                         return
                     target_serial = target_serial[0]
                     curves = curves.loc[curves['serial_number'] == target_serial]
                     self.run = self.instrument.select_cal_and_compute_mf(self.run, curves, by=None)
+                    sub_info = f"Mole Fraction computed"
         else:
             print(f"Unknown yparam: {yparam}")
             return
@@ -415,10 +426,24 @@ class MainWindow(QMainWindow):
         ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
-        ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})")
+            
+        main = f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})"
+        ax.set_title(main, pad=12)
+        if sub_info:
+            ax.text(
+                0.5, .98, sub_info,
+                transform=ax.transAxes, ha='center', va='bottom',
+                fontsize=9, color='white', clip_on=False,
+                bbox=dict(
+                    boxstyle='round,pad=0.25',
+                    facecolor='#8B0000',   # dark red
+                    edgecolor='none',      # or '#8B0000' if you want a border
+                    alpha=0.9
+                )
+            )
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
-        ax.set_ylabel(tlabel)
+        ax.set_ylabel(tlabel + " " + units)
 
         if self.toggle_grid_cb.isChecked():
             ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
