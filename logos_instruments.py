@@ -68,6 +68,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
             standards_dict = df.set_index('std_ID')[['num', 'serial_number']].T.to_dict('list')
             return standards_dict
         
+    def scale_number(self, parameter_num):
+        sql = f"""
+            select idx from reftank.scales where parameter_num = {parameter_num}
+        """
+        r = self.db.doquery(sql)
+        if not r:
+            raise ValueError(f"No scale number found for parameter number {parameter_num}.")
+        return r[0]['idx']
+        
     def scale_values(self, tank, pnum):
         """
         Returns a dictionary of scale values for a given tank and parameter number (pnum).
@@ -138,29 +147,113 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
+    def merge_calibration_tank_values(self, df):
+        """ Load calibration data for the given parameter number (pnum) and merge it with the provided dataframe (df).
+            Also merges the scale number.
+            This function assumes df has a 'port_info' column containing serial numbers.
+            ** Currently does not handle M4 data. The port_info column is much more complex in M4.
+        """
+        df = df.copy()
+        pnum = df['parameter_num'].iat[0]
+        
+        # Build a clean list of cal serial numbers from the dataframe
+        cal_serials = (
+            df['port_info']
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .loc[lambda s: s.ne('')]
+            .unique()
+            .tolist()
+        )
+
+        if not cal_serials:
+            # Nothing to filter by; choose what you want to do here
+            result = []  # or return empty DataFrame
+        else:
+            placeholders = ','.join(['%s'] * len(cal_serials))
+            sql = f"""
+                SELECT sa.serial_number, sa.scale_num, sa.start_date, sa.tzero, sa.coef0, sa.coef1, sa.coef2, sa.assign_date
+                FROM hats.scale_assignments AS sa
+                JOIN reftank.scales AS sc
+                ON sa.scale_num = sc.idx
+                WHERE sa.inst_num = %s
+                AND sc.parameter_num = %s
+                AND sa.serial_number IN ({placeholders});
+            """
+            params = [self.inst_num, pnum, *cal_serials]
+            result = pd.DataFrame(self.db.doquery(sql, params))
+
+        if result.empty:
+            # returns NaN for cal_mf if no calibration data is found
+            #print(f"No calibration data found for parameter {pnum} and serial numbers: {cal_serials}")
+            df['cal_mf'] = np.nan
+            df['scale_num'] = self.scale_number(pnum)
+            return df
+                
+        cols = ['serial_number', 'scale_num', 'coef0']  # add coef1, coef2... if needed
+        res = result[cols].copy()
+
+        df = (df.assign(port_info=df['port_info'].astype(str).str.strip())
+                .merge(res.rename(columns={'serial_number': 'port_info'}),
+                    on='port_info', how='left'))
+        df.rename(columns={'coef0': 'cal_mf'}, inplace=True)
+        df['cal_mf'] = pd.to_numeric(df['cal_mf'], errors='coerce')
+        
+        # missing scale_num added it
+        df.loc[df['scale_num'].isna(), 'scale_num'] = self.scale_number(pnum)
+        return df
+
+    def param_calcurves(self, df):
+        """
+        Returns the calibration curves for a given port number and channel.
+        """
+        scale_num = int(df['scale_num'].dropna().unique()[0])      # unique to each parameter_num
+        channel = df['channel'].unique()[0]
+        earliest_run = df['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
+        
+        if scale_num is None or channel is None:
+            raise ValueError("Scale number and channel must be specified.")
+        if not isinstance(scale_num, int):
+            raise ValueError("Scale number must be an integer.")
+        if not isinstance(channel, str):
+            raise ValueError("Channel must be a string.")
+        if not isinstance(earliest_run, pd.Timestamp):
+            raise ValueError("Earliest run must be a pandas Timestamp.")
+            
+        sql = f"""
+            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag 
+            FROM hats.ng_response
+                where inst_num = {self.inst_num}
+                and scale_num = {scale_num}
+                and channel = '{channel}'
+                and run_date >= '{earliest_run}'
+            order by run_date desc;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        # ng_response table has run_date and ng_data_view uses run_time
+        df.rename(columns={'run_date': 'run_time'}, inplace=True)
+        return df
+
 class Normalizing():
     
-    def __init__(self, std_run_type, run_type_column, response_type='area'):
+    def __init__(self, inst_id, std_run_type, run_type_column, response_type='area'):
+        self.inst_id = inst_id
         self.run_type_column = run_type_column
         self.standard_run_type = std_run_type
         self.response_type = response_type
 
     def _smooth_segment(self, seg, frac):
-        # some of these filters are not needed.
-        # 1) drop bad rows
-        #seg = seg.dropna(subset=['ts','area']).sort_values('ts')
-        # 2) consolidate duplicates
-        #seg = seg.groupby('ts', as_index=False)['area'].mean()
-        # 3) skip tiny segments
+        # skip tiny segments
         if len(seg) < 3 or seg['ts'].max() == seg['ts'].min():
             return pd.Series(seg[self.response_type].values, index=seg.index)
-        # 4) do LOWESS
+        # do LOWESS
         return pd.Series(
             lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False),
             index=seg.index
         )
     
-    def calculate_smoothed_std(self, df, min_pts=8, frac=0.5):
+    def calculate_smoothed_std(self, df, min_pts=8, frac=0.4):
         """ Calculate smoothed standard deviation for the standard run type.
             This function uses LOWESS smoothing on the area data.
             min_pts is the minimum number of points required to perform smoothing.
@@ -177,7 +270,8 @@ class Normalizing():
         
         # keep only those rows *after* the first in each run_time
         # this is to avoid smoothing the first point in each run_time which is often an outlier
-        std = std[std.groupby('run_time').cumcount() > 0].copy()
+        if self.inst_id == 'm4':
+            std = std[std.groupby('run_time').cumcount() > 0].copy()
         
         # Not enough points to smooth
         if len(std) < min_pts:
@@ -202,7 +296,7 @@ class Normalizing():
 
     def merge_smoothed_data(self, df):
         # smoothed std or reference tank injection
-        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.5)
+        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.4)
 
         out = (
             df
@@ -224,7 +318,6 @@ class Normalizing():
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
                 
         return out
-
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
@@ -255,6 +348,7 @@ class M4_Instrument(HATS_DB_Functions):
     
     def __init__(self):
         super().__init__()
+        HATS_DB_Functions.init()
         self.inst_id = 'm4'
         self.inst_num = 192
         self.start_date = '20231223'         # data before this date is not used.
@@ -275,7 +369,7 @@ class M4_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
-        norm = Normalizing(self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
+        norm = Normalizing(self.inst_id, self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
@@ -326,6 +420,7 @@ class M4_Instrument(HATS_DB_Functions):
         df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int)        # used for plotting
+        #df = self.merge_calibration_tank_values(df)   # add calibration tank mole fractions
 
         df.loc[df['run_type_num'] == 5, 'port_idx'] = (
             df.loc[df['run_type_num'] == 5, 'flask_port'] + 20      # PFP ports are offset by 20
@@ -442,7 +537,7 @@ class FE3_Instrument(HATS_DB_Functions):
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
         
-        norm = Normalizing(self.STANDARD_PORT_NUM, 'port', self.response_type)
+        norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
@@ -490,6 +585,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
+        df = self.merge_calibration_tank_values(df)   # add calibration tank mole fractions
         
         df = self.add_port_labels(df)
 
@@ -535,6 +631,133 @@ class FE3_Instrument(HATS_DB_Functions):
         )
 
         return df
+    
+    def select_cal_and_compute_mf(
+        self,
+        df: pd.DataFrame,
+        curves: pd.DataFrame,
+        resp_col: str = "normalized_resp",
+        by: list | None = None,           # e.g., ['channel','serial_number'] if you keep multiple families
+        flag_col: str = "flag",
+        flagged_val: int = 1,
+        mf_min: float = 0.0,              # domain hint for choosing a sensible root
+        mf_max: float | None = None,      # set e.g. to an expected upper bound if you have one
+    ) -> pd.DataFrame:
+        """
+        For each row in df, attach the latest unflagged calibration with cal.run_time <= df.run_time,
+        then invert y = c0 + c1*x + c2*x^2 + c3*x^3 to get x = mf_calc from y=df[resp_col].
+
+        Returns a new DataFrame with columns: coef0..coef3, function (if present), and mf_calc.
+        Rows with no eligible older calibration (or non-invertible polynomials) get mf_calc = NaN.
+        """
+        if resp_col not in df.columns:
+            raise KeyError(f"df is missing '{resp_col}'")
+
+        out = df.copy()
+        curves = curves.copy()
+        
+        out['run_time']    = self._ensure_utc(out['run_time'])
+        curves['run_time'] = self._ensure_utc(curves['run_time'])
+
+        # Keep unflagged calibrations (flag != flagged_val OR NaN)
+        cal = curves.loc[curves[flag_col].ne(flagged_val) | curves[flag_col].isna(),
+                        ['run_time','serial_number','coef0','coef1','coef2','coef3'] + (['function'] if 'function' in curves else [])]
+
+        # Sort for merge_asof
+        by = list(by) if by else []
+        cal = cal.sort_values(by + ['run_time']).reset_index(drop=True)
+
+        # Build one row per (by..., run_time) to resolve calibration once per run group (fast)
+        unique_runs = out.drop_duplicates(subset=by + ['run_time'])[[*by, 'run_time']].sort_values(by + ['run_time'])
+
+        # As-of merge: latest cal where cal.run_time <= run.run_time, respecting 'by' partitions if any
+        cal_for_run = pd.merge_asof(
+            unique_runs,
+            cal,
+            on='run_time',
+            by=by if by else None,
+            direction='backward',
+            allow_exact_matches=True
+        )
+
+        # Attach coefficients back to every row by (by..., run_time)
+        out = out.merge(cal_for_run, on=[*by, 'run_time'], how='left', validate='many_to_one')
+
+        # --- Invert polynomial: resp -> mf ----------------------------------------------------------
+        r  = out[resp_col].astype(float)
+        c0 = out['coef0']
+        c1 = out['coef1']
+        c2 = out['coef2']
+        c3 = out['coef3']
+
+        # Helper: invert a single polynomial
+        def _invert_poly_to_mf(y, a0, a1, a2, a3):
+            # No calibration? (all NaN) or all-zero coefs -> NaN
+            if pd.isna(a0) and pd.isna(a1) and pd.isna(a2) and pd.isna(a3):
+                return np.nan
+            if (a0 == 0 or pd.isna(a0)) and (a1 == 0 or pd.isna(a1)) and (a2 == 0 or pd.isna(a2)) and (a3 == 0 or pd.isna(a3)):
+                return np.nan
+
+            # Treat near-zero with tolerance
+            z1 = np.isclose(a1, 0.0, rtol=0, atol=1e-14)
+            z2 = np.isclose(a2, 0.0, rtol=0, atol=1e-14)
+            z3 = np.isclose(a3, 0.0, rtol=0, atol=1e-14)
+
+            # Linear: y = a0 + a1*x
+            if z2 and z3:
+                if np.isclose(a1, 0.0, atol=1e-14):
+                    return np.nan
+                x = (y - a0) / a1
+                return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+
+            # Quadratic: y = a0 + a1*x + a2*x^2
+            if z3:
+                A, B, C = a2, a1, (a0 - y)
+                if np.isclose(A, 0.0, atol=1e-14):  # fallback to linear if a2 ~ 0
+                    if np.isclose(B, 0.0, atol=1e-14):
+                        return np.nan
+                    x = -C / B
+                    return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+                disc = B*B - 4*A*C
+                if disc < 0:
+                    return np.nan
+                sqrt_disc = np.sqrt(disc)
+                r1 = (-B + sqrt_disc) / (2*A)
+                r2 = (-B - sqrt_disc) / (2*A)
+                candidates = [r for r in (r1, r2)
+                            if (r >= mf_min) and (mf_max is None or r <= mf_max)]
+                if not candidates:
+                    return np.nan
+                # Heuristic: pick the smaller non-negative (often right for concave response curves)
+                return min(candidates)
+
+            # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
+            coeffs = [a3, a2, a1, a0 - y]
+            roots = np.roots(coeffs)
+            real_roots = [float(np.real(z)) for z in roots if np.isreal(z)]
+            # Filter by domain
+            real_roots = [x for x in real_roots if (x >= mf_min) and (mf_max is None or x <= mf_max)]
+            if not real_roots:
+                return np.nan
+            # Heuristic: smallest non-negative root is usually the physical solution domain for MF
+            return min(real_roots)
+
+        out['mole_fraction'] = [
+            _invert_poly_to_mf(y, a0, a1, a2, a3)
+            for y, a0, a1, a2, a3 in zip(r, c0, c1, c2, c3)
+        ]
+
+        return out
+        
+    @staticmethod
+    def _ensure_utc(s: pd.Series) -> pd.Series:
+        # Coerce to datetime first
+        s = pd.to_datetime(s, errors='coerce')
+        # If tz-aware, convert to UTC; if naive, localize as UTC
+        if pd.api.types.is_datetime64tz_dtype(s):
+            return s.dt.tz_convert('UTC')
+        else:
+            return s.dt.tz_localize('UTC')
 
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
