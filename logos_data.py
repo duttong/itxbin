@@ -372,6 +372,20 @@ class MainWindow(QMainWindow):
         elif yparam == 'mole_fraction':
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
+            # if mole_fraction is missing, compute it
+            mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
+            if mf_mask.any():
+                curves = self.instrument.param_calcurves(self.run)
+                if curves.empty:
+                    print("No calibration curves available for mole fraction calculation.")
+                else:
+                    target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
+                    if len(target_serial) != 1:
+                        print(f"Expected one target serial number, found: {target_serial}")
+                        return
+                    target_serial = target_serial[0]
+                    curves = curves.loc[curves['serial_number'] == target_serial]
+                    self.run = self.instrument.select_cal_and_compute_mf(self.run, curves, by=None)
         else:
             print(f"Unknown yparam: {yparam}")
             return
@@ -401,7 +415,7 @@ class MainWindow(QMainWindow):
         ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
-        ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})")
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel)
@@ -448,16 +462,13 @@ class MainWindow(QMainWindow):
             print("No data available for plotting.")
             return
 
+        # filter for run_time selected in run_cb
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
         self.run = self.data.loc[self.data['run_time'] == sel]
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
-
-        yparam == 'ratio'
-        yvar = 'normalized_resp'
-        tlabel = 'Ratio (Normalized Response)'
 
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
@@ -479,11 +490,23 @@ class MainWindow(QMainWindow):
                 mpatches.Patch(color=col, label=label)
             )
 
+        yvar = 'normalized_resp'  # Use normalized_resp for calibration plots
+        tlabel = f'Calibration Scale {int(np.nanmin(self.run["scale_num"]))}'
+        mn_cal = float(np.nanmin(self.run['cal_mf']))
+        mx_cal = float(np.nanmax(self.run['cal_mf']))
+        try:
+            x_one2one = np.linspace(mn_cal*.95, mx_cal*1.05, 100)
+            y_one2one = x_one2one / 210
+        except ValueError:
+            x_one2one, y_one2one = [], []
+
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
+        ax.scatter(self.run['cal_mf'], self.run[yvar], marker='o', c=colors)
+        ax.plot(x_one2one, y_one2one, c='grey', ls='--', label='one-to-one')
         ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
-        ax.set_xlabel("Analysis Datetime")
+        units = '(ppb)' if int(self.current_pnum) == 5 else '(ppt)'      # ppb for N2O
+        ax.set_xlabel(f"Mole Fraction {units}")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel)
 
@@ -668,7 +691,7 @@ class MainWindow(QMainWindow):
             self.current_channel = None
 
         pnum = self.analytes[analyte_name]
-        self.current_pnum = pnum
+        self.current_pnum = int(pnum)
         print(f">>> Setting current analyte: {analyte_name} (pnum={pnum}, channel={self.current_channel})")
 
         start_sql, end_sql = self.get_load_range()
