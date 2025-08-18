@@ -118,8 +118,8 @@ class M4_Processing(M4_Instrument):
                 .copy()
         )
         
-        # Not enough points to smooth
-        if len(std) < min_pts:
+        # Not enough points to smooth (need at least 15 points)
+        if len(std) < min_pts*3:
             std['smoothed'] = np.nan
             return std[['analysis_datetime','run_time','smoothed']]
 
