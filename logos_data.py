@@ -332,7 +332,8 @@ class MainWindow(QMainWindow):
         # (This will load data and populate run_times)
         if self.analytes:
             first_name = list(self.analytes.keys())[0]
-            self.set_current_analyte(first_name)
+            if self.instrument.inst_id == 'm4':
+                self.set_current_analyte(first_name)
 
     def on_plot_type_changed(self, id: int):
         if id == 0:
@@ -482,6 +483,7 @@ class MainWindow(QMainWindow):
     def calibration_plot(self):
         """
         Plot data with the legend sorted by analysis_datetime.
+        Adds a residuals (diff_y) panel above the main plot that shares the x-axis.
         """
         if self.data.empty:
             print("No data available for plotting.")
@@ -490,10 +492,22 @@ class MainWindow(QMainWindow):
         # filter for run_time selected in run_cb
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
-        self.run = self.data.loc[self.data['run_time'] == sel]
+        self.run = self.data.loc[self.data['run_time'] == sel].copy()
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
+
+        curves = self.instrument.load_calcurves(self.data)
+        if curves.empty:
+            print("No calibration curves available for plotting.")
+            return
+        curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True)
+
+        # port1 is ref tank port
+        ref_estimate = self.instrument.select_cal_and_compute_mf(
+            self.run.loc[self.run['port'] == 1],
+            curves
+        )
 
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
@@ -502,7 +516,7 @@ class MainWindow(QMainWindow):
             self.run
             .loc[self.run['port_idx'].notna(), ['analysis_datetime', 'port_idx', 'port_label']]
             .drop_duplicates()
-            .sort_values('analysis_datetime')  # Sort by analysis_datetime
+            .sort_values('analysis_datetime')
             .set_index('port_idx')['port_label']
             .to_dict()
         )
@@ -511,64 +525,130 @@ class MainWindow(QMainWindow):
         for port in ports_in_run:
             col = self.instrument.COLOR_MAP.get(port, 'gray')
             label = port_label_map.get(port, str(port))
-            legend_handles.append(
-                mpatches.Patch(color=col, label=label)
-            )
+            legend_handles.append(mpatches.Patch(color=col, label=label))
+
+        # ref tank mean and std
+        ref_mf_mean = ref_estimate['mole_fraction'].mean()
+        ref_mf_sd   = ref_estimate['mole_fraction'].std()
+        ref_resp_mean = ref_estimate['normalized_resp'].mean()
+        ref_resp_sd   = ref_estimate['normalized_resp'].std()
 
         yvar = 'normalized_resp'  # Use normalized_resp for calibration plots
         tlabel = f'Calibration Scale {int(np.nanmin(self.run["scale_num"]))}'
         mn_cal = float(np.nanmin(self.run['cal_mf']))
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
-            x_one2one = np.linspace(mn_cal*.95, mx_cal*1.05, 100)
-            y_one2one = x_one2one / 210
+            x_one2one = np.linspace(mn_cal * .95, mx_cal * 1.05, 200)
+            y_one2one = x_one2one / ref_mf_mean
         except ValueError:
             x_one2one, y_one2one = [], []
 
+        # Build figure with residuals panel on top sharing x-axis
         self.figure.clear()
-        ax = self.figure.add_subplot(111)
-        ax.scatter(self.run['cal_mf'], self.run[yvar], marker='o', c=colors)
+        gs = self.figure.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 3], hspace=0.05)
+        ax_resid = self.figure.add_subplot(gs[0, 0])                    # top (smaller)
+        ax       = self.figure.add_subplot(gs[1, 0], sharex=ax_resid)   # bottom (main)
+
+        # Fill any missing ref cal_mf with ref_mf_mean (fix former mf_mean reference)
+        self.run.loc[self.run['port'] == 1, 'cal_mf'] = (
+            self.run.loc[self.run['port'] == 1, 'cal_mf'].fillna(ref_mf_mean)
+        )
+
+        # Mask for valid points
+        mask_main = self.run[['cal_mf', yvar]].notna().all(axis=1)
+        run_x = self.run.loc[mask_main, 'cal_mf'].astype(float)
+        run_y = self.run.loc[mask_main, yvar].astype(float)
+
+        # Main scatter
+        ax.scatter(run_x, run_y, marker='o', c=colors.loc[mask_main], alpha=0.7)
+
+        # One-to-one line
         ax.plot(x_one2one, y_one2one, c='grey', ls='--', label='one-to-one')
-        ax.set_title(f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
-        units = '(ppb)' if int(self.current_pnum) == 5 else '(ppt)'      # ppb for N2O
+
+        # Ref point with error bars
+        ax.errorbar(
+            ref_mf_mean, ref_resp_mean,
+            xerr=ref_mf_sd, yerr=ref_resp_sd,
+            fmt='o', color='black', ecolor='black',
+            elinewidth=1.2, capsize=3, markersize=10, zorder=10,
+        )
+        legend_handles.append(mpatches.Patch(color='black', label="ref mean $\\pm 1\\sigma$"))
+
+        # Plot stored cal curves (bottom axis). Compute residuals against the newest curve (row 0).
+        if not curves.empty:
+            # Use the newest curve as the model for residuals
+            row0 = curves.iloc[0]
+            coefs0 = [row0['coef3'], row0['coef2'], row0['coef1'], row0['coef0']]
+            # Predicted response at the actual run_x positions
+            y_pred = np.polyval(coefs0, run_x.to_numpy())
+            diff_y = run_y.to_numpy() - y_pred
+
+            # store residuals on self.run (align by index)
+            self.run.loc[mask_main, 'diff_y'] = diff_y
+
+            # Top residuals panel
+            ax_resid.scatter(run_x, diff_y, s=15, c=colors.loc[mask_main], alpha=0.8)
+            ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
+
+            # set symmetric y-limits for residuals
+            if np.isfinite(diff_y).any():
+                maxabs = np.nanmax(np.abs(diff_y))
+                if np.isfinite(maxabs) and maxabs > 0:
+                    ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
+
+            # Plot the cal curves (lines) on the main axis
+            xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
+            for i, row in curves.iloc[0:5].iterrows():
+                ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
+                if i == 0:
+                    ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
+                            label=row['run_date'].strftime('%Y-%m-%d'))
+                else:
+                    ax.plot(xgrid, ygrid, linewidth=0.5, linestyle='--',
+                            label=row['run_date'].strftime('%Y-%m-%d'))
+
+        # Titles/labels
+        ax_resid.set_title(f"{self.current_run_time} - {tlabel}: "
+                    f"{self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        units = '(ppb)' if int(self.current_pnum) == 5 else '(ppt)'  # ppb for N2O
         ax.set_xlabel(f"Mole Fraction {units}")
         ax.xaxis.set_tick_params(rotation=30)
-        ax.set_ylabel(tlabel)
+        ax.set_ylabel('Normalized Response')
+        ax_resid.set_ylabel('obs − curve')
+        ax_resid.tick_params(labelbottom=False)  # hide top x tick labels (shared x)
 
+        # Grid toggle applies to both axes
         if self.toggle_grid_cb.isChecked():
-            ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+            for _ax in (ax_resid, ax):
+                _ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
         else:
-            ax.grid(False)
+            for _ax in (ax_resid, ax):
+                _ax.grid(False)
 
-        box = ax.get_position()
-        ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
+        # Put legend outside; adjust right margin instead of manually resizing axes
+        self.figure.subplots_adjust(right=0.82)
         ax.legend(
             handles=legend_handles,
             loc='center left',
-            bbox_to_anchor=(1.02, 0.8),
+            bbox_to_anchor=(1.02, 0.5),
             fontsize=9,
             frameon=False
         )
 
+        # Optional y-axis locking for the main axis only
         if self.lock_y_axis_cb.isChecked():
-            # use the stored y-axis limits
             if self.y_axis_limits is None:
-                # If no limits are set, use the current y-limits
                 self.y_axis_limits = ax.get_ylim()
             else:
                 ax.set_ylim(self.y_axis_limits)
-            #print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
         else:
             try:
-                ax.set_ylim(
-                    self.run[yvar].min() * 0.95,
-                    self.run[yvar].max() * 1.05
-                )
+                ax.set_ylim(run_y.min() * 0.95, run_y.max() * 1.05)
             except ValueError:
-                pass  # In case of empty data, do not set limits
-        
+                pass
+
         self.canvas.draw()
-        
+
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()

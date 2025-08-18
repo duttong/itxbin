@@ -243,8 +243,6 @@ class HATS_DB_Functions(LOGOS_Instruments):
         by: list | None = None,           # e.g., ['channel','serial_number'] if you keep multiple families
         flag_col: str = "flag",
         flagged_val: int = 1,
-        mf_min: float = 0.0,              # domain hint for choosing a sensible root
-        mf_max: float | None = None,      # set e.g. to an expected upper bound if you have one
     ) -> pd.DataFrame:
         """
         For each row in df, attach the latest unflagged calibration with cal.run_time <= df.run_time,
@@ -293,65 +291,66 @@ class HATS_DB_Functions(LOGOS_Instruments):
         c2 = out['coef2']
         c3 = out['coef3']
 
-        # Helper: invert a single polynomial
-        def _invert_poly_to_mf(y, a0, a1, a2, a3):
-            # No calibration? (all NaN) or all-zero coefs -> NaN
-            if pd.isna(a0) and pd.isna(a1) and pd.isna(a2) and pd.isna(a3):
-                return np.nan
-            if (a0 == 0 or pd.isna(a0)) and (a1 == 0 or pd.isna(a1)) and (a2 == 0 or pd.isna(a2)) and (a3 == 0 or pd.isna(a3)):
-                return np.nan
-
-            # Treat near-zero with tolerance
-            z1 = np.isclose(a1, 0.0, rtol=0, atol=1e-14)
-            z2 = np.isclose(a2, 0.0, rtol=0, atol=1e-14)
-            z3 = np.isclose(a3, 0.0, rtol=0, atol=1e-14)
-
-            # Linear: y = a0 + a1*x
-            if z2 and z3:
-                if np.isclose(a1, 0.0, atol=1e-14):
-                    return np.nan
-                x = (y - a0) / a1
-                return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
-
-            # Quadratic: y = a0 + a1*x + a2*x^2
-            if z3:
-                A, B, C = a2, a1, (a0 - y)
-                if np.isclose(A, 0.0, atol=1e-14):  # fallback to linear if a2 ~ 0
-                    if np.isclose(B, 0.0, atol=1e-14):
-                        return np.nan
-                    x = -C / B
-                    return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
-                disc = B*B - 4*A*C
-                if disc < 0:
-                    return np.nan
-                sqrt_disc = np.sqrt(disc)
-                r1 = (-B + sqrt_disc) / (2*A)
-                r2 = (-B - sqrt_disc) / (2*A)
-                candidates = [r for r in (r1, r2)
-                            if (r >= mf_min) and (mf_max is None or r <= mf_max)]
-                if not candidates:
-                    return np.nan
-                # Heuristic: pick the smaller non-negative (often right for concave response curves)
-                return min(candidates)
-
-            # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
-            coeffs = [a3, a2, a1, a0 - y]
-            roots = np.roots(coeffs)
-            real_roots = [float(np.real(z)) for z in roots if np.isreal(z)]
-            # Filter by domain
-            real_roots = [x for x in real_roots if (x >= mf_min) and (mf_max is None or x <= mf_max)]
-            if not real_roots:
-                return np.nan
-            # Heuristic: smallest non-negative root is usually the physical solution domain for MF
-            return min(real_roots)
-
         out['mole_fraction'] = [
-            _invert_poly_to_mf(y, a0, a1, a2, a3)
+            self.invert_poly_to_mf(y, a0, a1, a2, a3)
             for y, a0, a1, a2, a3 in zip(r, c0, c1, c2, c3)
         ]
 
         return out
-        
+
+    # Helper: invert a single polynomial
+    @staticmethod
+    def invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=None):
+        # No calibration? (all NaN) or all-zero coefs -> NaN
+        if pd.isna(a0) and pd.isna(a1) and pd.isna(a2) and pd.isna(a3):
+            return np.nan
+        if (a0 == 0 or pd.isna(a0)) and (a1 == 0 or pd.isna(a1)) and (a2 == 0 or pd.isna(a2)) and (a3 == 0 or pd.isna(a3)):
+            return np.nan
+
+        # Treat near-zero with tolerance
+        z1 = np.isclose(a1, 0.0, rtol=0, atol=1e-14)
+        z2 = np.isclose(a2, 0.0, rtol=0, atol=1e-14)
+        z3 = np.isclose(a3, 0.0, rtol=0, atol=1e-14)
+
+        # Linear: y = a0 + a1*x
+        if z2 and z3:
+            if np.isclose(a1, 0.0, atol=1e-14):
+                return np.nan
+            x = (y - a0) / a1
+            return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+
+        # Quadratic: y = a0 + a1*x + a2*x^2
+        if z3:
+            A, B, C = a2, a1, (a0 - y)
+            if np.isclose(A, 0.0, atol=1e-14):  # fallback to linear if a2 ~ 0
+                if np.isclose(B, 0.0, atol=1e-14):
+                    return np.nan
+                x = -C / B
+                return x if (x >= mf_min) and (mf_max is None or x <= mf_max) else np.nan
+            disc = B*B - 4*A*C
+            if disc < 0:
+                return np.nan
+            sqrt_disc = np.sqrt(disc)
+            r1 = (-B + sqrt_disc) / (2*A)
+            r2 = (-B - sqrt_disc) / (2*A)
+            candidates = [r for r in (r1, r2)
+                        if (r >= mf_min) and (mf_max is None or r <= mf_max)]
+            if not candidates:
+                return np.nan
+            # Heuristic: pick the smaller non-negative (often right for concave response curves)
+            return min(candidates)
+
+        # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
+        coeffs = [a3, a2, a1, a0 - y]
+        roots = np.roots(coeffs)
+        real_roots = [float(np.real(z)) for z in roots if np.isreal(z)]
+        # Filter by domain
+        real_roots = [x for x in real_roots if (x >= mf_min) and (mf_max is None or x <= mf_max)]
+        if not real_roots:
+            return np.nan
+        # Heuristic: smallest non-negative root is usually the physical solution domain for MF
+        return min(real_roots)
+                
     @staticmethod
     def _ensure_utc(s: pd.Series) -> pd.Series:
         # Coerce to datetime first
@@ -590,6 +589,9 @@ class M4_Instrument(HATS_DB_Functions):
         
         return df            
 
+    def load_calcurves(self, df):
+        """ Calcurves are not stored in ng_response for M4. """
+        pass
 
 class FE3_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
@@ -757,6 +759,42 @@ class FE3_Instrument(HATS_DB_Functions):
         )
 
         return df
+    
+    def load_calcurves(self, df):
+        """
+        Returns the calibration curves from ng_response for a given port number and channel.
+        """
+        NUMTYPE_CALIBRATION = 2  # run_type_num for calibration runs
+        if df.empty:
+            raise ValueError("DataFrame is empty. Cannot load calibration curves.")
+        if 'run_type_num' not in df.columns:
+            raise ValueError("DataFrame must contain 'run_type_num' column.")
+        
+        cal_runs = self.data.loc[self.data['run_type_num'] == NUMTYPE_CALIBRATION, 'run_time'].unique()
+        cdf = self.data.loc[self.data['run_time'] == cal_runs[0]]
+
+        scale_num = int(cdf['scale_num'].dropna().unique()[0])      # unique to each parameter_num
+        channel = cdf['channel'].unique()[0]
+        earliest_run = cdf['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
+        
+        if scale_num is None or channel is None:
+            raise ValueError("Scale number and channel must be specified.")
+        if not isinstance(scale_num, int):
+            raise ValueError("Scale number must be an integer.")
+        if not isinstance(channel, str):
+            raise ValueError("Channel must be a string.")
+        if not isinstance(earliest_run, pd.Timestamp):
+            raise ValueError("Earliest run must be a pandas Timestamp.")
+            
+        sql = f"""
+            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
+                where inst_num = {self.inst_num}
+                and scale_num = {scale_num}
+                and channel = '{channel}'
+                and run_date >= '{earliest_run}'
+            order by run_date desc;
+        """
+        return pd.DataFrame(self.db.doquery(sql))
     
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
