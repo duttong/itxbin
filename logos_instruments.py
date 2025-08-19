@@ -361,6 +361,82 @@ class HATS_DB_Functions(LOGOS_Instruments):
         else:
             return s.dt.tz_localize('UTC')
 
+    # developed for fe3 -- needs work for other instruments
+    def fit_poly(self, 
+        df: pd.DataFrame,
+        order: int = 2,
+        xcol: str = "cal_mf",
+        ycol: str = "normalized_resp",
+        ports_col: str = "port",
+        exclude_ports = (1, 9),
+        flag_col: str = "flag",
+        bad_flag: int = 1,
+        extra_mask: pd.Series | None = None,
+    ):
+        """
+        Fit ycol = poly(order)(xcol) using rows where:
+        • port not in exclude_ports
+        • flag_col != bad_flag
+        • xcol and ycol are not null
+        Returns (model, fitted_df, poly) where:
+        • model: dict with coefs, r2, adj_r2, rmse, n, order
+        • fitted_df: subset with columns [xcol, ycol, yhat, resid]
+        • poly: np.poly1d, callable: y_pred = poly(x_new)
+        """
+
+        if order not in (1, 2, 3):
+            raise ValueError("order must be 1, 2, or 3")
+
+        # Build mask
+        m = pd.Series(True, index=df.index)
+        if ports_col in df:
+            m &= ~df[ports_col].isin(exclude_ports)
+        if flag_col in df:
+            m &= (df[flag_col] != bad_flag)
+        m &= df[xcol].notna() & df[ycol].notna()
+        if extra_mask is not None:
+            m &= extra_mask.reindex(df.index, fill_value=False)
+
+        sub = (
+            df.loc[m, [xcol, ycol]]
+            .astype(float)
+            .sort_values(xcol)
+        )
+        n = len(sub)
+        if n < (order + 1):
+            raise ValueError(f"Need at least {order+1} points to fit a degree-{order} polynomial; got {n}.")
+
+        x = sub[xcol].to_numpy()
+        y = sub[ycol].to_numpy()
+
+        # Fit
+        coefs = np.polyfit(x, y, deg=order)  # [a_k ... a1, a0]
+        poly = np.poly1d(coefs)
+        yhat = poly(x)
+
+        # Metrics
+        ss_res = np.sum((y - yhat) ** 2)
+        ss_tot = np.sum((y - y.mean()) ** 2)
+        r2 = np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
+        p = order + 1  # number of parameters
+        adj_r2 = np.nan if n <= p else 1 - (1 - r2) * (n - 1) / (n - p)
+        rmse = np.sqrt(ss_res / max(n - p, 1))
+
+        # Package outputs
+        coef_dict = {f"coef{i}": float(c) for i, c in zip(range(order, -1, -1), coefs)}
+        model = {
+            "order": order,
+            "coefs": coef_dict,       # coef{order}..coef0 (highest power → intercept)
+            "coefs_array": coefs.tolist(),
+            "r2": float(r2),
+            "adj_r2": float(adj_r2),
+            "rmse": float(rmse),
+            "n": int(n),
+        }
+        fitted = sub.assign(yhat=yhat, resid=y - yhat)
+
+        return model, fitted, poly
+
 class Normalizing():
     
     def __init__(self, inst_id, std_run_type, run_type_column, response_type='area'):
@@ -444,7 +520,7 @@ class Normalizing():
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
                 
         return out
-
+  
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
