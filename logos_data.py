@@ -380,24 +380,26 @@ class MainWindow(QMainWindow):
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
-            # if mole_fraction is missing, compute it
-            mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
-            if mf_mask.any():
-                curves = self.instrument.param_calcurves(self.run)
-                if curves.empty:
-                    print("No calibration curves available for mole fraction calculation.")
-                else:
-                    if self.instrument.inst_id == 'fe3':
-                        target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
-                    elif self.instrument.inst_id == 'm4':
-                        target_serial = self.run.loc[self.run['run_type_num'] == self.instrument.STANDARD_RUN_TYPE, 'port_info'].unique()
-                    if len(target_serial) != 1:
-                        print(f"Expected one target serial number, found: {target_serial}")
-                        return
-                    target_serial = target_serial[0]
-                    curves = curves.loc[curves['serial_number'] == target_serial]
-                    self.run = self.instrument.select_cal_and_compute_mf(self.run, curves, by=None)
-                    sub_info = f"Mole Fraction computed"
+            
+            if self.instrument.inst_id == 'fe3':
+                # if mole_fraction is missing, compute it for fe3
+                mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
+                if mf_mask.any():
+                    curves = self.instrument.param_calcurves(self.run)
+                    if curves.empty:
+                        print("No calibration curves available for mole fraction calculation.")
+                    else:
+                        if self.instrument.inst_id == 'fe3':
+                            target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
+                        elif self.instrument.inst_id == 'm4':
+                            target_serial = self.run.loc[self.run['run_type_num'] == self.instrument.STANDARD_RUN_TYPE, 'port_info'].unique()
+                        if len(target_serial) != 1:
+                            print(f"Expected one target serial number, found: {target_serial}")
+                            return
+                        target_serial = target_serial[0]
+                        curves = curves.loc[curves['serial_number'] == target_serial]
+                        self.run = self.instrument.select_cal_and_compute_mf(self.run, curves, by=None)
+                        sub_info = f"Mole Fraction computed"
         else:
             print(f"Unknown yparam: {yparam}")
             return
@@ -503,9 +505,9 @@ class MainWindow(QMainWindow):
             return
         curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True)
 
-        # port1 is ref tank port
+        # Ref tank mole fraction estimate
         ref_estimate = self.instrument.select_cal_and_compute_mf(
-            self.run.loc[self.run['port'] == 1],
+            self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM],
             curves
         )
 
@@ -539,10 +541,13 @@ class MainWindow(QMainWindow):
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
             x_one2one = np.linspace(mn_cal * .95, mx_cal * 1.05, 200)
-            y_one2one = x_one2one / ref_mf_mean
+            if np.isfinite(ref_mf_mean) and ref_mf_mean != 0:
+                y_one2one = x_one2one / ref_mf_mean
+            else:
+                x_one2one, y_one2one = [], []
         except ValueError:
             x_one2one, y_one2one = [], []
-
+    
         # Build figure with residuals panel on top sharing x-axis
         self.figure.clear()
         gs = self.figure.add_gridspec(nrows=2, ncols=1, height_ratios=[1, 3], hspace=0.05)
@@ -550,8 +555,8 @@ class MainWindow(QMainWindow):
         ax       = self.figure.add_subplot(gs[1, 0], sharex=ax_resid)   # bottom (main)
 
         # Fill any missing ref cal_mf with ref_mf_mean (fix former mf_mean reference)
-        self.run.loc[self.run['port'] == 1, 'cal_mf'] = (
-            self.run.loc[self.run['port'] == 1, 'cal_mf'].fillna(ref_mf_mean)
+        self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'cal_mf'] = (
+            self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'cal_mf'].fillna(ref_mf_mean)
         )
 
         # Mask for valid points
@@ -572,8 +577,9 @@ class MainWindow(QMainWindow):
             fmt='o', color='black', ecolor='black',
             elinewidth=1.2, capsize=3, markersize=10, zorder=10,
         )
-        legend_handles.append(mpatches.Patch(color='black', label="ref mean $\\pm 1\\sigma$"))
-
+        if np.isfinite(ref_mf_mean) and np.isfinite(ref_resp_mean):
+            legend_handles.append(mpatches.Patch(color='black', label="ref mean $\\pm 1\\sigma$"))
+    
         # Plot stored cal curves (bottom axis). Compute residuals against the newest curve (row 0).
         if not curves.empty:
             # Use the newest curve as the model for residuals
@@ -598,18 +604,32 @@ class MainWindow(QMainWindow):
 
             # Plot the cal curves (lines) on the main axis
             xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
+            calcurve_exists = False
             for i, row in curves.iloc[0:5].iterrows():
-                ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
-                if i == 0:
+                if self.run['run_time'].iloc[0] == row['run_time']:
+                    ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
                     ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
                             label=row['run_date'].strftime('%Y-%m-%d'))
-                else:
-                    ax.plot(xgrid, ygrid, linewidth=0.5, linestyle='--',
-                            label=row['run_date'].strftime('%Y-%m-%d'))
+                    calcurve_exists = True
+            if calcurve_exists == False:
+                ax.text(
+                    0.5, .98, "missing calculation curve",
+                    transform=ax.transAxes, ha='center', va='bottom',
+                    fontsize=9, color='white', clip_on=False,
+                    bbox=dict(
+                        boxstyle='round,pad=0.25',
+                        facecolor='#8B0000',   # dark red
+                        edgecolor='none',      # or '#8B0000' if you want a border
+                        alpha=0.9
+                    )
+                )
+
 
         # Titles/labels
-        ax_resid.set_title(f"{self.current_run_time} - {tlabel}: "
-                    f"{self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        title = (f"{self.current_run_time} - {tlabel}: "
+                f"{self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+        self.figure.suptitle(title, y=0.98)  # sits above both axes
+        ax_resid.set_title("Residuals")
         units = '(ppb)' if int(self.current_pnum) == 5 else '(ppt)'  # ppb for N2O
         ax.set_xlabel(f"Mole Fraction {units}")
         ax.xaxis.set_tick_params(rotation=30)
