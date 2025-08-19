@@ -65,8 +65,8 @@ class M4_Processing(M4_Instrument):
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
                 AND area != 0
-                AND detrend_method_num != 3
-                AND low_flow != 1
+                #AND detrend_method_num != 3
+                #AND low_flow != 1
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
