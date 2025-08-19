@@ -15,13 +15,16 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QDateTime
 
-import logos_instruments as li
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.patches as mpatches
 from matplotlib import rcParams
+from matplotlib.lines import Line2D
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+
+
+import logos_instruments as li
 
 class RubberBandOverlay(QWidget):
     def __init__(self, parent, pen):
@@ -116,6 +119,8 @@ class MainWindow(QMainWindow):
         self.y_axis_limits = None  # Store y-axis limits when locked
         self.toggle_grid_cb = None  # Initialize toggle_grid_cb to avoid AttributeError
         self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
+        self.calibration_rb = QRadioButton("Calibration")
+        self.fit_method_cb = QComboBox()
 
         # Set up the UI
         self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Initialize toggle_grid_cb
@@ -270,12 +275,31 @@ class MainWindow(QMainWindow):
         ratio_rb = QRadioButton("Ratio")
         mole_fraction_rb = QRadioButton("Mole Fraction")
         self.calibration_rb = QRadioButton("Calibration")
-        self.calibration_rb.setEnabled(False)  # Disable calibration until selected
+        self.calibration_rb.setEnabled(False)  # stays disabled until you detect availability
 
         plot_layout.addWidget(resp_rb)
         plot_layout.addWidget(ratio_rb)
         plot_layout.addWidget(mole_fraction_rb)
-        plot_layout.addWidget(self.calibration_rb)
+
+        # --- NEW: Fit method combo for Calibration row ---
+        self.fit_method_cb = QComboBox()
+        self.fit_method_cb.addItem("Linear", 1)
+        self.fit_method_cb.addItem("Quadratic", 2)
+        self.fit_method_cb.addItem("Cubic", 3)
+        self.fit_method_cb.setCurrentText("Quadratic")
+        self.fit_method_cb.setEnabled(False)  # follows calibration availability
+
+        # Optional: keep the chosen degree around
+        self.current_fit_degree = 2
+        self.fit_method_cb.currentIndexChanged.connect(self.on_fit_method_changed)
+
+        cal_row = QHBoxLayout()
+        cal_row.addWidget(self.calibration_rb)
+        cal_row.addSpacing(6)
+        cal_row.addWidget(QLabel("Fit:"))
+        cal_row.addWidget(self.fit_method_cb, 1)  # stretch so it hugs the right
+        plot_layout.addLayout(cal_row)
+        # -----------------------------------------------
 
         self.plot_radio_group.addButton(resp_rb, id=0)
         self.plot_radio_group.addButton(ratio_rb, id=1)
@@ -335,7 +359,20 @@ class MainWindow(QMainWindow):
             if self.instrument.inst_id == 'm4':
                 self.set_current_analyte(first_name)
 
+    def set_calibration_available(self, available: bool):
+        """Enable/disable the Calibration option and its fit selector together."""
+        self.calibration_rb.setEnabled(available)
+        # Per your requirement: enable the box whenever the radio is available
+        self.fit_method_cb.setEnabled(available)
+
+    def on_fit_method_changed(self, _idx: int):
+        self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/5
+        # If you're on the Calibration view, you can re-render immediately:
+        if self.plot_radio_group.checkedId() == 3:
+            self.on_plot_type_changed(3)
+        
     def on_plot_type_changed(self, id: int):
+        self.current_plot_type = id
         if id == 0:
             self.gc_plot('resp')
         elif id == 1:
@@ -348,6 +385,8 @@ class MainWindow(QMainWindow):
         if id != self.current_plot_type:
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
+            
+        self.fit_method_cb.setEnabled(self.calibration_rb.isEnabled() and id == 3)
     
     def gc_plot(self, yparam='resp'):
         """
@@ -499,18 +538,64 @@ class MainWindow(QMainWindow):
             print(f"No data for run_time: {self.current_run_time}")
             return
 
-        curves = self.instrument.load_calcurves(self.data)
-        if curves.empty:
-            print("No calibration curves available for plotting.")
-            return
-        curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True)
+        sel_rt = self.run['run_time'].iat[0]  # current selected run_time (UTC-aware)
 
-        # Ref tank mole fraction estimate
+        # ── Load & normalize curves ───────────────────────────────────────────────────
+        curves = self.instrument.load_calcurves(self.data)
+        REQ_COLS = ["run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
+
+        if curves is None or curves.empty:
+            # Start a fresh frame with the expected schema
+            curves = pd.DataFrame(columns=REQ_COLS)
+        else:
+            curves = curves.copy()
+            # Ensure all required columns exist
+            for c in REQ_COLS:
+                if c not in curves.columns:
+                    curves[c] = pd.NA
+
+        # Normalize time
+        curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+
+        # ── Helper to fit current run and return a row dict ───────────────────────────
+        def _fit_row_for_current_run(order=2):
+            model, fitted, poly = self.instrument.fit_poly(self.run, order=order)
+            order_name = {1: "linear", 2: "quadratic", 3: "cubic", 4: "quartic", 5: "quintic"}.get(
+                model.get("order", order), "poly"
+            )
+            return {
+                "run_date": pd.to_datetime(self.run["run_time"].iat[0], utc=True),
+                "serial_number": self.run["port_info"].iat[0],
+                "coef3": float(model["coefs"].get("coef3", 0.0)),
+                "coef2": float(model["coefs"].get("coef2", 0.0)),
+                "coef1": float(model["coefs"].get("coef1", 0.0)),
+                "coef0": float(model["coefs"].get("coef0", 0.0)),
+                "function": order_name,
+                "flag": 0,
+            }
+
+        # ── Create/append as needed ───────────────────────────────────────────────────
+        has_current = curves['run_time'].eq(sel_rt).any()
+
+        calcurve_exists = True
+        if curves.empty:
+            # No curves at all → fit and create DF with one row
+            new_row = _fit_row_for_current_run(order=2)
+            curves = pd.DataFrame([new_row], columns=REQ_COLS)
+            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+            calcurve_exists = False
+        elif not has_current:
+            # Existing curves, but not for this run_time → append one row
+            new_row = _fit_row_for_current_run(order=2)
+            curves = pd.concat([curves, pd.DataFrame([new_row])], ignore_index=True)
+            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+            calcurve_exists = False
+
         ref_estimate = self.instrument.select_cal_and_compute_mf(
             self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM],
             curves
         )
-
+        
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
 
@@ -578,51 +663,62 @@ class MainWindow(QMainWindow):
             elinewidth=1.2, capsize=3, markersize=10, zorder=10,
         )
         if np.isfinite(ref_mf_mean) and np.isfinite(ref_resp_mean):
-            legend_handles.append(mpatches.Patch(color='black', label="ref mean $\\pm 1\\sigma$"))
+            legend_handles.append(Line2D([], [], marker='o', linestyle='None', color='black', 
+                                         label="ref mean $\\pm 1\\sigma$"))
     
         # Plot stored cal curves (bottom axis). Compute residuals against the newest curve (row 0).
-        if not curves.empty:
-            # Use the newest curve as the model for residuals
-            row0 = curves.iloc[0]
-            coefs0 = [row0['coef3'], row0['coef2'], row0['coef1'], row0['coef0']]
-            # Predicted response at the actual run_x positions
-            y_pred = np.polyval(coefs0, run_x.to_numpy())
-            diff_y = run_y.to_numpy() - y_pred
+        sel = self.run['run_time'].iat[0]  # the timestamp you want
+        current_curve = curves['run_time'].eq(sel)
 
-            # store residuals on self.run (align by index)
-            self.run.loc[mask_main, 'diff_y'] = diff_y
+        row = curves.loc[current_curve].iloc[0]
+        coefs0 = [row['coef3'], row['coef2'], row['coef1'], row['coef0']]
+        
+        fitlabel = f'\nfit =\n'
+        for n, coef in enumerate(coefs0[::-1]):
+            if coef != 0.0:
+                fitlabel += f'{coef:0.6f} ($x^{n}$) \n'
+        legend_handles.append(Line2D([], [], linestyle='None', label=fitlabel))
+            
+        # Predicted response at the actual run_x positions
+        y_pred = np.polyval(coefs0, run_x.to_numpy())
+        diff_y = run_y.to_numpy() - y_pred
 
-            # Top residuals panel
-            ax_resid.scatter(run_x, diff_y, s=15, c=colors.loc[mask_main], alpha=0.8)
-            ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
+        # store residuals on self.run (align by index)
+        self.run.loc[mask_main, 'diff_y'] = diff_y
 
-            # set symmetric y-limits for residuals
-            if np.isfinite(diff_y).any():
-                maxabs = np.nanmax(np.abs(diff_y))
-                if np.isfinite(maxabs) and maxabs > 0:
-                    ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
+        # Top residuals panel
+        ax_resid.scatter(run_x, diff_y, s=15, c=colors.loc[mask_main], alpha=0.8)
+        ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
 
-            # Plot the cal curves (lines) on the main axis
-            xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
-            calcurve_exists = False
-            for i, row in curves.iloc[0:5].iterrows():
-                if self.run['run_time'].iloc[0] == row['run_time']:
-                    ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
-                    ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
-                            label=row['run_date'].strftime('%Y-%m-%d'))
-                    calcurve_exists = True
-            if calcurve_exists == False:
-                ax.text(
-                    0.5, .98, "missing calculation curve",
-                    transform=ax.transAxes, ha='center', va='bottom',
-                    fontsize=9, color='white', clip_on=False,
-                    bbox=dict(
-                        boxstyle='round,pad=0.25',
-                        facecolor='#8B0000',   # dark red
-                        edgecolor='none',      # or '#8B0000' if you want a border
-                        alpha=0.9
-                    )
+        # set symmetric y-limits for residuals
+        if np.isfinite(diff_y).any():
+            maxabs = np.nanmax(np.abs(diff_y))
+            if np.isfinite(maxabs) and maxabs > 0:
+                ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
+
+        # Plot the cal curves (lines) on the main axis
+        xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
+        #calcurve_exists = False
+        for i, row in curves.iterrows():
+            if self.run['run_time'].iloc[0] == row['run_time']:
+                ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
+                ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
+                        label=row['run_date'].strftime('%Y-%m-%d'))
+                #calcurve_exists = True
+                break
+                
+        if calcurve_exists == False:
+            ax.text(
+                0.5, .98, "New Calibration Curve - NOT SAVED",
+                transform=ax.transAxes, ha='center', va='bottom',
+                fontsize=9, color='white', clip_on=False,
+                bbox=dict(
+                    boxstyle='round,pad=0.25',
+                    facecolor='#8B0000',   # dark red
+                    edgecolor='none',      # or '#8B0000' if you want a border
+                    alpha=0.9
                 )
+            )
 
 
         # Titles/labels
@@ -647,13 +743,26 @@ class MainWindow(QMainWindow):
 
         # Put legend outside; adjust right margin instead of manually resizing axes
         self.figure.subplots_adjust(right=0.82)
-        ax.legend(
+        # legend call (add a couple of tweaks so the text-only entry aligns nicely)
+        leg = ax.legend(
             handles=legend_handles,
             loc='center left',
             bbox_to_anchor=(1.02, 0.5),
             fontsize=9,
-            frameon=False
+            frameon=False,
+            handlelength=0.5,      # no space for the text-only handle
+            handletextpad=0.4,
+            borderaxespad=0.3,
+            labelspacing=0.6,
         )
+
+        # left-align multi-line labels (works on modern Matplotlib)
+        try:
+            for t in leg.get_texts():
+                t.set_ha('left')
+            leg._legend_box.align = "left"   # noqa: access to private attr; widely used workaround
+        except Exception:
+            pass
 
         # Optional y-axis locking for the main axis only
         if self.lock_y_axis_cb.isChecked():
