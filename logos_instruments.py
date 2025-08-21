@@ -147,69 +147,17 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
-    def merge_calibration_tank_values(self, df):
-        """ Load calibration data for the given parameter number (pnum) and merge it with the provided dataframe (df).
-            Also merges the scale number.
-            This function assumes df has a 'port_info' column containing serial numbers.
-            ** Currently does not handle M4 data. The port_info column is much more complex in M4.
-        """
-        df = df.copy()
-        pnum = df['parameter_num'].iat[0]
-        
-        # Build a clean list of cal serial numbers from the dataframe
-        cal_serials = (
-            df['port_info']
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .loc[lambda s: s.ne('')]
-            .unique()
-            .tolist()
-        )
-
-        if not cal_serials:
-            # Nothing to filter by; choose what you want to do here
-            result = []  # or return empty DataFrame
-        else:
-            placeholders = ','.join(['%s'] * len(cal_serials))
-            sql = f"""
-                SELECT sa.serial_number, sa.scale_num, sa.start_date, sa.tzero, sa.coef0, sa.coef1, sa.coef2, sa.assign_date
-                FROM hats.scale_assignments AS sa
-                JOIN reftank.scales AS sc
-                ON sa.scale_num = sc.idx
-                WHERE sa.inst_num = %s
-                AND sc.parameter_num = %s
-                AND sa.serial_number IN ({placeholders});
-            """
-            params = [self.inst_num, pnum, *cal_serials]
-            result = pd.DataFrame(self.db.doquery(sql, params))
-
-        if result.empty:
-            # returns NaN for cal_mf if no calibration data is found
-            #print(f"No calibration data found for parameter {pnum} and serial numbers: {cal_serials}")
-            df['cal_mf'] = np.nan
-            df['scale_num'] = self.scale_number(pnum)
-            return df
-                
-        cols = ['serial_number', 'scale_num', 'coef0']  # add coef1, coef2... if needed
-        res = result[cols].copy()
-
-        df = (df.assign(port_info=df['port_info'].astype(str).str.strip())
-                .merge(res.rename(columns={'serial_number': 'port_info'}),
-                    on='port_info', how='left'))
-        df.rename(columns={'coef0': 'cal_mf'}, inplace=True)
-        df['cal_mf'] = pd.to_numeric(df['cal_mf'], errors='coerce')
-        
-        # missing scale_num added it
-        df.loc[df['scale_num'].isna(), 'scale_num'] = self.scale_number(pnum)
-        return df
-
     def param_calcurves(self, df):
         """
         Returns the calibration curves for a given port number and channel.
         """
-        scale_num = int(df['scale_num'].dropna().unique()[0])      # unique to each parameter_num
-        channel = df['channel'].unique()[0]
+        print(df.columns)
+        
+        try:
+            scale_num = int(df['cal_scale_num'].dropna().unique()[0])      # unique to each parameter_num
+            channel = df['channel'].unique()[0]
+        except (IndexError, ValueError):
+            return pd.DataFrame()  # No valid scale_num or channel found
         earliest_run = df['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
         
         if scale_num is None or channel is None:
@@ -235,68 +183,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df.rename(columns={'run_date': 'run_time'}, inplace=True)
         return df
 
-    def select_cal_and_compute_mf(
-        self,
-        df: pd.DataFrame,
-        curves: pd.DataFrame,
-        resp_col: str = "normalized_resp",
-        by: list | None = None,           # e.g., ['channel','serial_number'] if you keep multiple families
-        flag_col: str = "flag",
-        flagged_val: int = 1,
-    ) -> pd.DataFrame:
-        """
-        For each row in df, attach the latest unflagged calibration with cal.run_time <= df.run_time,
-        then invert y = c0 + c1*x + c2*x^2 + c3*x^3 to get x = mf_calc from y=df[resp_col].
-
-        Returns a new DataFrame with columns: coef0..coef3, function (if present), and mf_calc.
-        Rows with no eligible older calibration (or non-invertible polynomials) get mf_calc = NaN.
-        """
-        if resp_col not in df.columns:
-            raise KeyError(f"df is missing '{resp_col}'")
-
-        out = df.copy()
-        curves = curves.copy()
-        
-        out['run_time']    = self._ensure_utc(out['run_time'])
-        curves['run_time'] = self._ensure_utc(curves['run_time'])
-
-        # Keep unflagged calibrations (flag != flagged_val OR NaN)
-        cal = curves.loc[curves[flag_col].ne(flagged_val) | curves[flag_col].isna(),
-                        ['run_time','serial_number','coef0','coef1','coef2','coef3'] + (['function'] if 'function' in curves else [])]
-
-        # Sort for merge_asof
-        by = list(by) if by else []
-        cal = cal.sort_values(by + ['run_time']).reset_index(drop=True)
-
-        # Build one row per (by..., run_time) to resolve calibration once per run group (fast)
-        unique_runs = out.drop_duplicates(subset=by + ['run_time'])[[*by, 'run_time']].sort_values(by + ['run_time'])
-
-        # As-of merge: latest cal where cal.run_time <= run.run_time, respecting 'by' partitions if any
-        cal_for_run = pd.merge_asof(
-            unique_runs,
-            cal,
-            on='run_time',
-            by=by if by else None,
-            direction='backward',
-            allow_exact_matches=True
-        )
-
-        # Attach coefficients back to every row by (by..., run_time)
-        out = out.merge(cal_for_run, on=[*by, 'run_time'], how='left', validate='many_to_one')
-
-        # --- Invert polynomial: resp -> mf ----------------------------------------------------------
-        r  = out[resp_col].astype(float)
-        c0 = out['coef0']
-        c1 = out['coef1']
-        c2 = out['coef2']
-        c3 = out['coef3']
-
-        out['mole_fraction'] = [
-            self.invert_poly_to_mf(y, a0, a1, a2, a3)
-            for y, a0, a1, a2, a3 in zip(r, c0, c1, c2, c3)
+    def calc_mole_fraction(self, df):
+        df = df.copy()
+        cols = ["normalized_resp","coef0","coef1","coef2","coef3"]
+        arr = df[cols].to_numpy()
+        df["mole_fraction"] = [
+            self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=None)
+            for (y, a0, a1, a2, a3) in arr
         ]
-
-        return out
+        return df['mole_fraction']
 
     # Helper: invert a single polynomial
     @staticmethod
@@ -760,8 +655,8 @@ class FE3_Instrument(HATS_DB_Functions):
 
         print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
         # todo: use flags
-        channel_str = f"AND channel = '{channel}'" if channel else ""
-        query = f"""
+        channel_str = f"AND d.channel = '{channel}'" if channel else ""
+        queryOLD = f"""
             SELECT analysis_datetime, run_time, run_type_num, port, port_info, flask_port, detrend_method_num, 
                 height, mole_fraction, channel, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
@@ -774,6 +669,43 @@ class FE3_Instrument(HATS_DB_Functions):
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
+        
+        # Joins ng_data_view with ng_response to get calibration coefficients and scale_assignments_view
+        # to get calibration start date and cal tank mole fractions
+        query = f"""
+            WITH base AS (
+            SELECT
+                r.run_date AS cal_date,
+                r.coef0, r.coef1, r.coef2, r.coef3,
+                r.flag AS cal_flag,
+                r.serial_number AS cal_serial_number,
+                r.scale_num AS cal_scale_num,
+                r.flag as run_flag,
+                d.analysis_datetime, d.run_time, d.run_type_num, d.port, d.port_info,
+                d.flask_port, d.detrend_method_num, d.height, d.mole_fraction, d.parameter_num,
+                d.channel, d.flag AS data_flag, d.sample_id, d.pair_id_num, d.site
+            FROM ng_data_view AS d
+            LEFT JOIN ng_response AS r
+                ON d.ng_response_id = r.id
+            WHERE d.inst_num = {self.inst_num}
+                AND d.parameter_num = {pnum}
+                {channel_str}
+                AND d.height <> 0
+                AND run_type_num != {self.WARMUP_RUN_TYPE}
+                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+            )
+            SELECT b.*,
+                s.start_date     AS cal_start_date,
+                s.assign_date    AS cal_assign_date,
+                s.coef0          AS cal_mf,
+                s.unc_c0         AS cal_mf_unc
+            FROM base AS b
+            LEFT JOIN scale_assignments_view AS s
+            ON b.port_info = s.serial_number
+            AND s.scale_num = b.cal_scale_num
+            ORDER BY b.analysis_datetime;
+        """
+        
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
             print(f"No data found for parameter {pnum} in the specified date range.")
@@ -785,11 +717,9 @@ class FE3_Instrument(HATS_DB_Functions):
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
-        df['mole_fraction']     = df['mole_fraction'].astype(float)
         df = norm.merge_smoothed_data(df)
-        df['parameter_num']     = pnum
+        df['mole_fraction']     = self.calc_mole_fraction(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
-        df = self.merge_calibration_tank_values(df)   # add calibration tank mole fractions
         
         df = self.add_port_labels(df)
 
