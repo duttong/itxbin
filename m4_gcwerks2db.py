@@ -25,7 +25,7 @@ class M4_GCwerks(M4_Instrument):
             stop_dt = pd.to_datetime(t_stop, format='%y%m') + pd.offsets.MonthEnd(0)
 
         if start_dt < pd.to_datetime(self.start_date):
-            print(f'Start date "{t_start}" selected was too early, using "{self.start_date}"')
+            #print(f'Start date "{t_start}" selected was too early, using "{self.start_date}"')
             start_dt = pd.to_datetime(self.start_date)
         
         if gas not in self.molecules:
