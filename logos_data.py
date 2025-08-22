@@ -403,6 +403,7 @@ class MainWindow(QMainWindow):
             print(f"No data for run_time: {self.current_run_time}")
             return
 
+        current_curve_date = ''
         sub_info = ''
         if yparam == 'resp':
             yvar = self.instrument.response_type
@@ -421,6 +422,7 @@ class MainWindow(QMainWindow):
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
             
             if self.instrument.inst_id == 'fe3':
+                current_curve_date = self.run['cal_date'].iat[0]
                 # if mole_fraction is missing, compute it for fe3
                 mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
                 if mf_mask.any():
@@ -492,6 +494,11 @@ class MainWindow(QMainWindow):
         else:
             ax.grid(False)
 
+        if current_curve_date:
+            cal_delta_time = self.run['analysis_datetime'].min() - pd.to_datetime(current_curve_date, utc=True)
+            l = current_curve_date.strftime('\nCal Date:\n%Y-%m-%d %H:%M\n') + f'{cal_delta_time.days} days ago'
+            legend_handles.append(Line2D([], [], linestyle='None', label=l))
+            
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.legend(
@@ -509,7 +516,6 @@ class MainWindow(QMainWindow):
                 self.y_axis_limits = ax.get_ylim()
             else:
                 ax.set_ylim(self.y_axis_limits)
-            #print('Y-AXIS LIMITS LOCKED:', self.y_axis_limits)
         else:
             try:
                 ax.set_ylim(
