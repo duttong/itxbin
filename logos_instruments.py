@@ -60,6 +60,13 @@ class HATS_DB_Functions(LOGOS_Instruments):
         results['cal'] = 2
         results['std'] = 8
         return results
+    
+    def qurey_return_scale_num(self, parameter_num):
+        sql = f""" SELECT idx FROM reftank.scales where parameter_num = {parameter_num}; """
+        r = self.db.doquery(sql)
+        if not r:
+            raise ValueError(f"No scale number found for parameter number {parameter_num}.")
+        return r[0]['idx']  
 
     def standards(self):
             """ Returns a dictionary of standards files and a key used in the HATS db."""
@@ -188,7 +195,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         cols = ["normalized_resp","coef0","coef1","coef2","coef3"]
         arr = df[cols].to_numpy()
         df["mole_fraction"] = [
-            self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=None)
+            self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
             for (y, a0, a1, a2, a3) in arr
         ]
         return df['mole_fraction']
@@ -331,6 +338,21 @@ class HATS_DB_Functions(LOGOS_Instruments):
         fitted = sub.assign(yhat=yhat, resid=y - yhat)
 
         return model, fitted, poly
+    
+    def _fit_row_for_current_run(self, run, order=2):
+        # Fit polynomial for the current run and return a dict suitable for inserting into ng_response.
+        model, _, _ = self.fit_poly(run, order=order)
+        return {
+            "run_date": pd.to_datetime(run["run_time"].iat[0], utc=True),
+            "serial_number": run["port_info"].iat[0],
+            "coef3": float(model["coefs"].get("coef3", 0.0)),
+            "coef2": float(model["coefs"].get("coef2", 0.0)),
+            "coef1": float(model["coefs"].get("coef1", 0.0)),
+            "coef0": float(model["coefs"].get("coef0", 0.0)),
+            "function": "poly",
+            "flag": 0,
+        }
+
 
 class Normalizing():
     
@@ -415,7 +437,7 @@ class Normalizing():
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
                 
         return out
-  
+
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
@@ -690,7 +712,7 @@ class FE3_Instrument(HATS_DB_Functions):
             WHERE d.inst_num = {self.inst_num}
                 AND d.parameter_num = {pnum}
                 {channel_str}
-                AND d.height <> 0
+                #AND d.height <> 0
                 AND run_type_num != {self.WARMUP_RUN_TYPE}
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             )
@@ -766,7 +788,7 @@ class FE3_Instrument(HATS_DB_Functions):
 
         return df
     
-    def load_calcurves(self, df):
+    def load_calcurvesOLD(self, df):
         """
         Returns the calibration curves from ng_response for a given port number and channel.
         """
@@ -779,8 +801,11 @@ class FE3_Instrument(HATS_DB_Functions):
         cal_runs = self.data.loc[self.data['run_type_num'] == NUMTYPE_CALIBRATION, 'run_time'].unique()
         cdf = self.data.loc[self.data['run_time'] == cal_runs[0]]
 
-        scale_num = int(cdf['scale_num'].dropna().unique()[0])      # unique to each parameter_num
-        channel = cdf['channel'].unique()[0]
+        try:
+            scale_num = int(cdf['cal_scale_num'].dropna().unique()[0])      # unique to each parameter_num
+            channel = cdf['channel'].unique()[0]
+        except (IndexError, ValueError):
+            return pd.DataFrame()
         earliest_run = cdf['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
         
         if scale_num is None or channel is None:
@@ -801,7 +826,26 @@ class FE3_Instrument(HATS_DB_Functions):
             order by run_date desc;
         """
         return pd.DataFrame(self.db.doquery(sql))
-    
+
+    def load_calcurves(self, pnum, channel, earliest_run):
+        """
+        Returns the calibration curves from ng_response for a given port number and channel.
+        """
+        scale_num = self.qurey_return_scale_num(pnum)
+        
+        ch = ''
+        if channel is not None:
+            ch = f"and channel = '{channel}'"
+                  
+        sql = f"""
+            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
+                where inst_num = {self.inst_num}
+                and scale_num = {scale_num}
+                {ch}
+                and run_date >= '{earliest_run}'
+            order by run_date desc;
+        """
+        return pd.DataFrame(self.db.doquery(sql))
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     

@@ -366,7 +366,7 @@ class MainWindow(QMainWindow):
         self.fit_method_cb.setEnabled(available)
 
     def on_fit_method_changed(self, _idx: int):
-        self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/5
+        self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/3
         # If you're on the Calibration view, you can re-render immediately:
         if self.plot_radio_group.checkedId() == 3:
             self.on_plot_type_changed(3)
@@ -541,7 +541,8 @@ class MainWindow(QMainWindow):
         sel_rt = self.run['run_time'].iat[0]  # current selected run_time (UTC-aware)
 
         # ── Load & normalize curves ───────────────────────────────────────────────────
-        curves = self.instrument.load_calcurves(self.data)
+        earliest_time = self.data['run_time'].min() - pd.DateOffset(months=6)
+        curves = self.instrument.load_calcurves(self.current_pnum, self.current_channel, earliest_time)
         REQ_COLS = ["run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
 
         if curves is None or curves.empty:
@@ -557,43 +558,28 @@ class MainWindow(QMainWindow):
         # Normalize time
         curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
 
-        # ── Helper to fit current run and return a row dict ───────────────────────────
-        def _fit_row_for_current_run(order=2):
-            model, fitted, poly = self.instrument.fit_poly(self.run, order=order)
-            order_name = {1: "linear", 2: "quadratic", 3: "cubic", 4: "quartic", 5: "quintic"}.get(
-                model.get("order", order), "poly"
-            )
-            return {
-                "run_date": pd.to_datetime(self.run["run_time"].iat[0], utc=True),
-                "serial_number": self.run["port_info"].iat[0],
-                "coef3": float(model["coefs"].get("coef3", 0.0)),
-                "coef2": float(model["coefs"].get("coef2", 0.0)),
-                "coef1": float(model["coefs"].get("coef1", 0.0)),
-                "coef0": float(model["coefs"].get("coef0", 0.0)),
-                "function": order_name,
-                "flag": 0,
-            }
-
         # ── Create/append as needed ───────────────────────────────────────────────────
         has_current = curves['run_time'].eq(sel_rt).any()
 
         calcurve_exists = True
         if curves.empty:
             # No curves at all → fit and create DF with one row
-            new_row = _fit_row_for_current_run(order=2)
+            new_row = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
             curves = pd.DataFrame([new_row], columns=REQ_COLS)
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         elif not has_current:
             # Existing curves, but not for this run_time → append one row
-            new_row = _fit_row_for_current_run(order=2)
+            new_row = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
             curves = pd.concat([curves, pd.DataFrame([new_row])], ignore_index=True)
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
 
-        ref_estimate = self.instrument.select_cal_and_compute_mf(
+        # pd dataframe of ref tank mole fraction estimates for this run
+        ### TODO: mask out flagged data
+        ref_estimate = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM].copy()
+        ref_estimate['mole_fraction'] = self.instrument.calc_mole_fraction(
             self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM],
-            curves
         )
         
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
@@ -621,7 +607,7 @@ class MainWindow(QMainWindow):
         ref_resp_sd   = ref_estimate['normalized_resp'].std()
 
         yvar = 'normalized_resp'  # Use normalized_resp for calibration plots
-        tlabel = f'Calibration Scale {int(np.nanmin(self.run["scale_num"]))}'
+        tlabel = f'Calibration Scale {int(np.nanmin(self.run["cal_scale_num"]))}'
         mn_cal = float(np.nanmin(self.run['cal_mf']))
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
@@ -719,7 +705,6 @@ class MainWindow(QMainWindow):
                     alpha=0.9
                 )
             )
-
 
         # Titles/labels
         title = (f"{self.current_run_time} - {tlabel}: "
@@ -887,7 +872,7 @@ class MainWindow(QMainWindow):
             # Select the first radio button by default
             buttons = self.radio_group.buttons()
             if buttons:
-                buttons[0].setChecked(True)
+                buttons[10].setChecked(True)
 
         else:
             # Use a QComboBox
