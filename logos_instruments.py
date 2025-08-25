@@ -304,6 +304,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             .astype(float)
             .sort_values(xcol)
         )
+        #print(sub)
         n = len(sub)
         if n < (order + 1):
             raise ValueError(f"Need at least {order+1} points to fit a degree-{order} polynomial; got {n}.")
@@ -341,10 +342,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
     
     def _fit_row_for_current_run(self, run, order=2):
         # Fit polynomial for the current run and return a dict suitable for inserting into ng_response.
-        model, _, _ = self.fit_poly(run, order=order)
+        port_info = run.loc[run['port'] == self.STANDARD_PORT_NUM, 'port_info'].iat[0]
+        model, _, _ = self.fit_poly(run, order=int(order))
         return {
-            "run_date": pd.to_datetime(run["run_time"].iat[0], utc=True),
-            "serial_number": run["port_info"].iat[0],
+            "run_date": pd.to_datetime(run["run_time"].iat[0], utc=True).strftime('%Y-%m-%d %H:%M:%S'),
+            "inst_num": self.inst_num,
+            "site": "BLD",  # hardcoded for Boulder
+            "scale_num": int(run["cal_scale_num"].iat[0]),
+            "channel": run["channel"].iat[0],
+            "serial_number": port_info,
             "coef3": float(model["coefs"].get("coef3", 0.0)),
             "coef2": float(model["coefs"].get("coef2", 0.0)),
             "coef1": float(model["coefs"].get("coef1", 0.0)),
@@ -740,7 +746,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
         df = norm.merge_smoothed_data(df)
-        df['mole_fraction']     = self.calc_mole_fraction(df)
+        #df['mole_fraction']     = self.calc_mole_fraction(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
         df = self.add_port_labels(df)
@@ -788,45 +794,6 @@ class FE3_Instrument(HATS_DB_Functions):
 
         return df
     
-    def load_calcurvesOLD(self, df):
-        """
-        Returns the calibration curves from ng_response for a given port number and channel.
-        """
-        NUMTYPE_CALIBRATION = 2  # run_type_num for calibration runs
-        if df.empty:
-            raise ValueError("DataFrame is empty. Cannot load calibration curves.")
-        if 'run_type_num' not in df.columns:
-            raise ValueError("DataFrame must contain 'run_type_num' column.")
-        
-        cal_runs = self.data.loc[self.data['run_type_num'] == NUMTYPE_CALIBRATION, 'run_time'].unique()
-        cdf = self.data.loc[self.data['run_time'] == cal_runs[0]]
-
-        try:
-            scale_num = int(cdf['cal_scale_num'].dropna().unique()[0])      # unique to each parameter_num
-            channel = cdf['channel'].unique()[0]
-        except (IndexError, ValueError):
-            return pd.DataFrame()
-        earliest_run = cdf['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
-        
-        if scale_num is None or channel is None:
-            raise ValueError("Scale number and channel must be specified.")
-        if not isinstance(scale_num, int):
-            raise ValueError("Scale number must be an integer.")
-        if not isinstance(channel, str):
-            raise ValueError("Channel must be a string.")
-        if not isinstance(earliest_run, pd.Timestamp):
-            raise ValueError("Earliest run must be a pandas Timestamp.")
-            
-        sql = f"""
-            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
-                where inst_num = {self.inst_num}
-                and scale_num = {scale_num}
-                and channel = '{channel}'
-                and run_date >= '{earliest_run}'
-            order by run_date desc;
-        """
-        return pd.DataFrame(self.db.doquery(sql))
-
     def load_calcurves(self, pnum, channel, earliest_run):
         """
         Returns the calibration curves from ng_response for a given port number and channel.
