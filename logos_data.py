@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
         self.calibration_rb = QRadioButton("Calibration")
         self.fit_method_cb = QComboBox()
+        self._save_payload = None       # data for the Save Cal2DB button
 
         # Set up the UI
         self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Initialize toggle_grid_cb
@@ -421,26 +422,16 @@ class MainWindow(QMainWindow):
             tlabel = 'Mole Fraction'
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
             
+            # potentially compute missing mole_fraction values for fe3
             if self.instrument.inst_id == 'fe3':
                 current_curve_date = self.run['cal_date'].iat[0]
                 # if mole_fraction is missing, compute it for fe3
                 mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
                 if mf_mask.any():
-                    curves = self.instrument.param_calcurves(self.run)
-                    if curves.empty:
-                        print("No calibration curves available for mole fraction calculation.")
-                    else:
-                        if self.instrument.inst_id == 'fe3':
-                            target_serial = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM, 'port_info'].unique()
-                        elif self.instrument.inst_id == 'm4':
-                            target_serial = self.run.loc[self.run['run_type_num'] == self.instrument.STANDARD_RUN_TYPE, 'port_info'].unique()
-                        if len(target_serial) != 1:
-                            print(f"Expected one target serial number, found: {target_serial}")
-                            return
-                        target_serial = target_serial[0]
-                        curves = curves.loc[curves['serial_number'] == target_serial]
-                        self.run = self.instrument.select_cal_and_compute_mf(self.run, curves, by=None)
-                        sub_info = f"Mole Fraction computed"
+                    self.run.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(self.run.loc[mf_mask])
+                    sub_info = f"Mole Fraction computed"
+                if current_curve_date == None:
+                    sub_info = "No calibration curve available"
         else:
             print(f"Unknown yparam: {yparam}")
             return
@@ -494,6 +485,7 @@ class MainWindow(QMainWindow):
         else:
             ax.grid(False)
 
+        # Cal curve date and age (if available)
         if current_curve_date:
             cal_delta_time = self.run['analysis_datetime'].min() - pd.to_datetime(current_curve_date, utc=True)
             l = current_curve_date.strftime('\nCal Date:\n%Y-%m-%d %H:%M\n') + f'{cal_delta_time.days} days ago'
@@ -568,16 +560,18 @@ class MainWindow(QMainWindow):
         has_current = curves['run_time'].eq(sel_rt).any()
 
         calcurve_exists = True
+        new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
+        # save new fit info for Save Cal2DB button
+        self._save_payload = new_fit
+        
         if curves.empty:
             # No curves at all → fit and create DF with one row
-            new_row = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
-            curves = pd.DataFrame([new_row], columns=REQ_COLS)
+            curves = pd.DataFrame([new_fit], columns=REQ_COLS)
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         elif not has_current:
             # Existing curves, but not for this run_time → append one row
-            new_row = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
-            curves = pd.concat([curves, pd.DataFrame([new_row])], ignore_index=True)
+            curves = pd.concat([curves, pd.DataFrame([new_fit])], ignore_index=True)
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
 
@@ -604,7 +598,8 @@ class MainWindow(QMainWindow):
         for port in ports_in_run:
             col = self.instrument.COLOR_MAP.get(port, 'gray')
             label = port_label_map.get(port, str(port))
-            legend_handles.append(mpatches.Patch(color=col, label=label))
+            if port != 9:   # skip port 9 (Push Gas Port)
+                legend_handles.append(mpatches.Patch(color=col, label=label))
 
         # ref tank mean and std
         ref_mf_mean = ref_estimate['mole_fraction'].mean()
@@ -656,23 +651,24 @@ class MainWindow(QMainWindow):
         )
         if np.isfinite(ref_mf_mean) and np.isfinite(ref_resp_mean):
             legend_handles.append(Line2D([], [], marker='o', linestyle='None', color='black', 
-                                         label="ref mean $\\pm 1\\sigma$"))
+                                         label="Ref Mean $\\pm 1\\sigma$"))
     
         # Plot stored cal curves (bottom axis). Compute residuals against the newest curve (row 0).
         sel = self.run['run_time'].iat[0]  # the timestamp you want
-        current_curve = curves['run_time'].eq(sel)
+        stored_curve = curves['run_time'].eq(sel)
 
-        row = curves.loc[current_curve].iloc[0]
-        coefs0 = [row['coef3'], row['coef2'], row['coef1'], row['coef0']]
+        row = curves.loc[stored_curve].iloc[0]
+        stored_coefs = [row['coef3'], row['coef2'], row['coef1'], row['coef0']]
         
         fitlabel = f'\nfit =\n'
-        for n, coef in enumerate(coefs0[::-1]):
+        for n, coef in enumerate(stored_coefs[::-1]):
             if coef != 0.0:
                 fitlabel += f'{coef:0.6f} ($x^{n}$) \n'
         legend_handles.append(Line2D([], [], linestyle='None', label=fitlabel))
             
         # Predicted response at the actual run_x positions
-        y_pred = np.polyval(coefs0, run_x.to_numpy())
+        new_fit_coefs = [new_fit["coef3"], new_fit["coef2"], new_fit["coef1"], new_fit["coef0"]]
+        y_pred = np.polyval(new_fit_coefs, run_x.to_numpy())
         diff_y = run_y.to_numpy() - y_pred
 
         # store residuals on self.run (align by index)
@@ -688,17 +684,20 @@ class MainWindow(QMainWindow):
             if np.isfinite(maxabs) and maxabs > 0:
                 ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
 
-        # Plot the cal curves (lines) on the main axis
         xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
-        #calcurve_exists = False
-        for i, row in curves.iterrows():
-            if self.run['run_time'].iloc[0] == row['run_time']:
-                ygrid = np.polyval([row['coef3'], row['coef2'], row['coef1'], row['coef0']], xgrid)
-                ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
-                        label=row['run_date'].strftime('%Y-%m-%d'))
-                #calcurve_exists = True
-                break
-                
+        # Original curve from DB (black, thinner)
+        if calcurve_exists:
+            ygrid = np.polyval(stored_coefs, xgrid)
+            ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
+                            label=row['run_date'].strftime('%Y-%m-%d'))
+            legend_handles.append(Line2D([], [], color='black', label="Stored Fit"))
+        
+        # potentially a new fit (green, thicker)
+        ygrid_new = np.polyval(new_fit_coefs, xgrid)
+        ax.plot(xgrid, ygrid_new, linewidth=3, color='green', alpha=0.7)
+        legend_handles.append(Line2D([], [], color='green', label="New Fit"))
+
+        # Warning box if new curve
         if calcurve_exists == False:
             ax.text(
                 0.5, .98, "New Calibration Curve - NOT SAVED",
@@ -723,6 +722,9 @@ class MainWindow(QMainWindow):
         ax.set_ylabel('Normalized Response')
         ax_resid.set_ylabel('obs − curve')
         ax_resid.tick_params(labelbottom=False)  # hide top x tick labels (shared x)
+        
+        save_handle = Line2D([], [], linestyle='None', label='Save Cal2DB')
+        legend_handles.append(save_handle)
 
         # Grid toggle applies to both axes
         if self.toggle_grid_cb.isChecked():
@@ -746,7 +748,24 @@ class MainWindow(QMainWindow):
             borderaxespad=0.3,
             labelspacing=0.6,
         )
+        # Style the Save Cal2DB label like a button and make it clickable
+        self._save_text = None
+        for txt in leg.get_texts():
+            if txt.get_text().strip() == 'Save Cal2DB':
+                self._save_text = txt
+                txt.set_color('white')
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.4',
+                    facecolor='#2e7d32',   # button green
+                    edgecolor='none',
+                    alpha=0.95
+                ))
+                txt.set_picker(True)  # click to trigger event
 
+        # Connect the pick handler once
+        if not hasattr(self, '_save_button_cid') or self._save_button_cid is None:
+            self._save_button_cid = self.canvas.mpl_connect('pick_event', self._on_legend_pick)
+    
         # left-align multi-line labels (works on modern Matplotlib)
         try:
             for t in leg.get_texts():
@@ -754,7 +773,7 @@ class MainWindow(QMainWindow):
             leg._legend_box.align = "left"   # noqa: access to private attr; widely used workaround
         except Exception:
             pass
-
+    
         # Optional y-axis locking for the main axis only
         if self.lock_y_axis_cb.isChecked():
             if self.y_axis_limits is None:
@@ -769,6 +788,42 @@ class MainWindow(QMainWindow):
 
         self.canvas.draw()
 
+    def save_current_curve(self):
+        payload = getattr(self, "_save_payload", None)
+        if not payload:
+            print("No new calibration curve to save.")
+            return
+
+        sql = """
+        INSERT INTO ng_respons
+            scale_num, inst_num, site, run_date, channel, coef0, coef1, coef2, coef3, flag, function, serial_number
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                coef0         = VALUES(coef0),
+                coef1         = VALUES(coef1),
+                coef2         = VALUES(coef2),
+                coef3         = VALUES(coef3),
+                flag          = VALUES(flag),
+                function      = VALUES(function)
+        """
+        params = [payload[c] for c in [
+            'scale_num', 'inst_num', 'site', 'run_date', 'channel',
+            'coef0', 'coef1', 'coef2', 'coef3', 'flag', 'function', 'serial_number'
+        ]]
+        
+        print(sql)
+        print(params)
+        #r = self.instrument.db.doquery(sql, params)
+        self._save_payload = None  # Clear payload after saving
+    
+    def _on_legend_pick(self, event):
+        import matplotlib.text as mtext
+        art = event.artist
+
+        # Only care about the Save Cal2DB label
+        if isinstance(art, mtext.Text) and art.get_text().strip() == 'Save Cal2DB':
+            self.save_current_curve()
+    
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()
