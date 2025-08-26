@@ -982,7 +982,8 @@ class MainWindow(QMainWindow):
         run_type = self.runTypeCombo.currentText()
         self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
         
-        if self.run_type_num == self.instrument.RUN_TYPE_MAP['Calibrations']:
+        cal_num = (getattr(self.instrument, "RUN_TYPE_MAP", {}) or {}).get("Calibrations")
+        if self.run_type_num == cal_num:
             self.calibration_rb.setEnabled(True)
         else:
             self.calibration_rb.setEnabled(False)

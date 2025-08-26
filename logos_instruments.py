@@ -560,7 +560,7 @@ class M4_Instrument(HATS_DB_Functions):
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
         df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
-        #df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='raise', utc=True)
+        df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='raise', utc=True)
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['port']              = df['port'].astype(int)
@@ -571,12 +571,14 @@ class M4_Instrument(HATS_DB_Functions):
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
-        df['port_idx']          = df['port'].astype(int)        # used for plotting
-        #df = self.merge_calibration_tank_values(df)   # add calibration tank mole fractions
-
-        df.loc[df['run_type_num'] == 5, 'port_idx'] = (
-            df.loc[df['run_type_num'] == 5, 'flask_port'] + 20      # PFP ports are offset by 20
-        )
+        
+        # build a port_idx for plotting colors
+        mask = df['run_type_num'].eq(5)     # pfp runtype
+        base = pd.to_numeric(df['port'], errors='coerce').astype('float64')
+        pfp  = pd.to_numeric(df['flask_port'], errors='coerce').astype('float64') + 20
+        res = base.copy()
+        res.loc[mask] = pfp.loc[mask]          # explicit assignment avoids where/mask downcast warning
+        df['port_idx'] = res.round().astype('Int64')   # final, intentional cast to nullable int
         
         df = self.add_port_labels(df)
         
