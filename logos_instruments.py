@@ -84,19 +84,20 @@ class HATS_DB_Functions(LOGOS_Instruments):
             raise ValueError(f"No scale number found for parameter number {parameter_num}.")
         return r[0]['idx']
         
-    def scale_values(self, tank, pnum):
+    def scale_assignments(self, tank, pnum):
         """
         Returns a dictionary of scale values for a given tank and parameter number (pnum).
         """
         # Extract only the digits before the first "_" in the tank variable
-        match = re.search(r'(\d+)[^\d_]*_', tank)
-        tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
+        #match = re.search(r'(\d+)[^\d_]*_', tank)
+        #tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
         
         sql = f"""
             SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments 
-            where serial_number like '%{tank}%'
+            #where serial_number like '%{tank}%'
+            where serial_number = '{tank}'
             and inst_num = {self.inst_num} 
-            and scale_num = (select idx from reftank.scales where parameter_num = {pnum});
+            and scale_num = (select idx from reftank.scales where parameter_num={pnum} and current=1);
         """
         df = pd.DataFrame(self.db.doquery(sql))
         if not df.empty:
@@ -304,10 +305,11 @@ class HATS_DB_Functions(LOGOS_Instruments):
             .astype(float)
             .sort_values(xcol)
         )
-        #print(sub)
+
         n = len(sub)
         if n < (order + 1):
-            raise ValueError(f"Need at least {order+1} points to fit a degree-{order} polynomial; got {n}.")
+            #raise ValueError(f"Need at least {order+1} points to fit a degree-{order} polynomial; got {n}.")
+            return None, None, None
 
         x = sub[xcol].to_numpy()
         y = sub[ycol].to_numpy()
@@ -342,15 +344,20 @@ class HATS_DB_Functions(LOGOS_Instruments):
     
     def _fit_row_for_current_run(self, run, order=2):
         # Fit polynomial for the current run and return a dict suitable for inserting into ng_response.
-        port_info = run.loc[run['port'] == self.STANDARD_PORT_NUM, 'port_info'].iat[0]
+        try:
+            ref_tank = run.loc[run['port'] == self.STANDARD_PORT_NUM, 'port_info'].iat[0]
+        except IndexError:
+            return None
         model, _, _ = self.fit_poly(run, order=int(order))
+        if model is None:
+            return None
         return {
             "run_date": pd.to_datetime(run["run_time"].iat[0], utc=True).strftime('%Y-%m-%d %H:%M:%S'),
             "inst_num": self.inst_num,
             "site": "BLD",  # hardcoded for Boulder
             "scale_num": int(run["cal_scale_num"].iat[0]),
             "channel": run["channel"].iat[0],
-            "serial_number": port_info,
+            "serial_number": ref_tank,
             "coef3": float(model["coefs"].get("coef3", 0.0)),
             "coef2": float(model["coefs"].get("coef2", 0.0)),
             "coef1": float(model["coefs"].get("coef1", 0.0)),
@@ -447,6 +454,12 @@ class Normalizing():
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
+    RUN_TYPE_MAP = {
+        "All": None,        # no filter
+        "Flasks": 1,        # run_type_num
+        #"Calibrations": 2,
+        "PFPs": 5,
+    }
     STANDARD_RUN_TYPE = 8
     COLOR_MAP_RUN_TYPE = {
         1: "#1f77b4",  # Flask
@@ -484,11 +497,12 @@ class M4_Instrument(HATS_DB_Functions):
         self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
         self.response_type = 'area'
                 
-    def load_data(self, pnum, channel=None, start_date=None, end_date=None):
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
             channel (str, optional): Channel to filter data. Defaults to None.
+            run_type_num (int, optional): Run type number to filter data. Defaults to None.
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
@@ -509,10 +523,23 @@ class M4_Instrument(HATS_DB_Functions):
 
         start_date_str = start_date.strftime("%Y-%m-01")
         end_date_str = end_date.strftime("%Y-%m-%d")
+        
+        if run_type_num is not None:
+            run_type_filter = f"AND run_type_num = {run_type_num}"
 
         print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
+            SELECT * FROM hats.ng_data_processing_view
+            WHERE inst_num = {self.inst_num}
+                AND parameter_num = {pnum}
+                {run_type_filter if run_type_num is not None else ''}
+                #AND height != 0
+                #AND detrend_method_num != 3
+                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+            ORDER BY analysis_datetime;
+        """
+        queryOLD = f"""
             SELECT analysis_datetime, run_time, sample_datetime, run_type_num, port, port_info, flask_port, detrend_method_num, 
                 area, mole_fraction, net_pressure, flag, sample_id, pair_id_num, site
             FROM hats.ng_data_view
@@ -521,6 +548,7 @@ class M4_Instrument(HATS_DB_Functions):
                 #AND area != 0
                 AND detrend_method_num != 3
                 #AND low_flow != 1
+                {run_type_filter if run_type_num is not None else ''}
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
@@ -532,7 +560,7 @@ class M4_Instrument(HATS_DB_Functions):
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
         df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
-        df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='raise', utc=True)
+        #df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='raise', utc=True)
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['port']              = df['port'].astype(int)
@@ -595,6 +623,12 @@ class M4_Instrument(HATS_DB_Functions):
 class FE3_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
     
+    RUN_TYPE_MAP = {
+        "All": None,        # no filter
+        "Flasks": 1,        # run_type_num
+        "Calibrations": 2,
+        #"PFPs": 5,
+    }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     # color map made for a combination of SSV and Flask ports.
@@ -655,11 +689,12 @@ class FE3_Instrument(HATS_DB_Functions):
         # otherwise lookup in the precomputed map
         return self.molecule_channel_map.get(gas_l)
     
-    def load_data(self, pnum, channel=None, start_date=None, end_date=None):
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
             channel (str, optional): Channel to filter data. Defaults to None.
+            run_type_num (int, optional): Run type number to filter data. Defaults to None.
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
@@ -681,59 +716,27 @@ class FE3_Instrument(HATS_DB_Functions):
         start_date_str = start_date.strftime("%Y-%m-01")
         end_date_str = end_date.strftime("%Y-%m-%d")
 
+        # select run type filter (always exclude warmup runs if no filter specified)
+        if run_type_num is not None:
+            run_type_filter = f"AND run_type_num = {run_type_num}"
+        else:
+            run_type_filter = f"AND run_type_num != {self.WARMUP_RUN_TYPE}"
+            
+        channel_str = f"AND channel = '{channel}'" if channel else ""
+
         print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
         # todo: use flags
-        channel_str = f"AND d.channel = '{channel}'" if channel else ""
-        queryOLD = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port, port_info, flask_port, detrend_method_num, 
-                height, mole_fraction, channel, flag, sample_id, pair_id_num, site
-            FROM hats.ng_data_view
+        query = f"""
+            SELECT * FROM hats.ng_data_processing_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
                 {channel_str}
-                AND height != 0
-                AND run_type_num != {self.WARMUP_RUN_TYPE}
+                {run_type_filter}
+                #AND height != 0
                 #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
             ORDER BY analysis_datetime;
         """
-        
-        # Joins ng_data_view with ng_response to get calibration coefficients and scale_assignments_view
-        # to get calibration start date and cal tank mole fractions
-        query = f"""
-            WITH base AS (
-            SELECT
-                r.run_date AS cal_date,
-                r.coef0, r.coef1, r.coef2, r.coef3,
-                r.flag AS cal_flag,
-                r.serial_number AS cal_serial_number,
-                r.scale_num AS cal_scale_num,
-                r.flag as run_flag,
-                d.analysis_datetime, d.run_time, d.run_type_num, d.port, d.port_info,
-                d.flask_port, d.detrend_method_num, d.height, d.mole_fraction, d.parameter_num,
-                d.channel, d.flag AS data_flag, d.sample_id, d.pair_id_num, d.site
-            FROM ng_data_view AS d
-            LEFT JOIN ng_response AS r
-                ON d.ng_response_id = r.id
-            WHERE d.inst_num = {self.inst_num}
-                AND d.parameter_num = {pnum}
-                {channel_str}
-                #AND d.height <> 0
-                AND run_type_num != {self.WARMUP_RUN_TYPE}
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
-            )
-            SELECT b.*,
-                s.start_date     AS cal_start_date,
-                s.assign_date    AS cal_assign_date,
-                s.coef0          AS cal_mf,
-                s.unc_c0         AS cal_mf_unc
-            FROM base AS b
-            LEFT JOIN scale_assignments_view AS s
-            ON b.port_info = s.serial_number
-            AND s.scale_num = b.cal_scale_num
-            ORDER BY b.analysis_datetime;
-        """
-        
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
             print(f"No data found for parameter {pnum} in the specified date range.")

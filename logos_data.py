@@ -3,6 +3,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
+from functools import lru_cache
+import warnings
 import argparse
 
 from PyQt5 import QtCore, QtGui
@@ -131,13 +133,6 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")  # Initialize lock_y_axis_cb
         self.lock_y_axis_cb.setChecked(False)  # Default to unlocked
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
-
-        self.RUN_TYPE_MAP = {
-            "All": None,        # no filter
-            "Flasks": 1,        # run_type_num
-            "Calibrations": 2,
-            "PFPs": 5,
-        }
         self.run_type_num = None  # Will hold the current run_type_num for filtering
 
         self.init_ui()
@@ -176,8 +171,8 @@ class MainWindow(QMainWindow):
         self.start_month_cb = QComboBox()
         current_year = datetime.now().year
         current_month = datetime.now().month
-        start_year = (datetime.now() - timedelta(days=60)).year  # 2 months ago
-        start_month = (datetime.now() - timedelta(days=60)).month  # 2 months ago
+        start_year = (datetime.now() - timedelta(days=30)).year  # 1 month ago
+        start_month = (datetime.now() - timedelta(days=30)).month  # 1 month ago
         # Fill years (e.g. 2020..2025) and months (Jan..Dec)
         for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
             self.start_year_cb.addItem(str(y))
@@ -214,9 +209,9 @@ class MainWindow(QMainWindow):
 
         # Run Type Selection ComboBox  
         self.runTypeCombo = QComboBox(self)
-        self.runTypeCombo.addItems(list(self.RUN_TYPE_MAP.keys()))
+        self.runTypeCombo.addItems(list(self.instrument.RUN_TYPE_MAP.keys()))
         self.runTypeCombo.setCurrentText("All")
-        self.runTypeCombo.currentTextChanged.connect(self.on_apply_month_range)
+        self.runTypeCombo.currentTextChanged.connect(self.on_run_type_changed)
         
         # If you have a grid/box layout:
         runtype_row = QHBoxLayout()
@@ -536,6 +531,12 @@ class MainWindow(QMainWindow):
             print(f"No data for run_time: {self.current_run_time}")
             return
 
+        mask = self.run['port'].eq(self.instrument.STANDARD_PORT_NUM)
+        if not mask.any():  # no rows match
+            print(f"No STANDARD_PORT rows for run_time: {self.current_run_time}")
+            self.gc_plot('resp')
+            return
+        
         sel_rt = self.run['run_time'].iat[0]  # current selected run_time (UTC-aware)
 
         # ── Load & normalize curves ───────────────────────────────────────────────────
@@ -558,8 +559,10 @@ class MainWindow(QMainWindow):
 
         # ── Create/append as needed ───────────────────────────────────────────────────
         has_current = curves['run_time'].eq(sel_rt).any()
-
+        
         calcurve_exists = True
+        # file in scale_assignment values for calibration tanks in self.run
+        self.populate_cal_mf()
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
         self._save_payload = new_fit
@@ -657,9 +660,21 @@ class MainWindow(QMainWindow):
         sel = self.run['run_time'].iat[0]  # the timestamp you want
         stored_curve = curves['run_time'].eq(sel)
 
+        if curves is None or curves.empty:
+            print("No stored cal curves available.")
+            return
         row = curves.loc[stored_curve].iloc[0]
         stored_coefs = [row['coef3'], row['coef2'], row['coef1'], row['coef0']]
-        
+
+        # flag the curve?
+        is_flagged = False
+        if calcurve_exists and 'flag' in row and pd.notna(row['flag']):
+            try:
+                is_flagged = bool(int(row['flag']))
+            except Exception:
+                is_flagged = False
+        self._flag_state = is_flagged        
+
         fitlabel = f'\nfit =\n'
         for n, coef in enumerate(stored_coefs[::-1]):
             if coef != 0.0:
@@ -722,10 +737,16 @@ class MainWindow(QMainWindow):
         ax.set_ylabel('Normalized Response')
         ax_resid.set_ylabel('obs − curve')
         ax_resid.tick_params(labelbottom=False)  # hide top x tick labels (shared x)
-        
+                
         save_handle = Line2D([], [], linestyle='None', label='Save Cal2DB')
-        legend_handles.append(save_handle)
+        flag_label  = 'Unflag Cal2DB' if self._flag_state else 'Flag Cal2DB'
 
+        # spacer creates a small gap between the two buttons
+        spacer_handle = Line2D([], [], linestyle='None', label='\u2009')  # hair space
+
+        flag_handle = Line2D([], [], linestyle='None', label=flag_label)
+        legend_handles.extend([save_handle, spacer_handle, flag_handle])
+        
         # Grid toggle applies to both axes
         if self.toggle_grid_cb.isChecked():
             for _ax in (ax_resid, ax):
@@ -750,21 +771,32 @@ class MainWindow(QMainWindow):
         )
         # Style the Save Cal2DB label like a button and make it clickable
         self._save_text = None
+        self._flag_text = None
+        self._spacer_text = None
+
         for txt in leg.get_texts():
-            if txt.get_text().strip() == 'Save Cal2DB':
+            t = txt.get_text().strip()
+            if t == 'Save Cal2DB':
                 self._save_text = txt
                 txt.set_color('white')
-                txt.set_bbox(dict(
-                    boxstyle='round,pad=0.4',
-                    facecolor='#2e7d32',   # button green
-                    edgecolor='none',
-                    alpha=0.95
-                ))
-                txt.set_picker(True)  # click to trigger event
+                txt.set_bbox(dict(boxstyle='round,pad=0.4', facecolor='#2e7d32', edgecolor='none', alpha=0.95))
+                txt.set_picker(True)
+
+            elif t in ('Flag Cal2DB', 'Unflag Cal2DB'):
+                self._flag_text = txt
+                txt.set_picker(True)
+
+            elif txt.get_text() == '\u2009':  # our spacer
+                self._spacer_text = txt
+                txt.set_fontsize(3)            # tiny line height -> small gap
+                txt.set_color((0, 0, 0, 0))    # fully transparent
+
+        # Apply initial style for the flag button based on state
+        self._style_flag_button()
 
         # Connect the pick handler once
-        if not hasattr(self, '_save_button_cid') or self._save_button_cid is None:
-            self._save_button_cid = self.canvas.mpl_connect('pick_event', self._on_legend_pick)
+        if not hasattr(self, '_legend_pick_cid') or self._legend_pick_cid is None:
+            self._legend_pick_cid = self.canvas.mpl_connect('pick_event', self._on_legend_pick)
     
         # left-align multi-line labels (works on modern Matplotlib)
         try:
@@ -788,42 +820,149 @@ class MainWindow(QMainWindow):
 
         self.canvas.draw()
 
-    def save_current_curve(self):
-        payload = getattr(self, "_save_payload", None)
-        if not payload:
-            print("No new calibration curve to save.")
+    def populate_cal_mf(self) -> None:
+        """
+        Fill self.run['cal_mf'] from instrument.scale_assignments(tank, pnum).
+        Expects scale_assignments to return a dict/Series with keys 'coef0' and 'coef1'
+        (or None if not found).
+        """
+        if 'port_info' not in self.run:
+            raise KeyError("self.run must contain a 'port_info' column")
+
+        # Normalize tank IDs to strings for consistent lookup
+        tank_series = (
+            self.run['port_info']
+            .astype('string')        # keeps NaN semantics
+            .str.strip()
+        )
+
+        unique_tanks = tank_series.dropna().unique().tolist()
+        if not unique_tanks:
+            self.run['cal_mf'] = np.nan
             return
 
+        @lru_cache(maxsize=None)
+        def get_scale(tank_id: str):
+            rec = self.instrument.scale_assignments(tank_id, self.current_pnum)
+            if rec is None:
+                return None
+            if isinstance(rec, pd.Series):
+                rec = rec.to_dict()
+            return rec
+
+        tank_to_coef0 = {}
+        drift_tanks = []
+        for t in unique_tanks:
+            rec = get_scale(t)
+            if not rec:
+                # no scale assignment for this tank
+                continue
+            coef1 = float(rec.get('coef1') or 0.0)
+            if coef1 != 0.0:
+                drift_tanks.append((t, coef1))
+            coef0 = rec.get('coef0')
+            tank_to_coef0[t] = float(coef0) if coef0 is not None else np.nan
+
+        # Map back to the dataframe (vectorized) and ensure numeric dtype
+        self.run['cal_mf'] = tank_series.map(tank_to_coef0).astype('float64')
+
+        # Warn (or error) about drift, depending on your preference
+        if drift_tanks:
+            msg = "scale_assignments has non-zero coef1 (drift) for: " + \
+                ", ".join(f"{t} (coef1={c:g})" for t, c in drift_tanks)
+            # Option A (recommended): warn but continue
+            warnings.warn(msg, RuntimeWarning)
+            # Option B (strict): stop execution
+            # raise RuntimeError(msg)
+
+        # Optional: warn if some tanks had no assignment at all
+        #missing = sorted(set(tank_series.dropna()) - set(tank_to_coef0))
+        #if missing:
+        #    warnings.warn("No scale assignment found for: " + ", ".join(missing), UserWarning)
+
+    def _style_flag_button(self):
+        """Refresh the legend 'flag' button look from self._flag_state."""
+        if getattr(self, '_flag_text', None) is None:
+            return
+        if getattr(self, '_flag_state', False):
+            self._flag_text.set_text('Unflag Cal2DB')
+            self._flag_text.set_color('white')
+            self._flag_text.set_bbox(dict(
+                boxstyle='round,pad=0.4',
+                facecolor='darkred',
+                edgecolor='none',
+                alpha=0.95
+            ))
+        else:
+            self._flag_text.set_text('Flag Cal2DB')
+            self._flag_text.set_color('white')
+            self._flag_text.set_bbox(dict(
+                boxstyle='round,pad=0.4',
+                facecolor='#616161',  # neutral gray when not flagged
+                edgecolor='none',
+                alpha=0.9
+            ))
+
+    def save_current_curve(self, flag_value=None):
+        payload = getattr(self, "_save_payload", None)
+        if payload is None:
+            print("No calibration payload available.")
+            return
+
+        if flag_value is not None:
+            payload['flag'] = flag_value
+
+        fields = ['scale_num','inst_num','site','run_date','channel',
+                'coef0','coef1','coef2','coef3','flag','function','serial_number']
+
         sql = """
-        INSERT INTO ng_respons
-            scale_num, inst_num, site, run_date, channel, coef0, coef1, coef2, coef3, flag, function, serial_number
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO ng_response
+                (scale_num, inst_num, site, run_date, channel,
+                coef0, coef1, coef2, coef3, flag, function, serial_number)
+            VALUES
+                (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
-                coef0         = VALUES(coef0),
-                coef1         = VALUES(coef1),
-                coef2         = VALUES(coef2),
-                coef3         = VALUES(coef3),
-                flag          = VALUES(flag),
-                function      = VALUES(function)
-        """
-        params = [payload[c] for c in [
-            'scale_num', 'inst_num', 'site', 'run_date', 'channel',
-            'coef0', 'coef1', 'coef2', 'coef3', 'flag', 'function', 'serial_number'
-        ]]
-        
-        print(sql)
-        print(params)
-        #r = self.instrument.db.doquery(sql, params)
-        self._save_payload = None  # Clear payload after saving
-    
+                coef0 = VALUES(coef0),
+                coef1 = VALUES(coef1),
+                coef2 = VALUES(coef2),
+                coef3 = VALUES(coef3),
+                flag  = VALUES(flag),
+                function = VALUES(function)
+            """
+        params = [payload.get(c) for c in fields]
+        #print(sql); print(params)
+        self.instrument.db.doquery(sql, params)
+        self.calibration_plot()
+       
     def _on_legend_pick(self, event):
         import matplotlib.text as mtext
         art = event.artist
+        if not isinstance(art, mtext.Text):
+            return
 
-        # Only care about the Save Cal2DB label
-        if isinstance(art, mtext.Text) and art.get_text().strip() == 'Save Cal2DB':
+        # Identify by object identity (robust even if label text changes)
+        if art is getattr(self, '_save_text', None):
             self.save_current_curve()
-    
+        elif art is getattr(self, '_flag_text', None):
+            self.toggle_flag_current_curve()
+
+    def toggle_flag_current_curve(self):
+        # flip state
+        self._flag_state = not getattr(self, '_flag_state', False)
+        self._style_flag_button()
+        self.canvas.draw_idle()
+
+        # make sure we have a payload – if the user hasn’t pressed “Save” yet,
+        # fall back to the stored curve info on-screen
+        if getattr(self, "_save_payload", None) is None:
+            # grab the row corresponding to this run_time from `curves`
+            sel_rt = self.run['run_time'].iat[0]
+            cur_row = self.curves.loc[self.curves['run_time'] == sel_rt].iloc[0]
+            self._save_payload = cur_row.to_dict()
+
+        # send the upsert with the new flag
+        self.save_current_curve(flag_value=(1 if self._flag_state else 0))
+        
     def get_load_range(self):
         # Read selection from the four combo boxes
         sy = self.start_year_cb.currentText()
@@ -838,37 +977,43 @@ class MainWindow(QMainWindow):
     
     def on_apply_month_range(self):
         start_sql, end_sql = self.get_load_range()
+
+        # If runTypeCombo is set, filter the data by run_type_num
+        run_type = self.runTypeCombo.currentText()
+        self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
+        
+        if self.run_type_num == self.instrument.RUN_TYPE_MAP['Calibrations']:
+            self.calibration_rb.setEnabled(True)
+        else:
+            self.calibration_rb.setEnabled(False)
+
         # Reload data for the current analyte with that range
         self.data = self.instrument.load_data(
             pnum=self.current_pnum,
             channel=self.current_channel,
+            run_type_num=self.run_type_num,
             start_date=start_sql,
             end_date=end_sql
         )
 
-        # If runTypeCombo is set, filter the data by run_type_num
-        run_type = self.runTypeCombo.currentText()
-        self.run_type_num = self.RUN_TYPE_MAP.get(run_type, None)
         if self.run_type_num is not None:
             # Filter the DataFrame for the selected run_type_num
             times = set(self.data.loc[self.data['run_type_num'] == self.run_type_num, 'run_time'])
             self.data = self.data[self.data['run_time'].isin(times)]
-        
-        if self.run_type_num == self.RUN_TYPE_MAP['Calibrations']:
-            self.calibration_rb.setEnabled(True)
-        else:
-            self.calibration_rb.setEnabled(False)
-        
+               
         # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
-            # 1) get all unique times
+            # get all unique times
             times = sorted(self.data["run_time"].unique())
 
-            # 2) build sets of times that need a suffix
-            cal_times = set(self.data.loc[self.data['run_type_num'] == 2, 'run_time'])
-            pfp_times = set(self.data.loc[self.data['run_type_num'] == 5, 'run_time'])
+            # build sets of times that need a suffix
+            cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
+            pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
 
-            # 3) build your display strings, appending (Cal) and/or (PFP)
+            cal_times = set(self.data.loc[self.data['run_type_num'].eq(cal_idx), 'run_time']) if cal_idx is not None else set()
+            pfp_times = set(self.data.loc[self.data['run_type_num'].eq(pfp_idx), 'run_time']) if pfp_idx is not None else set()
+
+            # build display strings, appending (Cal) and/or (PFP)
             self.current_run_times = [
                 QDateTime.fromSecsSinceEpoch(
                     int(t.replace(tzinfo=timezone.utc).timestamp()),
@@ -890,9 +1035,8 @@ class MainWindow(QMainWindow):
         if self.current_run_times:
             last_idx = len(self.current_run_times) - 1
             self.run_cb.setCurrentIndex(last_idx)
-            self.on_run_changed(last_idx)
-            
-        self.on_plot_type_changed(self.current_plot_type)
+            # no need to call on_run_change separately. The signal is connected
+            # to self.run_cb when it changes.
 
     def populate_analyte_controls(self):
         """
@@ -979,13 +1123,14 @@ class MainWindow(QMainWindow):
         self.data = self.instrument.load_data(
             pnum=pnum,
             channel=self.current_channel,
+            run_type_num=self.run_type_num,
             start_date=start_sql,
             end_date=end_sql
         )
        
         # If runTypeCombo is set, filter the data by run_type_num
         run_type = self.runTypeCombo.currentText()
-        self.run_type_num = self.RUN_TYPE_MAP.get(run_type, None)
+        self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
         if self.run_type_num is not None:
             # Filter the DataFrame for the selected run_type_num
             times = set(self.data.loc[self.data['run_type_num'] == self.run_type_num, 'run_time'])
@@ -994,14 +1139,17 @@ class MainWindow(QMainWindow):
 
         # Extract unique run_time values (as Python datetime)
         if self.data is not None and not self.data.empty:
-            # 1) get all unique times
+            # get all unique times
             times = sorted(self.data["run_time"].unique())
 
-            # 2) build sets of times that need a suffix
-            cal_times = set(self.data.loc[self.data['run_type_num'] == 2, 'run_time'])
-            pfp_times = set(self.data.loc[self.data['run_type_num'] == 5, 'run_time'])
+            # build sets of times that need a suffix
+            cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
+            pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
 
-            # 3) build your display strings, appending (Cal) and/or (PFP)
+            cal_times = set(self.data.loc[self.data['run_type_num'].eq(cal_idx), 'run_time']) if cal_idx is not None else set()
+            pfp_times = set(self.data.loc[self.data['run_type_num'].eq(pfp_idx), 'run_time']) if pfp_idx is not None else set()
+
+            # build display strings, appending (Cal) and/or (PFP)
             self.current_run_times = [
                 QDateTime.fromSecsSinceEpoch(
                     int(t.replace(tzinfo=timezone.utc).timestamp()),
@@ -1046,6 +1194,12 @@ class MainWindow(QMainWindow):
         """
         return self.date_filter_cb.currentText()
         
+    def on_run_type_changed(self, index):
+        print('on_run_type_changed called')
+        self.current_plot_type = 0
+        #self.gc_plot("resp")
+        self.on_apply_month_range()  
+        
     def on_run_changed(self, index):
         """
         Called whenever the user picks a different run_time in run_cb. 
@@ -1054,7 +1208,7 @@ class MainWindow(QMainWindow):
             return
         self.current_run_time = self.current_run_times[index]
         self.on_plot_type_changed(self.current_plot_type)
-
+        
     def on_prev_run(self):
         """
         Move the run_cb selection one index backward, if possible.
