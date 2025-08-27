@@ -68,6 +68,44 @@ class HATS_DB_Functions(LOGOS_Instruments):
             raise ValueError(f"No scale number found for parameter number {parameter_num}.")
         return r[0]['idx']  
 
+    def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
+        """ Returns a list of run_times for a run_type_num and start/end range
+            start_date and end_date should be in YYYY-MM-DD format """
+        
+        if runtype is None:
+            rt = 'AND run_type_num <> 3'        # exclude warmup runs
+        else:
+            rt = f'AND run_type_num = {runtype}'
+
+        if end_date is None:
+            t1 = 'AND run_time <= UTC_TIMESTAMP()'
+            now = datetime.now()
+            end_date = now.strftime("%Y-%m-%d")
+        else:
+            t1 = f'AND run_time <= "{end_date}"'
+            
+        # 2 month window
+        if start_date is None:
+            t0 = f'AND run_time >= ("{end_date}" - INTERVAL 2 MONTH)'
+        else:
+            t0 = f'AND run_time >= "{start_date}"'
+            
+        sql = f"""
+            SELECT DISTINCT run_time
+            FROM hats.ng_data_processing_view
+            WHERE inst_num = {self.inst_num}
+                {rt}
+                {t0}
+                {t1}
+            ORDER BY run_time;
+        """
+        
+        df = pd.DataFrame(self.doquery(sql))
+        if df.empty:
+            return []
+        df['run_time'] = pd.to_datetime(df['run_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df['run_time'].to_list()
+        
     def standards(self):
             """ Returns a dictionary of standards files and a key used in the HATS db."""
             sql = "SELECT num, serial_number, std_ID FROM hats.standards"
@@ -419,11 +457,11 @@ class Normalizing():
             frac = 0.01
 
         std['smoothed'] = (
-            std
-            .groupby('run_time', group_keys=False)[['ts', self.response_type]]
+            std.groupby('run_time', group_keys=False)[['ts', self.response_type]]
             .apply(lambda seg: self._smooth_segment(seg, frac))
+            .squeeze()
         )
-
+        
         return std[['analysis_datetime','run_time','smoothed']]
 
     def merge_smoothed_data(self, df):
@@ -511,45 +549,23 @@ class M4_Instrument(HATS_DB_Functions):
         
         if end_date is None:
             end_date = datetime.today()
-        else:
-            end_date = datetime.strptime(end_date, "%y%m")
-        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
-        end_date = end_date.replace(day=last_day)
-
-        if start_date is None:
-            start_date = end_date - timedelta(days=60)
-        else:
-            start_date = datetime.strptime(start_date, "%y%m")
-
-        start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-%d")
         
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+       
+        # the run_type_num for M4 is not the same for all run_times
+        # Don't use for filtering 
         if run_type_num is not None:
             run_type_filter = f"AND run_type_num = {run_type_num}"
 
-        print(f"Loading data from {start_date_str} to {str(end_date_str)} for parameter {pnum}")
+        print(f"Loading data from {start_date} to {str(end_date)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
             SELECT * FROM hats.ng_data_processing_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
-                {run_type_filter if run_type_num is not None else ''}
-                #AND height != 0
                 #AND detrend_method_num != 3
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
-            ORDER BY analysis_datetime;
-        """
-        queryOLD = f"""
-            SELECT analysis_datetime, run_time, sample_datetime, run_type_num, port, port_info, flask_port, detrend_method_num, 
-                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num, site
-            FROM hats.ng_data_view
-            WHERE inst_num = {self.inst_num}
-                AND parameter_num = {pnum}
-                #AND area != 0
-                AND detrend_method_num != 3
-                #AND low_flow != 1
-                {run_type_filter if run_type_num is not None else ''}
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+                AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
         """
         df = pd.DataFrame(self.db.doquery(query))
@@ -705,19 +721,10 @@ class FE3_Instrument(HATS_DB_Functions):
         
         if end_date is None:
             end_date = datetime.today()
-        else:
-            end_date = datetime.strptime(end_date, "%y%m")
-        last_day = calendar.monthrange(end_date.year, end_date.month)[1]
-        end_date = end_date.replace(day=last_day)
-
+        
         if start_date is None:
-            start_date = end_date - timedelta(days=60)
-        else:
-            start_date = datetime.strptime(start_date, "%y%m")
-
-        start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-%d")
-
+            start_date = end_date - timedelta(days=30)
+            
         # select run type filter (always exclude warmup runs if no filter specified)
         if run_type_num is not None:
             run_type_filter = f"AND run_type_num = {run_type_num}"
@@ -726,7 +733,7 @@ class FE3_Instrument(HATS_DB_Functions):
             
         channel_str = f"AND channel = '{channel}'" if channel else ""
 
-        print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
+        print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
         # todo: use flags
         query = f"""
             SELECT * FROM hats.ng_data_processing_view
@@ -734,9 +741,8 @@ class FE3_Instrument(HATS_DB_Functions):
                 AND parameter_num = {pnum}
                 {channel_str}
                 {run_type_filter}
-                #AND height != 0
                 #AND detrend_method_num != 3
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
+                AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
         """
         df = pd.DataFrame(self.db.doquery(query))

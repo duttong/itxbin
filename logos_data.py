@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
 
         # “Apply” button
         self.apply_date_btn = QPushButton("Apply ▶")
-        self.apply_date_btn.clicked.connect(self.on_apply_month_range)
+        self.apply_date_btn.clicked.connect(self.on_run_changed)
 
         # Add to date_layout:
         date_layout.addWidget(QLabel("From:"))
@@ -350,16 +350,11 @@ class MainWindow(QMainWindow):
 
         # Kick off by selecting the first analyte by default
         # (This will load data and populate run_times)
-        if self.analytes:
-            first_name = list(self.analytes.keys())[0]
-            if self.instrument.inst_id == 'm4':
-                self.set_current_analyte(first_name)
-
-    def set_calibration_available(self, available: bool):
-        """Enable/disable the Calibration option and its fit selector together."""
-        self.calibration_rb.setEnabled(available)
-        # Per your requirement: enable the box whenever the radio is available
-        self.fit_method_cb.setEnabled(available)
+        self.set_runlist()
+        self.on_plot_type_changed(0)
+        if self.instrument.inst_id == 'm4':
+            self.current_pnum = 20
+            self.set_current_analyte()
 
     def on_fit_method_changed(self, _idx: int):
         self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/3
@@ -970,13 +965,12 @@ class MainWindow(QMainWindow):
         ey = self.end_year_cb.currentText()
         em = self.end_month_cb.currentIndex() + 1
 
-        # Build start/end strings of the form YYMM
-        start_sql = f"{sy[2:4]}{sm:02d}"
-        end_sql   = f"{ey[2:4]}{em:02d}"
+        start_sql = f"{sy}-{sm:02d}-01"
+        end_sql = f"{ey}-{em:02d}-31"
         return start_sql, end_sql
     
-    def on_apply_month_range(self):
-        start_sql, end_sql = self.get_load_range()
+    def set_runlist(self):
+        t0, t1 = self.get_load_range()
 
         # If runTypeCombo is set, filter the data by run_type_num
         run_type = self.runTypeCombo.currentText()
@@ -987,58 +981,47 @@ class MainWindow(QMainWindow):
             self.calibration_rb.setEnabled(True)
         else:
             self.calibration_rb.setEnabled(False)
+        if cal_num is None:
+            self.calibration_rb.setEnabled(False)
+        
+        # make run_time lists
+        cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
+        pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
 
-        # Reload data for the current analyte with that range
-        self.data = self.instrument.load_data(
-            pnum=self.current_pnum,
-            channel=self.current_channel,
-            run_type_num=self.run_type_num,
-            start_date=start_sql,
-            end_date=end_sql
-        )
-
-        if self.run_type_num is not None:
-            # Filter the DataFrame for the selected run_type_num
-            times = set(self.data.loc[self.data['run_type_num'] == self.run_type_num, 'run_time'])
-            self.data = self.data[self.data['run_time'].isin(times)]
-               
-        # Extract unique run_time values (as Python datetime)
-        if self.data is not None and not self.data.empty:
-            # get all unique times
-            times = sorted(self.data["run_time"].unique())
-
-            # build sets of times that need a suffix
-            cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
-            pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
-
-            cal_times = set(self.data.loc[self.data['run_type_num'].eq(cal_idx), 'run_time']) if cal_idx is not None else set()
-            pfp_times = set(self.data.loc[self.data['run_type_num'].eq(pfp_idx), 'run_time']) if pfp_idx is not None else set()
-
-            # build display strings, appending (Cal) and/or (PFP)
-            self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(
-                    int(t.replace(tzinfo=timezone.utc).timestamp()),
-                    Qt.UTC
-                ).toString("yyyy-MM-dd HH:mm:ss")
-                + (" (Cal)" if t in cal_times else "")
-                + (" (PFP)" if t in pfp_times else "")
-                for t in times
-            ]
-        else:
-            self.current_run_times = []
-    
+        runlist = self.instrument.query_return_run_list(runtype=self.run_type_num, start_date=t0, end_date=t1)
+        runlist_cals = []
+        if cal_idx is not None:
+            runlist_cals = self.instrument.query_return_run_list(runtype=cal_idx, start_date=t0, end_date=t1)
+        runlist_pfps = []
+        if pfp_idx is not None:
+            runlist_pfps = self.instrument.query_return_run_list(runtype=pfp_idx, start_date=t0, end_date=t1)
+            
+        self.current_run_times = [
+            r + " (Cal)" if r in runlist_cals
+            else r + " (PFP)" if r in runlist_pfps
+            else r
+            for r in runlist
+        ]
+        
+        self.current_run_time = self.current_run_times[-1]
+        
+        # Fill the run_cb combo with these run_time strings
         self.run_cb.blockSignals(True)
         self.run_cb.clear()
         for s in self.current_run_times:
             self.run_cb.addItem(s)
-        self.run_cb.blockSignals(False)
+        #self.run_cb.blockSignals(False)
 
-        if self.current_run_times:
+        # Preserve the current_run_time if it exists in the new analyte's run_times
+        if self.current_run_time in self.current_run_times:
+            idx = self.current_run_times.index(self.current_run_time)
+            self.run_cb.setCurrentIndex(idx)
+        elif self.current_run_times:
+            # Default to the last run_time if the current_run_time is not found
             last_idx = len(self.current_run_times) - 1
             self.run_cb.setCurrentIndex(last_idx)
-            # no need to call on_run_change separately. The signal is connected
-            # to self.run_cb when it changes.
-
+        self.run_cb.blockSignals(False)
+            
     def populate_analyte_controls(self):
         """
         If there are ≤ 12 analytes → show radio buttons in two columns,
@@ -1096,90 +1079,49 @@ class MainWindow(QMainWindow):
         rb = self.sender()
         if rb.isChecked():
             name = rb.text()
-            self.set_current_analyte(name)
+            # Extract channel if present in analyte_name
+            if '(' in name and ')' in name:
+                self.current_channel = name.split('(')[1].split(')')[0].strip()
+            else:
+                self.current_channel = None
+            pnum = self.analytes[name]
+            self.current_pnum = int(pnum)
+            self.set_current_analyte()
 
     def on_analyte_combo_changed(self, name):
         """
         Called whenever the QComboBox selection changes (for >12 analytes).
         """
-        self.set_current_analyte(name)
+        # Extract channel if present in analyte_name
+        if '(' in name and ')' in name:
+            self.current_channel = name.split('(')[1].split(')')[0].strip()
+        else:
+            self.current_channel = None
+        pnum = self.analytes[name]
+        self.current_pnum = int(pnum)
+        self.set_current_analyte()
+        
+    def load_selected_run(self):
+        # call sql load function from instrument class
+        # all of the input parameters are set with UI controls.
+        self.data = self.instrument.load_data(
+            pnum=self.current_pnum,
+            channel=self.current_channel,
+            run_type_num=self.run_type_num,
+            start_date=self.current_run_time,
+            end_date=self.current_run_time
+        )
 
-    def set_current_analyte(self, analyte_name):
+    def set_current_analyte(self):
         """
         Check to see if channel is in analyte_name.
         Preserve the current_run_time when switching analytes.
         """
-        # Extract channel if present in analyte_name
-        if '(' in analyte_name and ')' in analyte_name:
-            self.current_channel = analyte_name.split('(')[1].split(')')[0].strip()
-        else:
-            self.current_channel = None
+        if self.current_run_time is None:
+            self.set_runlist()
 
-        pnum = self.analytes[analyte_name]
-        self.current_pnum = int(pnum)
-        print(f">>> Setting current analyte: {analyte_name} (pnum={pnum}, channel={self.current_channel})")
-
-        start_sql, end_sql = self.get_load_range()
-        # (Re)load data for this analyte and the load range
-        self.data = self.instrument.load_data(
-            pnum=pnum,
-            channel=self.current_channel,
-            run_type_num=self.run_type_num,
-            start_date=start_sql,
-            end_date=end_sql
-        )
-       
-        # If runTypeCombo is set, filter the data by run_type_num
-        run_type = self.runTypeCombo.currentText()
-        self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
-        if self.run_type_num is not None:
-            # Filter the DataFrame for the selected run_type_num
-            times = set(self.data.loc[self.data['run_type_num'] == self.run_type_num, 'run_time'])
-            self.data = self.data[self.data['run_time'].isin(times)]
-            #self.data = self.data[self.data['run_type_num'] == run_type_num]
-
-        # Extract unique run_time values (as Python datetime)
-        if self.data is not None and not self.data.empty:
-            # get all unique times
-            times = sorted(self.data["run_time"].unique())
-
-            # build sets of times that need a suffix
-            cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
-            pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
-
-            cal_times = set(self.data.loc[self.data['run_type_num'].eq(cal_idx), 'run_time']) if cal_idx is not None else set()
-            pfp_times = set(self.data.loc[self.data['run_type_num'].eq(pfp_idx), 'run_time']) if pfp_idx is not None else set()
-
-            # build display strings, appending (Cal) and/or (PFP)
-            self.current_run_times = [
-                QDateTime.fromSecsSinceEpoch(
-                    int(t.replace(tzinfo=timezone.utc).timestamp()),
-                    Qt.UTC
-                ).toString("yyyy-MM-dd HH:mm:ss")
-                + (" (Cal)" if t in cal_times else "")
-                + (" (PFP)" if t in pfp_times else "")
-                for t in times
-            ]
-        else:
-            self.current_run_times = []
-            
-        # Fill the run_cb combo with these run_time strings
-        self.run_cb.blockSignals(True)
-        self.run_cb.clear()
-        for s in self.current_run_times:
-            self.run_cb.addItem(s)
-        self.run_cb.blockSignals(False)
-
-        # Preserve the current_run_time if it exists in the new analyte's run_times
-        if self.current_run_time in self.current_run_times:
-            idx = self.current_run_times.index(self.current_run_time)
-            self.run_cb.setCurrentIndex(idx)
-            self.on_run_changed(idx)
-        elif self.current_run_times:
-            # Default to the last run_time if the current_run_time is not found
-            last_idx = len(self.current_run_times) - 1
-            self.run_cb.setCurrentIndex(last_idx)
-            self.on_run_changed(last_idx)
+        self.load_selected_run()       
+        self.on_plot_type_changed(self.current_plot_type)
 
     def current_run_type_filter(self):
         """
@@ -1196,10 +1138,9 @@ class MainWindow(QMainWindow):
         return self.date_filter_cb.currentText()
         
     def on_run_type_changed(self, index):
-        print('on_run_type_changed called')
         self.current_plot_type = 0
-        #self.gc_plot("resp")
-        self.on_apply_month_range()  
+        self.set_runlist()
+        self.set_current_analyte()  
         
     def on_run_changed(self, index):
         """
@@ -1208,24 +1149,34 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.current_run_times):
             return
         self.current_run_time = self.current_run_times[index]
+
+        self.load_selected_run()
         self.on_plot_type_changed(self.current_plot_type)
         
     def on_prev_run(self):
         """
         Move the run_cb selection one index backward, if possible.
         """
+        self.run_cb.blockSignals(True)
         idx = self.run_cb.currentIndex()
         if idx > 0:
-            self.run_cb.setCurrentIndex(idx - 1)
-
+            idx -= 1
+            self.run_cb.setCurrentIndex(idx)
+            self.on_run_changed(idx)
+        self.run_cb.blockSignals(False)
+        
     def on_next_run(self):
         """
         Move the run_cb selection one index forward, if possible.
         """
+        self.run_cb.blockSignals(True)
         idx = self.run_cb.currentIndex()
         if idx < (self.run_cb.count() - 1):
-            self.run_cb.setCurrentIndex(idx + 1)
-
+            idx += 1
+            self.run_cb.setCurrentIndex(idx)
+            self.on_run_changed(idx)
+        self.run_cb.blockSignals(False)
+        
     def on_lock_y_axis_toggled(self, state):
         """
         Called when the lock_y_axis_cb checkbox is toggled.
