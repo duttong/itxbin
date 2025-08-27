@@ -173,7 +173,7 @@ class MainWindow(QMainWindow):
         current_month = datetime.now().month
         start_year = (datetime.now() - timedelta(days=30)).year  # 1 month ago
         start_month = (datetime.now() - timedelta(days=30)).month  # 1 month ago
-        # Fill years (e.g. 2020..2025) and months (Jan..Dec)
+        # Fill years and months
         for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
             self.start_year_cb.addItem(str(y))
         for m in range(1, 13):
@@ -186,26 +186,33 @@ class MainWindow(QMainWindow):
             self.end_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.end_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
+
         self.end_year_cb.setCurrentText(str(current_year))
         self.end_month_cb.setCurrentIndex(current_month - 1)
-        # Set default start date to the instrument's start date
         self.start_year_cb.setCurrentText(str(start_year))
         self.start_month_cb.setCurrentIndex(int(start_month) - 1)
 
-        # “Apply” button
+        # Apply button
         self.apply_date_btn = QPushButton("Apply ▶")
-        self.apply_date_btn.clicked.connect(self.on_run_changed)
+        self.apply_date_btn.clicked.connect(self.apply_dates)
 
-        # Add to date_layout:
+        # Add to layout
         date_layout.addWidget(QLabel("From:"))
         date_layout.addWidget(self.start_year_cb)
         date_layout.addWidget(self.start_month_cb)
-        date_layout.addSpacing(12)
         date_layout.addWidget(QLabel("To:"))
         date_layout.addWidget(self.end_year_cb)
         date_layout.addWidget(self.end_month_cb)
-        date_layout.addSpacing(12)
         date_layout.addWidget(self.apply_date_btn)
+
+        # Save the "last applied" values
+        self.last_applied = self.get_selected_dates()
+
+        # Watch for changes
+        self.start_year_cb.currentIndexChanged.connect(self.check_dirty)
+        self.start_month_cb.currentIndexChanged.connect(self.check_dirty)
+        self.end_year_cb.currentIndexChanged.connect(self.check_dirty)
+        self.end_month_cb.currentIndexChanged.connect(self.check_dirty)
 
         # Run Type Selection ComboBox  
         self.runTypeCombo = QComboBox(self)
@@ -355,6 +362,25 @@ class MainWindow(QMainWindow):
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
             self.set_current_analyte()
+
+    def get_selected_dates(self):
+        return {
+            "start_year": self.start_year_cb.currentText(),
+            "start_month": self.start_month_cb.currentText(),
+            "end_year": self.end_year_cb.currentText(),
+            "end_month": self.end_month_cb.currentText(),
+        }
+
+    def check_dirty(self):
+        # Compare current selection to last applied
+        if self.get_selected_dates() != self.last_applied:
+            self.apply_date_btn.setStyleSheet("background-color: lightgreen;")
+        else:
+            self.apply_date_btn.setStyleSheet("")
+
+    def apply_dates(self):
+        self.apply_date_btn.setStyleSheet("")
+        self.on_run_type_changed()
 
     def on_fit_method_changed(self, _idx: int):
         self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/3
@@ -1137,7 +1163,7 @@ class MainWindow(QMainWindow):
         """
         return self.date_filter_cb.currentText()
         
-    def on_run_type_changed(self, index):
+    def on_run_type_changed(self):
         self.current_plot_type = 0
         self.set_runlist()
         self.set_current_analyte()  
