@@ -570,9 +570,23 @@ class M4_Instrument(HATS_DB_Functions):
         
         if end_date is None:
             end_date = datetime.today()
-        
+        elif len(end_date) == 4:
+            # check for YYMM format
+            end_date = datetime.strptime(end_date, "%y%m")
+            end_date = start_date.strftime("%Y-%m-31")    # end of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
+
         if start_date is None:
             start_date = end_date - timedelta(days=30)
+        elif len(start_date) == 4: 
+            # check for YYMM format
+            start_date = datetime.strptime(start_date, "%y%m")
+            start_date = start_date.strftime("%Y-%m-01")    # beginning of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
        
         # the run_type_num for M4 is not the same for all run_times
         # Don't use for filtering 
@@ -742,10 +756,24 @@ class FE3_Instrument(HATS_DB_Functions):
         
         if end_date is None:
             end_date = datetime.today()
-        
+        elif len(end_date) == 4:
+            # check for YYMM format
+            end_date = datetime.strptime(end_date, "%y%m")
+            end_date = start_date.strftime("%Y-%m-31")    # end of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
+
         if start_date is None:
             start_date = end_date - timedelta(days=30)
-            
+        elif len(start_date) == 4: 
+            # check for YYMM format
+            start_date = datetime.strptime(start_date, "%y%m")
+            start_date = start_date.strftime("%Y-%m-01")    # beginning of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
+       
         # select run type filter (always exclude warmup runs if no filter specified)
         if run_type_num is not None:
             run_type_filter = f"AND run_type_num = {run_type_num}"
