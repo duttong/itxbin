@@ -762,6 +762,7 @@ class FE3_Instrument(HATS_DB_Functions):
                 AND parameter_num = {pnum}
                 {channel_str}
                 {run_type_filter}
+                AND height <> -999
                 #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
