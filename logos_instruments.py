@@ -193,6 +193,27 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
+    def scale_values(self, tank, pnum):
+        """
+        Returns a dictionary of scale values for a given tank and parameter number.
+        """
+        # Extract only the digits before the first "_" in the tank variable
+        match = re.search(r'(\d+)[^\d_]*_', tank)
+        tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
+        
+        sql = f"""
+            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments 
+            where serial_number like '%{tank}%'
+            and inst_num = {self.inst_num} 
+            and scale_num = (select idx from reftank.scales where parameter_num = {pnum});
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if not df.empty:
+            return df.iloc[0].to_dict()
+        else:
+            Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
+            return None
+
     def param_calcurves(self, df):
         """
         Returns the calibration curves for a given port number and channel.
@@ -804,7 +825,7 @@ class FE3_Instrument(HATS_DB_Functions):
         )
 
         return df
-    
+            
     def load_calcurves(self, pnum, channel, earliest_run):
         """
         Returns the calibration curves from ng_response for a given port number and channel.
