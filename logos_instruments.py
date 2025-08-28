@@ -487,7 +487,7 @@ class Normalizing():
 
     def merge_smoothed_data(self, df):
         # smoothed std or reference tank injection
-        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.2)
+        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.3)
 
         out = (
             df

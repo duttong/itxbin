@@ -464,14 +464,36 @@ class MainWindow(QMainWindow):
             .to_dict()
         )
 
+        # Calculate mean and std for each port
+        stats_map = (
+            self.run.groupby("port_idx")[yvar]
+            .agg(["mean", "std", "count"])
+            .to_dict("index")  # -> {port: {"mean": ..., "std": ...}}
+        )
+
         legend_handles = []
         for port in ports_in_run:
-            col = self.instrument.COLOR_MAP.get(port, 'gray')
-            label = port_label_map.get(port, str(port))
+            col = self.instrument.COLOR_MAP.get(port, "gray")
+            base_label = port_label_map.get(port, str(port))
+            if base_label == 'Push port':
+                continue
+
+            stats = stats_map.get(port)
+            if stats is not None:
+                # Two-line label with mean ± std
+                if yparam == 'resp':
+                    label = f"{base_label}"
+                elif yparam == 'ratio':
+                    label = f"{base_label}\n{stats['mean']:.3f} ± {stats['std']:.3f} ({stats['count']})"
+                else:
+                    label = f"{base_label}\n{stats['mean']:.2f} ± {stats['std']:.2f} ({stats['count']})"
+            else:
+                label = base_label
+
             legend_handles.append(
                 mpatches.Patch(color=col, label=label)
             )
-
+    
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
@@ -512,7 +534,7 @@ class MainWindow(QMainWindow):
         ax.legend(
             handles=legend_handles,
             loc='center left',
-            bbox_to_anchor=(1.02, 0.8),
+            bbox_to_anchor=(1.02, 0.6),
             fontsize=9,
             frameon=False
         )
