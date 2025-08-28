@@ -829,7 +829,7 @@ class FE3_Instrument(HATS_DB_Functions):
             
     def load_calcurves(self, pnum, channel, earliest_run):
         """
-        Returns the calibration curves from ng_response for a given port number and channel.
+        Returns the calibration curves from ng_response for a given parameter number and channel.
         """
         scale_num = self.qurey_return_scale_num(pnum)
         

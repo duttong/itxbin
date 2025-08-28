@@ -121,8 +121,12 @@ class MainWindow(QMainWindow):
         self.y_axis_limits = None  # Store y-axis limits when locked
         self.toggle_grid_cb = None  # Initialize toggle_grid_cb to avoid AttributeError
         self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
-        self.calibration_rb = QRadioButton("Calibration")
+        self.calibration_rb = QRadioButton()
+        self.resp_rb = QRadioButton()
         self.fit_method_cb = QComboBox()
+        self.draw2zero_cb = QCheckBox()
+        self.oldcurves_cb = QCheckBox()
+
         self._save_payload = None       # data for the Save Cal2DB button
 
         # Set up the UI
@@ -274,17 +278,19 @@ class MainWindow(QMainWindow):
         plot_gb.setLayout(plot_layout)
 
         self.plot_radio_group = QButtonGroup(self)
-        resp_rb = QRadioButton("Response")
+        self.resp_rb = QRadioButton("Response")
         ratio_rb = QRadioButton("Ratio")
         mole_fraction_rb = QRadioButton("Mole Fraction")
         self.calibration_rb = QRadioButton("Calibration")
-        self.calibration_rb.setEnabled(False)  # stays disabled until you detect availability
+        self.calibration_rb.setEnabled(False)
+        self.draw2zero_cb = QCheckBox("Zero")
+        self.oldcurves_cb = QCheckBox("Other Curves")
 
-        plot_layout.addWidget(resp_rb)
+        plot_layout.addWidget(self.resp_rb)
         plot_layout.addWidget(ratio_rb)
         plot_layout.addWidget(mole_fraction_rb)
 
-        # --- NEW: Fit method combo for Calibration row ---
+        # Fit method combo for Calibration row ---
         self.fit_method_cb = QComboBox()
         self.fit_method_cb.addItem("Linear", 1)
         self.fit_method_cb.addItem("Quadratic", 2)
@@ -292,23 +298,36 @@ class MainWindow(QMainWindow):
         self.fit_method_cb.setCurrentText("Quadratic")
         self.fit_method_cb.setEnabled(False)  # follows calibration availability
 
-        # Optional: keep the chosen degree around
         self.current_fit_degree = 2
         self.fit_method_cb.currentIndexChanged.connect(self.on_fit_method_changed)
 
+        # ── CALIBRATION ROW ──
         cal_row = QHBoxLayout()
         cal_row.addWidget(self.calibration_rb)
         cal_row.addSpacing(6)
         cal_row.addWidget(QLabel("Fit:"))
         cal_row.addWidget(self.fit_method_cb, 1)  # stretch so it hugs the right
         plot_layout.addLayout(cal_row)
-        # -----------------------------------------------
 
-        self.plot_radio_group.addButton(resp_rb, id=0)
+        # ── EXTRA OPTIONS ROW ──
+        self.draw2zero_cb.setEnabled(False)    # start disabled
+        self.oldcurves_cb.setEnabled(False)    # start disabled
+
+        cal_row2 = QHBoxLayout()
+        cal_row2.addSpacing(24)  # indent to align with calibration radio
+        cal_row2.addWidget(self.draw2zero_cb)
+        cal_row2.addWidget(self.oldcurves_cb)
+        cal_row2.addStretch(1)   # push them left
+        plot_layout.addLayout(cal_row2)
+        self.draw2zero_cb.clicked.connect(self.calibration_plot)
+        self.oldcurves_cb.clicked.connect(self.calibration_plot)
+       # -----------------------------------------------
+
+        self.plot_radio_group.addButton(self.resp_rb, id=0)
         self.plot_radio_group.addButton(ratio_rb, id=1)
         self.plot_radio_group.addButton(mole_fraction_rb, id=2)
         self.plot_radio_group.addButton(self.calibration_rb, id=3)
-        resp_rb.setChecked(True)
+        self.resp_rb.setChecked(True)
         self.plot_radio_group.idClicked[int].connect(self.on_plot_type_changed)
 
         # Options GroupBox
@@ -363,6 +382,12 @@ class MainWindow(QMainWindow):
             self.current_pnum = 20
             self.set_current_analyte()
 
+    def set_calibration_enabled(self, enabled: bool):
+        # enable or disable the other checkboxes associated with calibration_rb
+        self.fit_method_cb.setEnabled(enabled)
+        self.draw2zero_cb.setEnabled(enabled)
+        self.oldcurves_cb.setEnabled(enabled)
+
     def get_selected_dates(self):
         return {
             "start_year": self.start_year_cb.currentText(),
@@ -380,6 +405,7 @@ class MainWindow(QMainWindow):
 
     def apply_dates(self):
         self.apply_date_btn.setStyleSheet("")
+        self.resp_rb.setChecked(True)
         self.on_run_type_changed()
 
     def on_fit_method_changed(self, _idx: int):
@@ -390,6 +416,7 @@ class MainWindow(QMainWindow):
         
     def on_plot_type_changed(self, id: int):
         self.current_plot_type = id
+        self.set_calibration_enabled(False)
         if id == 0:
             self.gc_plot('resp')
         elif id == 1:
@@ -397,14 +424,13 @@ class MainWindow(QMainWindow):
         elif id == 2:
             self.gc_plot('mole_fraction')
         else:
+            self.set_calibration_enabled(True)
             self.calibration_plot()
         
         if id != self.current_plot_type:
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
             
-        self.fit_method_cb.setEnabled(self.calibration_rb.isEnabled() and id == 3)
-    
     def gc_plot(self, yparam='resp'):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -612,15 +638,20 @@ class MainWindow(QMainWindow):
         
         if curves.empty:
             # No curves at all → fit and create DF with one row
-            curves = pd.DataFrame([new_fit], columns=REQ_COLS)
+            try:
+                curves = pd.DataFrame([new_fit], columns=REQ_COLS)
+            except ValueError:
+                print(f'Error in calcurve {new_fit}')
+                return
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         elif not has_current:
             # Existing curves, but not for this run_time → append one row
             curves = pd.concat([curves, pd.DataFrame([new_fit])], ignore_index=True)
-            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
 
+        curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+        
         # pd dataframe of ref tank mole fraction estimates for this run
         ### TODO: mask out flagged data
         ref_estimate = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM].copy()
@@ -658,7 +689,8 @@ class MainWindow(QMainWindow):
         mn_cal = float(np.nanmin(self.run['cal_mf']))
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
-            x_one2one = np.linspace(mn_cal * .95, mx_cal * 1.05, 200)
+            #x_one2one = np.linspace(mn_cal * .95, mx_cal * 1.05, 200)
+            x_one2one = np.linspace(-.02, mx_cal * 1.05, 200)
             if np.isfinite(ref_mf_mean) and ref_mf_mean != 0:
                 y_one2one = x_one2one / ref_mf_mean
             else:
@@ -681,7 +713,7 @@ class MainWindow(QMainWindow):
         mask_main = self.run[['cal_mf', yvar]].notna().all(axis=1)
         run_x = self.run.loc[mask_main, 'cal_mf'].astype(float)
         run_y = self.run.loc[mask_main, yvar].astype(float)
-
+        
         # Main scatter
         ax.scatter(run_x, run_y, marker='o', c=colors.loc[mask_main], alpha=0.7)
 
@@ -699,7 +731,7 @@ class MainWindow(QMainWindow):
             legend_handles.append(Line2D([], [], marker='o', linestyle='None', color='black', 
                                          label="Ref Mean $\\pm 1\\sigma$"))
     
-        # Plot stored cal curves (bottom axis). Compute residuals against the newest curve (row 0).
+        # Plot stored cal curves (bottom axis).
         sel = self.run['run_time'].iat[0]  # the timestamp you want
         stored_curve = curves['run_time'].eq(sel)
 
@@ -718,6 +750,7 @@ class MainWindow(QMainWindow):
                 is_flagged = False
         self._flag_state = is_flagged        
 
+        # fit labels are from stored curve
         fitlabel = f'\nfit =\n'
         for n, coef in enumerate(stored_coefs[::-1]):
             if coef != 0.0:
@@ -742,19 +775,37 @@ class MainWindow(QMainWindow):
             if np.isfinite(maxabs) and maxabs > 0:
                 ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
 
-        xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
+        # Extend to zero if checked
+        if self.draw2zero_cb.isChecked():
+            xgrid = np.linspace(-0.02, mx_cal * 1.05, 300)
+        else:
+            xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
+            
         # Original curve from DB (black, thinner)
         if calcurve_exists:
             ygrid = np.polyval(stored_coefs, xgrid)
             ax.plot(xgrid, ygrid, linewidth=2, color='black', alpha=0.7,
                             label=row['run_date'].strftime('%Y-%m-%d'))
-            legend_handles.append(Line2D([], [], color='black', label="Stored Fit"))
+            legend_handles.append(Line2D([], [], color='black', linewidth=3, label=f"Fit {row['run_date'].strftime('%Y-%m-%d')}"))
+            
+        if self.oldcurves_cb.isChecked():
+            #print(curves)
+            # plot stored cal curves
+            for row in curves[0:6].itertuples():
+                coefs = [row.coef3, row.coef2, row.coef1, row.coef0]
+                flagged = int(row.flag)
+                ygrid = np.polyval(coefs, xgrid)
+                if flagged == 1:
+                    ax.plot(xgrid, ygrid, linewidth=1, color='red', linestyle=':', alpha=0.7)
+                else:
+                    ax.plot(xgrid, ygrid, linewidth=1, color='red', linestyle='-', alpha=0.7)
+            legend_handles.append(Line2D([], [], color='red', linewidth=3, label=f"Other fits"))
         
         # potentially a new fit (green, thicker)
         ygrid_new = np.polyval(new_fit_coefs, xgrid)
         ax.plot(xgrid, ygrid_new, linewidth=3, color='green', alpha=0.7)
-        legend_handles.append(Line2D([], [], color='green', label="New Fit"))
-
+        legend_handles.append(Line2D([], [], color='green', linewidth=3, label="New Fit"))
+        
         # Warning box if new curve
         if calcurve_exists == False:
             ax.text(
@@ -857,7 +908,12 @@ class MainWindow(QMainWindow):
                 ax.set_ylim(self.y_axis_limits)
         else:
             try:
-                ax.set_ylim(run_y.min() * 0.95, run_y.max() * 1.05)
+                if self.draw2zero_cb.isChecked():
+                    ax.set_ylim(0, 1.2)
+                    ax.set_xlim(0, run_x.max() * 1.05)
+                else:
+                    ax.set_ylim(run_y.min() * 0.95, run_y.max() * 1.05)
+                    ax.set_xlim(run_x.min() * 0.95, run_x.max() * 1.05)
             except ValueError:
                 pass
 
@@ -868,6 +924,7 @@ class MainWindow(QMainWindow):
         Fill self.run['cal_mf'] from instrument.scale_assignments(tank, pnum).
         Expects scale_assignments to return a dict/Series with keys 'coef0' and 'coef1'
         (or None if not found).
+        coef1 is not completely coded yet. No drift allowed.
         """
         if 'port_info' not in self.run:
             raise KeyError("self.run must contain a 'port_info' column")
@@ -1188,6 +1245,9 @@ class MainWindow(QMainWindow):
     def on_run_type_changed(self):
         self.current_plot_type = 0
         self.set_runlist()
+        self.set_calibration_enabled(False)
+        self.draw2zero_cb.setChecked(False)
+        self.oldcurves_cb.setChecked(False)
         self.set_current_analyte()  
         
     def on_run_changed(self, index):
