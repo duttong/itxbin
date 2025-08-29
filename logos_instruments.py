@@ -680,6 +680,7 @@ class FE3_Instrument(HATS_DB_Functions):
         "All": None,        # no filter
         "Flasks": 1,        # run_type_num
         "Calibrations": 2,
+        "Other": 4,
         #"PFPs": 5,
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
