@@ -12,7 +12,7 @@ from PyQt5 import QtCore, QtGui
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
-    QLabel, QComboBox, QPushButton, QRadioButton,
+    QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QScrollArea, QSizePolicy, QSpacerItem, QCheckBox
 )
 from PyQt5.QtCore import Qt, QDateTime
@@ -22,7 +22,7 @@ from matplotlib.figure import Figure
 import matplotlib.patches as mpatches
 from matplotlib import rcParams
 from matplotlib.lines import Line2D
-from matplotlib import pyplot as plt
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 
@@ -47,7 +47,7 @@ class RubberBandOverlay(QWidget):
         painter.end()
 
 class FastNavigationToolbar(NavigationToolbar):
-    def __init__(self, canvas, main_window):
+    def __init__(self, canvas, main_window, on_flag_toggle=None):
         super().__init__(canvas, main_window)
         self.main_window = main_window
         self.rubberband = None
@@ -61,6 +61,46 @@ class FastNavigationToolbar(NavigationToolbar):
             lambda evt: self._overlay.setGeometry(0, 0, canvas.width(), canvas.height()),
         )
 
+        self.on_flag_toggle = on_flag_toggle
+        self.addSeparator()
+        self.flag_action = QAction("Tagging", self)
+        self.flag_action.setCheckable(True)
+        self.flag_action.setShortcut("T")
+        self.flag_action.setToolTip("Toggle Tagging mode (T)")
+        self.flag_action.toggled.connect(self._toggle_flag)
+        self.addAction(self.flag_action)
+
+        acts = self.actions()
+        anchor_idx = None
+        for i, a in enumerate(acts):
+            tip = (a.toolTip() or "").lower()
+            text = (a.text() or "").lower()
+            icon = (a.iconText() or "").lower()
+            if "save" in tip or text == "save" or "save" in icon:
+                anchor_idx = i
+                break
+
+        if anchor_idx is not None:
+            # place *after* Zoom
+            self.removeAction(self.flag_action)
+            if anchor_idx + 1 < len(acts):
+                self.insertAction(acts[anchor_idx + 1], self.flag_action)
+                # optional: a tiny separator right after your button
+                self.insertSeparator(acts[anchor_idx + 1])
+            else:
+                self.addAction(self.flag_action)
+        else:
+            # fallback: put it before Save
+            for i, a in enumerate(self.actions()):
+                if "save" in (a.toolTip() or "").lower():
+                    self.removeAction(self.flag_action)
+                    self.insertAction(a, self.flag_action)   # before Save
+                    break
+
+    def _toggle_flag(self, checked):
+        if self.on_flag_toggle:
+            self.on_flag_toggle(checked)
+            
     def draw_rubberband(self, event, x0, y0, x1, y1):
         w, h = self.canvas.width(), self.canvas.height()
         self._overlay.setGeometry(0, 0, w, h)
@@ -367,7 +407,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.canvas)
 
         # Add a NavigationToolbar for the figure
-        self.toolbar = FastNavigationToolbar(self.canvas, self)  # Pass self explicitly
+        self.toolbar = FastNavigationToolbar(self.canvas, self, on_flag_toggle=self.on_flag_mode_toggled)  # Pass self explicitly
         right_layout.addWidget(self.toolbar)
 
         # Add both panes to the main hbox
@@ -381,6 +421,19 @@ class MainWindow(QMainWindow):
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
             self.set_current_analyte()
+
+    def on_flag_mode_toggled(self, enabled: bool):
+        self.flag_mode = enabled
+        self.canvas.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
+        if enabled:
+            self._cid = self.canvas.mpl_connect("button_press_event", self.on_flag_click)
+        else:
+            if hasattr(self, "_cid"):
+                self.canvas.mpl_disconnect(self._cid)
+                self._cid = None
+    
+    def on_flag_click(self, index):
+        print(f'flag clicked {index}')
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -430,6 +483,9 @@ class MainWindow(QMainWindow):
         if id != self.current_plot_type:
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
+            
+    def _fmt(self, x, y):
+        return f"x={mdates.num2date(x).strftime('%Y-%m-%d %H:%M')}  y={y:0.3g}"
             
     def gc_plot(self, yparam='resp'):
         """
@@ -491,8 +547,10 @@ class MainWindow(QMainWindow):
         )
 
         # Calculate mean and std for each port
+        flags = self.run['data_flag_int'].astype(bool)
+        good = self.run.loc[~flags, ['port_idx', yvar]]
         stats_map = (
-            self.run.groupby("port_idx")[yvar]
+            good.groupby("port_idx")[yvar]
             .agg(["mean", "std", "count"])
             .to_dict("index")  # -> {port: {"mean": ..., "std": ...}}
         )
@@ -522,7 +580,13 @@ class MainWindow(QMainWindow):
     
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors)
+        ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors, s=32, edgecolors='none', zorder=1)
+        # overlay: red ring around flagged points
+        ax.scatter(self.run.loc[flags, 'analysis_datetime'],
+                self.run.loc[flags, yvar],
+                facecolors='none', edgecolors='red', linewidths=1.5,
+                marker='o', s=36, zorder=3)
+
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
             
@@ -564,6 +628,7 @@ class MainWindow(QMainWindow):
             fontsize=9,
             frameon=False
         )
+        ax.format_coord = self._fmt
 
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
