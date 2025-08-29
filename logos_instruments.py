@@ -622,6 +622,9 @@ class M4_Instrument(HATS_DB_Functions):
         df['mole_fraction']     = df['mole_fraction'].astype(float)
         df = norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
+
+        df['data_flag_int'] = 0
+        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
         
         # build a port_idx for plotting colors
         mask = df['run_type_num'].eq(5)     # pfp runtype
@@ -810,6 +813,9 @@ class FE3_Instrument(HATS_DB_Functions):
         df = norm.merge_smoothed_data(df)
         #df['mole_fraction']     = self.calc_mole_fraction(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
+        
+        df['data_flag_int'] = 0
+        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
         
         df = self.add_port_labels(df)
 
