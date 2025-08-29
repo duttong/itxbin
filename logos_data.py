@@ -97,6 +97,23 @@ class FastNavigationToolbar(NavigationToolbar):
                     self.insertAction(a, self.flag_action)   # before Save
                     break
 
+    def zoom(self, *args, **kwargs):
+        super().zoom(*args, **kwargs)
+        # If we just entered a tool mode, turn Tagging OFF
+        if getattr(self, "mode", None):  # non-empty when active
+            try:
+                self.flag_action.setChecked(False)
+            except Exception:
+                pass
+
+    def pan(self, *args, **kwargs):
+        super().pan(*args, **kwargs)
+        if getattr(self, "mode", None):
+            try:
+                self.flag_action.setChecked(False)
+            except Exception:
+                pass
+
     def _toggle_flag(self, checked):
         if self.on_flag_toggle:
             self.on_flag_toggle(checked)
@@ -167,6 +184,15 @@ class MainWindow(QMainWindow):
         self.draw2zero_cb = QCheckBox()
         self.oldcurves_cb = QCheckBox()
 
+        self.tagging_enabled = False
+        self._pick_cid = None
+        self._scatter_main = None
+        self._current_yparam = None
+        self._current_yvar = None
+        self._pick_refresh = False
+        self._pending_xlim = None
+        self._pending_ylim = None
+        
         self._save_payload = None       # data for the Save Cal2DB button
 
         # Set up the UI
@@ -422,19 +448,21 @@ class MainWindow(QMainWindow):
             self.current_pnum = 20
             self.set_current_analyte()
 
-    def on_flag_mode_toggled(self, enabled: bool):
-        self.flag_mode = enabled
-        self.canvas.setCursor(Qt.CrossCursor if enabled else Qt.ArrowCursor)
-        if enabled:
-            self._cid = self.canvas.mpl_connect("button_press_event", self.on_flag_click)
-        else:
-            if hasattr(self, "_cid"):
-                self.canvas.mpl_disconnect(self._cid)
-                self._cid = None
-    
-    def on_flag_click(self, index):
-        print(f'flag clicked {index}')
-
+    def on_flag_mode_toggled(self, checked: bool):
+        self.tagging_enabled = checked
+        self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
+                
+        # If a tool is active, toggle it OFF so picks work
+        tb = getattr(self.canvas, "toolbar", None)
+        if checked and tb is not None and getattr(tb, "mode", None):
+            try:
+                if tb.mode == "zoom rect":
+                    tb.zoom()   # toggles off
+                elif tb.mode == "pan/zoom":
+                    tb.pan()    # toggles off
+            except Exception:
+                pass
+        
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
         self.fit_method_cb.setEnabled(enabled)
@@ -534,6 +562,15 @@ class MainWindow(QMainWindow):
             print(f"Unknown yparam: {yparam}")
             return
 
+        self._current_yparam = yparam
+        self._current_yvar = yvar
+        
+        x_dt = (
+            pd.to_datetime(self.run['analysis_datetime'], utc=True, errors='coerce')
+            .dt.tz_localize(None)   # drop timezone cleanly
+        )
+        self._x_num = mdates.date2num(x_dt.to_numpy())
+
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
 
@@ -547,7 +584,11 @@ class MainWindow(QMainWindow):
         )
 
         # Calculate mean and std for each port
-        flags = self.run['data_flag_int'].astype(bool)
+        flags = (
+            self.run['data_flag_int'] if 'data_flag_int' in self.run.columns
+            else pd.Series(0, index=self.run.index)
+        )
+        flags = flags.fillna(0).astype(int).astype(bool)        
         good = self.run.loc[~flags, ['port_idx', yvar]]
         stats_map = (
             good.groupby("port_idx")[yvar]
@@ -580,12 +621,16 @@ class MainWindow(QMainWindow):
     
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        ax.scatter(self.run['analysis_datetime'], self.run[yvar], marker='o', c=colors, s=32, edgecolors='none', zorder=1)
+        self._scatter_main = ax.scatter(
+            self.run['analysis_datetime'], self.run[yvar],
+            marker='o', c=colors, s=68, edgecolors='none', zorder=1,
+            picker=True, pickradius=7
+        )
         # overlay: red ring around flagged points
         ax.scatter(self.run.loc[flags, 'analysis_datetime'],
                 self.run.loc[flags, yvar],
                 facecolors='none', edgecolors='red', linewidths=1.5,
-                marker='o', s=36, zorder=3)
+                marker='o', s=75, zorder=3, picker=False)
 
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
@@ -629,7 +674,7 @@ class MainWindow(QMainWindow):
             frameon=False
         )
         ax.format_coord = self._fmt
-
+        
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
             if self.y_axis_limits is None:
@@ -646,8 +691,60 @@ class MainWindow(QMainWindow):
             except ValueError:
                 pass  # In case of empty data, do not set limits
         
-        self.canvas.draw()
-        
+        # ---- Restore view if requested by a prior click ----
+        if getattr(self, "_pending_xlim", None) is not None:
+            ax.set_xlim(self._pending_xlim)
+        if getattr(self, "_pending_ylim", None) is not None:
+            ax.set_ylim(self._pending_ylim)
+        self._pending_xlim = None
+        self._pending_ylim = None
+                
+        self.canvas.draw_idle()
+
+        if self._pick_cid is None:
+            self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)        
+
+    def _on_pick_point(self, event):
+        # Don’t flag while a tool is active
+        tb = getattr(self.canvas, "toolbar", None)
+        if tb is not None and getattr(tb, "mode", None):
+            return
+        if not self.tagging_enabled or event.artist is not self._scatter_main:
+            return
+
+        inds = np.asarray(event.ind, dtype=int)
+        if inds.size == 0:
+            return
+
+        mx, my = event.mouseevent.xdata, event.mouseevent.ydata
+        if mx is None or my is None:
+            i = inds[0]
+        else:
+            x_all = self._x_num  # precomputed
+            y_all = self.run[self._current_yvar].to_numpy()
+            dx = x_all[inds] - mx
+            dy = y_all[inds] - my
+            ok = np.isfinite(dx) & np.isfinite(dy)
+            if not ok.any():
+                return
+            i = inds[ok][np.argmin(dx[ok]**2 + dy[ok]**2)]
+
+        row_idx = self.run.index[i]
+        cur = self.run.at[row_idx, 'data_flag_int'] if 'data_flag_int' in self.run.columns else 0
+        cur_bool = bool(cur) if pd.notna(cur) else False
+        new_val = 0 if cur_bool else 1
+        for df in (self.run, self.data):
+            if 'data_flag_int' not in df.columns:
+                df['data_flag_int'] = 0
+            df.at[row_idx, 'data_flag_int'] = new_val
+
+        ax = self.figure.axes[0] if self.figure.axes else None
+        if ax is not None:
+            self._pending_xlim = ax.get_xlim()
+            self._pending_ylim = ax.get_ylim()
+
+        self.gc_plot(self._current_yparam)
+            
     def calibration_plot(self):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -896,6 +993,7 @@ class MainWindow(QMainWindow):
         ax.set_ylabel('Normalized Response')
         ax_resid.set_ylabel('obs − curve')
         ax_resid.tick_params(labelbottom=False)  # hide top x tick labels (shared x)
+        ax.format_coord = self._fmt
                 
         save_handle = Line2D([], [], linestyle='None', label='Save Cal2DB')
         flag_label  = 'Unflag Cal2DB' if self._flag_state else 'Flag Cal2DB'
