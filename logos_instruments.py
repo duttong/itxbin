@@ -41,8 +41,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
         return site_dict
 
     def query_analytes(self):
-        """Returns a dictionary of analytes and parameter numbers."""
-        sql = f"SELECT param_num, display_name FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
+        """Returns a dictionary of analytes and parameter numbers. """
+        sql = f"SELECT param_num, channel, display_name FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
         df = pd.DataFrame(self.doquery(sql))
         analytes_dict = dict(zip(df['display_name'], df['param_num']))
         return analytes_dict
@@ -252,7 +252,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
     def calc_mole_fraction(self, df):
         df = df.copy()
-        cols = ["normalized_resp","coef0","coef1","coef2","coef3"]
+        cols = ["normalized_resp", "coef0", "coef1", "coef2", "coef3"]
         arr = df[cols].to_numpy()
         df["mole_fraction"] = [
             self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
@@ -880,7 +880,7 @@ class BLD1_Instrument(HATS_DB_Functions):
     def __init__(self):
         super().__init__()
         self.inst_id = 'bld1'
-        self.inst_num = 999
+        self.inst_num = 220
         self.start_date = '20191217'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/bld1")
         self.export_dir = self.gc_dir / "results"
