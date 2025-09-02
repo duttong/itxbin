@@ -452,13 +452,16 @@ class Normalizing():
             The smoothed values are returned in a new column 'smoothed'.
         """
         std = (
-            df.loc[df[self.run_type_column] == self.standard_run_type,
-                    ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]]
-                .dropna()
-                .sort_values('analysis_datetime')
-                .copy()
+            df.loc[
+                (df[self.run_type_column] == self.standard_run_type) &
+                (df['data_flag'].eq('...')),
+                ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]
+            ]
+            .dropna()
+            .sort_values('analysis_datetime')
+            .copy()
         )
-        
+        #print(std)        
         # keep only those rows *after* the first in each run_time
         # this is to avoid smoothing the first point in each run_time which is often an outlier
         if self.inst_id == 'm4':
