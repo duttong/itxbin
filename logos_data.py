@@ -512,8 +512,11 @@ class MainWindow(QMainWindow):
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
             
-    def _fmt(self, x, y):
+    def _fmt_gc_plot(self, x, y):
         return f"x={mdates.num2date(x).strftime('%Y-%m-%d %H:%M')}  y={y:0.3g}"
+
+    def _fmt_cal_plot(self, x, y):
+        return f"x={x:0.3g}  y={y:0.3g}"
             
     def gc_plot(self, yparam='resp'):
         """
@@ -673,7 +676,7 @@ class MainWindow(QMainWindow):
             fontsize=9,
             frameon=False
         )
-        ax.format_coord = self._fmt
+        ax.format_coord = self._fmt_gc_plot
         
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
@@ -993,7 +996,7 @@ class MainWindow(QMainWindow):
         ax.set_ylabel('Normalized Response')
         ax_resid.set_ylabel('obs − curve')
         ax_resid.tick_params(labelbottom=False)  # hide top x tick labels (shared x)
-        ax.format_coord = self._fmt
+        ax.format_coord = self._fmt_cal_plot
                 
         save_handle = Line2D([], [], linestyle='None', label='Save Cal2DB')
         flag_label  = 'Unflag Cal2DB' if self._flag_state else 'Flag Cal2DB'
@@ -1185,6 +1188,7 @@ class MainWindow(QMainWindow):
             VALUES
                 (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
+                channel = VALUES(channel),
                 coef0 = VALUES(coef0),
                 coef1 = VALUES(coef1),
                 coef2 = VALUES(coef2),
