@@ -883,7 +883,9 @@ class FE3_Instrument(HATS_DB_Functions):
                 and run_date >= '{earliest_run}'
             order by run_date desc;
         """
-        return pd.DataFrame(self.db.doquery(sql))
+        df = pd.DataFrame(self.db.doquery(sql))
+        df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
+        return df
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     

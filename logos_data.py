@@ -183,6 +183,9 @@ class MainWindow(QMainWindow):
         self.fit_method_cb = QComboBox()
         self.draw2zero_cb = QCheckBox()
         self.oldcurves_cb = QCheckBox()
+        self.calcurve_label = QLabel()
+        self.calcurve_combo = QComboBox()
+        self.calcurves = []
 
         self.tagging_enabled = False
         self._pick_cid = None
@@ -192,6 +195,7 @@ class MainWindow(QMainWindow):
         self._pick_refresh = False
         self._pending_xlim = None
         self._pending_ylim = None
+        self.potential_curves = None
         
         self._save_payload = None       # data for the Save Cal2DB button
 
@@ -339,9 +343,9 @@ class MainWindow(QMainWindow):
 
         # Plot Type Selection GroupBox
         plot_gb = QGroupBox("Plot Type Selection")
-        plot_layout = QVBoxLayout()
-        plot_layout.setSpacing(6)
-        plot_gb.setLayout(plot_layout)
+        self.plot_layout = QVBoxLayout()
+        self.plot_layout.setSpacing(6)
+        plot_gb.setLayout(self.plot_layout)
 
         self.plot_radio_group = QButtonGroup(self)
         self.resp_rb = QRadioButton("Response")
@@ -352,9 +356,17 @@ class MainWindow(QMainWindow):
         self.draw2zero_cb = QCheckBox("Zero")
         self.oldcurves_cb = QCheckBox("Other Curves")
 
-        plot_layout.addWidget(self.resp_rb)
-        plot_layout.addWidget(ratio_rb)
-        plot_layout.addWidget(mole_fraction_rb)
+        self.plot_layout.addWidget(self.resp_rb)
+        self.plot_layout.addWidget(ratio_rb)
+        self.plot_layout.addWidget(mole_fraction_rb)
+        
+        self.calcurve_label = QLabel("Cal Date")
+        self.calcurve_combo = QComboBox()
+        self.calcurve_label.setVisible(False)   # hidden initially
+        self.calcurve_combo.setVisible(False)  
+        self.plot_layout.addWidget(self.calcurve_label)
+        self.plot_layout.addWidget(self.calcurve_combo)
+        self.calcurve_combo.currentIndexChanged.connect(self.on_calcurve_selected)
 
         # Fit method combo for Calibration row ---
         self.fit_method_cb = QComboBox()
@@ -373,7 +385,7 @@ class MainWindow(QMainWindow):
         cal_row.addSpacing(6)
         cal_row.addWidget(QLabel("Fit:"))
         cal_row.addWidget(self.fit_method_cb, 1)  # stretch so it hugs the right
-        plot_layout.addLayout(cal_row)
+        self.plot_layout.addLayout(cal_row)
 
         # ── EXTRA OPTIONS ROW ──
         self.draw2zero_cb.setEnabled(False)    # start disabled
@@ -384,7 +396,7 @@ class MainWindow(QMainWindow):
         cal_row2.addWidget(self.draw2zero_cb)
         cal_row2.addWidget(self.oldcurves_cb)
         cal_row2.addStretch(1)   # push them left
-        plot_layout.addLayout(cal_row2)
+        self.plot_layout.addLayout(cal_row2)
         self.draw2zero_cb.clicked.connect(self.calibration_plot)
         self.oldcurves_cb.clicked.connect(self.calibration_plot)
        # -----------------------------------------------
@@ -498,6 +510,9 @@ class MainWindow(QMainWindow):
     def on_plot_type_changed(self, id: int):
         self.current_plot_type = id
         self.set_calibration_enabled(False)
+        self.calcurve_label.setVisible(False)
+        self.calcurve_combo.setVisible(False)
+        
         if id == 0:
             self.gc_plot('resp')
         elif id == 1:
@@ -511,13 +526,13 @@ class MainWindow(QMainWindow):
         if id != self.current_plot_type:
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
-            
+
     def _fmt_gc_plot(self, x, y):
         return f"x={mdates.num2date(x).strftime('%Y-%m-%d %H:%M')}  y={y:0.3g}"
 
     def _fmt_cal_plot(self, x, y):
         return f"x={x:0.3g}  y={y:0.3g}"
-            
+
     def gc_plot(self, yparam='resp'):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -550,7 +565,7 @@ class MainWindow(QMainWindow):
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
-            
+    
             # potentially compute missing mole_fraction values for fe3
             if self.instrument.inst_id == 'fe3':
                 current_curve_date = self.run['cal_date'].iat[0]
@@ -661,6 +676,12 @@ class MainWindow(QMainWindow):
         else:
             ax.grid(False)
 
+        # add cal curve date selector
+        if (self.instrument.inst_id == 'fe3') & (yparam == 'mole_fraction'):
+            self.calcurve_label.setVisible(True)
+            self.calcurve_combo.setVisible(True)
+            self.populate_calcurve_combo(current_curve_date)
+
         # Cal curve date and age (if available)
         if current_curve_date:
             cal_delta_time = self.run['analysis_datetime'].min() - pd.to_datetime(current_curve_date, utc=True)
@@ -707,6 +728,45 @@ class MainWindow(QMainWindow):
         if self._pick_cid is None:
             self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)        
 
+    def populate_calcurve_combo(self, current_curve):
+        self.calcurve_combo.blockSignals(True)
+        self.calcurve_combo.clear()
+
+        # parse the current run time. This handles "(Cal)" in the string
+        sel_time = pd.to_datetime(self.current_run_time.split(' (')[0])
+        self.calcurves = self.instrument.load_calcurves(
+            self.current_pnum,
+            self.current_channel,
+            sel_time - pd.DateOffset(months=3)
+        )
+
+        window = self.calcurves.loc[
+            (self.calcurves['flag'] == 0) &
+            self.calcurves['run_date'].between(
+                sel_time - pd.Timedelta(days=60),
+                sel_time + pd.Timedelta(days=7)
+            )
+        ].sort_values('run_date')
+
+        # --- Add "Cal Date" label as first item ---
+        model = QtGui.QStandardItemModel()
+        label_item = QtGui.QStandardItem("Cal Date")
+        label_item.setFlags(label_item.flags() & ~Qt.ItemIsEnabled)  # Disable item
+        model.appendRow(label_item)
+
+        for _, row in window.iterrows():
+            label = row['run_date'].strftime('%Y-%m-%d %H:%M:%S')
+            self.calcurve_combo.addItem(label, userData=row)
+
+        # Fix: only format if current_curve is not NaT
+        if pd.notna(current_curve):
+            current_str = pd.to_datetime(current_curve).strftime('%Y-%m-%d %H:%M:%S')
+            idx = self.calcurve_combo.findText(current_str)
+            if idx != -1:
+                self.calcurve_combo.setCurrentIndex(idx)
+
+        self.calcurve_combo.blockSignals(False)    
+    
     def _on_pick_point(self, event):
         # Don’t flag while a tool is active
         tb = getattr(self.canvas, "toolbar", None)
@@ -747,7 +807,28 @@ class MainWindow(QMainWindow):
             self._pending_ylim = ax.get_ylim()
 
         self.gc_plot(self._current_yparam)
-            
+        
+    def on_calcurve_selected(self, index):
+        row = self.calcurve_combo.itemData(index)
+        if row is not None:
+            print("Selected calibration curve:", row['run_date'])
+
+            ts_str = self.current_run_time.split(" (")[0]
+            sel = pd.to_datetime(ts_str, utc=True)
+            mf_mask = self.data['run_time'] == sel
+
+            # Update cal info all at once
+            self.data.loc[mf_mask, ['cal_date', 'coef0', 'coef1', 'coef2', 'coef3']] = [
+                row['run_date'], row['coef0'], row['coef1'], row['coef2'], row['coef3']
+            ]
+
+            # Recalculate mole fractions
+            self.data.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(
+                self.data.loc[mf_mask]
+            )
+
+            self.gc_plot('mole_fraction')
+                        
     def calibration_plot(self):
         """
         Plot data with the legend sorted by analysis_datetime.
