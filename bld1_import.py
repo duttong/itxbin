@@ -78,9 +78,10 @@ class BLD1_import(GCwerks_Import):
 
 if __name__ == '__main__':
 
-    yyyy = date.today().year
+    yyyy = date.today().year 
     SGwin, SGorder = 37, 1      # Savitzky Golay default variables
     WSTART = -1                 # Wide spike filter start time
+    BOXWIDTH = 11  # Default box width for smoothing
     smoothfile_default = Path('/hats/gc/itxbin/bld1_smoothing.txt')
 
     parser = argparse.ArgumentParser(
@@ -89,6 +90,8 @@ if __name__ == '__main__':
         help='Apply 1-point spike filter (default off)')
     parser.add_argument('-W', action="store", dest='ws_start', default=WSTART,
         help='Apply wide spike filter (default off)')
+    parser.add_argument('-b', action='store', dest='boxwidth', metavar='Win', type=int, default=BOXWIDTH,
+        help=f'Apply a Box smooth with window width (default = {BOXWIDTH})')
     parser.add_argument('-g', action='store_true', default=False,
         help='Apply Savitzky Golay smoothing (default off)')
     parser.add_argument('-gw', action='store', dest='SGwin', metavar='Win', default=SGwin, type=int,
