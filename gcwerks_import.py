@@ -22,24 +22,22 @@ class GCwerks_Import:
         # GCWerks program to ingest external chromatogram data
         self.chromatogram_import = Path('/hats/gc/gcwerks-3/bin/chromatogram_import')
         
-        try:
-            if options.smoothfile:
+        if options.smoothfile:
+            smoothfile_path = Path(options.smoothfile)
+            if smoothfile_path.is_file():
                 self.usesmoothfile = True
-                sm = itx_import.ITX_smoothfile(Path(options.smoothfile))
+                sm = itx_import.ITX_smoothfile(smoothfile_path)
                 self.params_df = sm.params_df
-        except AttributeError:
-            pass
-            
+
         # if any command line filtering/smoothing options are set, don't use smoothfile
-        if ('s', True) in self.options.items():
+        if (
+            ('s', True) in self.options.items() or
+            int(self.options.get('boxwidth', -1)) > -1 or
+            ('g', True) in self.options.items() or
+            int(self.options.get('ws_start', -1)) > -1
+        ):
             self.usesmoothfile = False
-        if 'boxwidth' in self.options.items():
-            self.usesmoothfile = False
-        if ('g', True) in self.options.items():
-            self.usesmoothfile = False
-        if int(self.options['ws_start']) > -1:
-            self.usesmoothfile = False
-            
+
     def import_itx(self, itx_file):
         """ Import a single ITX file (all chroms) into GCwerks
             Apply filters and smoothing
@@ -58,10 +56,13 @@ class GCwerks_Import:
                 if params.spike:
                     itx.spike_filter(ch)
                 if params.wide_spike:
+                    #print(f'   channel {ch} wide spike {params.wide_spike}')
                     itx.wide_spike_filter(ch, start=params.wide_start)
                 if params.sg:
+                    #print(f'   channel {ch} savitzky golay {params.sg_win}')
                     itx.savitzky_golay(ch, winsize=params.sg_win, order=params.sg_ord)
                 elif params.boxwidth:
+                    #print(f'   channel {ch} box smooth {params.boxwidth}')
                     itx.box_smooth(ch, winsize=int(params.boxwidth))
         else:
             # apply spike filters before smoothing

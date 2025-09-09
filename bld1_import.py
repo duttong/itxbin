@@ -81,7 +81,7 @@ if __name__ == '__main__':
     yyyy = date.today().year 
     SGwin, SGorder = 37, 1      # Savitzky Golay default variables
     WSTART = -1                 # Wide spike filter start time
-    BOXWIDTH = 11  # Default box width for smoothing
+    BOXWIDTH = -1               # Default box width for smoothing
     smoothfile_default = Path('/hats/gc/itxbin/bld1_smoothing.txt')
 
     parser = argparse.ArgumentParser(
