@@ -62,7 +62,7 @@ class GCwerks_Import:
                 if params.sg:
                     itx.savitzky_golay(ch, winsize=params.sg_win, order=params.sg_ord)
                 elif params.boxwidth:
-                    itx.box_smooth(ch, winsize=params.boxwidth)
+                    itx.box_smooth(ch, winsize=int(params.boxwidth))
         else:
             # apply spike filters before smoothing
             if ('s', True) in self.options.items():
