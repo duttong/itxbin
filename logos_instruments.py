@@ -161,7 +161,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         
         # Copy and ensure df[time_col] is datetime64
         df = df.copy()
-        df[time_col] = pd.to_datetime(df[time_col])
+        df[time_col] = pd.to_datetime(df[time_col], utc=True)
 
         # If df is empty, just add the column and return
         if df.empty:
@@ -181,6 +181,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         )
 
         db_df = pd.DataFrame(self.db.doquery(sql))
+        db_df['analysis_time'] = pd.to_datetime(db_df['analysis_time'], utc=True)
 
         # Now merge back onto the original df:
         out = df.merge(

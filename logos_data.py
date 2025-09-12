@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
-    QButtonGroup, QScrollArea, QSizePolicy, QSpacerItem, QCheckBox
+    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox
 )
 from PyQt5.QtCore import Qt, QDateTime
 
@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         self._pick_refresh = False
         self._pending_xlim = None
         self._pending_ylim = None
-        self.potential_curves = None
+        self.madechanges = False
         
         self._save_payload = None       # data for the Save Cal2DB button
 
@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
     def _fmt_cal_plot(self, x, y):
         return f"x={x:0.3g}  y={y:0.3g}"
 
-    def gc_plot(self, yparam='resp'):
+    def gc_plot(self, yparam='resp', sub_info=''):
         """
         Plot data with the legend sorted by analysis_datetime.
         """
@@ -549,7 +549,6 @@ class MainWindow(QMainWindow):
             return
 
         current_curve_date = ''
-        sub_info = ''
         if yparam == 'resp':
             yvar = self.instrument.response_type
             tlabel = 'Response'
@@ -574,6 +573,7 @@ class MainWindow(QMainWindow):
                 if mf_mask.any():
                     self.run.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(self.run.loc[mf_mask])
                     sub_info = f"Mole Fraction computed"
+                    self.madechanges = True
                 if current_curve_date == None:
                     sub_info = "No calibration curve available"
         else:
@@ -827,7 +827,8 @@ class MainWindow(QMainWindow):
                 self.data.loc[mf_mask]
             )
 
-            self.gc_plot('mole_fraction')
+            self.madechanges = True
+            self.gc_plot('mole_fraction', sub_info='RE-CALCULATED')
                         
     def calibration_plot(self):
         """
@@ -1552,6 +1553,21 @@ class MainWindow(QMainWindow):
         self.on_plot_type_changed(self.current_plot_type)
         #self.gc_plot()  # Update the plot to reflect grid state
 
+    def made_changes(self, event):
+        if self.madechanges:
+            choice = QMessageBox.question(
+                self,  
+                "Quit", 
+                "Some of the data was modified. Do you want to save changes to fe3_db.csv file?", 
+                QMessageBox.Yes | QMessageBox.No)
+
+            if choice == QMessageBox.Yes:
+                print("Saving changes here...")
+                #self.fe3db.save_db_file(self.fe3db.db)
+                #event.accept()
+            else:
+                pass
+        
 
 def get_instrument_for(instrument_id: str):
     """
