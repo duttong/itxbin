@@ -19,7 +19,7 @@ class FE3_batch(FE3_Instrument):
         """ Calculates mole_fraction for a range of dates.
             Updates the ng_mole_fractions table """
         
-        EXCLUDE_PORT = 9   # no need to calculate mf for the "Push port"
+        EXCLUDE_PORT = 99   # no need to calculate mf for the "Push port" (set to 99 for now)
         
         gas = self.analytes_inv[pnum]
         if channel is None:
