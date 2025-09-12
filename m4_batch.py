@@ -34,120 +34,12 @@ class M4_Processing(M4_Instrument):
         super().__init__()
         self.data = None
         self.status_label = None
-    
-    def load_data(self, pnum, start_date=None, end_date=None):
-        """Load data from the database with date filtering.
-        Args:
-            pnum (int): Parameter number to filter data.
-            start_date (str, optional): Start date in YYMM format. Defaults to None.
-            end_date (str, optional): End date in YYMM format. Defaults to None.
-        """
-        
-        if end_date is None:
-            end_date = datetime.today()
-        else:
-            end_date = datetime.strptime(end_date, "%y%m")
 
-        if start_date is None:
-            start_date = end_date - timedelta(days=60)
-        else:
-            start_date = datetime.strptime(start_date, "%y%m")
-
-        start_date_str = start_date.strftime("%Y-%m-01")
-        end_date_str = end_date.strftime("%Y-%m-%d")
-
-        print(f"Loading data from {start_date_str} to {end_date_str} for parameter {pnum}")
-        # todo: use flags - using low_flow flag
-        query = f"""
-            SELECT analysis_datetime, run_time, run_type_num, port_info, detrend_method_num, 
-                area, mole_fraction, net_pressure, flag, sample_id, pair_id_num
-            FROM hats.ng_data_view
-            WHERE inst_num = {self.inst_num}
-                AND parameter_num = {pnum}
-                AND area != 0
-                #AND detrend_method_num != 3
-                #AND low_flow != 1
-                AND run_time BETWEEN '{start_date_str}' AND '{end_date_str}'
-            ORDER BY analysis_datetime;
-        """
-        df = pd.DataFrame(self.db.doquery(query))
-        if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
-            self.data = pd.DataFrame()
-            return
-        
-        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'])
-        df['run_time']          = pd.to_datetime(df['run_time'])
-        df['run_type_num']      = df['run_type_num'].astype(int)
-        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
-        df['area']              = df['area'].astype(float)
-        df['net_pressure']      = df['net_pressure'].astype(float)
-        df['area']              = df['area']/df['net_pressure']
-        df['mole_fraction']     = df['mole_fraction'].astype(float)
-        df['parameter_num']     = pnum
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
-
-    def _smooth_segment(self, seg, frac):
-        # some of these filters are not needed.
-        # 1) drop bad rows
-        #seg = seg.dropna(subset=['ts','area']).sort_values('ts')
-        # 2) consolidate duplicates
-        #seg = seg.groupby('ts', as_index=False)['area'].mean()
-        # 3) skip tiny segments
-        if len(seg) < 3 or seg['ts'].max() == seg['ts'].min():
-            return pd.Series(seg['area'].values, index=seg.index)
-        # 4) do LOWESS
-        return pd.Series(
-            lowess(seg['area'], seg['ts'], frac=frac, return_sorted=False),
-            index=seg.index
-        )
-        
-    def calculate_smoothed_std(self, df, min_pts=8, frac=0.5):
-        """ Calculate smoothed standard deviation for the standard run type.
-            This function uses LOWESS smoothing on the area data.
-            min_pts is the minimum number of points required to perform smoothing.
-            frac is the fraction of points used for smoothing.
-            The smoothed values are returned in a new column 'smoothed'.
-        """
-        std = (
-            df.loc[df['run_type_num'] == self.STANDARD_RUN_TYPE,
-                    ['analysis_datetime','run_time','detrend_method_num','area']]
-                .dropna()
-                .sort_values('analysis_datetime')
-                .copy()
-        )
-        
-        # Not enough points to smooth (need at least 15 points)
-        if len(std) < min_pts*3:
-            std['smoothed'] = np.nan
-            return std[['analysis_datetime','run_time','smoothed']]
-
-        # keep only those rows *after* the first in each run_time
-        # this is to avoid smoothing the first point in each run_time which is often an outlier
-        std = std[std.groupby('run_time').cumcount() > 0].copy()
-        
-        std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
-        
-        detrend_method = std['detrend_method_num'].iat[0]
-
-        if detrend_method == 1:
-            # point to point is the same as a small frac for LOWESS
-            frac = 0.01
-
-        std['smoothed'] = (
-            std
-            .groupby('run_time', group_keys=False)[['ts','area']]
-            .apply(lambda seg: self._smooth_segment(seg, frac))
-        )
-
-        return std[['analysis_datetime','run_time','smoothed']]
-    
     def calculate_mole_fraction(self, df):
         """
         Compute mole_fraction = (a0 + a1·days_elapsed) * x
         where days_elapsed is days since 1900-01-01 relative to run_time,
-        and x is normalized_area.
+        and x is normalized_resp.
         """
         pnum     = df['parameter_num'].iat[0]
         baseline = pd.Timestamp("1900-01-01")
@@ -177,39 +69,12 @@ class M4_Processing(M4_Instrument):
             a1 = float(coefs['coef1'])
             days = (pd.to_datetime(rt) - baseline).days
 
-            mf.loc[grp.index] = (a0 + a1 * days) * grp['normalized_area']
+            mf.loc[grp.index] = (a0 + a1 * days) * grp['normalized_resp']
 
         out = df.copy()
         out['mole_fraction'] = mf
         return out
 
-    def merge_smoothed_data(self):
-        df = self.data
-        # smoothed std or reference tank injection
-        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.5)
-
-        out = (
-            df
-            .merge(std, on=['analysis_datetime','run_time'], how='left')
-            .sort_values('analysis_datetime')
-        )
-
-        # explicitly select just the 'smoothed' column for the group operation which is the std
-        out['smoothed'] = (
-            out
-            .groupby('run_time', group_keys=False)['smoothed']
-            .apply(lambda s: s
-                .interpolate(method='linear', limit_direction='both')
-                .ffill()
-                .bfill()
-            )
-        )
-
-        out['normalized_area'] = out['area'] / out['smoothed']
-        out = self.calculate_mole_fraction(out)
-                
-        return out
-    
     def insert_mole_fractions(self, df):
         """
         Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
@@ -294,15 +159,13 @@ def main():
         # Process all analytes
         for analyte_name, pnum in m4.analytes.items():
             print(f"Processing analyte: {analyte_name} (Parameter {pnum})")
-            m4.load_data(
+            df = m4.load_data(
                 pnum=pnum,
                 start_date=args.start_date,
                 end_date=args.end_date
             )
             if m4.data.empty:
                 continue
-
-            df = m4.merge_smoothed_data()
 
             if args.insert:
                 df = m4.return_analysis_nums(df, 'analysis_datetime')
@@ -314,15 +177,13 @@ def main():
     else:
         # Process a single parameter
         pnum = int(args.parameter_num)
-        m4.load_data(
+        df = m4.load_data(
             pnum=pnum,
             start_date=args.start_date,
             end_date=args.end_date
         )
         if m4.data.empty:
             return
-
-        df = m4.merge_smoothed_data()
 
         # get analyte names
         analytes = m4.analytes
@@ -374,7 +235,7 @@ def main():
             ax2.grid(True)
             ax2.scatter(
                 df['analysis_datetime'],
-                df['normalized_area'],
+                df['normalized_resp'],
                 c=colors,
                 marker='o', linewidths=0, alpha=0.8,
                 label="Mole Fraction"
