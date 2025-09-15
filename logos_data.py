@@ -574,6 +574,7 @@ class MainWindow(QMainWindow):
                     self.run.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(self.run.loc[mf_mask])
                     sub_info = f"Mole Fraction computed"
                     self.madechanges = True
+                    self._style_gc_buttons()
                 if current_curve_date == None:
                     sub_info = "No calibration curve available"
         else:
@@ -687,18 +688,70 @@ class MainWindow(QMainWindow):
             cal_delta_time = self.run['analysis_datetime'].min() - pd.to_datetime(current_curve_date, utc=True)
             l = current_curve_date.strftime('\nCal Date:\n%Y-%m-%d %H:%M\n') + f'{cal_delta_time.days} days ago'
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
-            
+
+        # --- Append Save 2DB / Revert legend "buttons" (always present) ---
+        if self.madechanges:
+            spacer_handle  = Line2D([], [], linestyle='None', label='\u2009')
+            save2db_handle = Line2D([], [], linestyle='None', label='Save to DB')
+            revert_handle  = Line2D([], [], linestyle='None', label='Revert changes')
+
+            legend_handles.extend([spacer_handle, save2db_handle, spacer_handle, revert_handle])
+
+        # Put legend outside and create it ONCE 
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
-        ax.legend(
+
+        leg = ax.legend(
             handles=legend_handles,
             loc='center left',
             bbox_to_anchor=(1.02, 0.6),
             fontsize=9,
-            frameon=False
+            frameon=False,
+            handlelength=0.5,
+            handletextpad=0.4,
+            borderaxespad=0.3,
+            labelspacing=0.2,
         )
+
+        # Style Save/Revert entries like buttons
+        self._save2db_text = None
+        self._revert_text  = None
+        self._spacer2_text = None
+
+        for txt in leg.get_texts():
+            t = txt.get_text().strip()
+            if t == 'Save to DB':
+                self._save2db_text = txt
+                txt.set_picker(True)
+                txt.set_color('white')
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.4',
+                    facecolor=('#2e7d32' if self.madechanges else '#9e9e9e'),
+                    edgecolor='none', alpha=0.95
+                ))
+            elif t == 'Revert changes':
+                self._revert_text = txt
+                txt.set_picker(True)
+                txt.set_color('white')
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.4',
+                    facecolor=('#c62828' if self.madechanges else '#9e9e9e'),
+                    edgecolor='none', alpha=0.95
+                ))
+            elif t == '\u2009':  # spacer
+                self._spacer2_text = txt
+                txt.set_fontsize(10)
+                txt.set_color((0, 0, 0, 0))  # fully transparent
+                           
+        box = ax.get_position()
+        ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.format_coord = self._fmt_gc_plot
-        
+  
+        if not hasattr(self, "_legend_pick_cid") or self._legend_pick_cid is None:
+            self._legend_pick_cid = self.canvas.mpl_connect(
+                "pick_event", self._on_legend_pick
+            )
+      
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
             if self.y_axis_limits is None:
@@ -727,6 +780,15 @@ class MainWindow(QMainWindow):
 
         if self._pick_cid is None:
             self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)        
+   
+    def _style_gc_buttons(self):
+        """
+        Placeholder for consistency with calibration_plot.
+        In gc_plot, buttons are added/removed dynamically,
+        so this just redraws the canvas if needed.
+        """
+        if getattr(self, "canvas", None):
+            self.canvas.draw_idle()
 
     def populate_calcurve_combo(self, current_curve):
         self.calcurve_combo.blockSignals(True)
@@ -828,6 +890,7 @@ class MainWindow(QMainWindow):
             )
 
             self.madechanges = True
+            self._style_gc_buttons()
             self.gc_plot('mole_fraction', sub_info='RE-CALCULATED')
                         
     def calibration_plot(self):
@@ -1294,6 +1357,16 @@ class MainWindow(QMainWindow):
             self.save_current_curve()
         elif art is getattr(self, '_flag_text', None):
             self.toggle_flag_current_curve()
+        elif art is self._save2db_text:
+            if not self.madechanges:
+                return
+            print("Save 2DB clicked")   # stub; replace with save-to-DB logic
+            # self.save_to_db()
+        elif art is self._revert_text:
+            if not self.madechanges:
+                return
+            print("Revert clicked")     # stub; replace with revert logic
+            # self.revert_changes()           
 
     def toggle_flag_current_curve(self):
         # flip state
@@ -1465,6 +1538,8 @@ class MainWindow(QMainWindow):
             start_date=self.current_run_time,
             end_date=self.current_run_time
         )
+        
+        self.madechanges = False
 
     def set_current_analyte(self):
         """
