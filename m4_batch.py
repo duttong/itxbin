@@ -42,7 +42,7 @@ class M4_Processing(M4_Instrument):
         and x is normalized_resp.
         """
         pnum     = df['parameter_num'].iat[0]
-        baseline = pd.Timestamp("1900-01-01")
+        baseline = pd.Timestamp('1900-01-01', tz='UTC')
         mf       = pd.Series(index=df.index, dtype=float)
 
         # cache for scale values keyed by ref_tank
@@ -122,9 +122,10 @@ def main():
             )
             if m4.data.empty:
                 continue
+            
+            df = m4.calculate_mole_fraction(df)
 
             if args.insert:
-                df = m4.return_analysis_nums(df, 'analysis_datetime')
                 m4.upsert_mole_fractions(df)
 
         # No figures when processing all analytes
@@ -141,6 +142,8 @@ def main():
         if m4.data.empty:
             return
 
+        df = m4.calculate_mole_fraction(df)
+
         # get analyte names
         analytes = m4.analytes
         inv = {int(v): k for k, v in analytes.items()}
@@ -155,7 +158,6 @@ def main():
         ]
 
         if args.insert:
-            df = m4.return_analysis_nums(df, 'analysis_datetime')
             m4.upsert_mole_fractions(df)
             print(f"Inserted mole fractions for parameter {pnum} into the database. Total time: {time.time() - t0:.2f} seconds")
 
@@ -191,7 +193,7 @@ def main():
             ax2.grid(True)
             ax2.scatter(
                 df['analysis_datetime'],
-                df['normalized_resp'],
+                df['mole_fraction'],
                 c=colors,
                 marker='o', linewidths=0, alpha=0.8,
                 label="Mole Fraction"
