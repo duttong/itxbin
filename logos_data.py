@@ -96,6 +96,35 @@ class FastNavigationToolbar(NavigationToolbar):
                     self.removeAction(self.flag_action)
                     self.insertAction(a, self.flag_action)   # before Save
                     break
+        
+        self._style_flag_button()
+
+    def _style_flag_button(self):
+        # Grab the *current* QToolButton for the action (it changes if you reinsert)
+        btn = self.widgetForAction(self.flag_action)
+        if btn is None:
+            # Defer until the toolbar finishes creating the widget
+            QtCore.QTimer.singleShot(0, self._style_flag_button)
+            return
+
+        self.flag_button = btn
+        # Ensure it paints a background (autoRaise=True makes it flat/grey on some styles)
+        self.flag_button.setAutoRaise(False)
+        self.flag_button.setCheckable(True)   # mirrors the action's checkable
+
+        # Style normal vs checked states
+        self.flag_button.setStyleSheet("""
+            QToolButton {
+                background: none;
+                padding: 2px 8px;
+                border-radius: 6px;
+            }
+            QToolButton:checked {
+                background-color: #2e7d32;  /* green */
+                color: white;
+                font-weight: 600;
+            }
+        """)
 
     def zoom(self, *args, **kwargs):
         super().zoom(*args, **kwargs)
@@ -831,7 +860,7 @@ class MainWindow(QMainWindow):
         self.calcurve_combo.blockSignals(False)    
     
     def _on_pick_point(self, event):
-        # Don’t flag while a tool is active
+        # Don’t flag while a tool (zoom/pan) is active
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
             return
@@ -842,33 +871,39 @@ class MainWindow(QMainWindow):
         if inds.size == 0:
             return
 
+        # Pick the closest point to the mouse
         mx, my = event.mouseevent.xdata, event.mouseevent.ydata
         if mx is None or my is None:
             i = inds[0]
         else:
-            x_all = self._x_num  # precomputed
+            x_all = self._x_num  # precomputed x positions
             y_all = self.run[self._current_yvar].to_numpy()
             dx = x_all[inds] - mx
             dy = y_all[inds] - my
             ok = np.isfinite(dx) & np.isfinite(dy)
             if not ok.any():
                 return
-            i = inds[ok][np.argmin(dx[ok]**2 + dy[ok]**2)]
+            i = inds[ok][np.argmin(dx[ok] ** 2 + dy[ok] ** 2)]
 
         row_idx = self.run.index[i]
-        cur = self.run.at[row_idx, 'data_flag_int'] if 'data_flag_int' in self.run.columns else 0
+
+        # Ensure the flag column exists
+        if "data_flag_int" not in self.run.columns:
+            self.run["data_flag_int"] = 0
+
+        # Toggle the flag value
+        cur = self.run.at[row_idx, "data_flag_int"]
         cur_bool = bool(cur) if pd.notna(cur) else False
         new_val = 0 if cur_bool else 1
-        for df in self.run:
-            if 'data_flag_int' not in df.columns:
-                df['data_flag_int'] = 0
-            df.at[row_idx, 'data_flag_int'] = new_val
+        self.run.at[row_idx, "data_flag_int"] = new_val
 
+        # Preserve axis limits so the view doesn’t reset
         ax = self.figure.axes[0] if self.figure.axes else None
         if ax is not None:
             self._pending_xlim = ax.get_xlim()
             self._pending_ylim = ax.get_ylim()
 
+        # Redraw the plot
         self.gc_plot(self._current_yparam)
         
     def on_calcurve_selected(self, index):
