@@ -75,50 +75,6 @@ class M4_Processing(M4_Instrument):
         out['mole_fraction'] = mf
         return out
 
-    def insert_mole_fractions(self, df):
-        """
-        Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
-        Any non‑numeric mole_fraction (including blank strings) becomes NULL.
-        """
-        sql_insert = """
-            INSERT INTO hats.ng_mole_fractions (
-                analysis_num,
-                parameter_num,
-                mole_fraction
-            ) VALUES (
-                %s, %s, %s
-            )
-            ON DUPLICATE KEY UPDATE
-                mole_fraction = VALUES(mole_fraction)
-        """
-
-        # Coerce everything to float, invalid parses → NaN, then round
-        df = df.copy()
-        df['mole_fraction'] = (
-            pd.to_numeric(df['mole_fraction'], errors='coerce')
-            .round(5)
-        )
-
-        params = []
-        for _, row in df.iterrows():
-            # Convert pandas NaN → Python None so INSERT writes a NULL
-            mf = row.mole_fraction
-            mole_fraction = None if pd.isna(mf) else float(mf)
-
-            params.append((
-                row.analysis_num,
-                row.parameter_num,
-                mole_fraction
-            ))
-
-            # flush batch if doMultiInsert returns True
-            if self.db.doMultiInsert(sql_insert, params):
-                params = []
-
-        # any trailing rows
-        if params:
-            self.db.doMultiInsert(sql_insert, params, all=True)
-
 def main():
     parser = argparse.ArgumentParser(
         description="Process M4 data and optionally plot results"
@@ -169,7 +125,7 @@ def main():
 
             if args.insert:
                 df = m4.return_analysis_nums(df, 'analysis_datetime')
-                m4.insert_mole_fractions(df)
+                m4.upsert_mole_fractions(df)
 
         # No figures when processing all analytes
         print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
@@ -200,7 +156,7 @@ def main():
 
         if args.insert:
             df = m4.return_analysis_nums(df, 'analysis_datetime')
-            m4.insert_mole_fractions(df)
+            m4.upsert_mole_fractions(df)
             print(f"Inserted mole fractions for parameter {pnum} into the database. Total time: {time.time() - t0:.2f} seconds")
 
         if args.figures:
