@@ -194,6 +194,59 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
+    def upsert_mole_fractions(self, df, response_id=None):
+        """
+        Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
+        Any non‑numeric mole_fraction (including blank strings) becomes NULL.
+        """
+        sql_insert = """
+            INSERT INTO hats.ng_mole_fractions (
+                analysis_num,
+                parameter_num,
+                ng_response_id,
+                channel,
+                mole_fraction,
+                flag
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                ng_response_id = VALUES(ng_response_id),
+                mole_fraction = VALUES(mole_fraction),
+                flag = VALUES(flag)                
+        """
+
+        # Coerce everything to float, invalid parses → NaN, then round
+        df = df.copy()
+        df['mole_fraction'] = (
+            pd.to_numeric(df['mole_fraction'], errors='coerce')
+            .round(5)
+        )
+
+        params = []
+        for _, row in df.iterrows():
+            # Convert pandas NaN → Python None so INSERT writes a NULL
+            mf = row.mole_fraction
+            mole_fraction = None if pd.isna(mf) else float(mf)
+            id = 0 if response_id is None else response_id
+
+            params.append((
+                row.analysis_num,
+                row.parameter_num,
+                id,
+                row.channel,
+                mole_fraction,
+                row.data_flag
+            ))
+
+            # flush batch if doMultiInsert returns True
+            if self.db.doMultiInsert(sql_insert, params):
+                params = []
+
+        # any trailing rows
+        if params:
+            self.db.doMultiInsert(sql_insert, params, all=True)
+            
     def scale_values(self, tank, pnum):
         """
         Returns a dictionary of scale values for a given tank and parameter number.
@@ -877,7 +930,7 @@ class FE3_Instrument(HATS_DB_Functions):
             ch = f"and channel = '{channel}'"
                   
         sql = f"""
-            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
+            SELECT id, run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
                 where inst_num = {self.inst_num}
                 and scale_num = {scale_num}
                 {ch}

@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
         self.current_channel = None  # channel is optional, e.g. for FE3
         self.current_run_times = []   # will be a sorted list of QDateTime strings
         self.current_run_time = None  # currently selected run_time (QDateTime string)
-        self.data = pd.DataFrame()  # Placeholder for loaded data
+        self.run = pd.DataFrame()  # Placeholder for loaded data
         self.y_axis_limits = None  # Store y-axis limits when locked
         self.toggle_grid_cb = None  # Initialize toggle_grid_cb to avoid AttributeError
         self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
@@ -186,6 +186,7 @@ class MainWindow(QMainWindow):
         self.calcurve_label = QLabel()
         self.calcurve_combo = QComboBox()
         self.calcurves = []
+        self.selected_calc_curve = None  # currently selected calibration curve date
 
         self.tagging_enabled = False
         self._pick_cid = None
@@ -537,13 +538,13 @@ class MainWindow(QMainWindow):
         """
         Plot data with the legend sorted by analysis_datetime.
         """
-        if self.data.empty:
+        if self.run.empty:
             print("No data available for plotting.")
             return
 
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
-        self.run = self.data.loc[self.data['run_time'] == sel]
+        #self.run = self.data.loc[self.data['run_time'] == sel]
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
@@ -858,7 +859,7 @@ class MainWindow(QMainWindow):
         cur = self.run.at[row_idx, 'data_flag_int'] if 'data_flag_int' in self.run.columns else 0
         cur_bool = bool(cur) if pd.notna(cur) else False
         new_val = 0 if cur_bool else 1
-        for df in (self.run, self.data):
+        for df in self.run:
             if 'data_flag_int' not in df.columns:
                 df['data_flag_int'] = 0
             df.at[row_idx, 'data_flag_int'] = new_val
@@ -874,19 +875,21 @@ class MainWindow(QMainWindow):
         row = self.calcurve_combo.itemData(index)
         if row is not None:
             print("Selected calibration curve:", row['run_date'])
+            self.selected_calc_curve = row['run_date']
+            print(f"{self.calcurves.loc[self.calcurves['run_date'] == row['run_date']]}")
 
             ts_str = self.current_run_time.split(" (")[0]
             sel = pd.to_datetime(ts_str, utc=True)
-            mf_mask = self.data['run_time'] == sel
+            mf_mask = self.run['run_time'] == sel
 
             # Update cal info all at once
-            self.data.loc[mf_mask, ['cal_date', 'coef0', 'coef1', 'coef2', 'coef3']] = [
+            self.run.loc[mf_mask, ['cal_date', 'coef0', 'coef1', 'coef2', 'coef3']] = [
                 row['run_date'], row['coef0'], row['coef1'], row['coef2'], row['coef3']
             ]
 
             # Recalculate mole fractions
-            self.data.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(
-                self.data.loc[mf_mask]
+            self.run.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(
+                self.run.loc[mf_mask]
             )
 
             self.madechanges = True
@@ -898,14 +901,14 @@ class MainWindow(QMainWindow):
         Plot data with the legend sorted by analysis_datetime.
         Adds a residuals (diff_y) panel above the main plot that shares the x-axis.
         """
-        if self.data.empty:
+        if self.run.empty:
             print("No data available for plotting.")
             return
 
         # filter for run_time selected in run_cb
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
-        self.run = self.data.loc[self.data['run_time'] == sel].copy()
+        #self.run = self.data.loc[self.data['run_time'] == sel].copy()
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
@@ -919,7 +922,7 @@ class MainWindow(QMainWindow):
         sel_rt = self.run['run_time'].iat[0]  # current selected run_time (UTC-aware)
 
         # ── Load & normalize curves ───────────────────────────────────────────────────
-        earliest_time = self.data['run_time'].min() - pd.DateOffset(months=6)
+        earliest_time = self.run['run_time'].min() - pd.DateOffset(months=6)
         curves = self.instrument.load_calcurves(self.current_pnum, self.current_channel, earliest_time)
         REQ_COLS = ["run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
 
@@ -1360,13 +1363,21 @@ class MainWindow(QMainWindow):
         elif art is self._save2db_text:
             if not self.madechanges:
                 return
-            print("Save 2DB clicked")   # stub; replace with save-to-DB logic
-            # self.save_to_db()
+            print(f"Save 2DB clicked")
+            if self.selected_calc_curve is None:
+                self.instrument.upsert_mole_fractions(self.run)
+            else:    
+                id = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]['id'].iat[0]
+                self.instrument.upsert_mole_fractions(self.run, response_id=id)
+            self.madechanges = False
+            self.gc_plot(self._current_yparam, sub_info='SAVED')
         elif art is self._revert_text:
             if not self.madechanges:
                 return
-            print("Revert clicked")     # stub; replace with revert logic
-            # self.revert_changes()           
+            print("Revert clicked")
+            self.madechanges = False
+            self.load_selected_run()
+            self.gc_plot(self._current_yparam, sub_info='REVERTED')
 
     def toggle_flag_current_curve(self):
         # flip state
@@ -1531,7 +1542,7 @@ class MainWindow(QMainWindow):
     def load_selected_run(self):
         # call sql load function from instrument class
         # all of the input parameters are set with UI controls.
-        self.data = self.instrument.load_data(
+        self.run = self.instrument.load_data(
             pnum=self.current_pnum,
             channel=self.current_channel,
             run_type_num=self.run_type_num,
@@ -1626,7 +1637,6 @@ class MainWindow(QMainWindow):
         Called when the toggle_grid_cb checkbox is toggled.
         """
         self.on_plot_type_changed(self.current_plot_type)
-        #self.gc_plot()  # Update the plot to reflect grid state
 
     def made_changes(self, event):
         if self.madechanges:
