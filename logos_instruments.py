@@ -220,6 +220,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df = df.copy()
         df['mole_fraction'] = (
             pd.to_numeric(df['mole_fraction'], errors='coerce')
+            .replace([np.inf, -np.inf], np.nan)
             .round(5)
         )
 
