@@ -305,7 +305,56 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df.rename(columns={'run_date': 'run_time'}, inplace=True)
         return df
 
-    def calc_mole_fraction(self, df):
+    def calc_mole_fraction_scalevalues(self, df):
+        """
+        Compute mole_fraction = (a0 + a1·days_elapsed) * x
+        where days_elapsed is days since 1900-01-01 relative to run_time,
+        and x is normalized_resp.
+        This method uses scale values from the database.
+        
+        M4 uses this method.
+        """
+        pnum     = df['parameter_num'].iat[0]
+        baseline = pd.Timestamp('1900-01-01', tz='UTC')
+        mf       = pd.Series(index=df.index, dtype=float)
+
+        # cache for scale values keyed by ref_tank
+        scale_cache = {}
+
+        for rt, grp in df.groupby('run_time'):
+            mask = grp['run_type_num'] == self.STANDARD_RUN_TYPE
+            if not mask.any():
+                mf.loc[grp.index] = np.nan
+                continue
+
+            ref_tank = grp.loc[mask, 'port_info'].iat[0]
+
+            # only call scale_values once per tank
+            if ref_tank not in scale_cache:
+                scale_cache[ref_tank] = self.scale_values(ref_tank, pnum)
+            coefs = scale_cache[ref_tank]
+
+            if coefs is None:
+                mf.loc[grp.index] = np.nan
+                continue
+
+            a0 = float(coefs['coef0'])
+            a1 = float(coefs['coef1'])
+            days = (pd.to_datetime(rt) - baseline).days
+
+            mf.loc[grp.index] = (a0 + a1 * days) * grp['normalized_resp']
+
+        out = df.copy()
+        out['mole_fraction'] = mf
+        return out
+    
+    def calc_mole_fraction_response(self, df):
+        """ This method uses the polynomial coefficients from the ng_response table.
+            It can handle linear, quadratic, and cubic polynomials.
+            It inverts the polynomial to solve for mole_fraction given normalized_resp.
+            
+            FE3 uses this method.
+        """
         df = df.copy()
         cols = ["normalized_resp", "coef0", "coef1", "coef2", "coef3"]
         arr = df[cols].to_numpy()
@@ -869,7 +918,6 @@ class FE3_Instrument(HATS_DB_Functions):
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
         df = norm.merge_smoothed_data(df)
-        #df['mole_fraction']     = self.calc_mole_fraction(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
         df['data_flag_int'] = 0
