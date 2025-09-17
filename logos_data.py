@@ -24,6 +24,7 @@ from matplotlib import rcParams
 from matplotlib.lines import Line2D
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.widgets import RectangleSelector
 
 
 import logos_instruments as li
@@ -218,6 +219,7 @@ class MainWindow(QMainWindow):
         self.selected_calc_curve = None  # currently selected calibration curve date
 
         self.tagging_enabled = False
+        self._rect_selector = None
         self._pick_cid = None
         self._scatter_main = None
         self._current_yparam = None
@@ -493,18 +495,27 @@ class MainWindow(QMainWindow):
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
         self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
-                
-        # If a tool is active, toggle it OFF so picks work
-        tb = getattr(self.canvas, "toolbar", None)
-        if checked and tb is not None and getattr(tb, "mode", None):
-            try:
-                if tb.mode == "zoom rect":
-                    tb.zoom()   # toggles off
-                elif tb.mode == "pan/zoom":
-                    tb.pan()    # toggles off
-            except Exception:
-                pass
-        
+
+        if checked:
+            print("Enabling rectangle selector")
+            # Enable rectangle selector
+            if self._rect_selector is None:
+                self._rect_selector = RectangleSelector(
+                    ax=self.figure.axes[0],
+                    onselect=self._on_box_select,
+                    useblit=True,
+                    button=[1],  # left mouse button
+                    minspanx=5, minspany=5,
+                    spancoords="pixels",
+                    drag_from_anywhere=True,
+                    ignore_event_outside=False
+                )
+            self._rect_selector.set_active(True)
+            
+        else:
+            if self._rect_selector is not None:
+                self._rect_selector.set_active(False)
+    
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
         self.fit_method_cb.setEnabled(enabled)
@@ -675,12 +686,22 @@ class MainWindow(QMainWindow):
             marker='o', c=colors, s=68, edgecolors='none', zorder=1,
             picker=True, pickradius=7
         )
-        # overlay: red ring around flagged points
-        ax.scatter(self.run.loc[flags, 'analysis_datetime'],
+        
+        # overlay: show data_flag characters on top of flagged points
+        flags = self.run['data_flag_int'] != 0   # adjust if you use a different flag condition
+        for x, y, flag in zip(
+                self.run.loc[flags, 'analysis_datetime'],
                 self.run.loc[flags, yvar],
-                facecolors='none', edgecolors='red', linewidths=1.5,
-                marker='o', s=75, zorder=3, picker=False)
-
+                self.run.loc[flags, 'data_flag']  # assumes this column has the characters
+            ):
+            ax.text(
+                x, y,
+                str(flag),
+                color='black', fontsize=9, fontweight='bold',
+                ha='center', va='center',
+                zorder=4, picker=False
+            )
+    
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
             
@@ -805,12 +826,43 @@ class MainWindow(QMainWindow):
             ax.set_ylim(self._pending_ylim)
         self._pending_xlim = None
         self._pending_ylim = None
-                
+
+        # Make sure the rectangle selector attaches to the current axes
+        self._reattach_rect_selector()
+
         self.canvas.draw_idle()
 
         if self._pick_cid is None:
-            self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)        
-   
+            self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)
+            
+    def _reattach_rect_selector(self):
+        """Ensure RectangleSelector follows the current axes after a redraw."""
+        if not hasattr(self, "_rect_selector"):
+            return
+
+        if self._rect_selector is not None:
+            # Kill the old selector
+            self._rect_selector.set_active(False)
+            self._rect_selector.disconnect_events()
+            self._rect_selector = None
+
+        # Recreate on the fresh axes
+        if self.figure.axes and self.tagging_enabled:
+            ax = self.figure.axes[0]
+            from matplotlib.widgets import RectangleSelector
+            self._rect_selector = RectangleSelector(
+                ax=ax,
+                onselect=self._on_box_select,
+                useblit=True,
+                button=[1],             # left mouse
+                minspanx=5, minspany=5,
+                spancoords="pixels",
+                drag_from_anywhere=True,
+                ignore_event_outside=False
+
+            )
+            self._rect_selector.set_active(True)
+                    
     def _style_gc_buttons(self):
         """
         Placeholder for consistency with calibration_plot.
@@ -860,7 +912,6 @@ class MainWindow(QMainWindow):
         self.calcurve_combo.blockSignals(False)    
     
     def _on_pick_point(self, event):
-        # Don’t flag while a tool (zoom/pan) is active
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
             return
@@ -871,12 +922,11 @@ class MainWindow(QMainWindow):
         if inds.size == 0:
             return
 
-        # Pick the closest point to the mouse
         mx, my = event.mouseevent.xdata, event.mouseevent.ydata
         if mx is None or my is None:
             i = inds[0]
         else:
-            x_all = self._x_num  # precomputed x positions
+            x_all = self._x_num
             y_all = self.run[self._current_yvar].to_numpy()
             dx = x_all[inds] - mx
             dy = y_all[inds] - my
@@ -886,24 +936,50 @@ class MainWindow(QMainWindow):
             i = inds[ok][np.argmin(dx[ok] ** 2 + dy[ok] ** 2)]
 
         row_idx = self.run.index[i]
+        self._toggle_flags([row_idx])
 
-        # Ensure the flag column exists
+    def _on_box_select(self, eclick, erelease):
+        if not self.tagging_enabled:
+            return
+
+        x0, x1 = sorted([eclick.xdata, erelease.xdata])
+        y0, y1 = sorted([eclick.ydata, erelease.ydata])
+        if None in (x0, y0, x1, y1):
+            return
+
+        y_all = self.run[self._current_yvar].to_numpy()
+        mask = (self._x_num >= x0) & (self._x_num <= x1) & (y_all >= y0) & (y_all <= y1)
+        idxs = self.run.index[mask]
+
+        self._toggle_flags(idxs)
+
+    def _toggle_flags(self, idxs):
+        """Toggle flags for one or more points given by DataFrame indices."""
+        if idxs is None or len(idxs) == 0:
+            return
+
+        # Ensure flag columns exist
         if "data_flag_int" not in self.run.columns:
             self.run["data_flag_int"] = 0
+        if "data_flag" not in self.run.columns:
+            self.run["data_flag"] = ""
 
-        # Toggle the flag value
-        cur = self.run.at[row_idx, "data_flag_int"]
-        cur_bool = bool(cur) if pd.notna(cur) else False
-        new_val = 0 if cur_bool else 1
-        self.run.at[row_idx, "data_flag_int"] = new_val
+        for row_idx in idxs:
+            cur = int(self.run.at[row_idx, "data_flag_int"]) if not pd.isna(self.run.at[row_idx, "data_flag_int"]) else 0
+            new_val = 0 if cur else 1
+            self.run.at[row_idx, "data_flag_int"] = new_val
+            self.run.at[row_idx, "data_flag"] = 'M..' if new_val else '...'
 
-        # Preserve axis limits so the view doesn’t reset
+        self.madechanges = True
+        self._style_gc_buttons()
+
+        # Preserve view
         ax = self.figure.axes[0] if self.figure.axes else None
         if ax is not None:
             self._pending_xlim = ax.get_xlim()
             self._pending_ylim = ax.get_ylim()
 
-        # Redraw the plot
+        # Redraw
         self.gc_plot(self._current_yparam)
         
     def on_calcurve_selected(self, index):
