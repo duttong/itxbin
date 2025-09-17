@@ -19,7 +19,7 @@ class FE3_batch(FE3_Instrument):
         """ Calculates mole_fraction for a range of dates.
             Updates the ng_mole_fractions table """
         
-        EXCLUDE_PORT = 99   # no need to calculate mf for the "Push port" (set to 99 for now)
+        EXCLUDE_PORT = 9   # no need to calculate mf for the "Push port"
         
         gas = self.analytes_inv[pnum]
         if channel is None:
@@ -35,7 +35,7 @@ class FE3_batch(FE3_Instrument):
             return pd.DataFrame()
         
         df = df.loc[df['port'] != EXCLUDE_PORT].copy()
-        df['mole_fraction'] = self.calc_mole_fraction(df)
+        df['mole_fraction'] = self.calc_mole_fraction_response(df)
         df.loc[df['height'] == 0, 'mole_fraction'] = 0     # set mole_fraction to 0 if height = 0
         return df
     
