@@ -13,67 +13,6 @@ import time
 
 from logos_instruments import M4_Instrument
 
-class M4_Processing(M4_Instrument):
-    """Class for processing M4 data."""
-    
-    STANDARD_RUN_TYPE = 8
-    
-    COLOR_MAP = {
-        1: "#1f77b4",  # Flask
-        4: "#ff7f0e",  # Other
-        5: "#2ca02c",  # PFP
-        6: "#dd89f9",  # Zero
-        7: "#c7811b",  # Tank
-        8: "#505c5c",  # Standard
-        "Response": "#e04c19",  # Response
-        "Ratio": "#1f77b4",  # Ratio
-        "Mole Fraction": "#2ca02c",  # Mole Fraction
-    }
-    
-    def __init__(self):
-        super().__init__()
-        self.data = None
-        self.status_label = None
-
-    def calculate_mole_fraction(self, df):
-        """
-        Compute mole_fraction = (a0 + a1·days_elapsed) * x
-        where days_elapsed is days since 1900-01-01 relative to run_time,
-        and x is normalized_resp.
-        """
-        pnum     = df['parameter_num'].iat[0]
-        baseline = pd.Timestamp('1900-01-01', tz='UTC')
-        mf       = pd.Series(index=df.index, dtype=float)
-
-        # cache for scale values keyed by ref_tank
-        scale_cache = {}
-
-        for rt, grp in df.groupby('run_time'):
-            mask = grp['run_type_num'] == self.STANDARD_RUN_TYPE
-            if not mask.any():
-                mf.loc[grp.index] = np.nan
-                continue
-
-            ref_tank = grp.loc[mask, 'port_info'].iat[0]
-
-            # only call m4_scale_values once per tank
-            if ref_tank not in scale_cache:
-                scale_cache[ref_tank] = self.scale_values(ref_tank, pnum)
-            coefs = scale_cache[ref_tank]
-
-            if coefs is None:
-                mf.loc[grp.index] = np.nan
-                continue
-
-            a0 = float(coefs['coef0'])
-            a1 = float(coefs['coef1'])
-            days = (pd.to_datetime(rt) - baseline).days
-
-            mf.loc[grp.index] = (a0 + a1 * days) * grp['normalized_resp']
-
-        out = df.copy()
-        out['mole_fraction'] = mf
-        return out
 
 def main():
     parser = argparse.ArgumentParser(
@@ -107,7 +46,7 @@ def main():
     )
     args = parser.parse_args()
 
-    m4 = M4_Processing()
+    m4 = M4_Instrument()
     
     t0 = time.time()
 
@@ -123,7 +62,7 @@ def main():
             if m4.data.empty:
                 continue
             
-            df = m4.calculate_mole_fraction(df)
+            df = m4.calc_mole_fraction_scalevalues(df)
 
             if args.insert:
                 m4.upsert_mole_fractions(df)
@@ -142,9 +81,8 @@ def main():
         if m4.data.empty:
             return
 
-        df = m4.calculate_mole_fraction(df)
+        df = m4.calc_mole_fraction_scalevalues(df)
 
-        # get analyte names
         analytes = m4.analytes
         inv = {int(v): k for k, v in analytes.items()}
         title_text = f"{inv.get(pnum, 'Unknown')} ({pnum})"
@@ -189,7 +127,7 @@ def main():
 
             ax2.set_title("Normalized Area")
             ax2.set_xlabel("Analysis DateTime")
-            ax2.set_ylabel("Normalized Area")
+            ax2.set_ylabel("Mole Fraction")
             ax2.grid(True)
             ax2.scatter(
                 df['analysis_datetime'],
