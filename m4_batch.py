@@ -62,7 +62,7 @@ def main():
             if m4.data.empty:
                 continue
             
-            df = m4.calc_mole_fraction_scalevalues(df)
+            df = m4.calc_mole_fraction(df)
 
             if args.insert:
                 m4.upsert_mole_fractions(df)
@@ -81,7 +81,7 @@ def main():
         if m4.data.empty:
             return
 
-        df = m4.calc_mole_fraction_scalevalues(df)
+        df = m4.calc_mole_fraction(df)
 
         analytes = m4.analytes
         inv = {int(v): k for k, v in analytes.items()}
