@@ -247,6 +247,39 @@ class HATS_DB_Functions(LOGOS_Instruments):
         # any trailing rows
         if params:
             self.db.doMultiInsert(sql_insert, params, all=True)
+        
+    def update_flags_all_gases(self, df):
+        run_time = df.run_time.iat[0]
+        flagged = df.loc[df['data_flag'] != '...']
+        if flagged.empty:
+            # clear any existing flags for this run_time
+            sql = f"""
+                UPDATE hats.ng_mole_fractions mf
+                JOIN hats.ng_analysis a ON mf.analysis_num = a.num
+                SET mf.flag = '...'
+                WHERE a.inst_num = {self.inst_num}
+                  AND a.run_time = '{run_time}';
+                """
+            self.db.doquery(sql)
+        else:       
+            analysis_nums = flagged['analysis_num'].unique().tolist()
+            sql = f"""
+                UPDATE hats.ng_mole_fractions mf
+                JOIN hats.ng_analysis a ON mf.analysis_num = a.num
+                SET mf.flag = CASE
+                    WHEN mf.analysis_num = %s THEN %s
+                    ELSE mf.flag
+                END
+                WHERE a.inst_num = {self.inst_num}
+                    AND a.run_time = '{run_time}'
+                    AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
+                """
+            params = []
+            for _, row in flagged.iterrows():
+                params.append(row.analysis_num)
+                params.append(row.data_flag)
+            params.extend(analysis_nums)
+            self.db.doquery(sql, params)
             
     def scale_values(self, tank, pnum):
         """

@@ -756,10 +756,11 @@ class MainWindow(QMainWindow):
         # --- Append Save 2DB / Revert legend "buttons" (always present) ---
         if self.madechanges:
             spacer_handle  = Line2D([], [], linestyle='None', label='\u2009')
-            save2db_handle = Line2D([], [], linestyle='None', label='Save to DB')
+            save2db_handle = Line2D([], [], linestyle='None', label='Save current gas')
+            save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
             revert_handle  = Line2D([], [], linestyle='None', label='Revert changes')
 
-            legend_handles.extend([spacer_handle, save2db_handle, spacer_handle, revert_handle])
+            legend_handles.extend([spacer_handle, save2db_handle, spacer_handle, save2dball_handle, spacer_handle, revert_handle])
 
         # Put legend outside and create it ONCE 
         box = ax.get_position()
@@ -779,13 +780,23 @@ class MainWindow(QMainWindow):
 
         # Style Save/Revert entries like buttons
         self._save2db_text = None
+        self._save2dball_text = None
         self._revert_text  = None
         self._spacer2_text = None
 
         for txt in leg.get_texts():
             t = txt.get_text().strip()
-            if t == 'Save to DB':
+            if t == 'Save current gas':
                 self._save2db_text = txt
+                txt.set_picker(True)
+                txt.set_color('white')
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.4',
+                    facecolor=('#2e7d32' if self.madechanges else '#9e9e9e'),
+                    edgecolor='none', alpha=0.95
+                ))
+            elif t == 'Save all gases':
+                self._save2dball_text = txt
                 txt.set_picker(True)
                 txt.set_color('white')
                 txt.set_bbox(dict(
@@ -1491,7 +1502,7 @@ class MainWindow(QMainWindow):
         elif art is self._save2db_text:
             if not self.madechanges:
                 return
-            print(f"Save 2DB clicked")
+            #print(f"Save 2DB clicked")
             if self.selected_calc_curve is None:
                 self.instrument.upsert_mole_fractions(self.run)
             else:    
@@ -1499,6 +1510,15 @@ class MainWindow(QMainWindow):
                 self.instrument.upsert_mole_fractions(self.run, response_id=id)
             self.madechanges = False
             self.gc_plot(self._current_yparam, sub_info='SAVED')
+        elif art is self._save2dball_text:
+            if not self.madechanges:
+                return
+            print(f"Save flags to all gases clicked")
+            self.instrument.upsert_mole_fractions(self.run)
+            self.instrument.update_flags_all_gases(self.run)
+            self.madechanges = False
+            self.gc_plot(self._current_yparam, sub_info='SAVED ALL FLAGS')
+            
         elif art is self._revert_text:
             if not self.madechanges:
                 return
