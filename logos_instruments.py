@@ -249,6 +249,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             self.db.doMultiInsert(sql_insert, params, all=True)
         
     def update_flags_all_gases(self, df):
+        """Update flags for all gases for a given run_time."""
         run_time = df.run_time.iat[0]
         flagged = df.loc[df['data_flag'] != '...']
         if flagged.empty:
@@ -258,26 +259,30 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 JOIN hats.ng_analysis a ON mf.analysis_num = a.num
                 SET mf.flag = '...'
                 WHERE a.inst_num = {self.inst_num}
-                  AND a.run_time = '{run_time}';
-                """
+                AND a.run_time = '{run_time}';
+            """
             self.db.doquery(sql)
-        else:       
+        else:
+            # build a WHEN clause for each flagged row
+            # the code uses the flag from df, which may be different for each analysis_num
+            whens = []
+            params = []
+            for _, row in flagged.iterrows():
+                whens.append("WHEN mf.analysis_num = %s THEN %s")
+                params.extend([row.analysis_num, row.data_flag])
+
             analysis_nums = flagged['analysis_num'].unique().tolist()
             sql = f"""
                 UPDATE hats.ng_mole_fractions mf
                 JOIN hats.ng_analysis a ON mf.analysis_num = a.num
                 SET mf.flag = CASE
-                    WHEN mf.analysis_num = %s THEN %s
+                    {' '.join(whens)}
                     ELSE mf.flag
                 END
                 WHERE a.inst_num = {self.inst_num}
-                    AND a.run_time = '{run_time}'
-                    AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
-                """
-            params = []
-            for _, row in flagged.iterrows():
-                params.append(row.analysis_num)
-                params.append(row.data_flag)
+                AND a.run_time = '{run_time}'
+                AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
+            """
             params.extend(analysis_nums)
             self.db.doquery(sql, params)
             
@@ -301,43 +306,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         else:
             Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
             return None
-
-    def param_calcurves(self, df):
-        """
-        Returns the calibration curves for a given port number and channel.
-        """
-        print(df.columns)
-        
-        try:
-            scale_num = int(df['cal_scale_num'].dropna().unique()[0])      # unique to each parameter_num
-            channel = df['channel'].unique()[0]
-        except (IndexError, ValueError):
-            return pd.DataFrame()  # No valid scale_num or channel found
-        earliest_run = df['run_time'].min() - pd.DateOffset(years=1)  # 1 year before the earliest run
-        
-        if scale_num is None or channel is None:
-            raise ValueError("Scale number and channel must be specified.")
-        if not isinstance(scale_num, int):
-            raise ValueError("Scale number must be an integer.")
-        if not isinstance(channel, str):
-            raise ValueError("Channel must be a string.")
-        if not isinstance(earliest_run, pd.Timestamp):
-            raise ValueError("Earliest run must be a pandas Timestamp.")
-            
-        sql = f"""
-            SELECT run_date, serial_number, coef0, coef1, coef2, coef3, function, flag 
-            FROM hats.ng_response
-                where inst_num = {self.inst_num}
-                and scale_num = {scale_num}
-                and channel = '{channel}'
-                and run_date >= '{earliest_run}'
-            order by run_date desc;
-        """
-        df = pd.DataFrame(self.db.doquery(sql))
-        # ng_response table has run_date and ng_data_view uses run_time
-        df.rename(columns={'run_date': 'run_time'}, inplace=True)
-        return df
-
+ 
     def calc_mole_fraction(self, df):
         """ Wrapper to call the appropriate mole fraction calculation method
             based on the instrument type.
