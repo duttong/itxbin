@@ -35,34 +35,10 @@ class FE3_batch(FE3_Instrument):
             return pd.DataFrame()
         
         df = df.loc[df['port'] != EXCLUDE_PORT].copy()
-        df['mole_fraction'] = self.calc_mole_fraction_response(df)
+        df = self.calc_mole_fraction(df)
         df.loc[df['height'] == 0, 'mole_fraction'] = 0     # set mole_fraction to 0 if height = 0
         return df
     
-    def update_mole_fraction_table(self, df, batch_size=500):
-        """ Update the mole_fraction data in ng_mole_fractions """
-        sql = """
-            INSERT INTO hats.ng_mole_fractions (
-                analysis_num,
-                parameter_num,
-                channel,
-                mole_fraction
-            ) VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                mole_fraction = VALUES(mole_fraction);
-        """
-        params = []
-        for r in df.itertuples(index=False):
-            analysis_num = r.analysis_num
-            parameter_num = r.parameter_num
-            channel = r.channel
-            mole_fraction = None if pd.isna(r.mole_fraction) else r.mole_fraction
-            params.append((analysis_num, parameter_num, channel, mole_fraction))
-                
-        for i in range(0, len(params), batch_size):
-            batch = params[i : i + batch_size]
-            self.db.doMultiInsert(sql, batch, all=True)
-            
     def main(self):
         parser = argparse.ArgumentParser(
             description="Process FE3 data and optionally plot results"
@@ -114,7 +90,7 @@ class FE3_batch(FE3_Instrument):
                 print(f"Processing analyte: {gas} (Parameter {pnum} channel {ch})")
                 
                 df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
-                self.update_mole_fraction_table(df)
+                self.upsert_mole_fractions(df)
 
             print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
         else:
@@ -126,7 +102,7 @@ class FE3_batch(FE3_Instrument):
                 ch = self.return_preferred_channel(gas)
             
             df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
-            self.update_mole_fraction_table(df)
+            self.upsert_mole_fractions(df)
                             
             print(f"Processing complete for {df.shape[0]} rows. Total time: {time.time() - t0:.2f} seconds")  
         
