@@ -496,25 +496,38 @@ class MainWindow(QMainWindow):
         self.tagging_enabled = checked
         self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
 
+        tb = getattr(self.canvas, "toolbar", None)
+        if tb is not None:
+            # Always turn off zoom/pan modes first
+            if tb.mode == "zoom rect":
+                tb.zoom()
+            elif tb.mode == "pan/zoom":
+                tb.pan()
+            tb.mode = ""
+
+            # Disable/enable the buttons themselves
+            if "pan" in tb._actions and "zoom" in tb._actions:
+                tb._actions["pan"].setEnabled(not checked)
+                tb._actions["zoom"].setEnabled(not checked)
+
         if checked:
             print("Enabling rectangle selector")
-            # Enable rectangle selector
             if self._rect_selector is None:
                 self._rect_selector = RectangleSelector(
                     ax=self.figure.axes[0],
                     onselect=self._on_box_select,
                     useblit=True,
-                    button=[1],  # left mouse button
+                    button=[1],   # left mouse button
                     minspanx=5, minspany=5,
                     spancoords="pixels",
                     drag_from_anywhere=True,
                     ignore_event_outside=False
                 )
             self._rect_selector.set_active(True)
-            
         else:
             if self._rect_selector is not None:
                 self._rect_selector.set_active(False)
+
     
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -696,8 +709,8 @@ class MainWindow(QMainWindow):
             ):
             ax.text(
                 x, y,
-                str(flag),
-                color='black', fontsize=9, fontweight='bold',
+                str('X'),
+                color='white', fontsize=9, fontweight='bold',
                 ha='center', va='center',
                 zorder=4, picker=False
             )
@@ -979,6 +992,10 @@ class MainWindow(QMainWindow):
             self._pending_xlim = ax.get_xlim()
             self._pending_ylim = ax.get_ylim()
 
+        # Recalculate normalized response and mole fractions
+        self.run = self.instrument.norm.merge_smoothed_data(self.run)
+        self.run = self.instrument.calc_mole_fraction(self.run)
+        
         # Redraw
         self.gc_plot(self._current_yparam)
         

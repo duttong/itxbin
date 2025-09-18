@@ -305,6 +305,18 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df.rename(columns={'run_date': 'run_time'}, inplace=True)
         return df
 
+    def calc_mole_fraction(self, df):
+        """ Wrapper to call the appropriate mole fraction calculation method
+            based on the instrument type.
+            Returns a DataFrame with an additional 'mole_fraction' column.
+        """
+        if self.inst_id == 'm4':
+            return self.calc_mole_fraction_scalevalues(df)
+        elif self.inst_id == 'fe3':
+            return self.calc_mole_fraction_response(df)
+        else:
+            raise NotImplementedError(f"Mole fraction calculation not implemented for instrument '{self.inst_id}'.")
+        
     def calc_mole_fraction_scalevalues(self, df):
         """
         Compute mole_fraction = (a0 + a1·days_elapsed) * x
@@ -362,7 +374,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
             for (y, a0, a1, a2, a3) in arr
         ]
-        return df['mole_fraction']
+        return df
 
     # Helper: invert a single polynomial
     @staticmethod
@@ -594,6 +606,11 @@ class Normalizing():
 
     def merge_smoothed_data(self, df):
         # smoothed std or reference tank injection
+        
+        # drop any existing 'smoothed' column to avoid confusion and resmooth
+        if 'smoothed' in df.columns:
+            df = df.drop(columns=['smoothed'])
+        
         std = self.calculate_smoothed_std(df, min_pts=5, frac=0.3)
 
         out = (
@@ -662,6 +679,8 @@ class M4_Instrument(HATS_DB_Functions):
         self.analytes = self.query_analytes()
         self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
         self.response_type = 'area'
+        
+        self.norm = Normalizing(self.inst_id, self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
                 
     def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None):
         """Load data from the database with date filtering.
@@ -672,8 +691,6 @@ class M4_Instrument(HATS_DB_Functions):
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
-        
-        norm = Normalizing(self.inst_id, self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
@@ -727,7 +744,7 @@ class M4_Instrument(HATS_DB_Functions):
         df['net_pressure']      = df['net_pressure'].astype(float)
         df['area']              = df['area']/df['net_pressure']         # response per pressure
         df['mole_fraction']     = df['mole_fraction'].astype(float)
-        df = norm.merge_smoothed_data(df)
+        df = self.norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
 
         df['data_flag_int'] = 0
@@ -827,6 +844,8 @@ class FE3_Instrument(HATS_DB_Functions):
             'CFC11 (c)': self.analytes['CFC11 (a)'],
             'CFC113 (c)': self.analytes['CFC113 (a)'],
         })
+ 
+        self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
 
     @cached_property
     def gc_channels(self) -> dict[str, list[str]]:
@@ -862,8 +881,6 @@ class FE3_Instrument(HATS_DB_Functions):
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
-        
-        norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
         
         if end_date is None:
             end_date = datetime.today()
@@ -917,7 +934,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df['run_type_num']      = df['run_type_num'].astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
-        df = norm.merge_smoothed_data(df)
+        df = self.norm.merge_smoothed_data(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
         df['data_flag_int'] = 0
