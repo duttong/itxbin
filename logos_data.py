@@ -11,7 +11,7 @@ from PyQt5 import QtCore, QtGui
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox
 )
@@ -244,7 +244,6 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
     def init_ui(self):
-
         # Central widget + top‐level layout
         central = QWidget()
         self.setCentralWidget(central)
@@ -256,20 +255,20 @@ class MainWindow(QMainWindow):
         self.canvas = FigureCanvas(self.figure)
         self.current_plot_type = 0
 
-        # Left pane: all controls (run selection, analyte selection)
-        left_pane = QWidget()
-        left_pane.setMinimumWidth(420)  # Set fixed width
-        left_pane.setMaximumWidth(420)  # Set fixed width
-        left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(4, 4, 4, 4)  # Reduce margins
-        left_layout.setSpacing(6)  # Reduce spacing between widgets
-        left_pane.setLayout(left_layout)
+        # ── PROCESSING PANE ──
+        processing_pane = QWidget()
+        processing_pane.setMinimumWidth(420)
+        processing_pane.setMaximumWidth(420)
+        processing_layout = QVBoxLayout()
+        processing_layout.setContentsMargins(4, 4, 4, 4)
+        processing_layout.setSpacing(6)
+        processing_pane.setLayout(processing_layout)
 
-        # ── DATA RANGE SELECTION ──
+        # ── DATE RANGE SELECTION ──
         date_gb = QGroupBox("Date Range (by Month)")
         date_layout = QHBoxLayout()
-        date_layout.setContentsMargins(2, 2, 2, 2)  # Reduce margins inside the group box
-        date_layout.setSpacing(4)  # Reduce spacing inside the group box
+        date_layout.setContentsMargins(2, 2, 2, 2)
+        date_layout.setSpacing(4)
         date_gb.setLayout(date_layout)
 
         # Start: Year / Month
@@ -277,10 +276,9 @@ class MainWindow(QMainWindow):
         self.start_month_cb = QComboBox()
         current_year = datetime.now().year
         current_month = datetime.now().month
-        start_year = (datetime.now() - timedelta(days=30)).year  # 1 month ago
-        start_month = (datetime.now() - timedelta(days=30)).month  # 1 month ago
-        # Fill years and months
-        for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
+        start_year = (datetime.now() - timedelta(days=30)).year
+        start_month = (datetime.now() - timedelta(days=30)).month
+        for y in range(int(self.instrument.start_date[0:4]), current_year + 1):
             self.start_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.start_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
@@ -288,7 +286,7 @@ class MainWindow(QMainWindow):
         # End: Year / Month
         self.end_year_cb = QComboBox()
         self.end_month_cb = QComboBox()
-        for y in range(int(self.instrument.start_date[0:4]), int(current_year) + 1):
+        for y in range(int(self.instrument.start_date[0:4]), current_year + 1):
             self.end_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.end_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
@@ -310,6 +308,8 @@ class MainWindow(QMainWindow):
         date_layout.addWidget(self.end_year_cb)
         date_layout.addWidget(self.end_month_cb)
         date_layout.addWidget(self.apply_date_btn)
+
+        processing_layout.addWidget(date_gb)
 
         # Save the "last applied" values
         self.last_applied = self.get_selected_dates()
@@ -354,7 +354,7 @@ class MainWindow(QMainWindow):
         run_layout.addLayout(runsel_hbox)
         run_layout.addLayout(runtype_row)
 
-        left_layout.addWidget(run_gb)
+        processing_layout.addWidget(run_gb)
 
         # Molecule/Analyte Selection GroupBox
         analyte_gb = QGroupBox("Analyte Selection")
@@ -371,7 +371,7 @@ class MainWindow(QMainWindow):
         self.populate_analyte_controls()
         analyte_layout.addWidget(self.analyte_widget)
 
-        left_layout.addWidget(analyte_gb)
+        processing_layout.addWidget(analyte_gb)
 
         # Plot Type Selection GroupBox
         plot_gb = QGroupBox("Plot Type Selection")
@@ -465,11 +465,26 @@ class MainWindow(QMainWindow):
         combined_layout.addWidget(plot_gb, stretch=1)
         combined_layout.addWidget(options_gb, stretch=1)
 
-        left_layout.addWidget(combined_gb)
+        processing_layout.addWidget(combined_gb)
 
         # Stretch to push everything to the top
-        left_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
+        # ── TABS ──
+        tabs = QTabWidget()
+        tabs.addTab(processing_pane, "Processing")
+
+        # Timeseries tab (import if exists, otherwise placeholder)
+        try:
+            from logos_timeseries import TimeseriesWidget
+            timeseries_tab = TimeseriesWidget()
+        except ImportError:
+            timeseries_tab = QWidget()
+            ts_layout = QVBoxLayout(timeseries_tab)
+            ts_layout.addWidget(QLabel("Timeseries view coming soon..."))
+
+        tabs.addTab(timeseries_tab, "Timeseries")
+    
         # Right pane: matplotlib figure for plotting
         right_placeholder = QGroupBox("Plot Area")
         right_layout = QVBoxLayout()
@@ -481,7 +496,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.toolbar)
 
         # Add both panes to the main hbox
-        h_main.addWidget(left_pane, stretch=0)  # Fixed width for left pane
+        h_main.addWidget(tabs, stretch=0)  # Fixed width for left pane
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
 
         # Kick off by selecting the first analyte by default
@@ -1011,6 +1026,7 @@ class MainWindow(QMainWindow):
         self.gc_plot(self._current_yparam)
         
     def on_calcurve_selected(self, index):
+        
         row = self.calcurve_combo.itemData(index)
         if row is not None:
             print("Selected calibration curve:", row['run_date'])
@@ -1034,6 +1050,35 @@ class MainWindow(QMainWindow):
             self.madechanges = True
             self._style_gc_buttons()
             self.gc_plot('mole_fraction', sub_info='RE-CALCULATED')
+
+    def compute_ref_estimate(self, new_fit: dict) -> pd.DataFrame:
+        """
+        Build a DataFrame of ref tank mole fraction estimates for this run,
+        using the given calibration fit coefficients.
+        """
+        # Get unflagged STANDARD_PORT rows
+        ref_estimate = self.run.loc[
+            (self.run['port'] == self.instrument.STANDARD_PORT_NUM)
+            & (self.run['data_flag_int'] != 1)
+        ].copy()
+
+        # Extract coefficients from new_fit dict
+        a0, a1, a2, a3 = (
+            new_fit['coef0'],
+            new_fit['coef1'],
+            new_fit['coef2'],
+            new_fit['coef3'],
+        )
+
+        # Calculate mole fractions row-by-row
+        ref_estimate = ref_estimate.assign(
+            mole_fraction=[
+                self.instrument.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
+                for y in ref_estimate['normalized_resp']
+            ]
+        )
+
+        return ref_estimate
                         
     def calibration_plot(self):
         """
@@ -1087,7 +1132,10 @@ class MainWindow(QMainWindow):
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
         self._save_payload = new_fit
-        
+
+        # pd dataframe of ref tank mole fraction estimates for this run
+        ref_estimate = self.compute_ref_estimate(new_fit)
+       
         if curves.empty:
             # No curves at all → fit and create DF with one row
             try:
@@ -1103,13 +1151,6 @@ class MainWindow(QMainWindow):
             calcurve_exists = False
 
         curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
-        
-        # pd dataframe of ref tank mole fraction estimates for this run
-        ### TODO: mask out flagged data
-        ref_estimate = self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM].copy()
-        ref_estimate['mole_fraction'] = self.instrument.calc_mole_fraction(
-            self.run.loc[self.run['port'] == self.instrument.STANDARD_PORT_NUM],
-        )
         
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
@@ -1137,7 +1178,14 @@ class MainWindow(QMainWindow):
         ref_resp_sd   = ref_estimate['normalized_resp'].std()
 
         yvar = 'normalized_resp'  # Use normalized_resp for calibration plots
-        tlabel = f'Calibration Scale {int(np.nanmin(self.run["cal_scale_num"]))}'
+        try:
+            tlabel = f'Calibration Scale {int(np.nanmin(self.run["cal_scale_num"]))}'
+        except TypeError:
+            tlabel = 'Calibration Scale UNDEFINED'
+            self.figure.clear()
+            self.canvas.draw()
+            return
+            
         mn_cal = float(np.nanmin(self.run['cal_mf']))
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
@@ -1187,7 +1235,7 @@ class MainWindow(QMainWindow):
         sel = self.run['run_time'].iat[0]  # the timestamp you want
         stored_curve = curves['run_time'].eq(sel)
 
-        if curves is None or curves.empty:
+        if stored_curve is None or stored_curve.empty:
             print("No stored cal curves available.")
             return
         row = curves.loc[stored_curve].iloc[0]
