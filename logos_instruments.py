@@ -525,14 +525,16 @@ class HATS_DB_Functions(LOGOS_Instruments):
             ref_tank = run.loc[run['port'] == self.STANDARD_PORT_NUM, 'port_info'].iat[0]
         except IndexError:
             return None
+        
         model, _, _ = self.fit_poly(run, order=int(order))
         if model is None:
+            print('Not enough points to fit polynomial.')
             return None
         return {
             "run_date": pd.to_datetime(run["run_time"].iat[0], utc=True).strftime('%Y-%m-%d %H:%M:%S'),
             "inst_num": self.inst_num,
             "site": "BLD",  # hardcoded for Boulder
-            "scale_num": int(run["cal_scale_num"].iat[0]),
+            "scale_num": int(0 if pd.isna(run["cal_scale_num"].iat[0]) else run["cal_scale_num"].iat[0]),
             "channel": run["channel"].iat[0],
             "serial_number": ref_tank,
             "coef3": float(model["coefs"].get("coef3", 0.0)),
@@ -939,6 +941,10 @@ class FE3_Instrument(HATS_DB_Functions):
         df = self.norm.merge_smoothed_data(df)
         df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
+        # only set scale_num if first row is null
+        if df['cal_scale_num'].isna().iat[0]:
+            df['cal_scale_num'] = self.qurey_return_scale_num(pnum)
+
         df['data_flag_int'] = 0
         df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
         
@@ -946,6 +952,18 @@ class FE3_Instrument(HATS_DB_Functions):
 
         self.data = df.sort_values('analysis_datetime')
         return self.data
+    
+    def qurey_return_scale_num(self, pnum):
+        """ Query the scale number for a given parameter number. """
+        sql = f"""
+            SELECT idx FROM reftank.scales 
+            WHERE parameter_num = {pnum}
+            AND current = 1;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            raise ValueError(f"Scale number not found for parameter number {pnum}.")
+        return int(df['idx'].iat[0])
         
     def add_port_labels(self, df):
         """ Helper function to add port labels to the dataframe. """
@@ -996,7 +1014,7 @@ class FE3_Instrument(HATS_DB_Functions):
         ch = ''
         if channel is not None:
             ch = f"and channel = '{channel}'"
-                  
+        
         sql = f"""
             SELECT id, run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
                 where inst_num = {self.inst_num}
