@@ -248,43 +248,35 @@ class HATS_DB_Functions(LOGOS_Instruments):
         if params:
             self.db.doMultiInsert(sql_insert, params, all=True)
         
-    def update_flags_all_gases(self, df):
-        """Update flags for all gases for a given run_time."""
-        run_time = df.run_time.iat[0]
-        flagged = df.loc[df['data_flag'] != '...']
-        if flagged.empty:
-            # clear any existing flags for this run_time
-            sql = f"""
-                UPDATE hats.ng_mole_fractions mf
-                JOIN hats.ng_analysis a ON mf.analysis_num = a.num
-                SET mf.flag = '...'
-                WHERE a.inst_num = {self.inst_num}
-                AND a.run_time = '{run_time}';
-            """
-            self.db.doquery(sql)
-        else:
-            # build a WHEN clause for each flagged row
-            # the code uses the flag from df, which may be different for each analysis_num
-            whens = []
-            params = []
-            for _, row in flagged.iterrows():
-                whens.append("WHEN mf.analysis_num = %s THEN %s")
-                params.extend([row.analysis_num, row.data_flag])
+    def update_flags_all_analytes(self, df):
+        """Duplicate flags from df to all rows with the same analysis_num."""
 
+        run_time = df.run_time.iat[0]
+
+        # 1. Clear all flags for this run_time
+        sql_clear = f"""
+            UPDATE hats.ng_mole_fractions mf
+            JOIN hats.ng_analysis a ON mf.analysis_num = a.num
+            SET mf.flag = '...'
+            WHERE a.inst_num = {self.inst_num}
+            AND a.run_time = %s;
+        """
+        self.db.doquery(sql_clear, [run_time])
+
+        # 2. Apply flagged values ('M..') to the appropriate analysis_nums
+        flagged = df.loc[df['data_flag'] == 'M..']
+        if not flagged.empty:
             analysis_nums = flagged['analysis_num'].unique().tolist()
-            sql = f"""
+            sql_set = f"""
                 UPDATE hats.ng_mole_fractions mf
                 JOIN hats.ng_analysis a ON mf.analysis_num = a.num
-                SET mf.flag = CASE
-                    {' '.join(whens)}
-                    ELSE mf.flag
-                END
+                SET mf.flag = 'M..'
                 WHERE a.inst_num = {self.inst_num}
-                AND a.run_time = '{run_time}'
+                AND a.run_time = %s
                 AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
             """
-            params.extend(analysis_nums)
-            self.db.doquery(sql, params)
+            params = [run_time] + analysis_nums
+            self.db.doquery(sql_set, params)
             
     def scale_values(self, tank, pnum):
         """
@@ -686,7 +678,7 @@ class M4_Instrument(HATS_DB_Functions):
         
         self.norm = Normalizing(self.inst_id, self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
                 
-    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None):
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
@@ -721,7 +713,8 @@ class M4_Instrument(HATS_DB_Functions):
         if run_type_num is not None:
             run_type_filter = f"AND run_type_num = {run_type_num}"
 
-        print(f"Loading data from {start_date} to {str(end_date)} for parameter {pnum}")
+        if verbose:
+            print(f"Loading data from {start_date} to {str(end_date)} for parameter {pnum}")
         # todo: use flags - using low_flow flag
         query = f"""
             SELECT * FROM hats.ng_data_processing_view
@@ -876,7 +869,7 @@ class FE3_Instrument(HATS_DB_Functions):
         # otherwise lookup in the precomputed map
         return self.molecule_channel_map.get(gas_l)
     
-    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None):
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
         """Load data from the database with date filtering.
         Args:
             pnum (int): Parameter number to filter data.
@@ -914,7 +907,8 @@ class FE3_Instrument(HATS_DB_Functions):
             
         channel_str = f"AND channel = '{channel}'" if channel else ""
 
-        print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
+        if verbose:
+            print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
         # todo: use flags
         query = f"""
             SELECT * FROM hats.ng_data_processing_view

@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox
 )
-from PyQt5.QtCore import Qt, QDateTime
+from PyQt5.QtCore import Qt, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -106,7 +106,7 @@ class FastNavigationToolbar(NavigationToolbar):
         btn = self.widgetForAction(self.flag_action)
         if btn is None:
             # Defer until the toolbar finishes creating the widget
-            QtCore.QTimer.singleShot(0, self._style_flag_button)
+            QTimer.singleShot(0, self._style_flag_button)
             return
 
         self.flag_button = btn
@@ -769,16 +769,22 @@ class MainWindow(QMainWindow):
             l = current_curve_date.strftime('\nCal Date:\n%Y-%m-%d %H:%M\n') + f'{cal_delta_time.days} days ago'
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
 
-        # --- Append Save 2DB / Revert legend "buttons" (always present) ---
-        if self.madechanges:
-            spacer_handle  = Line2D([], [], linestyle='None', label='\u2009')
-            save2db_handle = Line2D([], [], linestyle='None', label='Save current gas')
-            save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
-            revert_handle  = Line2D([], [], linestyle='None', label='Revert changes')
+        # --- Always append Save/Revert legend "buttons" ---
+        spacer_handle     = Line2D([], [], linestyle='None', label='\u2009')
+        save2db_handle    = Line2D([], [], linestyle='None', label='Save current gas')
+        save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
+        revert_handle     = Line2D([], [], linestyle='None', label='Revert changes')
 
-            legend_handles.extend([spacer_handle, save2db_handle, spacer_handle, save2dball_handle, spacer_handle, revert_handle])
+        legend_handles.extend([
+            spacer_handle,
+            save2db_handle,
+            spacer_handle,
+            save2dball_handle,
+            spacer_handle,
+            revert_handle
+        ])
 
-        # Put legend outside and create it ONCE 
+        # Put legend outside and create it ONCE
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
 
@@ -833,7 +839,7 @@ class MainWindow(QMainWindow):
                 self._spacer2_text = txt
                 txt.set_fontsize(10)
                 txt.set_color((0, 0, 0, 0))  # fully transparent
-                           
+                          
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.format_coord = self._fmt_gc_plot
@@ -924,6 +930,13 @@ class MainWindow(QMainWindow):
             sel_time - pd.DateOffset(months=3)
         )
 
+        if self.calcurves.empty:
+            self.calcurve_combo.addItem("No curves found", userData=None)
+            self.calcurve_combo.setCurrentIndex(0)
+            self.calcurve_combo.blockSignals(False)
+            return
+        
+        # Filter to a window: 60 days before to 7 days after selected run_time
         window = self.calcurves.loc[
             self.calcurves['run_date'].between(
                 sel_time - pd.Timedelta(days=60),
@@ -969,6 +982,8 @@ class MainWindow(QMainWindow):
             y_all = self.run[self._current_yvar].to_numpy()
             dx = x_all[inds] - mx
             dy = y_all[inds] - my
+            dx = pd.to_numeric(dx, errors="coerce")
+            dy = pd.to_numeric(dy, errors="coerce")
             ok = np.isfinite(dx) & np.isfinite(dy)
             if not ok.any():
                 return
@@ -1574,7 +1589,7 @@ class MainWindow(QMainWindow):
         #print(sql); print(params)
         self.instrument.db.doquery(sql, params)
         self.calibration_plot()
-       
+          
     def _on_legend_pick(self, event):
         art = event.artist
         if not isinstance(art, mtext.Text):
@@ -1600,11 +1615,17 @@ class MainWindow(QMainWindow):
             if not self.madechanges:
                 return
             print(f"Save flags to all gases clicked")
-            self.instrument.upsert_mole_fractions(self.run)
-            self.instrument.update_flags_all_gases(self.run)
-            self.madechanges = False
-            self.gc_plot(self._current_yparam, sub_info='SAVED ALL FLAGS')
             
+            # set button to yellow while running
+            bbox = self._save2dball_text.get_bbox_patch()
+            if bbox:
+                bbox.update(dict(facecolor="yellow", edgecolor="none", alpha=0.95))
+            self._save2dball_text.set_color("black")
+            self.canvas.draw_idle()   # refresh display immediately
+            self.canvas.flush_events()
+            QApplication.processEvents()
+            QTimer.singleShot(0, self.update_all_analytes)
+
         elif art is self._revert_text:
             if not self.madechanges:
                 return
@@ -1613,6 +1634,52 @@ class MainWindow(QMainWindow):
             self.load_selected_run()
             self.gc_plot(self._current_yparam, sub_info='REVERTED')
 
+    def update_all_analytes(self):
+            pnum = self.current_pnum
+            ch = self.current_channel
+            self.instrument.update_flags_all_analytes(self.run)
+
+            # reload all gases for this run_time which will recalculate mole fractions
+            for key, param_num in self.analytes.items():
+                if "(" in key and ")" in key:
+                    analyte, channel = key.split("(", 1)
+                    analyte = analyte.strip()
+                    channel = channel.strip(") ")
+                else:
+                    analyte = key.strip()
+                    channel = None
+                    
+                run = self.instrument.load_data(
+                    pnum=int(param_num),
+                    channel=channel,
+                    #run_type_num=self.run_type_num,
+                    start_date=self.current_run_time,
+                    end_date=self.current_run_time,
+                    verbose=False
+                )
+                run = self.instrument.calc_mole_fraction(run)
+                self.instrument.upsert_mole_fractions(run)
+            
+            # reload current gas to refresh display
+            self.run = self.instrument.load_data(
+                    pnum=pnum,
+                    channel=ch,
+                    start_date=self.current_run_time,
+                    end_date=self.current_run_time,
+                    verbose=False
+            )
+
+            self.madechanges = False
+            self.gc_plot(self._current_yparam, sub_info='SAVED ALL FLAGS')
+            
+            self._save2dball_text.set_bbox(dict(
+                boxstyle="round,pad=0.4",
+                facecolor="#9e9e9e",
+                edgecolor="none", alpha=0.95
+            ))
+            self._save2dball_text.set_color("white")
+            self.canvas.draw_idle()
+            
     def toggle_flag_current_curve(self):
         """Toggle the flag value for the current calibration curve."""
         if getattr(self, "_save_payload", None) is None:
