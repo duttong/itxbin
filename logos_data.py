@@ -23,6 +23,7 @@ import matplotlib.patches as mpatches
 from matplotlib import rcParams
 from matplotlib.lines import Line2D
 import matplotlib.dates as mdates
+import matplotlib.text as mtext
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.widgets import RectangleSelector
 
@@ -97,7 +98,7 @@ class FastNavigationToolbar(NavigationToolbar):
                     self.removeAction(self.flag_action)
                     self.insertAction(a, self.flag_action)   # before Save
                     break
-        
+                
         self._style_flag_button()
 
     def _style_flag_button(self):
@@ -126,7 +127,7 @@ class FastNavigationToolbar(NavigationToolbar):
                 font-weight: 600;
             }
         """)
-
+                
     def zoom(self, *args, **kwargs):
         super().zoom(*args, **kwargs)
         # If we just entered a tool mode, turn Tagging OFF
@@ -526,7 +527,7 @@ class MainWindow(QMainWindow):
                 tb._actions["zoom"].setEnabled(not checked)
 
         if checked:
-            print("Enabling rectangle selector")
+            #print("Enabling rectangle selector")
             if self._rect_selector is None:
                 self._rect_selector = RectangleSelector(
                     ax=self.figure.axes[0],
@@ -924,7 +925,6 @@ class MainWindow(QMainWindow):
         )
 
         window = self.calcurves.loc[
-            (self.calcurves['flag'] == 0) &
             self.calcurves['run_date'].between(
                 sel_time - pd.Timedelta(days=60),
                 sel_time + pd.Timedelta(days=7)
@@ -1033,6 +1033,8 @@ class MainWindow(QMainWindow):
             self.selected_calc_curve = row['run_date']
             print(f"{self.calcurves.loc[self.calcurves['run_date'] == row['run_date']]}")
 
+            self._save_payload = row.to_dict()
+            
             ts_str = self.current_run_time.split(" (")[0]
             sel = pd.to_datetime(ts_str, utc=True)
             mf_mask = self.run['run_time'] == sel
@@ -1120,37 +1122,39 @@ class MainWindow(QMainWindow):
                 if c not in curves.columns:
                     curves[c] = pd.NA
 
-        # Normalize time
         curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
 
-        # ── Create/append as needed ───────────────────────────────────────────────────
-        has_current = curves['run_time'].eq(sel_rt).any()
-        
-        calcurve_exists = True
         # file in scale_assignment values for calibration tanks in self.run
         self.populate_cal_mf()
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
         self._save_payload = new_fit
 
-        # pd dataframe of ref tank mole fraction estimates for this run
-        ref_estimate = self.compute_ref_estimate(new_fit)
-       
+        # ── Create/append as needed ───────────────────────────────────────────────────
+        has_current = curves['run_time'].eq(sel_rt).any()
+        calcurve_exists = True
+        current_cal_flag = 0
         if curves.empty:
             # No curves at all → fit and create DF with one row
             try:
                 curves = pd.DataFrame([new_fit], columns=REQ_COLS)
             except ValueError:
                 print(f'Error in calcurve {new_fit}')
+                self.figure.clear()
+                self.canvas.draw()
                 return
-            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         elif not has_current:
             # Existing curves, but not for this run_time → append one row
             curves = pd.concat([curves, pd.DataFrame([new_fit])], ignore_index=True)
+            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
+        else:
+            current_cal_flag = curves.loc[curves['run_time'] == sel_rt, 'flag'].iat[0]
+        self._save_payload['flag'] = current_cal_flag
 
-        curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+        # pd dataframe of ref tank mole fraction estimates for this run
+        ref_estimate = self.compute_ref_estimate(new_fit)
         
         colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
@@ -1211,12 +1215,31 @@ class MainWindow(QMainWindow):
 
         # Mask for valid points
         mask_main = self.run[['cal_mf', yvar]].notna().all(axis=1)
-        run_x = self.run.loc[mask_main, 'cal_mf'].astype(float)
-        run_y = self.run.loc[mask_main, yvar].astype(float)
-        
-        # Main scatter
-        ax.scatter(run_x, run_y, marker='o', c=colors.loc[mask_main], alpha=0.7)
 
+        # Main scatter (all unflagged + flagged, same colors)
+        ax.scatter(
+            self.run.loc[mask_main, 'cal_mf'],
+            self.run.loc[mask_main, yvar],
+            marker='o',
+            c=colors.loc[mask_main],
+            alpha=0.7
+        )
+
+        # Mask for flagged subset
+        flags = (
+            self.run['data_flag_int'].fillna(0).astype(int) != 0
+        ) & mask_main
+        
+        # Overlay flagged points with white "X"
+        ax.scatter(
+            self.run.loc[flags, 'cal_mf'],
+            self.run.loc[flags, yvar],
+            marker='x',
+            c='white',
+            s=60,  # size of the marker
+            linewidths=2,
+            zorder=4
+        )
         # One-to-one line
         ax.plot(x_one2one, y_one2one, c='grey', ls='--', label='one-to-one')
 
@@ -1232,23 +1255,12 @@ class MainWindow(QMainWindow):
                                          label="Ref Mean $\\pm 1\\sigma$"))
     
         # Plot stored cal curves (bottom axis).
-        sel = self.run['run_time'].iat[0]  # the timestamp you want
-        stored_curve = curves['run_time'].eq(sel)
-
+        stored_curve = curves['run_time'].eq(sel_rt)
         if stored_curve is None or stored_curve.empty:
             print("No stored cal curves available.")
             return
         row = curves.loc[stored_curve].iloc[0]
         stored_coefs = [row['coef3'], row['coef2'], row['coef1'], row['coef0']]
-
-        # flag the curve?
-        is_flagged = False
-        if calcurve_exists and 'flag' in row and pd.notna(row['flag']):
-            try:
-                is_flagged = bool(int(row['flag']))
-            except Exception:
-                is_flagged = False
-        self._flag_state = is_flagged        
 
         # fit labels are from stored curve
         fitlabel = f'\nfit =\n'
@@ -1257,16 +1269,35 @@ class MainWindow(QMainWindow):
                 fitlabel += f'{coef:0.6f} ($x^{n}$) \n'
         legend_handles.append(Line2D([], [], linestyle='None', label=fitlabel))
             
-        # Predicted response at the actual run_x positions
+        # Predicted response at all valid run_x positions
         new_fit_coefs = [new_fit["coef3"], new_fit["coef2"], new_fit["coef1"], new_fit["coef0"]]
-        y_pred = np.polyval(new_fit_coefs, run_x.to_numpy())
-        diff_y = run_y.to_numpy() - y_pred
+        x_all = self.run.loc[mask_main, 'cal_mf'].astype(float)
+        y_all = self.run.loc[mask_main, yvar].astype(float)
 
-        # store residuals on self.run (align by index)
+        y_pred = np.polyval(new_fit_coefs, x_all.to_numpy())
+        diff_y = y_all.to_numpy() - y_pred
+
+        # Store residuals on self.run (align by index)
         self.run.loc[mask_main, 'diff_y'] = diff_y
 
-        # Top residuals panel
-        ax_resid.scatter(run_x, diff_y, s=15, c=colors.loc[mask_main], alpha=0.8)
+        # --- Residuals ---
+        # Unflagged residuals
+        ax_resid.scatter(
+            self.run.loc[mask_main & ~flags, 'cal_mf'],
+            self.run.loc[mask_main & ~flags, 'diff_y'],
+            s=15, c=colors.loc[mask_main & ~flags],
+            alpha=0.8
+        )
+
+        # Flagged residuals (white X overlay)
+        ax_resid.scatter(
+            self.run.loc[mask_main & flags, 'cal_mf'],
+            self.run.loc[mask_main & flags, 'diff_y'],
+            marker='x', c='white',
+            s=60, linewidths=2,
+            zorder=4
+        )
+        # Horizontal zero line
         ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
 
         # set symmetric y-limits for residuals
@@ -1334,7 +1365,8 @@ class MainWindow(QMainWindow):
         ax.format_coord = self._fmt_cal_plot
                 
         save_handle = Line2D([], [], linestyle='None', label='Save Cal2DB')
-        flag_label  = 'Unflag Cal2DB' if self._flag_state else 'Flag Cal2DB'
+        current = int(self._save_payload.get('flag', 0))
+        flag_label  = 'Unflag Cal2DB' if current else 'Flag Cal2DB'
 
         # spacer creates a small gap between the two buttons
         spacer_handle = Line2D([], [], linestyle='None', label='\u2009')  # hair space
@@ -1413,8 +1445,8 @@ class MainWindow(QMainWindow):
                     ax.set_ylim(0, 1.2)
                     ax.set_xlim(0, run_x.max() * 1.05)
                 else:
-                    ax.set_ylim(run_y.min() * 0.95, run_y.max() * 1.05)
-                    ax.set_xlim(run_x.min() * 0.95, run_x.max() * 1.05)
+                    ax.set_ylim(y_all.min() * 0.95, y_all.max() * 1.05)
+                    ax.set_xlim(x_all.min() * 0.95, x_all.max() * 1.05)
             except ValueError:
                 pass
 
@@ -1482,10 +1514,16 @@ class MainWindow(QMainWindow):
         #    warnings.warn("No scale assignment found for: " + ", ".join(missing), UserWarning)
 
     def _style_flag_button(self):
-        """Refresh the legend 'flag' button look from self._flag_state."""
+        """Refresh the legend 'flag' button look based on _save_payload['flag']"""
         if getattr(self, '_flag_text', None) is None:
             return
-        if getattr(self, '_flag_state', False):
+
+        # default to unflagged if payload missing
+        flagged = False
+        if getattr(self, "_save_payload", None) is not None:
+            flagged = bool(int(self._save_payload.get('flag', 0)))
+
+        if flagged:
             self._flag_text.set_text('Unflag Cal2DB')
             self._flag_text.set_color('white')
             self._flag_text.set_bbox(dict(
@@ -1499,7 +1537,7 @@ class MainWindow(QMainWindow):
             self._flag_text.set_color('white')
             self._flag_text.set_bbox(dict(
                 boxstyle='round,pad=0.4',
-                facecolor='#616161',  # neutral gray when not flagged
+                facecolor='#616161',  # neutral gray
                 edgecolor='none',
                 alpha=0.9
             ))
@@ -1510,6 +1548,7 @@ class MainWindow(QMainWindow):
             print("No calibration payload available.")
             return
 
+        print("Saving calibration curve to database:", payload['flag'])
         if flag_value is not None:
             payload['flag'] = flag_value
 
@@ -1537,7 +1576,6 @@ class MainWindow(QMainWindow):
         self.calibration_plot()
        
     def _on_legend_pick(self, event):
-        import matplotlib.text as mtext
         art = event.artist
         if not isinstance(art, mtext.Text):
             return
@@ -1576,21 +1614,24 @@ class MainWindow(QMainWindow):
             self.gc_plot(self._current_yparam, sub_info='REVERTED')
 
     def toggle_flag_current_curve(self):
-        # flip state
-        self._flag_state = not getattr(self, '_flag_state', False)
-        self._style_flag_button()
-        self.canvas.draw_idle()
-
-        # make sure we have a payload – if the user hasn’t pressed “Save” yet,
-        # fall back to the stored curve info on-screen
+        """Toggle the flag value for the current calibration curve."""
         if getattr(self, "_save_payload", None) is None:
-            # grab the row corresponding to this run_time from `curves`
-            sel_rt = self.run['run_time'].iat[0]
-            cur_row = self.curves.loc[self.curves['run_time'] == sel_rt].iloc[0]
-            self._save_payload = cur_row.to_dict()
+            print("No calibration payload to toggle.")
+            return
 
-        # send the upsert with the new flag
-        self.save_current_curve(flag_value=(1 if self._flag_state else 0))
+        # Flip the flag in payload
+        current_flag = int(self._save_payload.get("flag", 0))
+        new_flag = 0 if current_flag == 1 else 1
+        self._save_payload["flag"] = new_flag
+
+        # Save to DB
+        self.save_current_curve(flag_value=new_flag)
+
+        # Refresh the button style
+        self._style_flag_button()
+        if getattr(self, "canvas", None):
+            self.canvas.draw_idle()
+
         
     def get_load_range(self):
         # Read selection from the four combo boxes
