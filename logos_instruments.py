@@ -526,7 +526,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         except IndexError:
             return None
         
-        model, _, _ = self.fit_poly(run, order=int(order))
+        model, _, _ = self.fit_poly(run, order=int(order), flag_col='data_flag_int', bad_flag=1)
         if model is None:
             print('Not enough points to fit polynomial.')
             return None
@@ -1024,6 +1024,9 @@ class FE3_Instrument(HATS_DB_Functions):
             order by run_date desc;
         """
         df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            print(f"No calibration curves found for parameter {pnum} and channel '{channel}'.")
+            return df
         df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
         return df
 class BLD1_Instrument(HATS_DB_Functions):
