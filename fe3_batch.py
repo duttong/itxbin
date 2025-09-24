@@ -66,7 +66,7 @@ class FE3_batch(FE3_Instrument):
         parser.add_argument(
             '-s', '--start-date',
             type=str,
-            help="Start date in YYMM format (e.g. '2503')"
+            help="Start date in YYMM format (e.g. '2503'). The default behavior is to use the last 30 days."
         )
         parser.add_argument(
             '-e', '--end-date',
@@ -74,14 +74,9 @@ class FE3_batch(FE3_Instrument):
             help="End date in YYMM format (e.g. '2505')"
         )
         parser.add_argument(
-            '-f', '--figures',
-            action='store_true',
-            help="Show figures if provided, otherwise no figures"
-        )
-        parser.add_argument(
             '-i', '--insert',
             action='store_true',
-            help="Insert mole fractions into the database if provided"
+            help="Insert mole fractions into the HATS database."
         )
         args = parser.parse_args()
         
