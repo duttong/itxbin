@@ -34,18 +34,27 @@ def site_selection_ui():
     
     site_combo = QtWidgets.QComboBox()
     site_combo.setFont(QtGui.QFont('Helvetica', 16))
+
+    # Insert a placeholder as the first item
+    site_combo.addItem("-- Select Site --")
+
+    # Disable the placeholder item so it can’t be selected
+    site_combo.model().item(0).setFlags(
+        site_combo.model().item(0).flags() & ~QtCore.Qt.ItemIsEnabled
+    )
+
+    # Add real sites
     site_combo.addItems(GOOD_SITES)
-    site_combo.setStyleSheet("QComboBox { background-color: lightcoral; }")  # Setting background color to light red (lightcoral)
+
+    site_combo.setStyleSheet("QComboBox { background-color: lightcoral; }")
     layout.addWidget(site_combo)
     
     def on_select():
-        selected_site = site_combo.currentText()
-        if selected_site:
+        selected_site = site_combo.currentText().strip()
+        if selected_site and selected_site != "-- Select Site --":
             window.close()
             launch_gcwerks(selected_site)
-        else:
-            QtWidgets.QMessageBox.critical(window, "Selection Error", "Please select a valid site.")
-    
+
     site_combo.currentIndexChanged.connect(on_select)
     
     window.setLayout(layout)
