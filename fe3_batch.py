@@ -11,11 +11,12 @@ class FE3_batch(FE3_Instrument):
     
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.t0 = time.time()
     
     def update_cal_curves(self):
         pass
     
-    def update_runs(self, pnum, channel=None, start_date=None, end_date=None):
+    def update_runs(self, pnum, channel=None, start_date=None, end_date=None, verbose=False):
         """ Calculates mole_fraction for a range of dates.
             Updates the ng_mole_fractions table """
         
@@ -34,9 +35,16 @@ class FE3_batch(FE3_Instrument):
         if self.data.empty:
             return pd.DataFrame()
         
+        if verbose:
+            print(f'Finished loading data. elapsed time: {time.time() - self.t0:.2f} seconds')
+
         df = df.loc[df['port'] != EXCLUDE_PORT].copy()
         df = self.calc_mole_fraction(df)
         df.loc[df['height'] == 0, 'mole_fraction'] = 0     # set mole_fraction to 0 if height = 0
+
+        if verbose:
+            print(f'Finished calculating mole fractions. elapsed time: {time.time() - self.t0:.2f} seconds')
+
         return df
     
     def main(self):
@@ -76,8 +84,6 @@ class FE3_batch(FE3_Instrument):
             help="Insert mole fractions into the database if provided"
         )
         args = parser.parse_args()
-
-        t0 = time.time()
         
         if args.parameter_num.lower() == "all":
             # Process all analytes
@@ -92,7 +98,7 @@ class FE3_batch(FE3_Instrument):
                 df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
                 self.upsert_mole_fractions(df)
 
-            print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
+            print(f"Processing complete for all analytes. Total time: {time.time() - self.t0:.2f} seconds")
         else:
             # Process a single parameter
             pnum = int(args.parameter_num)
@@ -103,8 +109,8 @@ class FE3_batch(FE3_Instrument):
             
             df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
             self.upsert_mole_fractions(df)
-                            
-            print(f"Processing complete for {df.shape[0]} rows. Total time: {time.time() - t0:.2f} seconds")  
+                                    
+            print(f"Processing complete for {df.shape[0]} rows. Total time: {time.time() - self.t0:.2f} seconds")  
         
 if __name__ == "__main__":
     fe3 = FE3_batch()
