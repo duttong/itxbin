@@ -1284,7 +1284,7 @@ class MainWindow(QMainWindow):
                 fitlabel += f'{coef:0.6f} ($x^{n}$) \n'
         legend_handles.append(Line2D([], [], linestyle='None', label=fitlabel))
             
-        # Predicted response at all valid run_x positions
+        # Predicted response at all valid x_all positions
         new_fit_coefs = [new_fit["coef3"], new_fit["coef2"], new_fit["coef1"], new_fit["coef0"]]
         x_all = self.run.loc[mask_main, 'cal_mf'].astype(float)
         y_all = self.run.loc[mask_main, yvar].astype(float)
@@ -1458,7 +1458,7 @@ class MainWindow(QMainWindow):
             try:
                 if self.draw2zero_cb.isChecked():
                     ax.set_ylim(0, 1.2)
-                    ax.set_xlim(0, run_x.max() * 1.05)
+                    ax.set_xlim(0, x_all.max() * 1.05)
                 else:
                     ax.set_ylim(y_all.min() * 0.95, y_all.max() * 1.05)
                     ax.set_xlim(x_all.min() * 0.95, x_all.max() * 1.05)
