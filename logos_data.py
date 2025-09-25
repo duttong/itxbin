@@ -29,6 +29,7 @@ from matplotlib.widgets import RectangleSelector
 
 
 import logos_instruments as li
+from logos_timeseries import TimeseriesWidget
 
 class RubberBandOverlay(QWidget):
     def __init__(self, parent, pen):
@@ -432,7 +433,7 @@ class MainWindow(QMainWindow):
         self.plot_layout.addLayout(cal_row2)
         self.draw2zero_cb.clicked.connect(self.calibration_plot)
         self.oldcurves_cb.clicked.connect(self.calibration_plot)
-       # -----------------------------------------------
+        # -----------------------------------------------
 
         self.plot_radio_group.addButton(self.resp_rb, id=0)
         self.plot_radio_group.addButton(ratio_rb, id=1)
@@ -475,16 +476,8 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(processing_pane, "Processing")
 
-        # Timeseries tab (import if exists, otherwise placeholder)
-        try:
-            from logos_timeseries import TimeseriesWidget
-            timeseries_tab = TimeseriesWidget()
-        except ImportError:
-            timeseries_tab = QWidget()
-            ts_layout = QVBoxLayout(timeseries_tab)
-            ts_layout.addWidget(QLabel("Timeseries view coming soon..."))
-
-        tabs.addTab(timeseries_tab, "Timeseries")
+        self.timeseries_tab = TimeseriesWidget(instrument=self.instrument)
+        tabs.addTab(self.timeseries_tab, "Timeseries")
     
         # Right pane: matplotlib figure for plotting
         right_placeholder = QGroupBox("Plot Area")
@@ -506,7 +499,7 @@ class MainWindow(QMainWindow):
         self.on_plot_type_changed(0)
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
-            self.set_current_analyte()
+            self.set_current_analyte('HFC134a')
 
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
@@ -1828,7 +1821,7 @@ class MainWindow(QMainWindow):
                 self.current_channel = None
             pnum = self.analytes[name]
             self.current_pnum = int(pnum)
-            self.set_current_analyte()
+            self.set_current_analyte(name)
 
     def on_analyte_combo_changed(self, name):
         """
@@ -1841,7 +1834,7 @@ class MainWindow(QMainWindow):
             self.current_channel = None
         pnum = self.analytes[name]
         self.current_pnum = int(pnum)
-        self.set_current_analyte()
+        self.set_current_analyte(name)
         
     def load_selected_run(self):
         # call sql load function from instrument class
@@ -1856,11 +1849,14 @@ class MainWindow(QMainWindow):
         
         self.madechanges = False
 
-    def set_current_analyte(self):
+    def set_current_analyte(self, name):
         """
         Check to see if channel is in analyte_name.
         Preserve the current_run_time when switching analytes.
         """
+        if hasattr(self, "timeseries_tab") and self.timeseries_tab:
+            self.timeseries_tab.set_current_analyte(name)
+
         if self.current_run_time is None:
             self.set_runlist()
 
@@ -1887,7 +1883,7 @@ class MainWindow(QMainWindow):
         self.set_calibration_enabled(False)
         self.draw2zero_cb.setChecked(False)
         self.oldcurves_cb.setChecked(False)
-        self.set_current_analyte()  
+        #self.set_current_analyte()  
         
     def on_run_changed(self, index):
         """
