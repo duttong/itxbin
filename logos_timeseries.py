@@ -239,8 +239,8 @@ class TimeseriesWidget(QWidget):
         datasets = {}
         datasets["All samples"] = df.copy()
         datasets["Flask mean"] = (
-            df.groupby(["site", "sample_id"])
-            .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+            df.groupby(["site", "sample_id", "sample_datetime"])
+            .agg({"mole_fraction": ["mean", "std"]})
             .reset_index()
         )
         datasets["Flask mean"].columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
@@ -254,7 +254,7 @@ class TimeseriesWidget(QWidget):
         styles = {
             "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 4, "alpha": 0.4},
             "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 6, "alpha": 0.9},
-            "Pair mean":  {"marker": "s", "shade": 0.7, "error": True,  "size": 6, "alpha": 0.9},
+            "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 7, "alpha": 0.9},
         }
 
         fig, ax = plt.subplots(figsize=(12, 6))
