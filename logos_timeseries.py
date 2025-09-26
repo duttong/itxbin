@@ -3,6 +3,8 @@ from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout
 )
 from PyQt5.QtCore import Qt
+
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
@@ -41,6 +43,7 @@ class TimeseriesWidget(QWidget):
         self.analytes = self.instrument.analytes or {}
         self.current_analyte = None
         self.current_channel = None
+        self.dataset_handles = {}
         
         sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
                 'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
@@ -50,6 +53,7 @@ class TimeseriesWidget(QWidget):
         # cache for last loaded data
         self._cached_df = None
         self._last_query_params = None  # (start, end, analyte)
+        
 
         # --- Main layout ---
         controls = QVBoxLayout()
@@ -113,26 +117,6 @@ class TimeseriesWidget(QWidget):
         site_group.setLayout(site_layout)
         controls.addWidget(site_group)
                 
-        # Groupings
-        mean_group = QGroupBox("Averaging Options")
-        grps_layout = QHBoxLayout()
-
-        self.cb_all_samples = QCheckBox("All samples")
-        self.cb_all_samples.setChecked(True)
-
-        self.cb_flask_mean = QCheckBox("Flask Mean")
-        self.cb_flask_mean.setChecked(False)
-
-        self.cb_pair_mean = QCheckBox("Pair Mean")
-        self.cb_pair_mean.setChecked(False)
-
-        grps_layout.addWidget(self.cb_all_samples)
-        grps_layout.addWidget(self.cb_flask_mean)
-        grps_layout.addWidget(self.cb_pair_mean)
-
-        mean_group.setLayout(grps_layout)
-        controls.addWidget(mean_group)
-
         # ----- Set default selection -----
         self.set_current_analyte(self.current_analyte)
 
@@ -170,6 +154,44 @@ class TimeseriesWidget(QWidget):
         for cb in self.site_checks:
             cb.setChecked(False)
 
+    def _is_visible(self, handle):
+        return handle.get_visible()
+
+    def _disable_pan_zoom(self, toolbar):
+        """Turn off pan/zoom if active (Qt toolbar safe)."""
+        # Qt backends store QAction objects in _actions
+        actions = getattr(toolbar, "_actions", {})
+
+        # Disable pan if it's checked
+        pan_action = actions.get("pan")
+        if pan_action is not None and pan_action.isChecked():
+            toolbar.pan()  # toggles it OFF
+
+        # Disable zoom if it's checked
+        zoom_action = actions.get("zoom")
+        if zoom_action is not None and zoom_action.isChecked():
+            toolbar.zoom()  # toggles it OFF
+
+    def on_pick(self, event):
+        # --- Turn off pan/zoom if toolbar exists ---
+        manager = getattr(event.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        if toolbar is not None and isinstance(toolbar, NavigationToolbar2QT):
+            self._disable_pan_zoom(toolbar)
+
+        # --- Toggle dataset visibility ---
+        legend_line = event.artist
+        label = legend_line.get_label()
+
+        if label in self.dataset_handles:
+            visible = not self.dataset_handles[label][0].get_visible()
+            for h in self.dataset_handles[label]:
+                h.set_visible(visible)
+
+            # fade dummy legend entry
+            legend_line.set_alpha(1.0 if visible else 0.2)
+            event.canvas.draw_idle()
+                    
     def make_plot(self):
         start = self.start_year.value()
         end = self.end_year.value()
@@ -177,24 +199,25 @@ class TimeseriesWidget(QWidget):
         pnum = self.analytes.get(analyte)
         channel = self.current_channel or None
         sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
+        site_colors = build_site_colors(self.sites)
 
         if not sites or pnum is None:
             return
 
-        ch_str = '' if channel is None else f'AND channel = {channel})'
-            
+        ch_str = '' if channel is None else f'AND channel = {channel}'
+
         query_params = (start, end, analyte)
 
         # reload only if analyte/year range changed
         if query_params != self._last_query_params:
             sql = f"""
             SELECT sample_datetime, analysis_datetime, mole_fraction, channel, 
-                   data_flag, site, sample_id, pair_id_num
+                data_flag, site, sample_id, pair_id_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
-              AND parameter_num = {pnum}
-              {ch_str}
-              AND YEAR(sample_datetime) BETWEEN {start} AND {end}
+            AND parameter_num = {pnum}
+            {ch_str}
+            AND YEAR(sample_datetime) BETWEEN {start} AND {end}
             ORDER BY sample_datetime;
             """
             df = pd.DataFrame(self.instrument.doquery(sql))
@@ -212,45 +235,32 @@ class TimeseriesWidget(QWidget):
             print("No cached data")
             return
 
+        # --- Build datasets ---
         datasets = {}
-
-        if self.cb_all_samples.isChecked():
-            datasets["All samples"] = df.copy()
-
-        if self.cb_flask_mean.isChecked():
-            datasets["Flask mean"] = (
-                df.groupby(["site", "sample_id"])
-                .agg({
-                    "sample_datetime": "first",
-                    "mole_fraction": ["mean", "std"]
-                })
-                .reset_index()
-            )
-            datasets["Flask mean"].columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
-
-        if self.cb_pair_mean.isChecked():
-            datasets["Pair mean"] = (
-                df.groupby(["site", "pair_id_num"])
-                .agg({
-                    "sample_datetime": "first",
-                    "mole_fraction": ["mean", "std"]
-                })
-                .reset_index()
-            )
-            datasets["Pair mean"].columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
+        datasets["All samples"] = df.copy()
+        datasets["Flask mean"] = (
+            df.groupby(["site", "sample_id"])
+            .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+            .reset_index()
+        )
+        datasets["Flask mean"].columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
+        datasets["Pair mean"] = (
+            df.groupby(["site", "pair_id_num"])
+            .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+            .reset_index()
+        )
+        datasets["Pair mean"].columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
 
         styles = {
             "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 4, "alpha": 0.4},
             "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 6, "alpha": 0.9},
             "Pair mean":  {"marker": "s", "shade": 0.7, "error": True,  "size": 6, "alpha": 0.9},
         }
-        
+
         fig, ax = plt.subplots(figsize=(12, 6))
-        site_colors = build_site_colors(self.sites)
+        self.dataset_handles = {}  # reset
 
-        # Keep track of which sites already added to legend
-        legend_handles = {}
-
+        # --- Plot datasets ---
         for label, dset in datasets.items():
             for site, grp in dset.groupby("site"):
                 if site not in sites:
@@ -261,58 +271,86 @@ class TimeseriesWidget(QWidget):
                 color = adjust_brightness(base, style["shade"])
 
                 if label == "All samples":
-                    ax.plot(
+                    line, = ax.plot(
                         grp["sample_datetime"], grp["mole_fraction"],
                         marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], alpha=style["alpha"]
+                        color=color, markersize=style["size"], alpha=style["alpha"],
+                        label=label
                     )
+                    self.dataset_handles.setdefault(label, []).append(line)
                 else:
-                    ax.errorbar(
+                    container = ax.errorbar(
                         grp["sample_datetime"], grp["mean"], yerr=grp["std"],
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
-                        mfc='none', mec=color
+                        mfc='none', mec=color, label=label
                     )
-                # Add a single legend entry per site (on first dataset only)
-                if site not in legend_handles:
-                    h = ax.plot([], [], color=base, marker="o", linestyle="", label=site)[0]
-                    legend_handles[site] = h
 
-        ax.set_xlabel("Sample datetime")
-        ax.set_ylabel("Mole fraction")
-        ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {analyte}")
+                    # Flatten container parts into list of artists
+                    parts = []
+                    for child in container:
+                        if isinstance(child, (list, tuple)):
+                            parts.extend(child)
+                        else:
+                            parts.append(child)
+                    # Only keep objects that have set_visible
+                    parts = [p for p in parts if hasattr(p, "set_visible")]
 
-        # --- Site legend ---
-        site_legend = ax.legend(
-            handles=legend_handles.values(),
-            title="Site",
-            bbox_to_anchor=(1.05, 1),
-            loc="upper left",
-            borderaxespad=0.0,
-            columnspacing=1.0, handletextpad=0.2,
-            ncol=2
-        )
-        ax.add_artist(site_legend)  # keep this one
+                    self.dataset_handles.setdefault(label, []).extend(parts)
 
-        # --- Marker type key ---
-        marker_key = [
-            mlines.Line2D([], [], color="black", marker="o", linestyle="",
-                        markersize=6, label="Flasks"),
-            mlines.Line2D([], [], color="black", marker="^", linestyle="",
-                        markersize=6, label="Flask Means", mfc="none", mec="black"),
-            mlines.Line2D([], [], color="black", marker="s", linestyle="",
-                        markersize=6, label="Pair Means", mfc="none", mec="black"),
-        ]
+        for h in self.dataset_handles.get("Flask mean", []):
+            h.set_visible(False)
+        for h in self.dataset_handles.get("Pair mean", []):
+            h.set_visible(False)
+    
+        # --- Dataset legend (toggleable) ---
+        legend_handles = []
+        for label in datasets.keys():
+            dummy = mlines.Line2D(
+                [], [], color="black",
+                marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
+                linestyle="", markersize=6, label=label
+            )
+            legend_handles.append(dummy)
 
         dataset_legend = ax.legend(
-            handles=marker_key,
-            #title="Dataset",
-            bbox_to_anchor=(1.05, 0),   # bottom anchor
+            handles=legend_handles,
+            title="Datasets",
+            bbox_to_anchor=(1.05, 0),
             loc="lower left",
             borderaxespad=0.0
         )
         ax.add_artist(dataset_legend)
 
+        # Make dummy legend handles clickable
+        for legline in dataset_legend.legendHandles:
+            label = legline.get_label()
+            if label in ["Flask mean", "Pair mean"]:  # start greyed out
+                legline.set_alpha(0.4)
+            legline.set_picker(5)
+
+        fig.canvas.mpl_connect("pick_event", self.on_pick)
+
+        # --- Site legend ---
+        site_handles = {}
+        for site in sites:
+            site_handles[site] = ax.plot([], [], color=site_colors[site], marker="o", linestyle="", label=site)[0]
+
+        site_legend = ax.legend(
+            handles=site_handles.values(),
+            title="Sites",
+            bbox_to_anchor=(1.05, 1),
+            loc="upper left",
+            ncol=2,
+            columnspacing=1.0,
+            handletextpad=0.2,
+            borderaxespad=0.0
+        )
+        ax.add_artist(site_legend)
+
+        ax.set_xlabel("Sample datetime")
+        ax.set_ylabel("Mole fraction")
+        ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {analyte}")
         plt.xticks(rotation=45)
         plt.tight_layout(rect=[0, 0, 0.75, 1])
-        plt.show()
+        plt.show(block=False)
