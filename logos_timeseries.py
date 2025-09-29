@@ -11,13 +11,18 @@ import pandas as pd
 import colorsys
 
 
+LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
+            'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
+            'BLD', 'MKO']
+
+
 def build_site_colors(sites):
     """
     Assign each site a consistent base color from a colormap.
     Always returns a mapping for *all* sites in the list.
     """
     # use a perceptually uniform colormap with enough variety
-    cmap = plt.cm.get_cmap("tab20b", len(sites))
+    cmap = plt.cm.get_cmap("jet", len(sites))
     site_colors = {}
     for i, site in enumerate(sorted(sites)):  # sort to keep stable order
         site_colors[site] = cmap(i)
@@ -45,16 +50,14 @@ class TimeseriesWidget(QWidget):
         self.current_channel = None
         self.dataset_handles = {}
         
-        sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
-                'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
-                'BLD', 'MKO']
-        self.sites = sorted(sites) if sites else []
+        self.sites = sorted(LOGOS_sites) if LOGOS_sites else []
+        self.sites_df = self.get_site_info() if self.instrument else pd.DataFrame()
+        self.sites_by_lat = self.sites_df.sort_values("lat", ascending=False)["code"].tolist()
        
         # cache for last loaded data
         self._cached_df = None
         self._last_query_params = None  # (start, end, analyte)
         
-
         # --- Main layout ---
         controls = QVBoxLayout()
 
@@ -97,7 +100,7 @@ class TimeseriesWidget(QWidget):
         
         initial_sites = ['BRW', 'MLO', 'SMO', 'SPO']  # default ON
         cols = 3
-        for i, site in enumerate(self.sites):
+        for i, site in enumerate(self.sites_by_lat):
             cb = QCheckBox(site)
             cb.setChecked(site in initial_sites)   # ✅ only check if in subset
             self.site_checks.append(cb)
@@ -150,6 +153,15 @@ class TimeseriesWidget(QWidget):
             self.current_channel = channel.strip(") ")
 
         self.current_analyte = analyte_name
+        
+    def get_site_info(self):
+        sql = f""" SELECT 
+            code, lat, lon, elev from gmd.site
+            WHERE code in {tuple(LOGOS_sites)}
+            ORDER BY code;
+            """
+        df = pd.DataFrame(self.instrument.doquery(sql))
+        return df        
         
     def select_all_sites(self):
         for cb in self.site_checks:
@@ -204,7 +216,7 @@ class TimeseriesWidget(QWidget):
         pnum = self.analytes.get(analyte)
         channel = self.current_channel or None
         sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
-        site_colors = build_site_colors(self.sites)
+        site_colors = build_site_colors(self.sites_by_lat)
 
         if not sites or pnum is None:
             return
@@ -268,9 +280,9 @@ class TimeseriesWidget(QWidget):
         datasets["Pair mean"].columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
 
         styles = {
-            "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 4, "alpha": 0.4},
-            "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 6, "alpha": 0.9},
-            "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 7, "alpha": 0.9},
+            "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 3, "alpha": 0.4},
+            "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
+            "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
         }
 
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -291,7 +303,8 @@ class TimeseriesWidget(QWidget):
                         grp["sample_datetime"], grp["mole_fraction"],
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], alpha=style["alpha"],
-                        label=label
+                        label=label,
+                        mfc=color, mec='gray'
                     )
                     self.dataset_handles.setdefault(label, []).append(line)
                 else:
@@ -370,3 +383,4 @@ class TimeseriesWidget(QWidget):
         plt.xticks(rotation=45)
         plt.tight_layout(rect=[0, 0, 0.75, 1])
         plt.show(block=False)
+        
