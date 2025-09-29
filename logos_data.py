@@ -537,7 +537,6 @@ class MainWindow(QMainWindow):
             if self._rect_selector is not None:
                 self._rect_selector.set_active(False)
 
-    
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
         self.fit_method_cb.setEnabled(enabled)
@@ -1691,7 +1690,6 @@ class MainWindow(QMainWindow):
         self._style_flag_button()
         if getattr(self, "canvas", None):
             self.canvas.draw_idle()
-
         
     def get_load_range(self):
         # Read selection from the four combo boxes
@@ -1883,7 +1881,6 @@ class MainWindow(QMainWindow):
         self.set_calibration_enabled(False)
         self.draw2zero_cb.setChecked(False)
         self.oldcurves_cb.setChecked(False)
-        #self.set_current_analyte()  
         
     def on_run_changed(self, index):
         """

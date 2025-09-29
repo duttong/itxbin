@@ -1,10 +1,13 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout
+    QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
+    QToolTip
 )
+from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
 
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
@@ -190,26 +193,27 @@ class TimeseriesWidget(QWidget):
         if zoom_action is not None and zoom_action.isChecked():
             toolbar.zoom()  # toggles it OFF
 
-    def on_pick(self, event):
-        # --- Turn off pan/zoom if toolbar exists ---
-        manager = getattr(event.canvas, "manager", None)
-        toolbar = getattr(manager, "toolbar", None)
-        if toolbar is not None and isinstance(toolbar, NavigationToolbar2QT):
-            self._disable_pan_zoom(toolbar)
-
-        # --- Toggle dataset visibility ---
+    def on_legend_pick(self, event):
+        """Handle clicks on dataset legend entries only."""
         legend_line = event.artist
+
+        # Only respond to legend handles we flagged
+        if not isinstance(legend_line, mlines.Line2D):
+            return
+        if not getattr(legend_line, "_is_dataset_legend", False):
+            return
+
         label = legend_line.get_label()
+        if label not in self.dataset_handles or not self.dataset_handles[label]:
+            return
 
-        if label in self.dataset_handles:
-            visible = not self.dataset_handles[label][0].get_visible()
-            for h in self.dataset_handles[label]:
-                h.set_visible(visible)
+        visible = not self.dataset_handles[label][0].get_visible()
+        for h in self.dataset_handles[label]:     # <-- now indented inside the guard
+            h.set_visible(visible)
 
-            # fade dummy legend entry
-            legend_line.set_alpha(1.0 if visible else 0.2)
-            event.canvas.draw_idle()
-                    
+        legend_line.set_alpha(1.0 if visible else 0.2)
+        event.canvas.draw_idle()
+                 
     def make_plot(self):
         start = self.start_year.value()
         end = self.end_year.value()
@@ -231,7 +235,7 @@ class TimeseriesWidget(QWidget):
         # reload only if analyte/year range changed
         if query_params != self._last_query_params:
             sql = f"""
-            SELECT sample_datetime, analysis_datetime, mole_fraction, channel, 
+            SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel, 
                 data_flag, site, sample_id, pair_id_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
@@ -307,8 +311,18 @@ class TimeseriesWidget(QWidget):
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], alpha=style["alpha"],
                         label=label,
-                        mfc=color, mec='gray'
+                        mfc=color, mec='gray',
+                        picker=5  # 5 points tolerance (pixels)
                     )
+                    # attach metadata
+                    line._meta = {
+                        "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
+                        "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
+                        "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
+                        "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
+                        "analyte": analyte,
+                        "channel": channel,
+                    }
                     self.dataset_handles.setdefault(label, []).append(line)
                 else:
                     container = ax.errorbar(
@@ -343,6 +357,7 @@ class TimeseriesWidget(QWidget):
                 marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
                 linestyle="", markersize=6, label=label
             )
+            dummy._is_dataset_legend = True
             legend_handles.append(dummy)
 
         dataset_legend = ax.legend(
@@ -360,8 +375,10 @@ class TimeseriesWidget(QWidget):
             if label in ["Flask mean", "Pair mean"]:  # start greyed out
                 legline.set_alpha(0.4)
             legline.set_picker(5)
+            legline._is_dataset_legend = True
 
-        fig.canvas.mpl_connect("pick_event", self.on_pick)
+        fig.canvas.mpl_connect("pick_event", self.on_legend_pick)
+        fig.canvas.mpl_connect("pick_event", self.on_point_pick)
 
         # --- Site legend ---
         site_handles = {}
@@ -390,3 +407,84 @@ class TimeseriesWidget(QWidget):
         plt.tight_layout(rect=[0, 0, 0.75, 1])
         plt.show(block=False)
         
+    def on_point_pick(self, event):
+        artist = event.artist
+        if not hasattr(artist, "_meta"):
+            return
+        if not hasattr(event, "ind") or len(event.ind) == 0:
+            return
+
+        mx, my = event.mouseevent.xdata, event.mouseevent.ydata
+        if mx is None or my is None:
+            return
+
+        # Only for distance calculation
+        xdata = mdates.date2num(artist.get_xdata())
+        ydata = artist.get_ydata()
+
+        candidates = event.ind
+        dists = [(i, (xdata[i] - mx)**2 + (ydata[i] - my)**2) for i in candidates]
+        nearest_idx = min(dists, key=lambda t: t[1])[0]
+
+        # These values come straight from your DataFrame (no conversion)
+        sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
+        pair_id_num = artist._meta.get("pair_id_num", [None])[nearest_idx]
+        run_time    = artist._meta.get("run_time", [None])[nearest_idx]
+        site        = artist._meta.get("site", [None])[nearest_idx]
+        analyte     = artist._meta.get("analyte", "Unknown")
+        channel     = artist._meta.get("channel", None)
+
+        # Always show tooltip
+        text = (
+            f"<b>Site:</b> {site}<br>"
+            f"<b>Sample ID:</b> {sample_id}<br>"
+            f"<b>Pair ID:</b> {pair_id_num}<br>"
+            f"<b>Run time:</b> {run_time}"
+        )
+        QToolTip.showText(QCursor.pos(), text)
+
+        # Right click adds extra action
+        if event.mouseevent.button == 3:  # right click
+            self.main_window.current_run_time = str(run_time)
+            self.main_window.current_pnum = int(self.analytes.get(analyte))
+            self.main_window.current_channel = channel
+
+            # --- Update the analyte selection UI ---
+            if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
+                # Handle radio buttons
+                for rb in self.main_window.radio_group.buttons():
+                    if rb.text() == analyte:
+                        rb.setChecked(True)
+                        break
+
+            elif hasattr(self.main_window, "analyte_combo"):
+                # Handle combo box
+                idx = self.main_window.analyte_combo.findText(analyte, Qt.MatchExactly)
+                if idx >= 0:
+                    self.main_window.analyte_combo.setCurrentIndex(idx)
+
+            # --- Update date range UI ---
+            # Ensure run_time is a datetime (not string)
+            if not isinstance(run_time, pd.Timestamp):
+                run_time = pd.to_datetime(run_time)
+
+            end_year = run_time.year
+            end_month = run_time.month
+
+            # One month prior
+            start_dt = (run_time - pd.DateOffset(months=1))
+            start_year = start_dt.year
+            start_month = start_dt.month
+
+            # Update combo boxes
+            self.main_window.end_year_cb.setCurrentText(str(end_year))
+            self.main_window.end_month_cb.setCurrentIndex(end_month - 1)
+            self.main_window.start_year_cb.setCurrentText(str(start_year))
+            self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
+            
+            #self.main_window.set_runlist()
+    
+            # --- Continue with loading the run ---
+            self.main_window.load_selected_run()
+            self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
+            self.main_window.current_run_time = str(run_time) 
