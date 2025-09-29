@@ -884,7 +884,7 @@ class FE3_Instrument(HATS_DB_Functions):
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
-            end_date = start_date.strftime("%Y-%m-31")    # end of the month
+            end_date = end_date.strftime("%Y-%m-31")    # end of the month
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass

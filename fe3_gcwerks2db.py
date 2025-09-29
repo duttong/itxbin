@@ -438,6 +438,8 @@ if __name__ == '__main__':
     if options.yyyy:
         df = fe3.fe3_merged_data(duration='all')
         df = df.loc[df['time'].dt.year == int(options.yyyy)]
+    elif options.allyears:
+        df = fe3.fe3_merged_data(duration='all')
     else:
         df = fe3.fe3_merged_data(duration=2)
     

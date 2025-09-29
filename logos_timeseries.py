@@ -38,11 +38,6 @@ def adjust_brightness(color, factor=1.0):
 
 class TimeseriesWidget(QWidget):
     def __init__(self, instrument=None, parent=None):
-        """
-        analytes: dict mapping analyte name -> parameter_num
-        sites: iterable of available site codes
-        instrument: object with .doquery(sql) method
-        """
         super().__init__(parent)
         self.instrument = instrument
         self.main_window = self.parent()
@@ -220,13 +215,15 @@ class TimeseriesWidget(QWidget):
         end = self.end_year.value()
         analyte = self.analyte_combo.currentText()
         pnum = self.analytes.get(analyte)
-        channel = self.current_channel or None
+        self.set_current_analyte(analyte)
+        channel = self.current_channel
         sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
         site_colors = build_site_colors(self.sites_by_lat)
 
         if not sites or pnum is None:
             return
 
+        # channel filter string for sql query
         ch_str = '' if channel is None else f'AND channel = "{channel}"'
 
         query_params = (start, end, analyte)
