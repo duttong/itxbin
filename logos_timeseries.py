@@ -119,6 +119,11 @@ class TimeseriesWidget(QWidget):
                 
         # ----- Set default selection -----
         self.set_current_analyte(self.current_analyte)
+        
+        # ------ Flagging options ------
+        self.hide_flagged = QCheckBox("Hide flagged data")
+        self.hide_flagged.setChecked(True)
+        controls.addWidget(self.hide_flagged)
 
         # Plot button
         self.plot_button = QPushButton("Plot it")
@@ -237,17 +242,28 @@ class TimeseriesWidget(QWidget):
 
         # --- Build datasets ---
         datasets = {}
-        datasets["All samples"] = df.copy()
+        
+        # chose to show or hide flagged data in "All samples"
+        if self.hide_flagged.isChecked():
+            # only unflagged data
+            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
+        else:
+            datasets["All samples"] = df.copy()
+
+        # filter flagged rows (this is always done for means)
+        clean = df[df["data_flag"] == "..."]
+
         datasets["Flask mean"] = (
-            df.groupby(["site", "sample_id", "sample_datetime"])
-            .agg({"mole_fraction": ["mean", "std"]})
-            .reset_index()
+            clean.groupby(["site", "sample_id", "sample_datetime"])
+                .agg({"mole_fraction": ["mean", "std"]})
+                .reset_index()
         )
         datasets["Flask mean"].columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
+
         datasets["Pair mean"] = (
-            df.groupby(["site", "pair_id_num"])
-            .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
-            .reset_index()
+            clean.groupby(["site", "pair_id_num"])
+                .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+                .reset_index()
         )
         datasets["Pair mean"].columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
 
