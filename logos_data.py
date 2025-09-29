@@ -476,7 +476,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(processing_pane, "Processing")
 
-        self.timeseries_tab = TimeseriesWidget(instrument=self.instrument)
+        self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
         tabs.addTab(self.timeseries_tab, "Timeseries")
     
         # Right pane: matplotlib figure for plotting

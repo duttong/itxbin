@@ -45,9 +45,15 @@ class TimeseriesWidget(QWidget):
         """
         super().__init__(parent)
         self.instrument = instrument
+        self.main_window = self.parent()
+
         self.analytes = self.instrument.analytes or {}
         self.current_analyte = None
         self.current_channel = None
+
+        if self.instrument.inst_num == 193:     # FE3
+            self.current_analyte = 'CFC11 (c)'
+            self.current_channel = 'c'
         self.dataset_handles = {}
         
         self.sites = sorted(LOGOS_sites) if LOGOS_sites else []
@@ -221,7 +227,7 @@ class TimeseriesWidget(QWidget):
         if not sites or pnum is None:
             return
 
-        ch_str = '' if channel is None else f'AND channel = {channel}'
+        ch_str = '' if channel is None else f'AND channel = "{channel}"'
 
         query_params = (start, end, analyte)
 
@@ -380,6 +386,9 @@ class TimeseriesWidget(QWidget):
         ax.set_xlabel("Sample datetime")
         ax.set_ylabel("Mole fraction")
         ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {analyte}")
+        
+        if self.main_window.toggle_grid_cb.isChecked():
+            ax.grid(True, which="both", linestyle="--", alpha=0.5)
         plt.xticks(rotation=45)
         plt.tight_layout(rect=[0, 0, 0.75, 1])
         plt.show(block=False)
