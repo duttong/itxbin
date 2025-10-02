@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
 
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+from matplotlib.widgets import Button
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
@@ -61,6 +61,14 @@ class TimeseriesWidget(QWidget):
         # cache for last loaded data
         self._cached_df = None
         self._last_query_params = None  # (start, end, analyte)
+        
+        # remember dataset visibility across refreshes
+        self._dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
+        self._fig = None
+        self._ax = None
+        self._dataset_legend = None
+        self._site_legend = None
+        self._reload_button = None        
         
         # --- Main layout ---
         controls = QVBoxLayout()
@@ -194,10 +202,7 @@ class TimeseriesWidget(QWidget):
             toolbar.zoom()  # toggles it OFF
 
     def on_legend_pick(self, event):
-        """Handle clicks on dataset legend entries only."""
         legend_line = event.artist
-
-        # Only respond to legend handles we flagged
         if not isinstance(legend_line, mlines.Line2D):
             return
         if not getattr(legend_line, "_is_dataset_legend", False):
@@ -207,11 +212,12 @@ class TimeseriesWidget(QWidget):
         if label not in self.dataset_handles or not self.dataset_handles[label]:
             return
 
-        visible = not self.dataset_handles[label][0].get_visible()
-        for h in self.dataset_handles[label]:     # <-- now indented inside the guard
-            h.set_visible(visible)
+        new_visible = not self._dataset_visibility.get(label, True)
+        self._dataset_visibility[label] = new_visible
+        for h in self.dataset_handles[label]:
+            h.set_visible(new_visible)
 
-        legend_line.set_alpha(1.0 if visible else 0.2)
+        legend_line.set_alpha(1.0 if new_visible else 0.2)
         event.canvas.draw_idle()
 
     def load_flask_data(self):
@@ -256,54 +262,25 @@ class TimeseriesWidget(QWidget):
             
         return df
 
-    def timeseries_plot(self):
-        analyte = self.analyte_combo.currentText()
+    def _draw_dataset_artists(self, ax, datasets, analyte):
+        """(Re)create dataset artists only; legends/axes stay intact."""
+        # remove old dataset artists
+        for label, handles in getattr(self, "dataset_handles", {}).items():
+            for h in handles:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
+        self.dataset_handles = {}
 
-        df = self.load_flask_data()
-        if df is None or df.empty:
-            print("No data to plot")
-            return
-                
-        # --- Build datasets ---
-        datasets = {}
-        
-        # chose to show or hide flagged data in "All samples"
-        if self.hide_flagged.isChecked():
-            # only unflagged data
-            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
-        else:
-            datasets["All samples"] = df.copy()
-
-        # filter flagged rows (this is always done for means)
-        clean = df[df["data_flag"] == "..."]
-
-        datasets["Flask mean"] = (
-            clean.groupby(["site", "sample_id", "sample_datetime"])
-                .agg({"mole_fraction": ["mean", "std"]})
-                .reset_index()
-        )
-        datasets["Flask mean"].columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
-
-        datasets["Pair mean"] = (
-            clean.groupby(["site", "pair_id_num"])
-                .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
-                .reset_index()
-        )
-        datasets["Pair mean"].columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
-
+        sites = self.get_active_sites()
+        site_colors = build_site_colors(self.sites_by_lat)
         styles = {
             "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 3, "alpha": 0.4},
             "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
             "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
         }
 
-        sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
-        site_colors = build_site_colors(self.sites_by_lat)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        self.dataset_handles = {}  # reset
-
-        # --- Plot datasets ---
         for label, dset in datasets.items():
             for site, grp in dset.groupby("site"):
                 if site not in sites:
@@ -318,11 +295,9 @@ class TimeseriesWidget(QWidget):
                         grp["sample_datetime"], grp["mole_fraction"],
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], alpha=style["alpha"],
-                        label=label,
-                        mfc=color, mec='gray',
-                        picker=5  # 5 points tolerance (pixels)
+                        label=label, mfc=color, mec='gray', picker=5
                     )
-                    # attach metadata
+                    # metadata for tooltip/right-click behavior
                     line._meta = {
                         "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
                         "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
@@ -339,64 +314,114 @@ class TimeseriesWidget(QWidget):
                         color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
                         mfc='none', mec=color, label=label
                     )
-
-                    # Flatten container parts into list of artists
                     parts = []
                     for child in container:
                         if isinstance(child, (list, tuple)):
                             parts.extend(child)
                         else:
                             parts.append(child)
-                    # Only keep objects that have set_visible
                     parts = [p for p in parts if hasattr(p, "set_visible")]
-
                     self.dataset_handles.setdefault(label, []).extend(parts)
 
-        for h in self.dataset_handles.get("Flask mean", []):
-            h.set_visible(False)
-        for h in self.dataset_handles.get("Pair mean", []):
-            h.set_visible(False)
-    
-        # --- Dataset legend (toggleable) ---
+        # honor persisted visibility
+        for label, handles in self.dataset_handles.items():
+            visible = self._dataset_visibility.get(label, True)
+            for h in handles:
+                h.set_visible(visible)
+
+        ax.figure.canvas.draw_idle()
+
+    def refresh_artists(self, keep_limits: bool = True):
+        if self._ax is None:
+            return
+
+        ax = self._ax
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+
+        df = self.query_flask_data(force=True)
+        if df.empty:
+            print("No data to reload")
+            return
+
+        datasets = self.build_datasets(df)
+        analyte = self.analyte_combo.currentText()
+        self._draw_dataset_artists(ax, datasets, analyte)
+
+        if keep_limits:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+        ax.figure.canvas.draw_idle()
+
+    def timeseries_plot(self):
+        analyte = self.analyte_combo.currentText()
+
+        df = self.query_flask_data(force=False)
+        if df is None or df.empty:
+            print("No data to plot")
+            return
+
+        datasets = self.build_datasets(df)
+        sites = self.get_active_sites()
+        site_colors = build_site_colors(self.sites_by_lat)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        self._fig, self._ax = fig, ax
+        self.dataset_handles = {}
+
+        # --- Draw datasets (artists only) ---
+        self._draw_dataset_artists(ax, datasets, analyte)
+
+        # Make sure layout is computed
+        plt.tight_layout(rect=[0, 0, 0.75, 1])   # keep your right panel
+        fig.canvas.draw()
+
+        # Compute a "panel left" just to the right of the axes
+        axpos = ax.get_position()  # Bbox in FIGURE coords (x0, y0, w, h)
+        panel_left = axpos.x0 + axpos.width + 0.01           # small gap from axes
+        panel_top  = axpos.y0 + axpos.height
+
+        # --- Dataset legend (toggleable, one-time wiring) ---
         legend_handles = []
-        for label in datasets.keys():
-            dummy = mlines.Line2D(
-                [], [], color="black",
-                marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
-                linestyle="", markersize=6, label=label
-            )
+        for label in ["All samples", "Flask mean", "Pair mean"]:
+            dummy = mlines.Line2D([], [], color="black",
+                                  marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
+                                  linestyle="", markersize=6, label=label)
             dummy._is_dataset_legend = True
+            if not self._dataset_visibility.get(label, True):
+                dummy.set_alpha(0.4)
             legend_handles.append(dummy)
 
         dataset_legend = ax.legend(
             handles=legend_handles,
             title="Datasets",
-            bbox_to_anchor=(1.05, 0),
+            bbox_to_anchor=(panel_left, axpos.y0),
+            bbox_transform=fig.transFigure,
             loc="lower left",
             borderaxespad=0.0
         )
         ax.add_artist(dataset_legend)
+        self._dataset_legend = dataset_legend
 
-        # Make dummy legend handles clickable
         for legline in dataset_legend.legendHandles:
-            label = legline.get_label()
-            if label in ["Flask mean", "Pair mean"]:  # start greyed out
-                legline.set_alpha(0.4)
             legline.set_picker(5)
             legline._is_dataset_legend = True
 
         fig.canvas.mpl_connect("pick_event", self.on_legend_pick)
         fig.canvas.mpl_connect("pick_event", self.on_point_pick)
 
-        # --- Site legend ---
-        site_handles = {}
-        for site in sites:
-            site_handles[site] = ax.plot([], [], color=site_colors[site], marker="o", linestyle="", label=site)[0]
+        # --- Site legend (place in FIGURE coords, aligned to right of axes) ---
+        sites = self.get_active_sites()
+        site_colors = build_site_colors(self.sites_by_lat)
+        site_handles = {s: ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
+                        for s in sites}
 
+        # 3) Create the Sites legend ANCHORED IN FIGURE COORDS (not ax coords)
         site_legend = ax.legend(
             handles=site_handles.values(),
             title="Sites",
-            bbox_to_anchor=(1.05, 1),
+            bbox_to_anchor=(panel_left, panel_top),    # figure coords
+            bbox_transform=fig.transFigure,            # <— key change
             loc="upper left",
             ncol=2,
             columnspacing=1.0,
@@ -404,17 +429,114 @@ class TimeseriesWidget(QWidget):
             borderaxespad=0.0
         )
         ax.add_artist(site_legend)
+        self._site_legend = site_legend
 
+        # 4) Now place the Reload button directly UNDER that legend (also fig coords)
+        fig.canvas.draw()  # ensure legend size is finalized
+        renderer = fig.canvas.get_renderer()
+        leg_bbox_fig = site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+
+        pad_h = 0.01
+        btn_h = 0.035
+        btn_w = leg_bbox_fig.width * 0.90     # 90% of legend width (nice look)
+        btn_x = leg_bbox_fig.x0 + (leg_bbox_fig.width - btn_w) / 2.0
+        btn_y = max(0.02, leg_bbox_fig.y0 - pad_h - btn_h)
+
+        if not hasattr(self, "_reload_button_ax") or self._reload_button_ax.figure != fig:
+            self._reload_button_ax = fig.add_axes([btn_x, btn_y, btn_w, btn_h])
+            from matplotlib.widgets import Button
+            self._reload_button = Button(self._reload_button_ax, "Reload")
+            self._reload_button.on_clicked(lambda evt: self.refresh_artists(keep_limits=True))
+        else:
+            # if figure already has the button, just reposition it
+            self._reload_button_ax.set_position([btn_x, btn_y, btn_w, btn_h])
+            
+        # --- Axes labels, grid, layout ---
         ax.set_xlabel("Sample datetime")
         ax.set_ylabel("Mole fraction")
         ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {analyte}")
-        
+
         if self.main_window.toggle_grid_cb.isChecked():
             ax.grid(True, which="both", linestyle="--", alpha=0.5)
         plt.xticks(rotation=45)
         plt.tight_layout(rect=[0, 0, 0.75, 1])
         plt.show(block=False)
         
+        self._resize_cid = fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
+
+    def _reposition_reload_under_legend(self, event=None):
+        if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_button_ax", None):
+            return
+        fig = self._site_legend.axes.figure
+        renderer = fig.canvas.get_renderer()
+        leg_bbox_fig = self._site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+        pad_h = 0.01
+        btn_h = 0.035
+        btn_w = leg_bbox_fig.width * 0.90
+        btn_x = leg_bbox_fig.x0 + (leg_bbox_fig.width - btn_w) / 2.0
+        btn_y = max(0.02, leg_bbox_fig.y0 - pad_h - btn_h)
+        self._reload_button_ax.set_position([btn_x, btn_y, btn_w, btn_h])
+        fig.canvas.draw_idle()
+
+    # ---------- Data plumbing ----------
+    def get_active_sites(self):
+        return [cb.text() for cb in self.site_checks if cb.isChecked()]
+
+    def query_flask_data(self, force: bool = False) -> pd.DataFrame:
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        analyte = self.analyte_combo.currentText()
+        pnum    = self.analytes.get(analyte)
+        self.set_current_analyte(analyte)
+        channel = self.current_channel
+
+        if pnum is None:
+            return pd.DataFrame()
+
+        ch_str = '' if channel is None else f'AND channel = "{channel}"'
+        query_params = (start, end, analyte)
+
+        if force or query_params != self._last_query_params:
+            sql = f"""
+            SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
+                   data_flag, site, sample_id, pair_id_num
+            FROM hats.ng_data_processing_view
+            WHERE inst_num = {self.instrument.inst_num}
+              AND parameter_num = {pnum}
+              {ch_str}
+              AND YEAR(sample_datetime) BETWEEN {start} AND {end}
+            ORDER BY sample_datetime;
+            """
+            df = pd.DataFrame(self.instrument.doquery(sql))
+            if df.empty:
+                self._cached_df = pd.DataFrame()
+            else:
+                df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+                self._cached_df = df
+            self._last_query_params = query_params
+
+        return self._cached_df.copy() if self._cached_df is not None else pd.DataFrame()
+
+    def build_datasets(self, df: pd.DataFrame) -> dict:
+        datasets = {}
+        if self.hide_flagged.isChecked():
+            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
+        else:
+            datasets["All samples"] = df.copy()
+
+        clean = df[df["data_flag"] == "..."]
+        fm = (clean.groupby(["site", "sample_id", "sample_datetime"])
+                    .agg({"mole_fraction": ["mean", "std"]}).reset_index())
+        fm.columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
+        pm = (clean.groupby(["site", "pair_id_num"])
+                    .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+                    .reset_index())
+        pm.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
+
+        datasets["Flask mean"] = fm
+        datasets["Pair mean"]  = pm
+        return datasets
+                
     def on_point_pick(self, event):
         artist = event.artist
         if not hasattr(artist, "_meta"):
