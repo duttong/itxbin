@@ -443,7 +443,7 @@ class TimeseriesWidget(QWidget):
         )
         QToolTip.showText(QCursor.pos(), text)
 
-        # Right click adds extra action
+        # Right click adds extra action -- loads the run in main window
         if event.mouseevent.button == 3:  # right click
             self.main_window.current_run_time = str(run_time)
             self.main_window.current_pnum = int(self.analytes.get(analyte))
@@ -482,9 +482,14 @@ class TimeseriesWidget(QWidget):
             self.main_window.start_year_cb.setCurrentText(str(start_year))
             self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
             
-            #self.main_window.set_runlist()
+            # --- Set run type to "Flasks" ---
+            self.main_window.runTypeCombo.blockSignals(True)
+            self.main_window.runTypeCombo.setCurrentText("Flasks")
+            self.main_window.runTypeCombo.blockSignals(False)
     
             # --- Continue with loading the run ---
-            self.main_window.load_selected_run()
+            self.main_window.set_runlist(initial_date=run_time)
             self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
             self.main_window.current_run_time = str(run_time) 
+            # no need for the apply button highlight
+            self.main_window.apply_date_btn.setStyleSheet("")
