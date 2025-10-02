@@ -495,8 +495,7 @@ class MainWindow(QMainWindow):
 
         # Kick off by selecting the first analyte by default
         # (This will load data and populate run_times)
-        self.set_runlist()
-        self.on_plot_type_changed(0)
+        #self.on_plot_type_changed(0)
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
             self.set_current_analyte('HFC134a')
@@ -1133,8 +1132,10 @@ class MainWindow(QMainWindow):
 
         # file in scale_assignment values for calibration tanks in self.run
         self.populate_cal_mf()
+        print(self.run)
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
+        print(new_fit)
         self._save_payload = new_fit
 
         # ── Create/append as needed ───────────────────────────────────────────────────
@@ -1158,6 +1159,7 @@ class MainWindow(QMainWindow):
             calcurve_exists = False
         else:
             current_cal_flag = curves.loc[curves['run_time'] == sel_rt, 'flag'].iat[0]
+            
         self._save_payload['flag'] = current_cal_flag
 
         # pd dataframe of ref tank mole fraction estimates for this run
@@ -1736,14 +1738,11 @@ class MainWindow(QMainWindow):
             for r in runlist
         ]
         
-        self.current_run_time = self.current_run_times[-1]
-        
         # Fill the run_cb combo with these run_time strings
         self.run_cb.blockSignals(True)
         self.run_cb.clear()
         for s in self.current_run_times:
             self.run_cb.addItem(s)
-        #self.run_cb.blockSignals(False)
 
         # Preserve the current_run_time if it exists in the new analyte's run_times
         if self.current_run_time in self.current_run_times:
@@ -1754,6 +1753,11 @@ class MainWindow(QMainWindow):
             last_idx = len(self.current_run_times) - 1
             self.run_cb.setCurrentIndex(last_idx)
         self.run_cb.blockSignals(False)
+
+        self.current_run_time = self.current_run_times[-1]
+        
+        self.load_selected_run()
+        self.gc_plot('resp')
             
     def populate_analyte_controls(self):
         """
@@ -1857,8 +1861,8 @@ class MainWindow(QMainWindow):
 
         if self.current_run_time is None:
             self.set_runlist()
-
-        self.load_selected_run()       
+        else:
+            self.load_selected_run()       
         self.on_plot_type_changed(self.current_plot_type)
 
     def current_run_type_filter(self):
