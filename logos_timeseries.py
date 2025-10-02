@@ -106,7 +106,7 @@ class TimeseriesWidget(QWidget):
         cols = 3
         for i, site in enumerate(self.sites_by_lat):
             cb = QCheckBox(site)
-            cb.setChecked(site in initial_sites)   # ✅ only check if in subset
+            cb.setChecked(site in initial_sites)   # only check if in subset
             self.site_checks.append(cb)
             row, col = divmod(i, cols)
             grid.addWidget(cb, row, col)
@@ -134,7 +134,7 @@ class TimeseriesWidget(QWidget):
 
         # Plot button
         self.plot_button = QPushButton("Plot it")
-        self.plot_button.clicked.connect(self.make_plot)
+        self.plot_button.clicked.connect(self.timeseries_plot)
         controls.addWidget(self.plot_button)
 
         controls.addStretch()
@@ -213,8 +213,8 @@ class TimeseriesWidget(QWidget):
 
         legend_line.set_alpha(1.0 if visible else 0.2)
         event.canvas.draw_idle()
-                 
-    def make_plot(self):
+
+    def load_flask_data(self):
         start = self.start_year.value()
         end = self.end_year.value()
         analyte = self.analyte_combo.currentText()
@@ -222,10 +222,9 @@ class TimeseriesWidget(QWidget):
         self.set_current_analyte(analyte)
         channel = self.current_channel
         sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
-        site_colors = build_site_colors(self.sites_by_lat)
 
         if not sites or pnum is None:
-            return
+            return pd.DataFrame()
 
         # channel filter string for sql query
         ch_str = '' if channel is None else f'AND channel = "{channel}"'
@@ -254,11 +253,17 @@ class TimeseriesWidget(QWidget):
             self._last_query_params = query_params
         else:
             df = self._cached_df
+            
+        return df
 
+    def timeseries_plot(self):
+        analyte = self.analyte_combo.currentText()
+
+        df = self.load_flask_data()
         if df is None or df.empty:
-            print("No cached data")
+            print("No data to plot")
             return
-
+                
         # --- Build datasets ---
         datasets = {}
         
@@ -292,6 +297,9 @@ class TimeseriesWidget(QWidget):
             "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
         }
 
+        sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
+        site_colors = build_site_colors(self.sites_by_lat)
+
         fig, ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}  # reset
 
@@ -321,7 +329,7 @@ class TimeseriesWidget(QWidget):
                         "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
                         "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
                         "analyte": analyte,
-                        "channel": channel,
+                        "channel": self.current_channel,
                     }
                     self.dataset_handles.setdefault(label, []).append(line)
                 else:
