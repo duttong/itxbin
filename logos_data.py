@@ -1702,7 +1702,7 @@ class MainWindow(QMainWindow):
         end_sql = f"{ey}-{em:02d}-31"
         return start_sql, end_sql
     
-    def set_runlist(self):
+    def set_runlist(self, initial_date=None):
         t0, t1 = self.get_load_range()
 
         # If runTypeCombo is set, filter the data by run_type_num
@@ -1750,9 +1750,16 @@ class MainWindow(QMainWindow):
             # Default to the last run_time if the current_run_time is not found
             last_idx = len(self.current_run_times) - 1
             self.run_cb.setCurrentIndex(last_idx)
-        self.run_cb.blockSignals(False)
 
-        self.current_run_time = self.current_run_times[-1]
+        if str(initial_date) in self.current_run_times:
+            idx = self.current_run_times.index(str(initial_date))
+            self.run_cb.setCurrentIndex(idx)
+            self.current_run_time = self.current_run_times[idx] 
+        else:
+            # Default to the last run_time if no initial_date provided
+            self.current_run_time = self.current_run_times[-1]
+
+        self.run_cb.blockSignals(False)
         
         self.load_selected_run()
         self.gc_plot('resp')
