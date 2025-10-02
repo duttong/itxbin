@@ -1132,10 +1132,8 @@ class MainWindow(QMainWindow):
 
         # file in scale_assignment values for calibration tanks in self.run
         self.populate_cal_mf()
-        print(self.run)
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
-        print(new_fit)
         self._save_payload = new_fit
 
         # ── Create/append as needed ───────────────────────────────────────────────────
