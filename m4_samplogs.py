@@ -363,8 +363,7 @@ class M4_SampleLogs(M4_Instrument):
             port_info    = VALUES(port_info),
             pair_id_num  = VALUES(pair_id_num),
             flask_id     = VALUES(flask_id),
-            ccgg_event_num = VALUES(ccgg_event_num),
-            num          = LAST_INSERT_ID(num)
+            ccgg_event_num = VALUES(ccgg_event_num)
         """
 
         df = df.fillna('')
