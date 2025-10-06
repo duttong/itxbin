@@ -373,7 +373,7 @@ class TimeseriesWidget(QWidget):
         self._draw_dataset_artists(ax, datasets, analyte)
 
         # Make sure layout is computed
-        plt.tight_layout(rect=[0, 0, 0.75, 1])   # keep your right panel
+        plt.tight_layout(rect=[0, 0, 0.85, 1])   # keep your right panel
         fig.canvas.draw()
 
         # Compute a "panel left" just to the right of the axes
@@ -433,6 +433,7 @@ class TimeseriesWidget(QWidget):
 
         # 4) Now place the Reload button directly UNDER that legend (also fig coords)
         fig.canvas.draw()  # ensure legend size is finalized
+        
         renderer = fig.canvas.get_renderer()
         leg_bbox_fig = site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
 
@@ -444,7 +445,6 @@ class TimeseriesWidget(QWidget):
 
         if not hasattr(self, "_reload_button_ax") or self._reload_button_ax.figure != fig:
             self._reload_button_ax = fig.add_axes([btn_x, btn_y, btn_w, btn_h])
-            from matplotlib.widgets import Button
             self._reload_button = Button(self._reload_button_ax, "Reload")
             self._reload_button.on_clicked(lambda evt: self.refresh_artists(keep_limits=True))
         else:
@@ -459,7 +459,7 @@ class TimeseriesWidget(QWidget):
         if self.main_window.toggle_grid_cb.isChecked():
             ax.grid(True, which="both", linestyle="--", alpha=0.5)
         plt.xticks(rotation=45)
-        plt.tight_layout(rect=[0, 0, 0.75, 1])
+        plt.tight_layout(rect=[0, 0, .85, 1])
         plt.show(block=False)
         
         self._resize_cid = fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
