@@ -578,6 +578,9 @@ class TimeseriesWidget(QWidget):
                 if idx >= 0:
                     self.main_window.analyte_combo.setCurrentIndex(idx)
 
+            if hasattr(self.main_window, "tabs"):
+                self.main_window.tabs.setCurrentIndex(0)  # switch to first tab ("Processing")
+
             # --- Update date range UI ---
             # Ensure run_time is a datetime (not string)
             if not isinstance(run_time, pd.Timestamp):

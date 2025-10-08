@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
         self._pending_xlim = None
         self._pending_ylim = None
         self.madechanges = False
+        self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
 
@@ -478,6 +479,7 @@ class MainWindow(QMainWindow):
 
         self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
         tabs.addTab(self.timeseries_tab, "Timeseries")
+        self.tabs = tabs
     
         # Right pane: matplotlib figure for plotting
         right_placeholder = QGroupBox("Plot Area")
@@ -629,8 +631,8 @@ class MainWindow(QMainWindow):
             # potentially compute missing mole_fraction values for fe3
             if self.instrument.inst_id == 'fe3':
                 current_curve_date = self.run['cal_date'].iat[0]
-                # if mole_fraction is missing, compute it for fe3
-                mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna()
+                # if mole_fraction is missing, compute it for fe3, except for port 9 (Push Port)
+                mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna() & self.run['port'].ne(9)
                 if mf_mask.any():
                     self.run.loc[mf_mask, 'mole_fraction'] = self.instrument.calc_mole_fraction(self.run.loc[mf_mask])
                     sub_info = f"Mole Fraction computed"
