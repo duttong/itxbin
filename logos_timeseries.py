@@ -39,11 +39,231 @@ def adjust_brightness(color, factor=1.0):
     r, g, b = colorsys.hls_to_rgb(h, l, s)
     return (r, g, b, a)
 
+
+class TimeseriesFigure:
+    """Manages a single interactive matplotlib figure for timeseries data."""
+
+    def __init__(self, parent_widget, df, analyte):
+        self.parent = parent_widget
+        self.df = df
+        self.analyte = analyte
+        self.channel = parent_widget.current_channel
+
+        # Per-figure state (fully independent)
+        self._fig, self._ax = plt.subplots(figsize=(12, 6))
+        self.dataset_handles = {}
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
+
+        self._build_plot()
+        self._fig.canvas.mpl_connect("close_event", self._on_close)
+
+    # ────────────────────────────────────────────────────────────
+    def _on_close(self, evt):
+        # drop strong ref from parent so it can GC cleanly
+        try:
+            self.parent.open_figures.remove(self)
+        except ValueError:
+            pass
+
+    # ────────────────────────────────────────────────────────────
+    def _build_plot(self):
+        datasets = self.parent.build_datasets(self.df)
+        sites_by_lat = self.parent.sites_by_lat
+
+        # Draw the datasets (reuses parent logic)
+        self.dataset_handles = self.parent._draw_dataset_artists(self._ax, datasets, self.analyte)
+
+        # --- Apply initial visibility defaults ---
+        for label, visible in self.dataset_visibility.items():
+            if label in self.dataset_handles:
+                for h in self.dataset_handles[label]:
+                    h.set_visible(visible)
+
+        # Layout adjustments
+        #plt.tight_layout(rect=[0, 0, 0.85, 1])
+        self._fig.tight_layout(rect=[0, 0, 0.85, 1])
+        self._fig.subplots_adjust(top=0.90, bottom=0.12, left=0.05, right=0.85)
+        self._fig.canvas.draw()
+
+        # Positioning helpers
+        axpos = self._ax.get_position()
+        panel_left = axpos.x0 + axpos.width + 0.01
+        panel_top = axpos.y0 + axpos.height
+
+        # ─── Dataset Legend ───
+        legend_handles = []
+        for label in ["All samples", "Flask mean", "Pair mean"]:
+            dummy = mlines.Line2D([], [], color="black",
+                                  marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
+                                  linestyle="", markersize=6, label=label)
+            dummy._is_dataset_legend = True
+            if not self.dataset_visibility.get(label, True):
+                dummy.set_alpha(0.4)
+            legend_handles.append(dummy)
+
+        dataset_legend = self._ax.legend(
+            handles=legend_handles,
+            title="Datasets",
+            bbox_to_anchor=(panel_left, axpos.y0),
+            bbox_transform=self._fig.transFigure,
+            loc="lower left",
+            borderaxespad=0.0
+        )
+        self._ax.add_artist(dataset_legend)
+        self._dataset_legend = dataset_legend
+
+        for legline in dataset_legend.legendHandles:
+            legline.set_picker(5)
+            legline._is_dataset_legend = True
+
+        # ─── Site Legend ───
+        site_colors = build_site_colors(sites_by_lat)
+        sites = self.parent.get_active_sites()
+        site_handles = {s: self._ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
+                        for s in sites}
+        site_legend = self._ax.legend(
+            handles=site_handles.values(),
+            title="Sites",
+            bbox_to_anchor=(panel_left, panel_top),
+            bbox_transform=self._fig.transFigure,
+            loc="upper left",
+            ncol=2,
+            columnspacing=1.0,
+            handletextpad=0.2,
+            borderaxespad=0.0
+        )
+        self._ax.add_artist(site_legend)
+        self._site_legend = site_legend
+
+        # ─── Reload Button ───
+        self._add_reload_button_below(site_legend)
+
+        # Axes labels
+        self._ax.set_xlabel("Sample datetime")
+        self._ax.set_ylabel("Mole fraction")
+        self._ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {self.analyte}")
+
+        if self.parent.main_window.toggle_grid_cb.isChecked():
+            self._ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        plt.xticks(rotation=45)
+        plt.show(block=False)
+
+        # Event connections
+        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
+        self._fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
+
+    # ────────────────────────────────────────────────────────────
+    def _add_reload_button_below(self, legend):
+        self._fig.canvas.draw()
+        renderer = self._fig.canvas.get_renderer()
+        leg_bbox = legend.get_window_extent(renderer=renderer).transformed(self._fig.transFigure.inverted())
+
+        pad_h = 0.01
+        btn_h = 0.035
+        btn_w = leg_bbox.width * 0.9
+        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
+        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
+
+        self._reload_ax = self._fig.add_axes([btn_x, btn_y, btn_w, btn_h])
+        self._reload_btn = Button(self._reload_ax, "Reload")
+        self._reload_btn.on_clicked(lambda evt: self._on_reload_clicked())
+
+    # ────────────────────────────────────────────────────────────
+    def _on_reload_clicked(self):
+        """Reload data from parent instrument and preserve per-dataset visibility."""
+        # Flash the button yellow while reloading
+        self._reload_btn.label.set_text("Reloading...")
+        self._reload_ax.set_facecolor("#fff8cc")  # soft yellow
+        self._fig.canvas.draw_idle()
+
+        plt.pause(0.05)  # brief visual feedback (keeps GUI responsive)
+
+        # Query using the analyte/channel that this figure was created with
+        df = self.parent.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
+        if df.empty:
+            print("No data to reload")
+            self._reload_btn.label.set_text("Reload")
+            self._reload_ax.set_facecolor("lightgray")
+            self._fig.canvas.draw_idle()
+            return
+
+        # Remove old dataset artists before redrawing
+        for handles in self.dataset_handles.values():
+            for h in handles:
+                try:
+                    h.remove()
+                except Exception:
+                    pass
+        self.dataset_handles.clear()
+
+        # Redraw datasets
+        datasets = self.parent.build_datasets(df)
+        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
+        self.dataset_handles = self.parent._draw_dataset_artists(self._ax, datasets, self.analyte)
+
+        # Re-apply per-dataset visibility preferences
+        for label, visible in self.dataset_visibility.items():
+            if label in self.dataset_handles:
+                for h in self.dataset_handles[label]:
+                    h.set_visible(visible)
+
+        # Restore limits
+        self._ax.set_xlim(xlim)
+        self._ax.set_ylim(ylim)
+
+        # Restore button to normal
+        self._reload_btn.label.set_text("Reload")
+        self._reload_ax.set_facecolor("lightgray")
+        self._fig.canvas.draw_idle()
+
+    def _reposition_reload_under_legend(self, event=None):
+        if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_ax", None):
+            return
+        fig = self._site_legend.axes.figure
+        renderer = fig.canvas.get_renderer()
+        leg_bbox = self._site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
+        pad_h = 0.01
+        btn_h = 0.035
+        btn_w = leg_bbox.width * 0.9
+        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
+        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
+        self._reload_ax.set_position([btn_x, btn_y, btn_w, btn_h])
+        fig.canvas.draw_idle()
+
+    # ────────────────────────────────────────────────────────────
+    def _on_pick_event(self, event):
+        """Handle both dataset legend toggles and point tooltips."""
+        artist = event.artist
+
+        # Dataset legend click
+        if isinstance(artist, mlines.Line2D) and getattr(artist, "_is_dataset_legend", False):
+            label = artist.get_label()
+            if label not in self.dataset_visibility:
+                return
+
+            # Toggle visibility state
+            new_visible = not self.dataset_visibility[label]
+            self.dataset_visibility[label] = new_visible
+
+            # Update corresponding dataset artists
+            if label in self.dataset_handles:
+                for h in self.dataset_handles[label]:
+                    h.set_visible(new_visible)
+
+            # Update legend alpha feedback
+            artist.set_alpha(1.0 if new_visible else 0.3)
+            event.canvas.draw_idle()
+            return
+
+        # Otherwise, delegate to parent for tooltip/right-click actions
+        self.parent.on_point_pick(event)
+
 class TimeseriesWidget(QWidget):
     def __init__(self, instrument=None, parent=None):
         super().__init__(parent)
         self.instrument = instrument
         self.main_window = self.parent()
+        self.open_figures = []
 
         self.analytes = self.instrument.analytes or {}
         self.current_analyte = None
@@ -52,7 +272,6 @@ class TimeseriesWidget(QWidget):
         if self.instrument.inst_num == 193:     # FE3
             self.current_analyte = 'CFC11 (c)'
             self.current_channel = 'c'
-        self.dataset_handles = {}
         
         self.sites = sorted(LOGOS_sites) if LOGOS_sites else []
         self.sites_df = self.get_site_info() if self.instrument else pd.DataFrame()
@@ -63,12 +282,7 @@ class TimeseriesWidget(QWidget):
         self._last_query_params = None  # (start, end, analyte)
         
         # remember dataset visibility across refreshes
-        self._dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
-        self._fig = None
-        self._ax = None
-        self._dataset_legend = None
-        self._site_legend = None
-        self._reload_button = None        
+        self._dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}   
         
         # --- Main layout ---
         controls = QVBoxLayout()
@@ -263,15 +477,8 @@ class TimeseriesWidget(QWidget):
         return df
 
     def _draw_dataset_artists(self, ax, datasets, analyte):
-        """(Re)create dataset artists only; legends/axes stay intact."""
-        # remove old dataset artists
-        for label, handles in getattr(self, "dataset_handles", {}).items():
-            for h in handles:
-                try:
-                    h.remove()
-                except Exception:
-                    pass
-        self.dataset_handles = {}
+        """Draw datasets on a specific Axes, return dataset_handles dict."""
+        dataset_handles = {}
 
         sites = self.get_active_sites()
         site_colors = build_site_colors(self.sites_by_lat)
@@ -297,7 +504,6 @@ class TimeseriesWidget(QWidget):
                         color=color, markersize=style["size"], alpha=style["alpha"],
                         label=label, mfc=color, mec='gray', picker=5
                     )
-                    # metadata for tooltip/right-click behavior
                     line._meta = {
                         "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
                         "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
@@ -306,7 +512,7 @@ class TimeseriesWidget(QWidget):
                         "analyte": analyte,
                         "channel": self.current_channel,
                     }
-                    self.dataset_handles.setdefault(label, []).append(line)
+                    dataset_handles.setdefault(label, []).append(line)
                 else:
                     container = ax.errorbar(
                         grp["sample_datetime"], grp["mean"], yerr=grp["std"],
@@ -321,15 +527,10 @@ class TimeseriesWidget(QWidget):
                         else:
                             parts.append(child)
                     parts = [p for p in parts if hasattr(p, "set_visible")]
-                    self.dataset_handles.setdefault(label, []).extend(parts)
-
-        # honor persisted visibility
-        for label, handles in self.dataset_handles.items():
-            visible = self._dataset_visibility.get(label, True)
-            for h in handles:
-                h.set_visible(visible)
+                    dataset_handles.setdefault(label, []).extend(parts)
 
         ax.figure.canvas.draw_idle()
+        return dataset_handles
 
     def refresh_artists(self, keep_limits: bool = True):
         if self._ax is None:
@@ -354,115 +555,13 @@ class TimeseriesWidget(QWidget):
         ax.figure.canvas.draw_idle()
 
     def timeseries_plot(self):
-        analyte = self.analyte_combo.currentText()
-
         df = self.query_flask_data(force=False)
-        if df is None or df.empty:
+        if df.empty:
             print("No data to plot")
             return
-
-        datasets = self.build_datasets(df)
-        sites = self.get_active_sites()
-        site_colors = build_site_colors(self.sites_by_lat)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        self._fig, self._ax = fig, ax
-        self.dataset_handles = {}
-
-        # --- Draw datasets (artists only) ---
-        self._draw_dataset_artists(ax, datasets, analyte)
-
-        # Make sure layout is computed
-        plt.tight_layout(rect=[0, 0, 0.85, 1])   # keep your right panel
-        fig.canvas.draw()
-
-        # Compute a "panel left" just to the right of the axes
-        axpos = ax.get_position()  # Bbox in FIGURE coords (x0, y0, w, h)
-        panel_left = axpos.x0 + axpos.width + 0.01           # small gap from axes
-        panel_top  = axpos.y0 + axpos.height
-
-        # --- Dataset legend (toggleable, one-time wiring) ---
-        legend_handles = []
-        for label in ["All samples", "Flask mean", "Pair mean"]:
-            dummy = mlines.Line2D([], [], color="black",
-                                  marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
-                                  linestyle="", markersize=6, label=label)
-            dummy._is_dataset_legend = True
-            if not self._dataset_visibility.get(label, True):
-                dummy.set_alpha(0.4)
-            legend_handles.append(dummy)
-
-        dataset_legend = ax.legend(
-            handles=legend_handles,
-            title="Datasets",
-            bbox_to_anchor=(panel_left, axpos.y0),
-            bbox_transform=fig.transFigure,
-            loc="lower left",
-            borderaxespad=0.0
-        )
-        ax.add_artist(dataset_legend)
-        self._dataset_legend = dataset_legend
-
-        for legline in dataset_legend.legendHandles:
-            legline.set_picker(5)
-            legline._is_dataset_legend = True
-
-        fig.canvas.mpl_connect("pick_event", self.on_legend_pick)
-        fig.canvas.mpl_connect("pick_event", self.on_point_pick)
-
-        # --- Site legend (place in FIGURE coords, aligned to right of axes) ---
-        sites = self.get_active_sites()
-        site_colors = build_site_colors(self.sites_by_lat)
-        site_handles = {s: ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
-                        for s in sites}
-
-        # 3) Create the Sites legend ANCHORED IN FIGURE COORDS (not ax coords)
-        site_legend = ax.legend(
-            handles=site_handles.values(),
-            title="Sites",
-            bbox_to_anchor=(panel_left, panel_top),    # figure coords
-            bbox_transform=fig.transFigure,            # <— key change
-            loc="upper left",
-            ncol=2,
-            columnspacing=1.0,
-            handletextpad=0.2,
-            borderaxespad=0.0
-        )
-        ax.add_artist(site_legend)
-        self._site_legend = site_legend
-
-        # 4) Now place the Reload button directly UNDER that legend (also fig coords)
-        fig.canvas.draw()  # ensure legend size is finalized
-        
-        renderer = fig.canvas.get_renderer()
-        leg_bbox_fig = site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
-
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox_fig.width * 0.90     # 90% of legend width (nice look)
-        btn_x = leg_bbox_fig.x0 + (leg_bbox_fig.width - btn_w) / 2.0
-        btn_y = max(0.02, leg_bbox_fig.y0 - pad_h - btn_h)
-
-        if not hasattr(self, "_reload_button_ax") or self._reload_button_ax.figure != fig:
-            self._reload_button_ax = fig.add_axes([btn_x, btn_y, btn_w, btn_h])
-            self._reload_button = Button(self._reload_button_ax, "Reload")
-            self._reload_button.on_clicked(lambda evt: self.refresh_artists(keep_limits=True))
-        else:
-            # if figure already has the button, just reposition it
-            self._reload_button_ax.set_position([btn_x, btn_y, btn_w, btn_h])
-            
-        # --- Axes labels, grid, layout ---
-        ax.set_xlabel("Sample datetime")
-        ax.set_ylabel("Mole fraction")
-        ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {analyte}")
-
-        if self.main_window.toggle_grid_cb.isChecked():
-            ax.grid(True, which="both", linestyle="--", alpha=0.5)
-        plt.xticks(rotation=45)
-        plt.tight_layout(rect=[0, 0, .85, 1])
-        plt.show(block=False)
-        
-        self._resize_cid = fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
+        analyte = self.analyte_combo.currentText()
+        fig = TimeseriesFigure(self, df, analyte)
+        self.open_figures.append(fig)
 
     def _reposition_reload_under_legend(self, event=None):
         if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_button_ax", None):
@@ -482,13 +581,14 @@ class TimeseriesWidget(QWidget):
     def get_active_sites(self):
         return [cb.text() for cb in self.site_checks if cb.isChecked()]
 
-    def query_flask_data(self, force: bool = False) -> pd.DataFrame:
+    def query_flask_data(self, force: bool = False, analyte: str | None = None, channel: str | None = None) -> pd.DataFrame:
         start = self.start_year.value()
         end   = self.end_year.value()
-        analyte = self.analyte_combo.currentText()
+
+        analyte = analyte or self.analyte_combo.currentText()
         pnum    = self.analytes.get(analyte)
         self.set_current_analyte(analyte)
-        channel = self.current_channel
+        channel = channel or self.current_channel
 
         if pnum is None:
             return pd.DataFrame()
