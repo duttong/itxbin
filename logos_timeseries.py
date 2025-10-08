@@ -397,85 +397,6 @@ class TimeseriesWidget(QWidget):
         for cb in self.site_checks:
             cb.setChecked(False)
 
-    def _is_visible(self, handle):
-        return handle.get_visible()
-
-    def _disable_pan_zoom(self, toolbar):
-        """Turn off pan/zoom if active (Qt toolbar safe)."""
-        # Qt backends store QAction objects in _actions
-        actions = getattr(toolbar, "_actions", {})
-
-        # Disable pan if it's checked
-        pan_action = actions.get("pan")
-        if pan_action is not None and pan_action.isChecked():
-            toolbar.pan()  # toggles it OFF
-
-        # Disable zoom if it's checked
-        zoom_action = actions.get("zoom")
-        if zoom_action is not None and zoom_action.isChecked():
-            toolbar.zoom()  # toggles it OFF
-
-    def on_legend_pick(self, event):
-        legend_line = event.artist
-        if not isinstance(legend_line, mlines.Line2D):
-            return
-        if not getattr(legend_line, "_is_dataset_legend", False):
-            return
-
-        label = legend_line.get_label()
-        if label not in self.dataset_handles or not self.dataset_handles[label]:
-            return
-
-        new_visible = not self._dataset_visibility.get(label, True)
-        self._dataset_visibility[label] = new_visible
-        for h in self.dataset_handles[label]:
-            h.set_visible(new_visible)
-
-        legend_line.set_alpha(1.0 if new_visible else 0.2)
-        event.canvas.draw_idle()
-
-    def load_flask_data(self):
-        start = self.start_year.value()
-        end = self.end_year.value()
-        analyte = self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
-        self.set_current_analyte(analyte)
-        channel = self.current_channel
-        sites = [cb.text() for cb in self.site_checks if cb.isChecked()]
-
-        if not sites or pnum is None:
-            return pd.DataFrame()
-
-        # channel filter string for sql query
-        ch_str = '' if channel is None else f'AND channel = "{channel}"'
-
-        query_params = (start, end, analyte)
-
-        # reload only if analyte/year range changed
-        if query_params != self._last_query_params:
-            sql = f"""
-            SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel, 
-                data_flag, site, sample_id, pair_id_num
-            FROM hats.ng_data_processing_view
-            WHERE inst_num = {self.instrument.inst_num}
-            AND parameter_num = {pnum}
-            {ch_str}
-            AND YEAR(sample_datetime) BETWEEN {start} AND {end}
-            ORDER BY sample_datetime;
-            """
-            df = pd.DataFrame(self.instrument.doquery(sql))
-            if df.empty:
-                print("No data returned")
-                return
-            df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
-
-            self._cached_df = df
-            self._last_query_params = query_params
-        else:
-            df = self._cached_df
-            
-        return df
-
     def _draw_dataset_artists(self, ax, datasets, analyte):
         """Draw datasets on a specific Axes, return dataset_handles dict."""
         dataset_handles = {}
@@ -532,28 +453,6 @@ class TimeseriesWidget(QWidget):
         ax.figure.canvas.draw_idle()
         return dataset_handles
 
-    def refresh_artists(self, keep_limits: bool = True):
-        if self._ax is None:
-            return
-
-        ax = self._ax
-        xlim = ax.get_xlim()
-        ylim = ax.get_ylim()
-
-        df = self.query_flask_data(force=True)
-        if df.empty:
-            print("No data to reload")
-            return
-
-        datasets = self.build_datasets(df)
-        analyte = self.analyte_combo.currentText()
-        self._draw_dataset_artists(ax, datasets, analyte)
-
-        if keep_limits:
-            ax.set_xlim(xlim)
-            ax.set_ylim(ylim)
-        ax.figure.canvas.draw_idle()
-
     def timeseries_plot(self):
         df = self.query_flask_data(force=False)
         if df.empty:
@@ -562,20 +461,6 @@ class TimeseriesWidget(QWidget):
         analyte = self.analyte_combo.currentText()
         fig = TimeseriesFigure(self, df, analyte)
         self.open_figures.append(fig)
-
-    def _reposition_reload_under_legend(self, event=None):
-        if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_button_ax", None):
-            return
-        fig = self._site_legend.axes.figure
-        renderer = fig.canvas.get_renderer()
-        leg_bbox_fig = self._site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox_fig.width * 0.90
-        btn_x = leg_bbox_fig.x0 + (leg_bbox_fig.width - btn_w) / 2.0
-        btn_y = max(0.02, leg_bbox_fig.y0 - pad_h - btn_h)
-        self._reload_button_ax.set_position([btn_x, btn_y, btn_w, btn_h])
-        fig.canvas.draw_idle()
 
     # ---------- Data plumbing ----------
     def get_active_sites(self):
