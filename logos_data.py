@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
-    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox
+    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame
 )
 from PyQt5.QtCore import Qt, QTimer
 
@@ -219,6 +219,7 @@ class MainWindow(QMainWindow):
         self.calcurve_combo = QComboBox()
         self.calcurves = []
         self.selected_calc_curve = None  # currently selected calibration curve date
+        self.smoothing_cb = QComboBox()
 
         self.tagging_enabled = False
         self._rect_selector = None
@@ -449,6 +450,31 @@ class MainWindow(QMainWindow):
         options_layout.setSpacing(6)
         options_gb.setLayout(options_layout)
 
+        # --- Response smoothing combobox ---
+        self.smoothing_label = QLabel("Response smoothing:")
+        self.smoothing_cb = QComboBox()
+        self.smoothing_cb.addItems([
+            "Point to Point",          # maps to 1
+            "Lowess %10",              # maps to 4
+            "Lowess %20",              # maps to 5
+            "Lowess %30 (default)",    # maps to 2
+            "Lowess %40",              # maps to 7
+            "Lowess %50",              # maps to 8
+        ])
+        self.smoothing_cb.setCurrentIndex(3)  # show "Lowess %30 (default)"
+
+        options_layout.addWidget(self.smoothing_label)
+        options_layout.addWidget(self.smoothing_cb)
+        self.smoothing_cb.currentIndexChanged.connect(self.on_smoothing_changed)
+
+        # --- Horizontal separator ---
+        options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space above
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Sunken)
+        options_layout.addWidget(line)
+        options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space below
+
         self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")
         self.lock_y_axis_cb.setChecked(False)
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
@@ -569,6 +595,17 @@ class MainWindow(QMainWindow):
         # If you're on the Calibration view, you can re-render immediately:
         if self.plot_radio_group.checkedId() == 3:
             self.on_plot_type_changed(3)
+            
+    def on_smoothing_changed(self, idx: int):
+        #print(f"Smoothing changed to index: {idx} get_selected_detrend_method = {self.get_selected_detrend_method()}", )
+        self.run['detrend_method_num'] = self.get_selected_detrend_method()
+        self.run = self.instrument.norm.merge_smoothed_data(self.run)
+        self.run = self.instrument.calc_mole_fraction(self.run)
+        self.madechanges = True
+        self._style_gc_buttons()
+        
+        # Redraw
+        self.gc_plot(self._current_yparam, sub_info="Smoothing changed")
         
     def on_plot_type_changed(self, id: int):
         self.current_plot_type = id
@@ -606,7 +643,6 @@ class MainWindow(QMainWindow):
 
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
-        #self.run = self.data.loc[self.data['run_time'] == sel]
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
@@ -1102,7 +1138,6 @@ class MainWindow(QMainWindow):
         # filter for run_time selected in run_cb
         ts_str = self.current_run_time.split(" (")[0]
         sel = pd.to_datetime(ts_str, utc=True)
-        #self.run = self.data.loc[self.data['run_time'] == sel].copy()
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
@@ -1662,6 +1697,7 @@ class MainWindow(QMainWindow):
                     end_date=self.current_run_time,
                     verbose=False
             )
+            self.update_smoothing_combobox()
 
             self.madechanges = False
             self.gc_plot(self._current_yparam, sub_info='SAVED ALL FLAGS')
@@ -1855,8 +1891,47 @@ class MainWindow(QMainWindow):
             start_date=self.current_run_time,
             end_date=self.current_run_time
         )
-        
+
+        self.update_smoothing_combobox()
+
         self.madechanges = False
+
+    def update_smoothing_combobox(self):
+        """
+        Set the smoothing combobox index based on self.run['detrend_method_num'].
+        If not found or invalid, defaults to 'Lowess %30 (default)'.
+        """
+        index_to_detrend_method = {
+            0: 1,  # Point to Point
+            1: 4,  # Lowess 0.1
+            2: 5,  # Lowess 0.2
+            3: 2,  # Lowess 0.3 (default)
+            4: 7,  # Lowess 0.4
+            5: 8,  # Lowess 0.5
+        }
+        detrend_to_index = {v: k for k, v in index_to_detrend_method.items()}
+
+        try:
+            dm = int(self.run["detrend_method_num"].iat[0])
+            idx = detrend_to_index.get(dm, 3)
+            self.smoothing_cb.setCurrentIndex(idx)
+        except Exception as e:
+            print(f"Warning: could not set smoothing combobox ({e})")
+            self.smoothing_cb.setCurrentIndex(3)
+
+    def get_selected_detrend_method(self):
+        """
+        Return the detrend_method_num corresponding to the current combobox selection.
+        """
+        index_to_detrend_method = {
+            0: 1,  # Point to Point
+            1: 4,  # Lowess 0.1
+            2: 5,  # Lowess 0.2
+            3: 2,  # Lowess 0.3 (default)
+            4: 7,  # Lowess 0.4
+            5: 8,  # Lowess 0.5
+        }
+        return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)
 
     def set_current_analyte(self, name):
         """

@@ -5,7 +5,7 @@ import re
 from functools import cached_property
 from pathlib import Path
 from datetime import datetime, timedelta
-import calendar
+import time
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
@@ -204,16 +204,18 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 analysis_num,
                 parameter_num,
                 ng_response_id,
+                detrend_method_num,
                 channel,
                 mole_fraction,
                 flag
             ) VALUES (
-                %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 ng_response_id = VALUES(ng_response_id),
                 mole_fraction = VALUES(mole_fraction),
-                flag = VALUES(flag)                
+                flag = VALUES(flag),
+                detrend_method_num = VALUES(detrend_method_num);         
         """
 
         # Coerce everything to float, invalid parses → NaN, then round
@@ -235,6 +237,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 row.analysis_num,
                 row.parameter_num,
                 id,
+                row.detrend_method_num,
                 row.channel,
                 mole_fraction,
                 row.data_flag
@@ -547,6 +550,7 @@ class Normalizing():
         self.response_type = response_type
 
     def _smooth_segment(self, seg, frac):
+        """Perform LOWESS smoothing on a single segment."""
         # skip tiny segments
         if len(seg) < 3 or seg['ts'].max() == seg['ts'].min():
             return pd.Series(seg[self.response_type].values, index=seg.index)
@@ -555,79 +559,84 @@ class Normalizing():
             lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False),
             index=seg.index
         )
-    
-    def calculate_smoothed_std(self, df, min_pts=8, frac=0.4):
-        """ Calculate smoothed standard deviation for the standard run type.
-            This function uses LOWESS smoothing on the area data.
-            min_pts is the minimum number of points required to perform smoothing.
-            frac is the fraction of points used for smoothing.
-            The smoothed values are returned in a new column 'smoothed'.
+
+    def calculate_smoothed_std(self, df, min_pts=8, default_frac=0.3, verbose=False):
         """
+        Calculate smoothed standard deviation per run_time.
+        Each run_time can have its own detrend_method_num controlling the LOWESS fraction.
+        Optimized to reduce Python overhead while keeping per-run segmentation.
+        """
+
         std = (
             df.loc[
-                (df[self.run_type_column] == self.standard_run_type) &
-                (df['data_flag'].eq('...')),
+                (df[self.run_type_column] == self.standard_run_type)
+                & (df['data_flag'].eq('...')),
                 ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]
             ]
             .dropna()
             .sort_values('analysis_datetime')
             .copy()
         )
-        #print(std)        
-        # keep only those rows *after* the first in each run_time
-        # this is to avoid smoothing the first point in each run_time which is often an outlier
+        std = std.reset_index(drop=True)
+
+        # skip first points for M4
         if self.inst_id == 'm4':
-            std = std[std.groupby('run_time').cumcount() > 0].copy()
-        
-        # Not enough points to smooth
+            std = std[std.groupby('run_time').cumcount() > 0].reset_index(drop=True)
+
         if len(std) < min_pts:
             std['smoothed'] = np.nan
-            return std[['analysis_datetime','run_time','smoothed']]
+            return std[['analysis_datetime', 'run_time', 'smoothed']]
 
         std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
-        
-        detrend_method = std['detrend_method_num'].iat[0]
+        smoothed = np.full(len(std), np.nan, dtype=float)
 
-        if detrend_method == 1:
-            # point to point is the same as a small frac for LOWESS
-            frac = 0.01
+        # simple lookup table
+        # 1 = point to point, 2 = Default Lowess (0.3), 3 = None (Using default Lowess)
+        # 4 = Lowess 0.1, 5 = Lowess 0.2, 6 = Lowess 0.3, 7 = Lowess 0.4, 8 = Lowess 0.5
+        frac_map = {1: 0.01, 2: 0.3, 3: 0.3, 
+                    4: 0.1, 5: 0.2, 6: 0.3, 7: 0.4, 8: 0.5}
 
-        std['smoothed'] = (
-            std.groupby('run_time', group_keys=False)[['ts', self.response_type]]
-            .apply(lambda seg: self._smooth_segment(seg, frac))
-            .squeeze()
-        )
-        
-        return std[['analysis_datetime','run_time','smoothed']]
+        # group-level loop, but minimal overhead
+        for run_time, seg in std.groupby('run_time', sort=False):
+            detrend_method = seg['detrend_method_num'].iloc[0]
+            frac = frac_map.get(detrend_method, default_frac)
+
+            if verbose:
+                t0 = time.time()
+                print(f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} | frac={frac}")
+
+            if len(seg) >= 3 and seg['ts'].max() > seg['ts'].min():
+                y_smooth = lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False)
+                smoothed[seg.index] = y_smooth
+            else:
+                smoothed[seg.index] = seg[self.response_type].values
+
+            if verbose:
+                print(f"  done in {time.time()-t0:.4f}s")
+
+        std['smoothed'] = smoothed
+        return std[['analysis_datetime', 'run_time', 'smoothed']]
 
     def merge_smoothed_data(self, df):
-        # smoothed std or reference tank injection
-        
-        # drop any existing 'smoothed' column to avoid confusion and resmooth
+        """Merge smoothed standard data and calculate normalized response."""
         if 'smoothed' in df.columns:
             df = df.drop(columns=['smoothed'])
-        
-        std = self.calculate_smoothed_std(df, min_pts=5, frac=0.3)
+
+        std = self.calculate_smoothed_std(df, min_pts=5, default_frac=0.3)
 
         out = (
-            df
-            .merge(std, on=['analysis_datetime','run_time'], how='left')
+            df.merge(std, on=['analysis_datetime', 'run_time'], how='left')
             .sort_values('analysis_datetime')
         )
 
-        # explicitly select just the 'smoothed' column for the group operation which is the std
+        # Fill missing smoothed values within each run_time
         out['smoothed'] = (
-            out
-            .groupby('run_time', group_keys=False)['smoothed']
-            .apply(lambda s: s
-                .interpolate(method='linear', limit_direction='both')
-                .ffill()
-                .bfill()
-            )
+            out.groupby('run_time', group_keys=False)['smoothed']
+            .apply(lambda s: s.interpolate(method='linear', limit_direction='both').ffill().bfill())
         )
 
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
-                
+
         return out
 
 class M4_Instrument(HATS_DB_Functions):
@@ -727,8 +736,7 @@ class M4_Instrument(HATS_DB_Functions):
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
             print(f"No data found for parameter {pnum} in the specified date range.")
-            self.data = pd.DataFrame()
-            return
+            return pd.DataFrame()
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
         df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
@@ -757,8 +765,7 @@ class M4_Instrument(HATS_DB_Functions):
         
         df = self.add_port_labels(df)
         
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
+        return df.sort_values('analysis_datetime')
         
     def add_port_labels(self, df):
         """ Helper function to add port labels to the dataframe. """
@@ -878,6 +885,7 @@ class FE3_Instrument(HATS_DB_Functions):
             start_date (str, optional): Start date in YYMM format. Defaults to None.
             end_date (str, optional): End date in YYMM format. Defaults to None.
         """
+        t0 = time.time()
         
         if end_date is None:
             end_date = datetime.today()
@@ -909,7 +917,7 @@ class FE3_Instrument(HATS_DB_Functions):
 
         if verbose:
             print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
-        # todo: use flags
+
         query = f"""
             SELECT * FROM hats.ng_data_processing_view
             WHERE inst_num = {self.inst_num}
@@ -924,8 +932,9 @@ class FE3_Instrument(HATS_DB_Functions):
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
             print(f"No data found for parameter {pnum} in the specified date range.")
-            self.data = pd.DataFrame()
-            return
+            return pd.DataFrame()
+        
+        #print(f"Data loaded in {time.time()-t0:.4f}s, {len(df)} rows.")
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
         df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
@@ -944,8 +953,7 @@ class FE3_Instrument(HATS_DB_Functions):
         
         df = self.add_port_labels(df)
 
-        self.data = df.sort_values('analysis_datetime')
-        return self.data
+        return df.sort_values('analysis_datetime')
     
     def qurey_return_scale_num(self, pnum):
         """ Query the scale number for a given parameter number. """
