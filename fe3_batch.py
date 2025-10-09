@@ -32,7 +32,7 @@ class FE3_batch(FE3_Instrument):
             start_date=start_date,
             end_date=end_date
         )
-        if self.data.empty:
+        if df.empty:
             return pd.DataFrame()
         
         if verbose:
