@@ -59,7 +59,7 @@ def main():
                 start_date=args.start_date,
                 end_date=args.end_date
             )
-            if m4.data.empty:
+            if df.empty:
                 continue
             
             df = m4.calc_mole_fraction(df)
