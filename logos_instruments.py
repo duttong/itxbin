@@ -672,6 +672,15 @@ class M4_Instrument(HATS_DB_Functions):
         25: 'purple', 26: 'orange', 27: 'darkgreen', 28: 'darkred', 29: 'lightgreen',
         30: 'black', 31: 'coral', 32: 'lightblue'}
     
+    MARKER_MAP = {
+        # run_type_num
+        1: 'o',   # Flask
+        5: 's',   # PFP
+        6: 'v',   # Zero
+        7: '^',   # Tank
+        8: 'D',   # Standard
+    }
+    
     def __init__(self):
         super().__init__()
         self.inst_id = 'm4'
@@ -824,6 +833,18 @@ class FE3_Instrument(HATS_DB_Functions):
         # Flask ports (10-19)
         10: 'cornflowerblue', 11: 'blue', 12: 'red', 13: 'cyan', 14: 'pink',
         15: 'gray', 16: 'orange', 17: 'darkgreen', 18: 'darkred', 19: 'purple'}
+
+    MARKER_MAP = {
+        # port number
+        1: 'D',   # Standard
+        2: '^',   # Tank
+        3: 's',   # Other
+        4: 'P',   # Other
+        5: 'X',   # Other
+        6: '*',   # Other
+        9: 'v',   # Push port
+        10: 'o',   # Flask
+    }
     
     def __init__(self):
         super().__init__()

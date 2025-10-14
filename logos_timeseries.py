@@ -427,6 +427,7 @@ class TimeseriesWidget(QWidget):
                     )
                     line._meta = {
                         "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
+                        "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
                         "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
                         "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
                         "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
@@ -545,6 +546,7 @@ class TimeseriesWidget(QWidget):
         sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
         pair_id_num = artist._meta.get("pair_id_num", [None])[nearest_idx]
         run_time    = artist._meta.get("run_time", [None])[nearest_idx]
+        sample_time = artist._meta.get("sample_datetime", [None])[nearest_idx]
         site        = artist._meta.get("site", [None])[nearest_idx]
         analyte     = artist._meta.get("analyte", "Unknown")
         channel     = artist._meta.get("channel", None)
@@ -554,6 +556,7 @@ class TimeseriesWidget(QWidget):
             f"<b>Site:</b> {site}<br>"
             f"<b>Sample ID:</b> {sample_id}<br>"
             f"<b>Pair ID:</b> {pair_id_num}<br>"
+            f"<b>Sample time:</b> {sample_time}<br>"
             f"<b>Run time:</b> {run_time}"
         )
         QToolTip.showText(QCursor.pos(), text)

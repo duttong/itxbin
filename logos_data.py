@@ -3,14 +3,16 @@ import sys
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
+import math
 from functools import lru_cache
 import warnings
 import argparse
 
-from PyQt5 import QtCore, QtGui
+from PyQt5 import QtCore
+from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget,
+    QApplication, QMainWindow, QWidget, QToolTip,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame
@@ -31,6 +33,30 @@ from matplotlib.widgets import RectangleSelector
 import logos_instruments as li
 from logos_timeseries import TimeseriesWidget
 
+
+def _is_blank(value):
+    """Return True for None, NaN, empty, or placeholder strings."""
+    if value is None:
+        return True
+    if isinstance(value, (float, np.floating)) and math.isnan(value):
+        return True
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"", "none", "nan", "na", "null"}:
+            return True
+    return False
+
+
+def _to_int_or_none(value):
+    """Try to convert to int; return None on failure."""
+    if _is_blank(value):
+        return None
+    try:
+        i = int(str(value).strip())
+        return i
+    except Exception:
+        return None
+    
 class RubberBandOverlay(QWidget):
     def __init__(self, parent, pen):
         super().__init__(parent)
@@ -43,8 +69,8 @@ class RubberBandOverlay(QWidget):
         self.hide()
 
     def paintEvent(self, event):
-        painter = QtGui.QPainter(self)
-        painter.setCompositionMode(QtGui.QPainter.RasterOp_SourceXorDestination)
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.RasterOp_SourceXorDestination)
         painter.setPen(self.pen)
         painter.drawRect(self.rect)
         painter.end()
@@ -55,7 +81,7 @@ class FastNavigationToolbar(NavigationToolbar):
         self.main_window = main_window
         self.rubberband = None
 
-        pen = QtGui.QPen(self.palette().color(QtGui.QPalette.Highlight))
+        pen = QPen(self.palette().color(QPalette.Highlight))
         pen.setStyle(QtCore.Qt.DashLine)
         self._overlay = RubberBandOverlay(canvas, pen)
 
@@ -224,7 +250,7 @@ class MainWindow(QMainWindow):
         self.tagging_enabled = False
         self._rect_selector = None
         self._pick_cid = None
-        self._scatter_main = None
+        self._scatter_main = []
         self._current_yparam = None
         self._current_yvar = None
         self._pick_refresh = False
@@ -689,9 +715,8 @@ class MainWindow(QMainWindow):
         )
         self._x_num = mdates.date2num(x_dt.to_numpy())
 
-        colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
-
+        #ports_in_run = sorted(self.run['port_label'].dropna().unique())
         port_label_map = (
             self.run
             .loc[self.run['port_idx'].notna(), ['analysis_datetime', 'port_idx', 'port_label']]
@@ -721,9 +746,11 @@ class MainWindow(QMainWindow):
             if base_label == 'Push port':
                 continue
 
+            #marker = self.instrument.MARKER_MAP.get(self.get_marker_key(), 'o')
+            marker = 'o'
+
             stats = stats_map.get(port)
             if stats is not None:
-                # Two-line label with mean ± std
                 if yparam == 'resp':
                     label = f"{base_label}"
                 elif yparam == 'ratio':
@@ -733,17 +760,49 @@ class MainWindow(QMainWindow):
             else:
                 label = base_label
 
-            legend_handles.append(
-                mpatches.Patch(color=col, label=label)
-            )
-    
+            legend_handles.append(Line2D(
+                [], [],
+                color=col,
+                marker=marker,
+                linestyle='None',
+                markersize=8,
+                label=label
+            ))
+            
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        self._scatter_main = ax.scatter(
-            self.run['analysis_datetime'], self.run[yvar],
-            marker='o', c=colors, s=68, edgecolors='none', zorder=1,
-            picker=True, pickradius=7
-        )
+        for run_type, subset in self.run.groupby('run_type_num'):
+            marker = self.instrument.MARKER_MAP.get(self.get_marker_key(port), 'o')
+            color = subset['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
+            scatter = ax.scatter(
+                subset['analysis_datetime'],
+                subset[yvar],
+                marker=marker,
+                c=color,
+                s=68,
+                edgecolors='none',
+                zorder=1,
+                picker=True,
+                pickradius=7
+            )
+        
+            scatter._meta = {
+                "site": subset["site"].astype(str).tolist() if "site" in subset else [""] * len(subset),
+
+                # format analysis_time to "YYYY-MM-DD HH:MM:SS"
+                "analysis_time": (
+                    pd.to_datetime(subset["analysis_datetime"], errors="coerce")
+                    .dt.strftime("%Y-%m-%d %H:%M:%S")
+                    .tolist()
+                    if "analysis_datetime" in subset
+                    else [""] * len(subset)
+                ),
+
+                "sample_id": subset["sample_id"].astype(str).tolist() if "sample_id" in subset else [""] * len(subset),
+                "pair_id": subset["pair_id_num"].astype(str).tolist() if "pair_id_num" in subset else [""] * len(subset),
+                "port_info": subset["port_info"].astype(str).tolist() if "port_info" in subset else [""] * len(subset),
+            }
+            self._scatter_main.append(scatter)
         
         # overlay: show data_flag characters on top of flagged points
         flags = self.run['data_flag_int'] != 0   # adjust if you use a different flag condition
@@ -868,16 +927,16 @@ class MainWindow(QMainWindow):
                 self._spacer2_text = txt
                 txt.set_fontsize(10)
                 txt.set_color((0, 0, 0, 0))  # fully transparent
-                          
+
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.format_coord = self._fmt_gc_plot
-  
+ 
         if not hasattr(self, "_legend_pick_cid") or self._legend_pick_cid is None:
             self._legend_pick_cid = self.canvas.mpl_connect(
                 "pick_event", self._on_legend_pick
             )
-      
+
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
             if self.y_axis_limits is None:
@@ -909,7 +968,11 @@ class MainWindow(QMainWindow):
 
         if self._pick_cid is None:
             self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)
-            
+
+        # Connect tooltip click handler
+        if not hasattr(self, "_click_tooltip_cid"):
+            self._click_tooltip_cid = self.canvas.mpl_connect("button_press_event", self._on_click_tooltip)
+                
     def _reattach_rect_selector(self):
         """Ensure RectangleSelector follows the current axes after a redraw."""
         if not hasattr(self, "_rect_selector"):
@@ -947,6 +1010,16 @@ class MainWindow(QMainWindow):
         if getattr(self, "canvas", None):
             self.canvas.draw_idle()
 
+    def get_marker_key(self, port):
+        if self.instrument.inst_id == 'm4':
+            field = 'run_type_num'
+        else:
+            field = 'port'
+        try:
+            return int(self.run.loc[self.run[field] == port, field].iloc[0])
+        except Exception:
+            return None
+
     def populate_calcurve_combo(self, current_curve):
         self.calcurve_combo.blockSignals(True)
         self.calcurve_combo.clear()
@@ -974,8 +1047,8 @@ class MainWindow(QMainWindow):
         ].sort_values('run_date')
 
         # --- Add "Cal Date" label as first item ---
-        model = QtGui.QStandardItemModel()
-        label_item = QtGui.QStandardItem("Cal Date")
+        model = QStandardItemModel()
+        label_item = QStandardItem("Cal Date")
         label_item.setFlags(label_item.flags() & ~Qt.ItemIsEnabled)  # Disable item
         model.appendRow(label_item)
 
@@ -1020,6 +1093,58 @@ class MainWindow(QMainWindow):
 
         row_idx = self.run.index[i]
         self._toggle_flags([row_idx])
+
+    def _on_click_tooltip(self, event):
+        """Show tooltip on left-click when tagging and navigation are off."""
+        # Left mouse only
+        if event.button != 1:
+            return
+
+        # Skip if tagging or navigation tools are active
+        tb = getattr(self.canvas, "toolbar", None)
+        if (tb is not None and getattr(tb, "mode", None)) or self.tagging_enabled:
+            return
+
+        # Find which artist was clicked
+        for artist in self.figure.axes[0].collections:
+            cont, ind = artist.contains(event)
+            if not cont:
+                continue
+
+            nearest_idx = ind["ind"][0]
+            meta = getattr(artist, "_meta", {})
+
+            site = meta.get("site", [None])[nearest_idx]
+            analysis_time = meta.get("analysis_time", [None])[nearest_idx]
+            sample_id = meta.get("sample_id", [None])[nearest_idx]
+            pair_id = meta.get("pair_id", [None])[nearest_idx]
+
+            parts = []
+
+            # Site — show if not blank/None
+            if site not in (None, "", "nan", "None"):
+                parts.append(f"<b>Site:</b> {site}")
+
+            # Sample ID — show only if not "0" or blank
+            if isinstance(sample_id, str):
+                sid = sample_id.strip()
+                if sid and sid not in {"0", "000", "None", "nan"}:
+                    parts.append(f"<b>Sample ID:</b> {sid}")
+
+            # Pair ID — show only if not "0" or blank
+            if isinstance(sample_id, str):
+                pid = pair_id.strip()
+                if pid and pid not in {"0", "000", "None", "nan"}:
+                    parts.append(f"<b>Pair ID:</b> {pid}")
+
+            parts.append(f"<b>Port Info:</b> {meta.get('port_info', [''])[nearest_idx]}")
+            # Analysis time — always shown
+            parts.append(f"<b>Analysis time:</b> {analysis_time}")
+
+            # Combine for tooltip
+            text = "<br>".join(parts)
+            QToolTip.showText(QCursor.pos(), text)
+            break
 
     def _on_box_select(self, eclick, erelease):
         if not self.tagging_enabled:
