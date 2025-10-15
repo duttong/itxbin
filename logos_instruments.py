@@ -826,11 +826,11 @@ class FE3_Instrument(HATS_DB_Functions):
 
     MARKER_MAP = {
         # port number
-        1: 'D',   # Standard
+        1: 'X',   # Standard
         2: '^',   # Tank
         3: 's',   # Other
         4: 'P',   # Other
-        5: 'X',   # Other
+        5: 'D',   # Other
         6: '*',   # Other
         9: 'v',   # Push port
         10: 'o',   # Flask
