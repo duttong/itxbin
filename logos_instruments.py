@@ -1,6 +1,7 @@
 import sys
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import re
 from functools import cached_property
 from pathlib import Path
@@ -10,6 +11,10 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
     INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220} 
+    
+    LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
+            'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
+            'BLD', 'MKO']
 
     def __init__(self):
         # gcwerks-3 path
@@ -649,28 +654,6 @@ class M4_Instrument(HATS_DB_Functions):
         "PFPs": 5,
     }
     STANDARD_RUN_TYPE = 8
-    COLOR_MAP_RUN_TYPE = {
-        1: "#1f77b4",  # Flask
-        4: "#ff7f0e",  # Other
-        5: "#2ca02c",  # PFP
-        6: "#dd89f9",  # Zero
-        7: "#c7811b",  # Tank
-        8: "#505c5c",  # Standard
-        "Response": "#e04c19",  # Response
-        "Ratio": "#1f77b4",  # Ratio
-        "Mole Fraction": "#2ca02c",  # Mole Fraction
-    }
-    
-    COLOR_MAP = {
-        # SSV ports (0-16)
-        0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'hotpink',
-        5: 'purple', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
-        10: 'cornflowerblue', 11: 'green', 12: 'red', 13: 'cyan', 14: 'pink',
-        15: 'teal', 16: 'orange',
-        # PFPs (20-32)
-        20: 'cornflowerblue', 21: 'green', 22: 'red', 23: 'cyan', 24: 'hotpink',
-        25: 'purple', 26: 'orange', 27: 'darkgreen', 28: 'darkred', 29: 'lightgreen',
-        30: 'black', 31: 'coral', 32: 'lightblue'}
     
     MARKER_MAP = {
         # run_type_num
@@ -772,7 +755,7 @@ class M4_Instrument(HATS_DB_Functions):
         res.loc[mask] = pfp.loc[mask]          # explicit assignment avoids where/mask downcast warning
         df['port_idx'] = res.round().astype('Int64')   # final, intentional cast to nullable int
         
-        df = self.add_port_labels(df)
+        df = self.add_port_labels(df)       # port labels, colors, and markers
         
         return df.sort_values('analysis_datetime')
         
@@ -806,7 +789,22 @@ class M4_Instrument(HATS_DB_Functions):
         df['port_label'] = df['port_label'] \
                             .str.replace(r'\s+', ' ', regex=True) \
                             .str.strip()
+
+        # assign colors to sites
+        cmap = plt.get_cmap('tab20')
+        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+
+        # Start with site-based colors
+        df['port_color'] = df['site'].map(site_colors).fillna('gray')
+
+        # Override when port == 14 → gray
+        df.loc[df['run_type_num'] == self.STANDARD_RUN_TYPE, 'port_color'] = 'red'
+
+        # Override when port_info == 'zero_air' → black
+        df.loc[df['port_info'] == 'zero_air', 'port_color'] = 'black'  
         
+        df['port_marker'] = df['run_type_num'].map(self.MARKER_MAP).fillna('o')
+
         return df            
 
     def load_calcurves(self, df):
@@ -825,14 +823,6 @@ class FE3_Instrument(HATS_DB_Functions):
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
-    # color map made for a combination of SSV and Flask ports.
-    COLOR_MAP = {
-        # SSV ports (0-9)
-        0: 'cornflowerblue', 1: 'green', 2: 'red', 3: 'cyan', 4: 'pink',
-        5: 'gray', 6: 'orange', 7: 'darkgreen', 8: 'darkred', 9: 'lightgreen',
-        # Flask ports (10-19)
-        10: 'cornflowerblue', 11: 'blue', 12: 'red', 13: 'cyan', 14: 'pink',
-        15: 'gray', 16: 'orange', 17: 'darkgreen', 18: 'darkred', 19: 'purple'}
 
     MARKER_MAP = {
         # port number
@@ -1025,6 +1015,27 @@ class FE3_Instrument(HATS_DB_Functions):
             .str.replace('0-0 (0)', '')
             .str.strip()
         )
+
+        # assign colors to sites
+        cmap = plt.get_cmap('tab20')
+        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+
+        # Start with site-based colors
+        df['port_color'] = df['site'].map(site_colors).fillna('gray')
+
+        # Override when port == 14 → gray
+        df.loc[df['port'] == self.STANDARD_PORT_NUM, 'port_color'] = 'red'
+
+        df.loc[df['port'] == 2, 'port_color'] = 'purple'   # cal runs
+        df.loc[df['port'] == 3, 'port_color'] = 'blue'   # cal runs
+        df.loc[df['port'] == 4, 'port_color'] = 'green'   # cal runs
+        df.loc[df['port'] == 5, 'port_color'] = 'lightblue'   # cal runs
+        df.loc[df['port'] == 6, 'port_color'] = 'orange'   # cal runs
+
+        # Override when port_info == 'zero_air' → black
+        df.loc[df['port_info'] == 'zero_air', 'port_color'] = 'black'  
+        
+        df['port_marker'] = df['port'].map(self.MARKER_MAP).fillna('o')
 
         return df
             

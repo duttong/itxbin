@@ -548,8 +548,6 @@ class MainWindow(QMainWindow):
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
 
         # Kick off by selecting the first analyte by default
-        # (This will load data and populate run_times)
-        #self.on_plot_type_changed(0)
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
             self.set_current_analyte('HFC134a')
@@ -667,8 +665,6 @@ class MainWindow(QMainWindow):
             print("No data available for plotting.")
             return
 
-        ts_str = self.current_run_time.split(" (")[0]
-        sel = pd.to_datetime(ts_str, utc=True)
         if self.run.empty:
             print(f"No data for run_time: {self.current_run_time}")
             return
@@ -715,17 +711,6 @@ class MainWindow(QMainWindow):
         )
         self._x_num = mdates.date2num(x_dt.to_numpy())
 
-        ports_in_run = sorted(self.run['port_idx'].dropna().unique())
-        #ports_in_run = sorted(self.run['port_label'].dropna().unique())
-        port_label_map = (
-            self.run
-            .loc[self.run['port_idx'].notna(), ['analysis_datetime', 'port_idx', 'port_label']]
-            .drop_duplicates()
-            .sort_values('analysis_datetime')  # Sort by analysis_datetime
-            .set_index('port_idx')['port_label']
-            .to_dict()
-        )
-
         # Calculate mean and std for each port
         flags = (
             self.run['data_flag_int'] if 'data_flag_int' in self.run.columns
@@ -740,14 +725,14 @@ class MainWindow(QMainWindow):
         )
 
         legend_handles = []
+        ports_in_run = sorted(self.run['port_idx'].dropna().unique())
+
         for port in ports_in_run:
-            col = self.instrument.COLOR_MAP.get(port, "gray")
-            base_label = port_label_map.get(port, str(port))
+            color = self.run.loc[self.run['port_idx'] == port, 'port_color'].iloc[0]
+            marker = self.run.loc[self.run['port_idx'] == port, 'port_marker'].iloc[0]
+            base_label = self.run.loc[self.run['port_idx'] == port, 'port_label'].iloc[0]
             if base_label == 'Push port':
                 continue
-
-            #marker = self.instrument.MARKER_MAP.get(self.get_marker_key(), 'o')
-            marker = 'o'
 
             stats = stats_map.get(port)
             if stats is not None:
@@ -762,18 +747,21 @@ class MainWindow(QMainWindow):
 
             legend_handles.append(Line2D(
                 [], [],
-                color=col,
+                color=color,
                 marker=marker,
                 linestyle='None',
                 markersize=8,
                 label=label
             ))
             
+        # Sort legend handles alphabetically by their label
+        legend_handles = sorted(legend_handles, key=lambda h: h.get_label())
+
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        for run_type, subset in self.run.groupby('run_type_num'):
-            marker = self.instrument.MARKER_MAP.get(self.get_marker_key(port), 'o')
-            color = subset['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
+        for port, subset in self.run.groupby('port_idx'):
+            marker = subset['port_marker'].iloc[0]
+            color = subset['port_color']
             scatter = ax.scatter(
                 subset['analysis_datetime'],
                 subset[yvar],
@@ -1009,16 +997,6 @@ class MainWindow(QMainWindow):
         """
         if getattr(self, "canvas", None):
             self.canvas.draw_idle()
-
-    def get_marker_key(self, port):
-        if self.instrument.inst_id == 'm4':
-            field = 'run_type_num'
-        else:
-            field = 'port'
-        try:
-            return int(self.run.loc[self.run[field] == port, field].iloc[0])
-        except Exception:
-            return None
 
     def populate_calcurve_combo(self, current_curve):
         self.calcurve_combo.blockSignals(True)
@@ -1325,24 +1303,25 @@ class MainWindow(QMainWindow):
         # pd dataframe of ref tank mole fraction estimates for this run
         ref_estimate = self.compute_ref_estimate(new_fit)
         
-        colors = self.run['port_idx'].map(self.instrument.COLOR_MAP).fillna('gray')
+        #colors = self.run['port_colors']
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
-
-        port_label_map = (
-            self.run
-            .loc[self.run['port_idx'].notna(), ['analysis_datetime', 'port_idx', 'port_label']]
-            .drop_duplicates()
-            .sort_values('analysis_datetime')
-            .set_index('port_idx')['port_label']
-            .to_dict()
-        )
 
         legend_handles = []
         for port in ports_in_run:
-            col = self.instrument.COLOR_MAP.get(port, 'gray')
-            label = port_label_map.get(port, str(port))
-            if port != 9:   # skip port 9 (Push Gas Port)
-                legend_handles.append(mpatches.Patch(color=col, label=label))
+            color = self.run.loc[self.run['port_idx'] == port, 'port_color'].iloc[0]
+            marker = self.run.loc[self.run['port_idx'] == port, 'port_marker'].iloc[0]
+            label=self.run.loc[self.run['port_idx'] == port, 'port_label'].iloc[0]
+            if port == 9:   # skip port 9 (Push Gas Port)
+                continue
+
+            legend_handles.append(Line2D(
+                [], [],
+                color=color,
+                marker=marker,
+                linestyle='None',
+                markersize=8,
+                label=label
+            ))
 
         # ref tank mean and std
         ref_mf_mean = ref_estimate['mole_fraction'].mean()
@@ -1386,13 +1365,17 @@ class MainWindow(QMainWindow):
         mask_main = self.run[['cal_mf', yvar]].notna().all(axis=1)
 
         # Main scatter (all unflagged + flagged, same colors)
-        ax.scatter(
-            self.run.loc[mask_main, 'cal_mf'],
-            self.run.loc[mask_main, yvar],
-            marker='o',
-            c=colors.loc[mask_main],
-            alpha=0.7
-        )
+        for port, subset in self.run.groupby('port_idx'):
+            marker = subset['port_marker'].iloc[0]
+            color = subset['port_color']
+
+            ax.scatter(
+                subset['cal_mf'],
+                subset[yvar],
+                marker=marker,
+                c=color,
+                zorder=1,
+            )
 
         # Mask for flagged subset
         flags = (
@@ -1454,7 +1437,7 @@ class MainWindow(QMainWindow):
         ax_resid.scatter(
             self.run.loc[mask_main & ~flags, 'cal_mf'],
             self.run.loc[mask_main & ~flags, 'diff_y'],
-            s=15, c=colors.loc[mask_main & ~flags],
+            s=15, c=self.run.loc[mask_main & ~flags, 'port_color'],
             alpha=0.8
         )
 
@@ -2036,6 +2019,7 @@ class MainWindow(QMainWindow):
         }
         detrend_to_index = {v: k for k, v in index_to_detrend_method.items()}
 
+        self.smoothing_cb.blockSignals(True)
         try:
             dm = int(self.run["detrend_method_num"].iat[0])
             idx = detrend_to_index.get(dm, 3)
@@ -2043,6 +2027,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Warning: could not set smoothing combobox ({e})")
             self.smoothing_cb.setCurrentIndex(3)
+        self.smoothing_cb.blockSignals(False)
 
     def get_selected_detrend_method(self):
         """
