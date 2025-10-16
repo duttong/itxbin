@@ -789,6 +789,11 @@ class MainWindow(QMainWindow):
                 "sample_id": subset["sample_id"].astype(str).tolist() if "sample_id" in subset else [""] * len(subset),
                 "pair_id": subset["pair_id_num"].astype(str).tolist() if "pair_id_num" in subset else [""] * len(subset),
                 "port_info": subset["port_info"].astype(str).tolist() if "port_info" in subset else [""] * len(subset),
+                "net_pressure": (
+                    subset["net_pressure"].map(lambda x: f"{x:.3f}" if pd.notnull(x) else "").tolist()
+                    if "net_pressure" in subset
+                    else [""] * len(subset)
+                ),
             }
             self._scatter_main.append(scatter)
         
@@ -1096,6 +1101,7 @@ class MainWindow(QMainWindow):
             analysis_time = meta.get("analysis_time", [None])[nearest_idx]
             sample_id = meta.get("sample_id", [None])[nearest_idx]
             pair_id = meta.get("pair_id", [None])[nearest_idx]
+            net_pressure = meta.get("net_pressure", [None])[nearest_idx]
 
             parts = []
 
@@ -1116,6 +1122,13 @@ class MainWindow(QMainWindow):
                     parts.append(f"<b>Pair ID:</b> {pid}")
 
             parts.append(f"<b>Port Info:</b> {meta.get('port_info', [''])[nearest_idx]}")
+
+            # Pair ID — show only if not "0" or blank
+            if isinstance(net_pressure, str):
+                presss = net_pressure.strip()
+                if presss and presss not in {"0", "000", "None", "nan"}:
+                    parts.append(f"<b>Net Pressure:</b> {presss} psi")
+
             # Analysis time — always shown
             parts.append(f"<b>Analysis time:</b> {analysis_time}")
 
