@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import re
 from functools import cached_property
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
@@ -824,8 +824,11 @@ class FE3_Instrument(HATS_DB_Functions):
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
 
+    # The plumbing on the GC changed, before 20210928-225324
+    # Define the cutoff date
+    CUTOFF_DATETIME = datetime(2021, 9, 28, 22, 53, 24, tzinfo=timezone.utc)
+
     MARKER_MAP = {
-        # port number
         1: 'X',   # Standard
         2: '^',   # Tank
         3: 's',   # Other
@@ -833,7 +836,7 @@ class FE3_Instrument(HATS_DB_Functions):
         5: 'D',   # Other
         6: '*',   # Other
         9: 'v',   # Push port
-        10: 'o',   # Flask
+        10: 'o',  # Flask
     }
     
     def __init__(self):
@@ -953,7 +956,6 @@ class FE3_Instrument(HATS_DB_Functions):
         df['detrend_method_num'] = df['detrend_method_num'].astype(int)
         df['height']            = df['height'].astype(float)
         df = self.norm.merge_smoothed_data(df)
-        df['port_idx']          = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
         
         # only set scale_num if first row is null
         if df['cal_scale_num'].isna().iat[0]:
@@ -962,7 +964,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df['data_flag_int'] = 0
         df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
         
-        df = self.add_port_labels(df)
+        df = self.add_port_labels(df)   # port labels, colors, and markers (port_idx)
 
         return df.sort_values('analysis_datetime')
     
@@ -1016,6 +1018,17 @@ class FE3_Instrument(HATS_DB_Functions):
             .str.strip()
         )
 
+        # choose which marker map to use based on the cutoff date
+        before_mask = df['analysis_datetime'] < self.CUTOFF_DATETIME
+        after_mask = ~before_mask
+
+        # base port_idx logic for both
+        df['port_idx'] = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
+
+        # override port_idx for special cases before cutoff
+        df.loc[before_mask & (df['port'] == 10), 'port_idx'] = 9   # push port before cutoff
+        df.loc[before_mask & (df['port'] == 2),  'port_idx'] = (10 + df['flask_port'].fillna(0).astype(int))
+
         # assign colors to sites
         cmap = plt.get_cmap('tab20')
         site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
@@ -1024,18 +1037,23 @@ class FE3_Instrument(HATS_DB_Functions):
         df['port_color'] = df['site'].map(site_colors).fillna('gray')
 
         # Override when port == 14 → gray
-        df.loc[df['port'] == self.STANDARD_PORT_NUM, 'port_color'] = 'red'
+        df.loc[df['port_idx'] == self.STANDARD_PORT_NUM, 'port_color'] = 'red'
 
-        df.loc[df['port'] == 2, 'port_color'] = 'purple'   # cal runs
-        df.loc[df['port'] == 3, 'port_color'] = 'blue'   # cal runs
-        df.loc[df['port'] == 4, 'port_color'] = 'green'   # cal runs
-        df.loc[df['port'] == 5, 'port_color'] = 'lightblue'   # cal runs
-        df.loc[df['port'] == 6, 'port_color'] = 'orange'   # cal runs
+        df.loc[df['port_idx'] == 2, 'port_color'] = 'purple'   # cal runs
+        df.loc[df['port_idx'] == 3, 'port_color'] = 'blue'     # cal runs
+        df.loc[df['port_idx'] == 4, 'port_color'] = 'green'    # cal runs
+        df.loc[df['port_idx'] == 5, 'port_color'] = 'lightblue'   # cal runs
+        df.loc[df['port_idx'] == 6, 'port_color'] = 'orange'   # cal runs
 
         # Override when port_info == 'zero_air' → black
         df.loc[df['port_info'] == 'zero_air', 'port_color'] = 'black'  
         
-        df['port_marker'] = df['port'].map(self.MARKER_MAP).fillna('o')
+        # port markers
+        df['port_marker'] = df['port_idx'].map(self.MARKER_MAP)
+
+        # assign flask markers (port_idx >= 10) to whatever MARKER_MAP[10] is
+        flask_marker = self.MARKER_MAP.get(10, 'o')  # fallback just in case
+        df.loc[df['port_idx'] >= 10, 'port_marker'] = flask_marker        
 
         return df
             
