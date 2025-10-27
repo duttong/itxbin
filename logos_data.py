@@ -1916,7 +1916,10 @@ class MainWindow(QMainWindow):
             self.current_run_time = self.current_run_times[idx] 
         else:
             # Default to the last run_time if no initial_date provided
-            self.current_run_time = self.current_run_times[-1]
+            try:
+                self.current_run_time = self.current_run_times[-1]
+            except IndexError:
+                self.current_run_time = None
 
         self.run_cb.blockSignals(False)
         
