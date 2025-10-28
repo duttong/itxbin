@@ -835,6 +835,8 @@ class FE3_Instrument(HATS_DB_Functions):
         4: 'P',   # Other
         5: 'D',   # Other
         6: '*',   # Other
+        7: '^',   # Other
+        8: 's',   # Other
         9: 'v',   # Push port
         10: 'o',  # Flask
     }
