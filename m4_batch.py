@@ -78,7 +78,7 @@ def main():
             start_date=args.start_date,
             end_date=args.end_date
         )
-        if m4.data.empty:
+        if df.empty:
             return
 
         df = m4.calc_mole_fraction(df)
@@ -86,12 +86,21 @@ def main():
         analytes = m4.analytes
         inv = {int(v): k for k, v in analytes.items()}
         title_text = f"{inv.get(pnum, 'Unknown')} ({pnum})"
+        COLOR_MAP = {
+            1: "#1f77b4",  # Flask
+            4: "#ff7f0e",  # Other
+            5: "#2ca02c",  # PFP
+            6: "#dd89f9",  # Zero
+            7: "#c7811b",  # Tank
+            8: "#505c5c",  # Standard
+        }
 
-        colors = df['run_type_num'].map(m4.COLOR_MAP).fillna('gray')
+        colors = df['run_type_num'].map(COLOR_MAP).fillna('gray')
+        #colors = df['port_color']
         run_map = {v: k for k, v in m4.run_type_num().items()}
         legend_handles = [
             mpatches.Patch(color=col, label=run_map[rt])
-            for rt, col in m4.COLOR_MAP.items()
+            for rt, col in COLOR_MAP.items()
             if isinstance(rt, int) and rt in run_map
         ]
 
