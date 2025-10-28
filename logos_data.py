@@ -234,8 +234,6 @@ class MainWindow(QMainWindow):
         self.current_run_time = None  # currently selected run_time (QDateTime string)
         self.run = pd.DataFrame()  # Placeholder for loaded data
         self.y_axis_limits = None  # Store y-axis limits when locked
-        self.toggle_grid_cb = None  # Initialize toggle_grid_cb to avoid AttributeError
-        self.lock_y_axis_cb = None  # Initialize lock_y_axis_cb to avoid AttributeError
         self.calibration_rb = QRadioButton()
         self.resp_rb = QRadioButton()
         self.fit_method_cb = QComboBox()
@@ -246,6 +244,8 @@ class MainWindow(QMainWindow):
         self.calcurves = []
         self.selected_calc_curve = None  # currently selected calibration curve date
         self.smoothing_cb = QComboBox()
+        self.toggle_grid_cb = QCheckBox()  
+        self.lock_y_axis_cb = QCheckBox()
 
         self.tagging_enabled = False
         self._rect_selector = None
@@ -260,16 +260,7 @@ class MainWindow(QMainWindow):
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
-
-        # Set up the UI
-        self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Initialize toggle_grid_cb
-        self.toggle_grid_cb.setChecked(True)  # Default to showing grid
-        self.toggle_grid_cb.stateChanged.connect(self.on_toggle_grid_toggled)
-
-        self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")  # Initialize lock_y_axis_cb
-        self.lock_y_axis_cb.setChecked(False)  # Default to unlocked
-        self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
-        self.run_type_num = None  # Will hold the current run_type_num for filtering
+        self.run_type_num = None
 
         self.init_ui()
 
@@ -396,9 +387,6 @@ class MainWindow(QMainWindow):
         self.analyte_layout = QGridLayout()
         self.analyte_layout.setSpacing(4)
         self.analyte_widget.setLayout(self.analyte_layout)
-
-        # If there are more than 12 analytes, we’ll switch to a QComboBox below.
-        self.populate_analyte_controls()
         analyte_layout.addWidget(self.analyte_widget)
 
         processing_layout.addWidget(analyte_gb)
@@ -547,6 +535,8 @@ class MainWindow(QMainWindow):
         h_main.addWidget(tabs, stretch=0)  # Fixed width for left pane
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
 
+        self.populate_analyte_controls()
+        
         # Kick off by selecting the first analyte by default
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
