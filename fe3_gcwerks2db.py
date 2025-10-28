@@ -164,9 +164,9 @@ class FE3_Prepare(fe3_inst):
 
         # safety check
         if len(des) != n or len(idx) != n:
-            print(f'Unexpected length mismatch in _seq2list {df.iloc[0].time}')
+            if df.iloc[0].time.strftime('%Y-%m-%d %H:%M:%S') != '2019-12-20 18:20:00':
+                print(f'Unexpected length mismatch in _seq2list {df.iloc[0].time}')
             return None, None
-            raise RuntimeError("Unexpected length mismatch in _seq2list")
 
         return des, idx
 
