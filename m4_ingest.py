@@ -108,7 +108,7 @@ def run_commands(gcd: Path):
         ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd)],
         ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
         ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x"],
-        ["/hats/gc/itxbin/m4_batch.py",       "-p", "all", "-i"],
+        ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i"],
     ]
     for cmd in cmds:
         logging.info(f"Running: {' '.join(cmd)}")
@@ -139,10 +139,11 @@ def main():
     # ensure incoming exists
     args.incoming.mkdir(parents=True, exist_ok=True)
 
-    clean_incoming(args.incoming, threshold)
     sync_raw(args.raw, args.incoming, threshold)
     sync_gspc(args.gspc, args.incoming, threshold)
     run_commands('/hats/gc/m4')
+    # remove older directories/files
+    clean_incoming(args.incoming, threshold)
 
 
 if __name__ == "__main__":
