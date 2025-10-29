@@ -257,6 +257,7 @@ class MainWindow(QMainWindow):
         self._pending_xlim = None
         self._pending_ylim = None
         self.madechanges = False
+        self.smoothing_changed = False
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
@@ -616,6 +617,7 @@ class MainWindow(QMainWindow):
         self.run = self.instrument.norm.merge_smoothed_data(self.run)
         self.run = self.instrument.calc_mole_fraction(self.run)
         self.madechanges = True
+        self.smoothing_changed = True
         self._style_gc_buttons()
         
         # Redraw
@@ -803,7 +805,7 @@ class MainWindow(QMainWindow):
             )
     
         if yparam == 'resp':
-            ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Loess-Smooth')
+            ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
             
         main = f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})"
         ax.set_title(main, pad=12)
@@ -885,9 +887,16 @@ class MainWindow(QMainWindow):
                     edgecolor='none', alpha=0.95
                 ))
             elif t == 'Save all gases':
+                txt.set_color('white')
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.4',
+                    facecolor = '#9e9e9e',
+                    edgecolor='none', alpha=0.95
+                ))
+                if self.smoothing_changed:
+                    continue
                 self._save2dball_text = txt
                 txt.set_picker(True)
-                txt.set_color('white')
                 txt.set_bbox(dict(
                     boxstyle='round,pad=0.4',
                     facecolor=('#2e7d32' if self.madechanges else '#9e9e9e'),
@@ -1756,11 +1765,15 @@ class MainWindow(QMainWindow):
                 id = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]['id'].iat[0]
                 self.instrument.upsert_mole_fractions(self.run, response_id=id)
             self.madechanges = False
+            self.smoothing_changed = False
             self.gc_plot(self._current_yparam, sub_info='SAVED')
         elif art is self._save2dball_text:
             if not self.madechanges:
                 return
-            print(f"Save flags to all gases clicked")
+            # the button is disabled for all gases while smoothing is changing. Use only one gas at a time.
+            if self.smoothing_changed:
+                return
+            #print(f"Save flags to all gases clicked")
             
             # set button to yellow while running
             bbox = self._save2dball_text.get_bbox_patch()
@@ -1776,6 +1789,7 @@ class MainWindow(QMainWindow):
             if not self.madechanges:
                 return
             self.madechanges = False
+            self.smoothing_changed = False
             self.load_selected_run()
             self.gc_plot(self._current_yparam, sub_info='REVERTED')
 
