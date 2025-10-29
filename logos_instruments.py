@@ -654,6 +654,7 @@ class M4_Instrument(HATS_DB_Functions):
         "PFPs": 5,
     }
     STANDARD_RUN_TYPE = 8
+    EXCLUDE = [6, 7]     # run_type_num to exclude from autoscaling (zero air and tank runs)
     
     MARKER_MAP = {
         # run_type_num
@@ -823,6 +824,7 @@ class FE3_Instrument(HATS_DB_Functions):
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
+    EXCLUDE = [9]               # push port - exclude from autoscaling
 
     # The plumbing on the GC changed, before 20210928-225324
     # Define the cutoff date

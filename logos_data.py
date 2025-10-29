@@ -244,7 +244,7 @@ class MainWindow(QMainWindow):
         self.calcurves = []
         self.selected_calc_curve = None  # currently selected calibration curve date
         self.smoothing_cb = QComboBox()
-        self.toggle_grid_cb = QCheckBox()  
+        self.toggle_scale_cb = QCheckBox()  
         self.lock_y_axis_cb = QCheckBox()
 
         self.tagging_enabled = False
@@ -494,10 +494,10 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.toggle_grid_cb = QCheckBox("Toggle Grid")  # Properly initialize toggle_grid_cb
-        self.toggle_grid_cb.setChecked(True)  # Default to showing grid
-        self.toggle_grid_cb.stateChanged.connect(self.on_toggle_grid_toggled)
-        options_layout.addWidget(self.toggle_grid_cb)
+        self.toggle_scale_cb = QCheckBox("Autoscale")  # Properly initialize toggle_scale_cb
+        self.toggle_scale_cb.setChecked(True)  # Default to showing grid
+        self.toggle_scale_cb.stateChanged.connect(self.on_toggle_scale_toggled)
+        options_layout.addWidget(self.toggle_scale_cb)
 
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("Plot and Options")
@@ -822,11 +822,7 @@ class MainWindow(QMainWindow):
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel + " " + units)
-
-        if self.toggle_grid_cb.isChecked():
-            ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
-        else:
-            ax.grid(False)
+        ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
 
         # add cal curve date selector
         if (self.instrument.inst_id == 'fe3') & (yparam == 'mole_fraction'):
@@ -920,6 +916,7 @@ class MainWindow(QMainWindow):
                 "pick_event", self._on_legend_pick
             )
 
+        # ---- Y-Axis Scaling ----
         if self.lock_y_axis_cb.isChecked():
             # use the stored y-axis limits
             if self.y_axis_limits is None:
@@ -927,14 +924,30 @@ class MainWindow(QMainWindow):
                 self.y_axis_limits = ax.get_ylim()
             else:
                 ax.set_ylim(self.y_axis_limits)
+
         else:
-            try:
-                ax.set_ylim(
-                    self.run[yvar].min() * 0.95,
-                    self.run[yvar].max() * 1.05
-                )
-            except ValueError:
-                pass  # In case of empty data, do not set limits
+            # Only adjust y-limits if not locked
+            if self.toggle_scale_cb.isChecked():
+                exclude = self.instrument.EXCLUDE
+                if self.instrument.inst_id == 'm4':
+                    exclude_variable = 'run_type_num'
+                else:
+                    exclude_variable = 'port'
+
+                scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
+                if not scale_df.empty:
+                    ax.set_ylim(
+                        scale_df.min() * 0.95,
+                        scale_df.max() * 1.05
+                    )
+            else:
+                try:
+                    ax.set_ylim(
+                        self.run[yvar].min() * 0.95,
+                        self.run[yvar].max() * 1.05
+                    )
+                except ValueError:
+                    pass  # In case of empty data, do not set limits
         
         # ---- Restore view if requested by a prior click ----
         if getattr(self, "_pending_xlim", None) is not None:
@@ -1529,14 +1542,6 @@ class MainWindow(QMainWindow):
         flag_handle = Line2D([], [], linestyle='None', label=flag_label)
         legend_handles.extend([save_handle, spacer_handle, flag_handle])
         
-        # Grid toggle applies to both axes
-        if self.toggle_grid_cb.isChecked():
-            for _ax in (ax_resid, ax):
-                _ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
-        else:
-            for _ax in (ax_resid, ax):
-                _ax.grid(False)
-
         # Put legend outside; adjust right margin instead of manually resizing axes
         self.figure.subplots_adjust(right=0.82)
         # legend call (add a couple of tweaks so the text-only entry aligns nicely)
@@ -1604,7 +1609,8 @@ class MainWindow(QMainWindow):
                     ax.set_xlim(x_all.min() * 0.95, x_all.max() * 1.05)
             except ValueError:
                 pass
-
+        ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+        
         self.canvas.draw()
 
     def populate_cal_mf(self) -> None:
@@ -1769,7 +1775,6 @@ class MainWindow(QMainWindow):
         elif art is self._revert_text:
             if not self.madechanges:
                 return
-            print("Revert clicked")
             self.madechanges = False
             self.load_selected_run()
             self.gc_plot(self._current_yparam, sub_info='REVERTED')
@@ -2130,10 +2135,11 @@ class MainWindow(QMainWindow):
         else:
             self.y_axis_limits = None  # Clear the saved limits
             #print("Y-Axis scale unlocked.")
+        self.on_plot_type_changed(self.current_plot_type)
 
-    def on_toggle_grid_toggled(self, state):
+    def on_toggle_scale_toggled(self, state):
         """
-        Called when the toggle_grid_cb checkbox is toggled.
+        Called when the toggle_scale_cb checkbox is toggled.
         """
         self.on_plot_type_changed(self.current_plot_type)
 
