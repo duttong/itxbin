@@ -142,9 +142,7 @@ class TimeseriesFigure:
         self._ax.set_xlabel("Sample datetime")
         self._ax.set_ylabel("Mole fraction")
         self._ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {self.analyte}")
-
-        if self.parent.main_window.toggle_grid_cb.isChecked():
-            self._ax.grid(True, which="both", linestyle="--", alpha=0.5)
+        self._ax.grid(True, which="both", linestyle="--", alpha=0.5)
         plt.xticks(rotation=45)
         plt.show(block=False)
 
