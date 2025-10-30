@@ -15,6 +15,8 @@ class LOGOS_Instruments:
     LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MKO']
+    
+    BASE_MARKER_SIZE = 60   # for scatter plots. Can override in subclasses.
 
     def __init__(self):
         # gcwerks-3 path
@@ -306,7 +308,19 @@ class HATS_DB_Functions(LOGOS_Instruments):
         else:
             Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
             return None
- 
+
+    def qurey_return_scale_num(self, pnum):
+        """ Query the scale number for a given parameter number. """
+        sql = f"""
+            SELECT idx FROM reftank.scales 
+            WHERE parameter_num = {pnum}
+            AND current = 1;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            raise ValueError(f"Scale number not found for parameter number {pnum}.")
+        return int(df['idx'].iat[0])
+
     def calc_mole_fraction(self, df):
         """ Wrapper to call the appropriate mole fraction calculation method
             based on the instrument type.
@@ -813,7 +827,7 @@ class M4_Instrument(HATS_DB_Functions):
         pass
 
 class FE3_Instrument(HATS_DB_Functions):
-    """ Class for accessing M4 specific functions in the HATS database. """
+    """ Class for accessing FE3 specific functions in the HATS database. """
     
     RUN_TYPE_MAP = {
         "All": None,        # no filter
@@ -842,6 +856,8 @@ class FE3_Instrument(HATS_DB_Functions):
         9: 'v',   # Push port
         10: 'o',  # Flask
     }
+    
+    COLOR_MAP = {STANDARD_PORT_NUM: 'red', 2: 'purple', 3: 'blue', 4: 'green', 5: 'lightblue', 6: 'orange'}
     
     def __init__(self):
         super().__init__()
@@ -971,19 +987,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df = self.add_port_labels(df)   # port labels, colors, and markers (port_idx)
 
         return df.sort_values('analysis_datetime')
-    
-    def qurey_return_scale_num(self, pnum):
-        """ Query the scale number for a given parameter number. """
-        sql = f"""
-            SELECT idx FROM reftank.scales 
-            WHERE parameter_num = {pnum}
-            AND current = 1;
-        """
-        df = pd.DataFrame(self.db.doquery(sql))
-        if df.empty:
-            raise ValueError(f"Scale number not found for parameter number {pnum}.")
-        return int(df['idx'].iat[0])
-        
+            
     def add_port_labels(self, df):
         """ Helper function to add port labels to the dataframe. """
         # base port label on port_info and port number
@@ -1039,15 +1043,8 @@ class FE3_Instrument(HATS_DB_Functions):
 
         # Start with site-based colors
         df['port_color'] = df['site'].map(site_colors).fillna('gray')
-
-        # Override when port == 14 → gray
-        df.loc[df['port_idx'] == self.STANDARD_PORT_NUM, 'port_color'] = 'red'
-
-        df.loc[df['port_idx'] == 2, 'port_color'] = 'purple'   # cal runs
-        df.loc[df['port_idx'] == 3, 'port_color'] = 'blue'     # cal runs
-        df.loc[df['port_idx'] == 4, 'port_color'] = 'green'    # cal runs
-        df.loc[df['port_idx'] == 5, 'port_color'] = 'lightblue'   # cal runs
-        df.loc[df['port_idx'] == 6, 'port_color'] = 'orange'   # cal runs
+        # override with port colors based on port_idx
+        df['port_color'] = df['port_idx'].map(self.COLOR_MAP).fillna(df['port_color'])
 
         # Override when port_info == 'zero_air' → black
         df.loc[df['port_info'] == 'zero_air', 'port_color'] = 'black'  
@@ -1088,10 +1085,163 @@ class FE3_Instrument(HATS_DB_Functions):
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     
+    RUN_TYPE_MAP = {
+        # Name: run_type_num
+        "All": None,        # no filter
+        #"Flasks": 1,      
+        "Calibrations": 2,
+        "Other": 4,
+        "Aircore": 9,
+    }
+    STANDARD_PORT_NUM = 11       # port number the standard is run on.
+    WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
+    EXCLUDE = []               # exclude from autoscaling
+    BASE_MARKER_SIZE = 15
+
+    MARKER_MAP = {
+        1: 'o',    # Standard
+        11: 'D',   # aircore
+        12: '*',   # Cal
+        13: 'o',
+        14: 'o',
+        15: 'o',
+        16: 'o',
+        17: 'o',
+        18: 'o',
+        19: 'o',
+    }
+    
+    COLOR_MAP = {1: 'cornflowerblue', 11: 'orange', 12: 'darkgreen', 13: 'cyan', 14: 'pink',
+                 15: 'gray', 16: 'blue', 17: 'red', 18: 'darkred', 19: 'lightgreen',
+                 3: 'orange', 5: 'gray', 7: 'red'}  # ports used in 2021
+    
     def __init__(self):
         super().__init__()
         self.inst_id = 'bld1'
         self.inst_num = 220
-        self.start_date = '20191217'         # data before this date is not used.
+        self.start_date = '20210906'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/bld1")
         self.export_dir = self.gc_dir / "results"
+        self.response_type = 'height'
+
+        self.analytes = {'SF6':6, 'N2O':5, 'CFC11':114, 'CFC12':22, 'CFC113':32, 'h1211':26}
+        self.gas_chans = {
+            'a': ['CFC11', 'CFC12', 'CFC113', 'h1211'],
+            'b': ['SF6', 'N2O']
+        }
+        self.chan_map = {gas: ch for ch, gases in self.gas_chans.items() for gas in gases}
+
+        self.molecules  = self.analytes.keys()
+        self.analytes_inv = {v: k for k, v in self.analytes.items()}
+
+        self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
+        """Load data from the database with date filtering.
+        Args:
+            pnum (int): Parameter number to filter data.
+            channel (str, optional): Channel to filter data. Defaults to None.
+            run_type_num (int, optional): Run type number to filter data. Defaults to None.
+            start_date (str, optional): Start date in YYMM format. Defaults to None.
+            end_date (str, optional): End date in YYMM format. Defaults to None.
+        """
+        t0 = time.time()
+        
+        if end_date is None:
+            end_date = datetime.today()
+        elif len(end_date) == 4:
+            # check for YYMM format
+            end_date = datetime.strptime(end_date, "%y%m")
+            end_date = end_date.strftime("%Y-%m-31")    # end of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
+
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+        elif len(start_date) == 4: 
+            # check for YYMM format
+            start_date = datetime.strptime(start_date, "%y%m")
+            start_date = start_date.strftime("%Y-%m-01")    # beginning of the month
+        else:
+            # expecting '%Y-%m-%d %H:%M:%s' format
+            pass
+       
+        # select run type filter (always exclude warmup runs if no filter specified)
+        if run_type_num is not None:
+            run_type_filter = f"AND run_type_num = {run_type_num}"
+        else:
+            run_type_filter = f"AND run_type_num != {self.WARMUP_RUN_TYPE}"
+            
+        channel_str = f"AND channel = '{channel}'" if channel else ""
+
+        if verbose:
+            print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
+
+        query = f"""
+            SELECT * FROM hats.ng_data_processing_view
+            WHERE inst_num = {self.inst_num}
+                AND parameter_num = {pnum}
+                {channel_str}
+                {run_type_filter}
+                AND height <> -999
+                #AND detrend_method_num != 3
+                AND run_time BETWEEN '{start_date}' AND '{end_date}'
+            ORDER BY analysis_datetime;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            print(f"No data found for parameter {pnum} in the specified date range.")
+            return pd.DataFrame()
+        
+        #print(f"Data loaded in {time.time()-t0:.4f}s, {len(df)} rows.")
+        
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
+        df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
+        df['run_type_num']      = df['run_type_num'].astype(int)
+        df['detrend_method_num'] = df['detrend_method_num'].astype(int)
+        df['height']            = df['height'].astype(float)
+        df = self.norm.merge_smoothed_data(df)
+        
+        # only set scale_num if first row is null
+        if df['cal_scale_num'].isna().iat[0]:
+            df['cal_scale_num'] = self.qurey_return_scale_num(pnum)
+
+        df['data_flag_int'] = 0
+        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
+        
+        df = self.add_port_labels(df)   # port labels, colors, and markers (port_idx)
+
+        return df.sort_values('analysis_datetime')
+    
+    def add_port_labels(self, df):
+        """ Helper function to add port labels to the dataframe. """
+        # base port label on port_info and port number
+        df['port_label'] = (
+            df['port_info'].fillna('unknown').str.strip() + ' (' +
+            df['port'].astype(int).astype(str) + ')'
+        )
+
+        # clean up any stray spaces
+        df['port_label'] = (
+            df['port_label']
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.strip()
+        )
+        
+        df['port_label'] = (
+            df['port_label']
+            .str.replace('0-0 (0)', '')
+            .str.strip()
+        )
+
+        # base port_idx logic for both
+        df['port_idx'] = df['port'].astype(int)
+
+        # Start with site-based colors
+        df['port_color'] = df['port'].map(self.COLOR_MAP).fillna('gray')
+
+        # port markers
+        df['port_marker'] = df['port_idx'].map(self.MARKER_MAP)
+
+        return df
