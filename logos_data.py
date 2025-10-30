@@ -759,7 +759,7 @@ class MainWindow(QMainWindow):
                 subset[yvar],
                 marker=marker,
                 c=color,
-                s=68,
+                s=self.instrument.BASE_MARKER_SIZE,
                 edgecolors='none',
                 zorder=1,
                 picker=True,
@@ -791,19 +791,21 @@ class MainWindow(QMainWindow):
         
         # overlay: show data_flag characters on top of flagged points
         flags = self.run['data_flag_int'] != 0   # adjust if you use a different flag condition
-        for x, y, flag in zip(
-                self.run.loc[flags, 'analysis_datetime'],
-                self.run.loc[flags, yvar],
-                self.run.loc[flags, 'data_flag']  # assumes this column has the characters
-            ):
-            ax.text(
-                x, y,
-                str('X'),
-                color='white', fontsize=9, fontweight='bold',
-                ha='center', va='center',
-                zorder=4, picker=False
+
+        flagged = self.run.loc[flags]
+        if not flagged.empty:
+            ax.scatter(
+                flagged['analysis_datetime'],
+                flagged[yvar],
+                marker='o',  # or same marker as their port if you prefer
+                facecolors='lightgray',
+                edgecolors=flagged['port_color'],
+                linewidths=1.5,
+                s=self.instrument.BASE_MARKER_SIZE * 1.1,  # slightly larger for visibility
+                zorder=4,
+                picker=False
             )
-    
+        
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
             
@@ -1413,6 +1415,7 @@ class MainWindow(QMainWindow):
             self.run.loc[flags, yvar],
             marker='x',
             c='white',
+            edgecolors=self.run.loc[flags, 'port_color'],
             s=60,  # size of the marker
             linewidths=2,
             zorder=4
@@ -1974,7 +1977,10 @@ class MainWindow(QMainWindow):
             # Select the first radio button by default
             buttons = self.radio_group.buttons()
             if buttons:
-                buttons[10].setChecked(True)
+                if self.instrument.inst_id == 'fe3':
+                    buttons[10].setChecked(True)
+                elif self.instrument.inst_id == 'bld1':
+                    buttons[0].setChecked(True)
 
         else:
             # Use a QComboBox
@@ -2167,8 +2173,6 @@ class MainWindow(QMainWindow):
 
             if choice == QMessageBox.Yes:
                 print("Saving changes here...")
-                #self.fe3db.save_db_file(self.fe3db.db)
-                #event.accept()
             else:
                 pass
         
