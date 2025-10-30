@@ -798,7 +798,7 @@ class MainWindow(QMainWindow):
                 flagged['analysis_datetime'],
                 flagged[yvar],
                 marker='o',  # or same marker as their port if you prefer
-                facecolors='lightgray',
+                facecolors='whitesmoke',
                 edgecolors=flagged['port_color'],
                 linewidths=1.5,
                 s=self.instrument.BASE_MARKER_SIZE * 1.1,  # slightly larger for visibility
@@ -1413,10 +1413,10 @@ class MainWindow(QMainWindow):
         ax.scatter(
             self.run.loc[flags, 'cal_mf'],
             self.run.loc[flags, yvar],
-            marker='x',
+            marker='o',
             c='white',
             edgecolors=self.run.loc[flags, 'port_color'],
-            s=60,  # size of the marker
+            s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
             linewidths=2,
             zorder=4
         )
@@ -1469,13 +1469,15 @@ class MainWindow(QMainWindow):
             alpha=0.8
         )
 
-        # Flagged residuals (white X overlay)
+        # Flagged residuals (white or light-gray face, colored edge)
         ax_resid.scatter(
             self.run.loc[mask_main & flags, 'cal_mf'],
             self.run.loc[mask_main & flags, 'diff_y'],
-            marker='x', c='white',
-            s=60, linewidths=2,
-            zorder=4
+            facecolors='whitesmoke',  # or '#f0f0f0' for slightly darker
+            edgecolors=self.run.loc[mask_main & flags, 'port_color'],
+            s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
+            linewidths=1.2,
+            zorder=4,
         )
         # Horizontal zero line
         ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
