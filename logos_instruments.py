@@ -328,7 +328,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         """
         if self.inst_id == 'm4':
             return self.calc_mole_fraction_scalevalues(df)
-        elif self.inst_id == 'fe3':
+        elif self.inst_id == 'fe3' or self.inst_id == 'bld1':
             return self.calc_mole_fraction_response(df)
         else:
             raise NotImplementedError(f"Mole fraction calculation not implemented for instrument '{self.inst_id}'.")
@@ -579,7 +579,7 @@ class Normalizing():
             index=seg.index
         )
 
-    def calculate_smoothed_std(self, df, min_pts=8, default_frac=0.3, verbose=False):
+    def calculate_smoothed_std(self, df, min_pts=8, verbose=False):
         """
         Calculate smoothed standard deviation per run_time.
         Each run_time can have its own detrend_method_num controlling the LOWESS fraction.
@@ -609,22 +609,21 @@ class Normalizing():
         std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
         smoothed = np.full(len(std), np.nan, dtype=float)
 
-        # simple lookup table
-        # 1 = point to point, 2 = Default Lowess (0.3), 3 = None (Using default Lowess)
-        # 4 = Lowess 0.1, 5 = Lowess 0.2, 6 = Lowess 0.3, 7 = Lowess 0.4, 8 = Lowess 0.5
-        frac_map = {1: 0.01, 2: 0.3, 3: 0.3, 
-                    4: 0.1, 5: 0.2, 6: 0.3, 7: 0.4, 8: 0.5}
+        # detrend_method_num: points
+        points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7}
 
         # group-level loop, but minimal overhead
         for run_time, seg in std.groupby('run_time', sort=False):
             detrend_method = seg['detrend_method_num'].iloc[0]
-            frac = frac_map.get(detrend_method, default_frac)
-
-            if verbose:
-                t0 = time.time()
-                print(f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} | frac={frac}")
-
+            
             if len(seg) >= 3 and seg['ts'].max() > seg['ts'].min():
+                frac = points_map.get(detrend_method, 5) / len(seg)
+                frac = 0.5 if frac > 1 else frac
+
+                if verbose:
+                    t0 = time.time()
+                    print(f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} | points={points_map.get(detrend_method, 5)} | frac={frac}")
+                
                 y_smooth = lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False)
                 smoothed[seg.index] = y_smooth
             else:
@@ -641,7 +640,7 @@ class Normalizing():
         if 'smoothed' in df.columns:
             df = df.drop(columns=['smoothed'])
 
-        std = self.calculate_smoothed_std(df, min_pts=5, default_frac=0.3)
+        std = self.calculate_smoothed_std(df, min_pts=5)
 
         out = (
             df.merge(std, on=['analysis_datetime', 'run_time'], how='left')
@@ -1244,4 +1243,29 @@ class BLD1_Instrument(HATS_DB_Functions):
         # port markers
         df['port_marker'] = df['port_idx'].map(self.MARKER_MAP)
 
+        return df
+
+    def load_calcurves(self, pnum, channel, earliest_run):
+        """
+        Returns the calibration curves from ng_response for a given parameter number and channel.
+        """
+        scale_num = self.qurey_return_scale_num(pnum)
+        
+        ch = ''
+        if channel is not None:
+            ch = f"and channel = '{channel}'"
+        
+        sql = f"""
+            SELECT id, run_date, serial_number, coef0, coef1, coef2, coef3, function, flag FROM hats.ng_response
+                where inst_num = {self.inst_num}
+                and scale_num = {scale_num}
+                {ch}
+                and run_date >= '{earliest_run}'
+            order by run_date desc;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            print(f"No calibration curves found for parameter {pnum} and channel '{channel}'.")
+            return df
+        df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
         return df

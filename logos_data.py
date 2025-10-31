@@ -298,8 +298,8 @@ class MainWindow(QMainWindow):
         self.start_month_cb = QComboBox()
         current_year = datetime.now().year
         current_month = datetime.now().month
-        start_year = (datetime.now() - timedelta(days=30)).year
-        start_month = (datetime.now() - timedelta(days=30)).month
+        start_year = (datetime.now() - timedelta(days=32)).year
+        start_month = (datetime.now() - timedelta(days=32)).month
         for y in range(int(self.instrument.start_date[0:4]), current_year + 1):
             self.start_year_cb.addItem(str(y))
         for m in range(1, 13):
@@ -469,14 +469,15 @@ class MainWindow(QMainWindow):
         self.smoothing_label = QLabel("Response smoothing:")
         self.smoothing_cb = QComboBox()
         self.smoothing_cb.addItems([
-            "Point to Point",          # maps to 1
-            "Lowess %10",              # maps to 4
-            "Lowess %20",              # maps to 5
-            "Lowess %30 (default)",    # maps to 2
-            "Lowess %40",              # maps to 7
-            "Lowess %50",              # maps to 8
+            "Point to Point",   # maps to 1
+            "Lowess 2-points",  # maps to 5
+            "Lowess 3-points",  # maps to 6
+            "Lowess 4-points",  # maps to 7
+            "Lowess 5-points",  # maps to 8
+            "Lowess 6-points",  # maps to 9
+            "Lowess 7-points",  # maps to 10
         ])
-        self.smoothing_cb.setCurrentIndex(3)  # show "Lowess %30 (default)"
+        self.smoothing_cb.setCurrentIndex(4)  # show "Lowess 5-points" by default
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
@@ -679,7 +680,7 @@ class MainWindow(QMainWindow):
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
     
             # potentially compute missing mole_fraction values for fe3
-            if self.instrument.inst_id == 'fe3':
+            if (self.instrument.inst_id == 'fe3') or (self.instrument.inst_id == 'bld1'):
                 current_curve_date = self.run['cal_date'].iat[0]
                 # if mole_fraction is missing, compute it for fe3, except for port 9 (Push Port)
                 mf_mask = self.run['normalized_resp'].gt(0.1) & self.run['mole_fraction'].isna() & self.run['port'].ne(9)
@@ -829,7 +830,7 @@ class MainWindow(QMainWindow):
         ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
 
         # add cal curve date selector
-        if (self.instrument.inst_id == 'fe3') & (yparam == 'mole_fraction'):
+        if ((self.instrument.inst_id == 'fe3') or (self.instrument.inst_id == 'bld1')) and (yparam == 'mole_fraction'):
             self.calcurve_label.setVisible(True)
             self.calcurve_combo.setVisible(True)
             self.populate_calcurve_combo(current_curve_date)
@@ -1055,6 +1056,7 @@ class MainWindow(QMainWindow):
 
         # Fix: only format if current_curve is not NaT
         if pd.notna(current_curve):
+            #print(f'current curve = {current_curve}')
             current_str = pd.to_datetime(current_curve).strftime('%Y-%m-%d %H:%M:%S')
             idx = self.calcurve_combo.findText(current_str)
             if idx != -1:
@@ -1203,10 +1205,8 @@ class MainWindow(QMainWindow):
         
         row = self.calcurve_combo.itemData(index)
         if row is not None:
-            print("Selected calibration curve:", row['run_date'])
             self.selected_calc_curve = row['run_date']
-            print(f"{self.calcurves.loc[self.calcurves['run_date'] == row['run_date']]}")
-
+            
             self._save_payload = row.to_dict()
             
             ts_str = self.current_run_time.split(" (")[0]
@@ -2040,26 +2040,27 @@ class MainWindow(QMainWindow):
     def update_smoothing_combobox(self):
         """
         Set the smoothing combobox index based on self.run['detrend_method_num'].
-        If not found or invalid, defaults to 'Lowess %30 (default)'.
+        If not found or invalid, defaults to 'Lowess 5-points(default)'.
         """
         index_to_detrend_method = {
             0: 1,  # Point to Point
-            1: 4,  # Lowess 0.1
-            2: 5,  # Lowess 0.2
-            3: 2,  # Lowess 0.3 (default)
-            4: 7,  # Lowess 0.4
-            5: 8,  # Lowess 0.5
+            1: 5,  # Lowess 2-points
+            2: 6,  # Lowess 3-points
+            3: 7,  # 4-points
+            4: 8,  # 5-points
+            5: 9,  # 6-points 
+            6: 10,  # 7-points
         }
         detrend_to_index = {v: k for k, v in index_to_detrend_method.items()}
 
         self.smoothing_cb.blockSignals(True)
         try:
             dm = int(self.run["detrend_method_num"].iat[0])
-            idx = detrend_to_index.get(dm, 3)
+            idx = detrend_to_index.get(dm, 4) # default to Lowess 5-points
             self.smoothing_cb.setCurrentIndex(idx)
         except Exception as e:
             print(f"Warning: could not set smoothing combobox ({e})")
-            self.smoothing_cb.setCurrentIndex(3)
+            self.smoothing_cb.setCurrentIndex(4)
         self.smoothing_cb.blockSignals(False)
 
     def get_selected_detrend_method(self):
@@ -2068,13 +2069,15 @@ class MainWindow(QMainWindow):
         """
         index_to_detrend_method = {
             0: 1,  # Point to Point
-            1: 4,  # Lowess 0.1
-            2: 5,  # Lowess 0.2
-            3: 2,  # Lowess 0.3 (default)
-            4: 7,  # Lowess 0.4
-            5: 8,  # Lowess 0.5
+            1: 5,  # Lowess 2-points
+            2: 6,  # Lowess 3-points
+            3: 7,  # Lowess 4
+            4: 8,  # Lowess 5
+            5: 9,  # Lowess 6
+            6: 10,  # Lowess 7
         }
-        return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)
+        #print(f"Selected detrend method index: {self.smoothing_cb.currentIndex()}, {index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 8)}")
+        return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 8)  # default to Lowess 5-points
 
     def set_current_analyte(self, name):
         """
