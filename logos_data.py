@@ -948,10 +948,9 @@ class MainWindow(QMainWindow):
 
                 scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
                 if not scale_df.empty:
-                    ax.set_ylim(
-                        scale_df.min() * 0.95,
-                        scale_df.max() * 1.05
-                    )
+                    ymin, ymax = scale_df.min(), scale_df.max()
+                    if pd.notna(ymin) and pd.notna(ymax) and np.isfinite(ymin) and np.isfinite(ymax):
+                        ax.set_ylim(ymin * 0.95, ymax * 1.05)
             else:
                 try:
                     ax.set_ylim(
