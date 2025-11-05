@@ -841,7 +841,11 @@ class FE3_Instrument(HATS_DB_Functions):
 
     # The plumbing on the GC changed, before 20210928-225324
     # Define the cutoff date
-    CUTOFF_DATETIME = datetime(2021, 9, 28, 22, 53, 24, tzinfo=timezone.utc)
+    CUTOFF_DATETIME1 = datetime(2021, 9, 28, 22, 32, 24, tzinfo=timezone.utc)
+    # A second small change happened on 20210930-230101
+    # this cutoff date affected two flask runs. Instead of coding special logic,
+    # for CUTOFF_DATETIME2, we changed the port assingments in the database directly. 
+    # CUTOFF_DATETIME2 = datetime(2021, 9, 30, 23, 1, 1, tzinfo=timezone.utc)
 
     MARKER_MAP = {
         1: 'X',   # Standard
@@ -1026,8 +1030,8 @@ class FE3_Instrument(HATS_DB_Functions):
         )
 
         # choose which marker map to use based on the cutoff date
-        before_mask = df['analysis_datetime'] < self.CUTOFF_DATETIME
-        after_mask = ~before_mask
+        before_mask = df['analysis_datetime'] < self.CUTOFF_DATETIME1
+        #after_mask = ~before_mask
 
         # base port_idx logic for both
         df['port_idx'] = df['port'].astype(int) + df['flask_port'].fillna(0).astype(int)
