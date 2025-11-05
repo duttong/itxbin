@@ -4,6 +4,7 @@ import argparse
 import pandas as pd
 
 from gcwerks_export import GCwerks_export
+from bld1_gcwerks2db import main as bld1_gcwerks2db
 
 
 class BLD1_Process(GCwerks_export):
@@ -43,7 +44,12 @@ if __name__ == '__main__':
 
     if options.year:
         bld1.export_years(options.mol, start_year=options.year, end_year=options.year, report=reportfile)
+        bld1_gcwerks2db(year=options.year)
         quit()
 
     # bld1.export_years(options.mol)
     bld1.export_onefile(report=reportfile)
+    
+    # upload gcwerks results of current year to DB (added 20251105)
+    current_year = bld1.read_results(year='all').index[-1].year
+    bld1_gcwerks2db(year=current_year)
