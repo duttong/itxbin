@@ -33,9 +33,9 @@ class GCwerks_Import:
         # if any command line filtering/smoothing options are set, don't use smoothfile
         if (
             ('s', True) in self.options.items() or
-            int(self.options.get('boxwidth', -1)) > -1 or
+            (self.options.get('boxwidth') is not None and int(self.options['boxwidth']) > -1) or
             ('g', True) in self.options.items() or
-            int(self.options.get('ws_start', -1)) > -1
+            (self.options.get('ws_start') is not None and int(self.options['ws_start']) > -1)
         ):
             self.usesmoothfile = False
 
