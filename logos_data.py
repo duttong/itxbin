@@ -1400,6 +1400,7 @@ class MainWindow(QMainWindow):
                 subset[yvar],
                 marker=marker,
                 c=color,
+                s=10,
                 zorder=1,
             )
 
