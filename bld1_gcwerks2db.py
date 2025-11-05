@@ -73,7 +73,7 @@ def cleanup_db_df(df, dropcols=True):
     df = df.reset_index()
     if dropcols:
         # drop area columns to save space.
-        droplist = [f'{mol}_area' for mol in self.mols]
+        droplist = [f'{mol}_area' for mol in bld1.analytes.keys()]
         #droplist += ['ports', 'seq']
         cols = df.columns.difference(droplist)
         df = df[cols]
