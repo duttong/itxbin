@@ -544,6 +544,9 @@ class MainWindow(QMainWindow):
             self.current_pnum = 20
             self.set_current_analyte('HFC134a')
 
+        self.figure.tight_layout(rect=[0, 0, 1.05, 1])
+        self.canvas.draw_idle()
+
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
         self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
@@ -871,7 +874,7 @@ class MainWindow(QMainWindow):
             borderaxespad=0.3,
             labelspacing=0.2,
         )
-
+        
         # Style Save/Revert entries like buttons
         self._save2db_text = None
         self._save2dball_text = None
@@ -949,6 +952,9 @@ class MainWindow(QMainWindow):
                 scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
                 if not scale_df.empty:
                     ymin, ymax = scale_df.min(), scale_df.max()
+                    if ymin == ymax:
+                        ymin -= 0.05 * abs(ymin) if ymin != 0 else 0.05
+                        ymax += 0.05 * abs(ymax) if ymax != 0 else 0.05
                     if pd.notna(ymin) and pd.notna(ymax) and np.isfinite(ymin) and np.isfinite(ymax):
                         ax.set_ylim(ymin * 0.95, ymax * 1.05)
             else:
@@ -971,6 +977,16 @@ class MainWindow(QMainWindow):
         # Make sure the rectangle selector attaches to the current axes
         self._reattach_rect_selector()
 
+        # --- estimate margin from longest legend label ---
+        texts = [t.get_text() for t in leg.texts]
+        if texts:
+            max_len = max(len(t) for t in texts)
+            # map longest label length to a right margin between 0.75–0.95
+            right_margin = max(0.75, min(0.95, 1.0 - (max_len * 0.01)))
+        else:
+            right_margin = 0.9  # fallback if no legend entries
+
+        self.figure.tight_layout(rect=[0, 0, right_margin, 1])
         self.canvas.draw_idle()
 
         if self._pick_cid is None:
@@ -979,7 +995,7 @@ class MainWindow(QMainWindow):
         # Connect tooltip click handler
         if not hasattr(self, "_click_tooltip_cid"):
             self._click_tooltip_cid = self.canvas.mpl_connect("button_press_event", self._on_click_tooltip)
-                
+                        
     def _reattach_rect_selector(self):
         """Ensure RectangleSelector follows the current axes after a redraw."""
         if not hasattr(self, "_rect_selector"):
