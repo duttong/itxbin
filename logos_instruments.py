@@ -387,7 +387,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         cols = ["normalized_resp", "coef0", "coef1", "coef2", "coef3"]
         arr = df[cols].to_numpy()
         df["mole_fraction"] = [
-            self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
+            self.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=-20.0, mf_max=3000)
             for (y, a0, a1, a2, a3) in arr
         ]
         return df
