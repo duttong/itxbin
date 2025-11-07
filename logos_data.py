@@ -12,7 +12,7 @@ from PyQt5 import QtCore
 from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QToolTip,
+    QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame
@@ -511,6 +511,15 @@ class MainWindow(QMainWindow):
         combined_layout.addWidget(options_gb, stretch=1)
 
         processing_layout.addWidget(combined_gb)
+
+        # --- Save Run Button ---
+        if self.instrument.inst_id in {'bld1'}:
+            self.save_csv_btn = QPushButton("Save run to .csv file")
+            self.save_csv_btn.setToolTip("Export the selected run to a CSV file")
+            self.save_csv_btn.clicked.connect(lambda: self.export_csv(self.save_csv_btn))
+
+            # Add it below the existing Plot and Options section
+            processing_layout.addWidget(self.save_csv_btn) 
 
         # Stretch to push everything to the top
         processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -1384,7 +1393,7 @@ class MainWindow(QMainWindow):
         mx_cal = float(np.nanmax(self.run['cal_mf']))
         try:
             #x_one2one = np.linspace(mn_cal * .95, mx_cal * 1.05, 200)
-            x_one2one = np.linspace(-.02, mx_cal * 1.05, 200)
+            x_one2one = np.linspace(-ref_mf_mean*0.2, mx_cal * 1.05, 200)
             if np.isfinite(ref_mf_mean) and ref_mf_mean != 0:
                 y_one2one = x_one2one / ref_mf_mean
             else:
@@ -1425,7 +1434,7 @@ class MainWindow(QMainWindow):
             self.run['data_flag_int'].fillna(0).astype(int) != 0
         ) & mask_main
         
-        # Overlay flagged points with white "X"
+        # Overlay flagged points
         ax.scatter(
             self.run.loc[flags, 'cal_mf'],
             self.run.loc[flags, yvar],
@@ -1506,7 +1515,7 @@ class MainWindow(QMainWindow):
 
         # Extend to zero if checked
         if self.draw2zero_cb.isChecked():
-            xgrid = np.linspace(-0.02, mx_cal * 1.05, 300)
+            xgrid = np.linspace(-ref_mf_mean*0.2, mx_cal * 1.05, 300)
         else:
             xgrid = np.linspace(mn_cal * .95, mx_cal * 1.05, 300)
             
@@ -1632,8 +1641,8 @@ class MainWindow(QMainWindow):
         else:
             try:
                 if self.draw2zero_cb.isChecked():
-                    ax.set_ylim(0, 1.2)
-                    ax.set_xlim(0, x_all.max() * 1.05)
+                    ax.set_ylim(-.2, 1.2)
+                    ax.set_xlim(-ref_mf_mean*0.2, x_all.max() * 1.05)
                 else:
                     ax.set_ylim(y_all.min() * 0.95, y_all.max() * 1.05)
                     ax.set_xlim(x_all.min() * 0.95, x_all.max() * 1.05)
@@ -2196,6 +2205,32 @@ class MainWindow(QMainWindow):
                 print("Saving changes here...")
             else:
                 pass
+
+    def export_csv(self, button):
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+
+        run_selected = pd.to_datetime(self.run['run_time'].iloc[0]).strftime('%Y%m%d-%H%M%S')
+        runtype = self.run['run_type_num'].iloc[0]
+        default_file = f'{run_selected}_data.csv'
+
+        """
+        if self.runTypeCombo.currentText() == 'aircore':
+            default_file = f'{run_selected}_data.csv'
+        else:    
+            default_file = f'{run_selected}_summary.csv'
+        """
+            
+        file, _ = QFileDialog.getSaveFileName(
+            self,
+            'Save run as CSV file',
+            default_file,
+            'CSV Files (*.csv);;All Files (*)',
+            options=options
+        )
+
+        if file:
+            self.instrument.export_run_alldata(self.run, file)
         
 
 def get_instrument_for(instrument_id: str):
