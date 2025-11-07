@@ -1273,3 +1273,95 @@ class BLD1_Instrument(HATS_DB_Functions):
             return df
         df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
         return df
+    
+    def export_run(self, df, file):
+        pass
+                
+    def export_run_alldata(self, df, file):
+        
+        start_date = df['run_time'].min().strftime('%Y-%m-%d %H:%M:%S')
+
+        query = f"""
+            SELECT analysis_datetime, run_time, port, port_info, parameter_num,
+               height, mole_fraction, retention_time, flag FROM hats.ng_data_view
+            WHERE inst_num = {self.inst_num}
+                AND run_time = '{start_date}'
+            ORDER BY analysis_datetime;
+        """
+
+        df = pd.DataFrame(self.db.doquery(query))
+
+        # --- Map flag strings to boolean ---
+        if 'flag' in df.columns:
+            df['flag'] = df['flag'].apply(lambda x: False if str(x).strip() == '...' else True)
+
+        self.export_run_legacy(df, file)
+
+    def export_run_legacy(self, df, filepath):
+        """
+        Export the current run to a legacy CSV format, flattening analytes
+        (SF6, N2O, CFC11, CFC12, CFC113, h1211) into columns based on parameter_num.
+        Ensures one row per analysis_datetime.
+        """
+
+        #analytes = ['SF6', 'N2O', 'CFC11', 'CFC12', 'CFC113', 'h1211']
+        analytes = self.analytes.keys()
+        base_cols = ['time', 'port']  # <-- 'time' instead of 'analysis_time'
+        export_cols = base_cols + [
+            f"{mol}_{suffix}"
+            for mol in analytes
+            for suffix in ['ht', 'rt', 'value', 'flag']
+        ]
+
+        # --- Base table: one row per unique timestamp ---
+        df_base = (
+            df[['analysis_datetime', 'port']]
+            .drop_duplicates(subset=['analysis_datetime'])
+            .copy()
+        )
+        df_base['time'] = pd.to_datetime(df_base['analysis_datetime']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        df_out = df_base[['time', 'port']].copy()
+
+        # --- Add analyte data (pivot per analyte then merge) ---
+        for mol, pnum in self.analytes.items():
+            subset = df[df['parameter_num'] == pnum].copy()
+
+            # ensure expected columns
+            for col in ['height', 'retention_time', 'mole_fraction', 'flag']:
+                if col not in subset.columns:
+                    subset[col] = pd.NA if col != 'flag' else False
+
+            # rename for clarity
+            subset.rename(columns={
+                'height': f'{mol}_ht',
+                'retention_time': f'{mol}_rt',
+                'mole_fraction': f'{mol}_value',
+                'flag': f'{mol}_flag'
+            }, inplace=True)
+
+            # ensure datetime column for merge
+            subset['analysis_dt'] = pd.to_datetime(subset['analysis_datetime'])
+            df_out['analysis_dt'] = pd.to_datetime(df_out['time'])
+
+            # reduce to one row per analysis_datetime
+            subset = subset.groupby('analysis_dt', as_index=False).first()
+
+            # merge safely
+            df_out = df_out.merge(
+                subset[['analysis_dt', f'{mol}_ht', f'{mol}_rt', f'{mol}_value', f'{mol}_flag']],
+                on='analysis_dt',
+                how='left'
+            )
+
+        # drop helper column
+        df_out.drop(columns=['analysis_dt'], inplace=True, errors='ignore')
+
+        # --- Ensure all expected columns exist ---
+        for col in export_cols:
+            if col not in df_out.columns:
+                df_out[col] = False if col.endswith('_flag') else pd.NA
+
+        # --- Reorder columns and save ---
+        df_out = df_out[export_cols]
+        df_out.to_csv(filepath, index=False)
+        print(f"Legacy CSV saved: {filepath}")
