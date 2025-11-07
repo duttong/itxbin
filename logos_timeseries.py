@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
 import colorsys
+import time
 
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
@@ -44,7 +45,7 @@ class TimeseriesFigure:
     """Manages a single interactive matplotlib figure for timeseries data."""
 
     def __init__(self, parent_widget, df, analyte):
-        self.parent = parent_widget
+        self.parent_widget = parent_widget
         self.df = df
         self.analyte = analyte
         self.channel = parent_widget.current_channel
@@ -61,26 +62,25 @@ class TimeseriesFigure:
     def _on_close(self, evt):
         # drop strong ref from parent so it can GC cleanly
         try:
-            self.parent.open_figures.remove(self)
+            self.parent_widget.open_figures.remove(self)
         except ValueError:
             pass
 
     # ────────────────────────────────────────────────────────────
     def _build_plot(self):
-        datasets = self.parent.build_datasets(self.df)
-        sites_by_lat = self.parent.sites_by_lat
+        """Build full figure layout and legends."""
+        datasets = self.parent_widget.build_datasets(self.df)
+        sites_by_lat = self.parent_widget.sites_by_lat
 
-        # Draw the datasets (reuses parent logic)
-        self.dataset_handles = self.parent._draw_dataset_artists(self._ax, datasets, self.analyte)
+        # --- Draw datasets ---
+        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
 
-        # --- Apply initial visibility defaults ---
-        for label, visible in self.dataset_visibility.items():
-            if label in self.dataset_handles:
-                for h in self.dataset_handles[label]:
-                    h.set_visible(visible)
+        # Tag each artist with its site (safety)
+        for label, artists in self.dataset_handles.items():
+            for artist in artists:
+                artist._site = getattr(artist, "_site", None)
 
         # Layout adjustments
-        #plt.tight_layout(rect=[0, 0, 0.85, 1])
         self._fig.tight_layout(rect=[0, 0, 0.85, 1])
         self._fig.subplots_adjust(top=0.90, bottom=0.12, left=0.05, right=0.85)
         self._fig.canvas.draw()
@@ -94,8 +94,8 @@ class TimeseriesFigure:
         legend_handles = []
         for label in ["All samples", "Flask mean", "Pair mean"]:
             dummy = mlines.Line2D([], [], color="black",
-                                  marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
-                                  linestyle="", markersize=6, label=label)
+                                marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
+                                linestyle="", markersize=6, label=label)
             dummy._is_dataset_legend = True
             if not self.dataset_visibility.get(label, True):
                 dummy.set_alpha(0.4)
@@ -118,9 +118,14 @@ class TimeseriesFigure:
 
         # ─── Site Legend ───
         site_colors = build_site_colors(sites_by_lat)
-        sites = self.parent.get_active_sites()
-        site_handles = {s: self._ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
-                        for s in sites}
+        sites = self.parent_widget.get_active_sites()
+
+        # Create dummy handles for legend
+        site_handles = {
+            s: self._ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
+            for s in sites
+        }
+
         site_legend = self._ax.legend(
             handles=site_handles.values(),
             title="Sites",
@@ -135,10 +140,27 @@ class TimeseriesFigure:
         self._ax.add_artist(site_legend)
         self._site_legend = site_legend
 
+        for legline in site_legend.legendHandles:
+            legline.set_picker(5)
+            legline._site_legend = True
+
+        # ─── Build mapping of site → all artists ───
+        self._site_artists = {}
+        for artist in self._ax.get_lines() + self._ax.collections:
+            site = getattr(artist, "_site", None)
+            if site:
+                self._site_artists.setdefault(site, []).append(artist)
+
+        # ─── Initialize site visibility (all ON) ───
+        self._site_visibility = {s: True for s in self._site_artists.keys()}
+
+        # ─── Apply dataset + site visibility rules ───
+        self._apply_visibility()
+
         # ─── Reload Button ───
         self._add_reload_button_below(site_legend)
 
-        # Axes labels
+        # Axes labels and cosmetics
         self._ax.set_xlabel("Sample datetime")
         self._ax.set_ylabel("Mole fraction")
         self._ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {self.analyte}")
@@ -146,9 +168,25 @@ class TimeseriesFigure:
         plt.xticks(rotation=45)
         plt.show(block=False)
 
-        # Event connections
+        # Events
         self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
         self._fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
+
+    def _apply_visibility(self):
+        """Enforce visibility = site_visibility AND dataset_visibility for all artists."""
+        for site, artists in getattr(self, "_site_artists", {}).items():
+            svis = self._site_visibility.get(site, True)
+            for a in artists:
+                # Try to get dataset label (either via .get_label() or custom tag)
+                dlabel = getattr(a, "_dataset_label", None)
+                if dlabel is None:
+                    dlabel = getattr(a, "get_label", lambda: None)()
+                if not dlabel or dlabel not in self.dataset_visibility:
+                    continue
+
+                dvis = self.dataset_visibility[dlabel]
+                a.set_visible(bool(svis and dvis))
+        self._fig.canvas.draw_idle()
 
     # ────────────────────────────────────────────────────────────
     def _add_reload_button_below(self, legend):
@@ -177,7 +215,7 @@ class TimeseriesFigure:
         plt.pause(0.05)  # brief visual feedback (keeps GUI responsive)
 
         # Query using the analyte/channel that this figure was created with
-        df = self.parent.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
+        df = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
         if df.empty:
             print("No data to reload")
             self._reload_btn.label.set_text("Reload")
@@ -195,15 +233,37 @@ class TimeseriesFigure:
         self.dataset_handles.clear()
 
         # Redraw datasets
-        datasets = self.parent.build_datasets(df)
+        datasets = self.parent_widget.build_datasets(df)
         xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
-        self.dataset_handles = self.parent._draw_dataset_artists(self._ax, datasets, self.analyte)
+        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
 
         # Re-apply per-dataset visibility preferences
         for label, visible in self.dataset_visibility.items():
             if label in self.dataset_handles:
                 for h in self.dataset_handles[label]:
                     h.set_visible(visible)
+
+        # Re-tag artists with site (if needed)
+        for site, artists in self.dataset_handles.items():
+            for artist in artists:
+                artist._site = getattr(artist, "_site", site)
+
+        # Rebuild site→artists map from dataset_handles
+        self._site_artists = {}
+        for _, artists in self.dataset_handles.items():
+            for a in artists:
+                site = getattr(a, "_site", None)
+                if site:
+                    self._site_artists.setdefault(site, []).append(a)
+
+        # Ensure _site_visibility has entries for all current sites (default True if new)
+        if not hasattr(self, "_site_visibility"):
+            self._site_visibility = {}
+        for s in self._site_artists.keys():
+            self._site_visibility.setdefault(s, True)
+
+        # Enforce combined visibility
+        self._apply_visibility()
 
         # Restore limits
         self._ax.set_xlim(xlim)
@@ -230,31 +290,66 @@ class TimeseriesFigure:
 
     # ────────────────────────────────────────────────────────────
     def _on_pick_event(self, event):
-        """Handle both dataset legend toggles and point tooltips."""
+        """Handle dataset legend toggles, site legend toggles, and point tooltips."""
+
+        # --- Prevent double-trigger ---
+        tnow = time.time()
+        if hasattr(self, "_last_pick_time") and (tnow - self._last_pick_time) < 0.15:
+            return
+        self._last_pick_time = tnow
+        
         artist = event.artist
 
-        # Dataset legend click
+        # ─── Dataset Legend ───
         if isinstance(artist, mlines.Line2D) and getattr(artist, "_is_dataset_legend", False):
             label = artist.get_label()
             if label not in self.dataset_visibility:
                 return
 
-            # Toggle visibility state
-            new_visible = not self.dataset_visibility[label]
-            self.dataset_visibility[label] = new_visible
+            # Flip dataset state
+            self.dataset_visibility[label] = not self.dataset_visibility[label]
 
-            # Update corresponding dataset artists
-            if label in self.dataset_handles:
-                for h in self.dataset_handles[label]:
-                    h.set_visible(new_visible)
+            # Visual feedback for the legend icon
+            artist.set_alpha(1.0 if self.dataset_visibility[label] else 0.3)
 
-            # Update legend alpha feedback
-            artist.set_alpha(1.0 if new_visible else 0.3)
-            event.canvas.draw_idle()
+            # Enforce across ALL sites via single pass
+            self._apply_visibility()
             return
 
-        # Otherwise, delegate to parent for tooltip/right-click actions
-        self.parent.on_point_pick(event)
+        # ─── Site Legend ───
+        if hasattr(self, "_site_legend"):
+            leg = self._site_legend
+            label = None
+
+            # Identify clicked site legend entry
+            for text in leg.get_texts():
+                if event.artist == text:
+                    label = text.get_text()
+                    break
+            for handle in leg.legendHandles:
+                if event.artist == handle:
+                    label = handle.get_label()
+                    break
+
+            if label and label in getattr(self, "_site_visibility", {}):
+                # Flip site state
+                self._site_visibility[label] = not self._site_visibility[label]
+
+                # Dim legend entry when hidden
+                alpha = 1.0 if self._site_visibility[label] else 0.2
+                for text in leg.get_texts():
+                    if text.get_text() == label:
+                        text.set_alpha(alpha)
+                for handle in leg.legendHandles:
+                    if handle.get_label() == label:
+                        handle.set_alpha(alpha)
+
+                # Enforce site x dataset visibility
+                self._apply_visibility()
+                return
+
+        # ─── Other clickable artists (tooltips, etc.) ───
+        self.parent_widget.on_point_pick(event)
 
 class TimeseriesWidget(QWidget):
     def __init__(self, instrument=None, parent=None):
@@ -267,6 +362,7 @@ class TimeseriesWidget(QWidget):
         self.current_analyte = None
         self.current_channel = None
 
+        # defualts
         if self.instrument.inst_num == 193:     # FE3
             self.current_analyte = 'CFC11 (c)'
             self.current_channel = 'c'
@@ -416,6 +512,9 @@ class TimeseriesWidget(QWidget):
                 style = styles[label]
                 color = adjust_brightness(base, style["shade"])
 
+                # determine visibility for this dataset
+                visible = self._dataset_visibility.get(label, True)
+
                 if label == "All samples":
                     line, = ax.plot(
                         grp["sample_datetime"], grp["mole_fraction"],
@@ -423,6 +522,8 @@ class TimeseriesWidget(QWidget):
                         color=color, markersize=style["size"], alpha=style["alpha"],
                         label=label, mfc=color, mec='gray', picker=5
                     )
+                    line._site = site
+                    line._dataset_label = label
                     line._meta = {
                         "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
                         "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
@@ -432,21 +533,33 @@ class TimeseriesWidget(QWidget):
                         "analyte": analyte,
                         "channel": self.current_channel,
                     }
+                    line.set_visible(visible)
                     dataset_handles.setdefault(label, []).append(line)
+
                 else:
+                    # draw errorbar and tag all its parts
                     container = ax.errorbar(
                         grp["sample_datetime"], grp["mean"], yerr=grp["std"],
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
                         mfc='none', mec=color, label=label
                     )
+
+                    # Flatten all visible artist components
                     parts = []
                     for child in container:
                         if isinstance(child, (list, tuple)):
                             parts.extend(child)
                         else:
                             parts.append(child)
-                    parts = [p for p in parts if hasattr(p, "set_visible")]
+
+                    # Apply site label + visibility to every piece
+                    for p in parts:
+                        if hasattr(p, "set_visible"):
+                            p._site = site
+                            p._dataset_label = label
+                            p.set_visible(visible)
+
                     dataset_handles.setdefault(label, []).extend(parts)
 
         ax.figure.canvas.draw_idle()
