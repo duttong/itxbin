@@ -1972,14 +1972,34 @@ class MainWindow(QMainWindow):
             self.canvas.draw_idle()
         
     def get_load_range(self):
+        """
+        Return (start_date, end_date) strings for SQL filtering based on GUI selections.
+        Ensures valid end-of-month dates, handles reversed order by swapping both
+        internally and in the UI combo boxes.
+        """
+        # --- Read selections ---
         sy = int(self.start_year_cb.currentText())
         sm = self.start_month_cb.currentIndex() + 1
         ey = int(self.end_year_cb.currentText())
         em = self.end_month_cb.currentIndex() + 1
 
+        # --- Convert to pandas timestamps ---
         start = pd.Timestamp(f"{sy}-{sm:02d}-01")
-        # roll forward to the last day of that month
-        end = (pd.Timestamp(f"{ey}-{em:02d}-01") + pd.offsets.MonthEnd(1))
+        end = pd.Timestamp(f"{ey}-{em:02d}-01") + pd.offsets.MonthEnd(1)
+
+        # --- Handle reversed selection ---
+        if start > end:
+            # Swap dates
+            start, end = end, start
+
+            # Update the UI combo boxes to match the corrected order
+            self.start_year_cb.setCurrentText(str(start.year))
+            self.start_month_cb.setCurrentIndex(start.month - 1)
+            self.end_year_cb.setCurrentText(str(end.year))
+            self.end_month_cb.setCurrentIndex(end.month - 1)
+            self.apply_dates()
+
+        # --- Return valid date strings ---
         return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     
     def set_runlist(self, initial_date=None):
