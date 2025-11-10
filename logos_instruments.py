@@ -834,6 +834,7 @@ class FE3_Instrument(HATS_DB_Functions):
         "Calibrations": 2,
         "Other": 4,
         #"PFPs": 5,
+        "Test": 10
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
@@ -1091,10 +1092,10 @@ class BLD1_Instrument(HATS_DB_Functions):
     RUN_TYPE_MAP = {
         # Name: run_type_num
         "All": None,        # no filter
-        #"Flasks": 1,      
         "Calibrations": 2,
         "Other": 4,
         "Aircore": 9,
+        "Test": 10
     }
     STANDARD_PORT_NUM = 11       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.

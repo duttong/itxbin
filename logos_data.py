@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 import math
+import re
 from functools import lru_cache
 import warnings
 import argparse
@@ -359,6 +360,36 @@ class MainWindow(QMainWindow):
         run_layout.setSpacing(6)
         run_gb.setLayout(run_layout)
         run_layout.addWidget(date_gb)
+        
+        # Change Run Type
+        change_runtype = QGroupBox("Change Run Type")
+        change_runtype_layout = QHBoxLayout()  # horizontal so all on one line
+        change_runtype.setLayout(change_runtype_layout)
+
+        # Label
+        change_runtype_label = QLabel("New Type:")
+
+        # Combo box (exclude 'All')
+        # Enable only for certain instruments to change the set run_type_num on the loaded run
+        self.change_runtype_enabled = False
+        if self.instrument.inst_id in {'fe3', 'bld1'}:
+            self.change_runtype_enabled = True
+        self.change_runtype_cb = QComboBox()
+        runtype_items = [k for k in self.instrument.RUN_TYPE_MAP.keys() if k != "All"]
+        self.change_runtype_cb.addItems(runtype_items)
+        self.change_runtype_cb.setCurrentIndex(-1)  # start blank
+        self.change_runtype_cb.currentTextChanged.connect(self.on_change_run_type_db)
+
+        # Save button
+        self.save_runtype_btn = QPushButton("Save")
+        self.save_runtype_btn.clicked.connect(self.on_save_run_type)
+        self.save_runtype_btn.setEnabled(False)  # optional, enable when selection changes
+
+        # Add widgets to layout (all in one row)
+        change_runtype_layout.addWidget(change_runtype_label)
+        change_runtype_layout.addWidget(self.change_runtype_cb)
+        change_runtype_layout.addWidget(self.save_runtype_btn)
+        change_runtype_layout.addStretch()  # push everything left, optional
 
         # Actual run_time selector + Prev/Next buttons
         runsel_hbox = QHBoxLayout()
@@ -375,6 +406,10 @@ class MainWindow(QMainWindow):
         runsel_hbox.addWidget(self.next_btn)
         run_layout.addLayout(runsel_hbox)
         run_layout.addLayout(runtype_row)
+
+        # Add group box to main layout
+        if self.change_runtype_enabled:
+            run_layout.addWidget(change_runtype)
 
         processing_layout.addWidget(run_gb)
 
@@ -656,6 +691,8 @@ class MainWindow(QMainWindow):
             self.current_plot_type = id
             self.lock_y_axis_cb.setChecked(False)
 
+        self.set_runtype_combo()
+
     def _fmt_gc_plot(self, x, y):
         return f"x={mdates.num2date(x).strftime('%Y-%m-%d %H:%M')}  y={y:0.3g}"
 
@@ -667,11 +704,6 @@ class MainWindow(QMainWindow):
         Plot data with the legend sorted by analysis_datetime.
         """
         if self.run.empty:
-            print("No data available for plotting.")
-            return
-
-        if self.run.empty:
-            print(f"No data for run_time: {self.current_run_time}")
             return
 
         current_curve_date = ''
@@ -1042,6 +1074,46 @@ class MainWindow(QMainWindow):
         if getattr(self, "canvas", None):
             self.canvas.draw_idle()
 
+    def clear_plot(self, message="No data available"):
+        """Clear the main GC plot and legend, resetting interactive elements."""
+        # Clear figure contents
+        if hasattr(self, "figure"):
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            ax.set_title(message, pad=12)
+            ax.set_xlabel("Analysis Datetime")
+            ax.set_ylabel("")
+            ax.grid(False)
+            ax.set_facecolor("#f7f7f7")
+
+            # Clear legend area (force blank layout)
+            ax.legend([], [], frameon=False)
+            self.figure.tight_layout(rect=[0, 0, 0.9, 1])
+
+            # Redraw the canvas
+            if hasattr(self, "canvas"):
+                self.canvas.draw_idle()
+
+        # Reset internal state for legend and buttons
+        self._scatter_main = []
+        self._save2db_text = None
+        self._save2dball_text = None
+        self._revert_text = None
+        self._spacer2_text = None
+
+        # Disconnect pick and tooltip callbacks (if active)
+        for attr in ("_legend_pick_cid", "_pick_cid", "_click_tooltip_cid"):
+            cid = getattr(self, attr, None)
+            if cid is not None and hasattr(self, "canvas"):
+                self.canvas.mpl_disconnect(cid)
+            setattr(self, attr, None)
+
+        # Hide calibration curve selector if visible
+        if hasattr(self, "calcurve_label"):
+            self.calcurve_label.setVisible(False)
+        if hasattr(self, "calcurve_combo"):
+            self.calcurve_combo.setVisible(False)
+
     def populate_calcurve_combo(self, current_curve):
         self.calcurve_combo.blockSignals(True)
         self.calcurve_combo.clear()
@@ -1273,7 +1345,7 @@ class MainWindow(QMainWindow):
         # Calculate mole fractions row-by-row
         ref_estimate = ref_estimate.assign(
             mole_fraction=[
-                self.instrument.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=0.0, mf_max=3000)
+                self.instrument.invert_poly_to_mf(y, a0, a1, a2, a3, mf_min=-20.0, mf_max=3000)
                 for y in ref_estimate['normalized_resp']
             ]
         )
@@ -1286,15 +1358,11 @@ class MainWindow(QMainWindow):
         Adds a residuals (diff_y) panel above the main plot that shares the x-axis.
         """
         if self.run.empty:
-            print("No data available for plotting.")
+            self.clear_plot()
             return
 
         # filter for run_time selected in run_cb
         ts_str = self.current_run_time.split(" (")[0]
-        sel = pd.to_datetime(ts_str, utc=True)
-        if self.run.empty:
-            print(f"No data for run_time: {self.current_run_time}")
-            return
 
         mask = self.run['port'].eq(self.instrument.STANDARD_PORT_NUM)
         if not mask.any():  # no rows match
@@ -2059,6 +2127,7 @@ class MainWindow(QMainWindow):
         )
 
         self.update_smoothing_combobox()
+        self.set_runtype_combo()
 
         self.madechanges = False
 
@@ -2084,7 +2153,7 @@ class MainWindow(QMainWindow):
             idx = detrend_to_index.get(dm, 4) # default to Lowess 5-points
             self.smoothing_cb.setCurrentIndex(idx)
         except Exception as e:
-            print(f"Warning: could not set smoothing combobox ({e})")
+            #print(f"Warning: could not set smoothing combobox ({e})")
             self.smoothing_cb.setCurrentIndex(4)
         self.smoothing_cb.blockSignals(False)
 
@@ -2149,7 +2218,116 @@ class MainWindow(QMainWindow):
 
         self.load_selected_run()
         self.on_plot_type_changed(self.current_plot_type)
+
+    def set_runtype_combo(self):
+        """Set the combo box to the current run's run type."""
         
+        if self.change_runtype_enabled is False:
+            return
+
+        if self.run is None or self.run.empty:
+            self.clear_plot()
+            return
+                
+        # Get the current run's run_type_num
+        current_runtype_num = int(self.run['run_type_num'].iloc[0])
+
+        # Build reverse map {num: name} from the instrument
+        num_to_name = {v: k for k, v in self.instrument.run_type_num().items()}
+
+        # Lookup the lowercase name for the current type
+        current_runtype_name = num_to_name.get(current_runtype_num, "").lower()
+        current_runtype_name = re.sub(r's$', '', current_runtype_name)  # remove trailing 's'
+        current_runtype_name = 'calibration' if current_runtype_name == 'cal' else current_runtype_name
+
+        # Find the matching index ignoring case and plural
+        index = -1
+        for i in range(self.change_runtype_cb.count()):
+            item = self.change_runtype_cb.itemText(i).lower()
+            item_norm = re.sub(r's$', '', item)  # normalize plural form
+            if item_norm == current_runtype_name:
+                index = i
+                break
+
+        # Set the index if found
+        self.change_runtype_cb.setCurrentIndex(index)
+        
+    def on_change_run_type_db(self):
+        """Enable save button only if a new run type is selected."""
+        if not self.change_runtype_enabled:
+            return
+
+        # Get the selected combo text directly
+        text = self.change_runtype_cb.currentText().strip()
+        if not text:
+            self.save_runtype_btn.setEnabled(False)
+            return
+
+        # Get the current run's numeric type
+        current_runtype_num = int(self.run['run_type_num'].iloc[0])
+
+        # Reverse map from num → name
+        num_to_name = {v: k for k, v in self.instrument.run_type_num().items()}
+
+        # Normalize current run type name
+        current_name = num_to_name.get(current_runtype_num, "").lower()
+        current_name = re.sub(r's$', '', current_name)
+        current_name = 'calibration' if current_name == 'cal' else current_name
+
+        # Normalize selected combo text
+        selected_name = text.lower()
+        selected_name = re.sub(r's$', '', selected_name)
+        selected_name = 'calibration' if selected_name == 'cal' else selected_name
+
+        # Compare normalized names
+        enabled = selected_name != current_name
+        self.save_runtype_btn.setEnabled(enabled)
+        self._style_save_runtype_btn(enabled)
+
+    def _style_save_runtype_btn(self, enabled):
+        """Update the Save button color based on its enabled state."""
+        if enabled:
+            # Light green when enabled
+            self.save_runtype_btn.setStyleSheet(
+                "QPushButton { background-color: lightgreen; color: black; }"
+            )
+        else:
+            # Default / greyed-out look when disabled
+            self.save_runtype_btn.setStyleSheet(
+                "QPushButton { background-color: #d3d3d3; color: #666; }"
+            )
+
+    def on_save_run_type(self):
+        """Update the database with the new run type for the current run."""
+        runtime = self.run['run_time'].iloc[0]
+        runtime_str = runtime.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Get selected run type text from combo box
+        text = self.change_runtype_cb.currentText()
+        if not text:
+            print("No run type selected.")
+            return
+
+        run_type_num = self.instrument.RUN_TYPE_MAP.get(text)
+        if run_type_num is None:
+            print(f"Unknown run type '{text}', skipping update.")
+            return
+
+        sql = f"""
+            UPDATE hats.ng_analysis
+            SET run_type_num = {run_type_num}
+            WHERE inst_num = {self.instrument.inst_num}
+            AND run_time = '{runtime_str}';
+        """
+
+        self.instrument.db.doquery(sql)
+        self.save_runtype_btn.setEnabled(False)
+        print(f"Run type updated in database for run_time {runtime_str}'.")
+        
+        self.set_runlist()
+        self.load_selected_run()
+        self.on_plot_type_changed(self.current_plot_type)
+                
     def on_prev_run(self):
         """
         Move the run_cb selection one index backward, if possible.
