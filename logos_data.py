@@ -895,9 +895,9 @@ class MainWindow(QMainWindow):
             spacer_handle,
             save2db_handle,
             spacer_handle,
-            save2dball_handle,
+            revert_handle,
             spacer_handle,
-            revert_handle
+            save2dball_handle
         ])
 
         # Put legend outside and create it ONCE
@@ -946,7 +946,8 @@ class MainWindow(QMainWindow):
                 txt.set_picker(True)
                 txt.set_bbox(dict(
                     boxstyle='round,pad=0.4',
-                    facecolor=('#2e7d32' if self.madechanges else '#9e9e9e'),
+                    #facecolor=('#2e7d32' if self.madechanges else '#9e9e9e'),
+                    facecolor=('#43a047' if self.madechanges else '#9e9e9e'),
                     edgecolor='none', alpha=0.95
                 ))
             elif t == 'Revert changes':
