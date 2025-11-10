@@ -1596,9 +1596,22 @@ class MainWindow(QMainWindow):
             legend_handles.append(Line2D([], [], color='black', linewidth=3, label=f"Fit {row['run_date'].strftime('%Y-%m-%d')}"))
             
         if self.oldcurves_cb.isChecked():
-            #print(curves)
+            t0, t1 = self.get_load_range()
+            t0 = pd.to_datetime(t0)
+            t1 = pd.to_datetime(t1)
+            
+            curves['run_date'] = pd.to_datetime(curves['run_date'])
+
+            # Filter curves to within the selected range
+            mask = (curves['run_date'] >= t0) & (curves['run_date'] <= t1)
+            subset = curves.loc[mask].sort_values('run_date', ascending=False)
+
+            # Limit to a manageable number, e.g., the 6 most recent within range
+            max_curves = 6
+            subset = subset.head(max_curves)
+
             # plot stored cal curves
-            for row in curves[0:6].itertuples():
+            for row in subset.itertuples():
                 coefs = [row.coef3, row.coef2, row.coef1, row.coef0]
                 flagged = int(row.flag)
                 ygrid = np.polyval(coefs, xgrid)
@@ -1959,15 +1972,15 @@ class MainWindow(QMainWindow):
             self.canvas.draw_idle()
         
     def get_load_range(self):
-        # Read selection from the four combo boxes
-        sy = self.start_year_cb.currentText()
-        sm = self.start_month_cb.currentIndex() + 1   # Jan→1, Feb→2, etc.
-        ey = self.end_year_cb.currentText()
+        sy = int(self.start_year_cb.currentText())
+        sm = self.start_month_cb.currentIndex() + 1
+        ey = int(self.end_year_cb.currentText())
         em = self.end_month_cb.currentIndex() + 1
 
-        start_sql = f"{sy}-{sm:02d}-01"
-        end_sql = f"{ey}-{em:02d}-31"
-        return start_sql, end_sql
+        start = pd.Timestamp(f"{sy}-{sm:02d}-01")
+        # roll forward to the last day of that month
+        end = (pd.Timestamp(f"{ey}-{em:02d}-01") + pd.offsets.MonthEnd(1))
+        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     
     def set_runlist(self, initial_date=None):
         t0, t1 = self.get_load_range()
