@@ -1094,8 +1094,9 @@ class BLD1_Instrument(HATS_DB_Functions):
         "All": None,        # no filter
         "Calibrations": 2,
         "Other": 4,
+        "Zero": 6,
+        "Test": 10,
         "Aircore": 9,
-        "Test": 10
     }
     STANDARD_PORT_NUM = 11       # port number the standard is run on.
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
