@@ -833,6 +833,7 @@ class FE3_Instrument(HATS_DB_Functions):
         "Flasks": 1,        # run_type_num
         "Calibrations": 2,
         "Other": 4,
+        "Tank": 7,
         #"PFPs": 5,
         "Test": 10
     }
