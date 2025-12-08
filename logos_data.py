@@ -822,7 +822,13 @@ class MainWindow(QMainWindow):
                     if "analysis_datetime" in subset
                     else [""] * len(subset)
                 ),
-
+                "sample_datetime": (
+                    pd.to_datetime(subset["sample_datetime"], errors="coerce")
+                    .dt.strftime("%Y-%m-%d %H:%M:%S")
+                    .tolist()
+                    if "sample_datetime" in subset
+                    else [""] * len(subset)
+                ),
                 "sample_id": subset["sample_id"].astype(str).tolist() if "sample_id" in subset else [""] * len(subset),
                 "pair_id": subset["pair_id_num"].astype(str).tolist() if "pair_id_num" in subset else [""] * len(subset),
                 "port_info": subset["port_info"].astype(str).tolist() if "port_info" in subset else [""] * len(subset),
@@ -831,6 +837,10 @@ class MainWindow(QMainWindow):
                     if "net_pressure" in subset
                     else [""] * len(subset)
                 ),
+                "mole_fraction": subset["mole_fraction"].round(3).astype(str).tolist() if "mole_fraction" in subset else [""] * len(subset),
+                "response": subset[f"{self.instrument.response_type}"].round(5).astype(str).tolist() if f"{self.instrument.response_type}" in subset else [""] * len(subset),
+                "ratio": subset["normalized_resp"].round(5).astype(str).tolist() if "normalized_resp" in subset else [""] * len(subset),
+
             }
             self._scatter_main.append(scatter)
         
@@ -1212,6 +1222,11 @@ class MainWindow(QMainWindow):
 
             site = meta.get("site", [None])[nearest_idx]
             analysis_time = meta.get("analysis_time", [None])[nearest_idx]
+            sample_time = meta.get("sample_datetime", [None])[nearest_idx]
+            resp = meta.get("response", [None])[nearest_idx]
+            resp = meta.get("response", [None])[nearest_idx]
+            ratio = meta.get("ratio", [None])[nearest_idx]
+            mf = meta.get("mole_fraction", [None])[nearest_idx]
             sample_id = meta.get("sample_id", [None])[nearest_idx]
             pair_id = meta.get("pair_id", [None])[nearest_idx]
             net_pressure = meta.get("net_pressure", [None])[nearest_idx]
@@ -1221,6 +1236,15 @@ class MainWindow(QMainWindow):
             # Site — show if not blank/None
             if site not in (None, "", "nan", "None"):
                 parts.append(f"<b>Site:</b> {site}")
+            
+            if resp is not None:
+                parts.append(f"<b>Response:</b> {resp}")
+                
+            if ratio is not None:
+                parts.append(f"<b>Ratio:</b> {ratio}")
+
+            if mf is not None:
+                parts.append(f"<b>Mole Fraction:</b> {mf}")
 
             # Sample ID — show only if not "0" or blank
             if isinstance(sample_id, str):
@@ -1242,9 +1266,13 @@ class MainWindow(QMainWindow):
                 if presss and presss not in {"0", "000", "None", "nan"}:
                     parts.append(f"<b>Net Pressure:</b> {presss} psi")
 
+            # Sample time — show only if not blank
+            if not _is_blank(sample_time):
+                parts.append(f"<b>Sample time:</b> {sample_time}")
+
             # Analysis time — always shown
             parts.append(f"<b>Analysis time:</b> {analysis_time}")
-
+            
             # Combine for tooltip
             text = "<br>".join(parts)
             QToolTip.showText(QCursor.pos(), text)
