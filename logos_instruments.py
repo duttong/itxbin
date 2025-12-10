@@ -568,22 +568,17 @@ class Normalizing():
         self.standard_run_type = std_run_type
         self.response_type = response_type
 
-    def _smooth_segment(self, seg, frac):
-        """Perform LOWESS smoothing on a single segment."""
-        # skip tiny segments
-        if len(seg) < 3 or seg['ts'].max() == seg['ts'].min():
-            return pd.Series(seg[self.response_type].values, index=seg.index)
-        # do LOWESS
-        return pd.Series(
-            lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False),
-            index=seg.index
-        )
-
-    def calculate_smoothed_std(self, df, min_pts=8, verbose=False):
+    def calculate_smoothed_std(
+        self,
+        df,
+        min_pts: int = 8,
+        verbose: bool = False,
+        override_detrend_method_num: int | None = None,
+    ):
         """
         Calculate smoothed standard deviation per run_time.
-        Each run_time can have its own detrend_method_num controlling the LOWESS fraction.
-        Optimized to reduce Python overhead while keeping per-run segmentation.
+        Each run_time can have its own detrend_method_num controlling the LOWESS fraction,
+        or you can override all of them with override_detrend_method_num.
         """
 
         std = (
@@ -610,21 +605,35 @@ class Normalizing():
         smoothed = np.full(len(std), np.nan, dtype=float)
 
         # detrend_method_num: points
+        #points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7, 11:10, 12:15, 13:20, 14:25}
         points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7}
 
         # group-level loop, but minimal overhead
         for run_time, seg in std.groupby('run_time', sort=False):
-            detrend_method = seg['detrend_method_num'].iloc[0]
+
+            if override_detrend_method_num is not None:
+                detrend_method = override_detrend_method_num
+            else:
+                detrend_method = seg['detrend_method_num'].iloc[0]
             
             if len(seg) >= 3 and seg['ts'].max() > seg['ts'].min():
                 frac = points_map.get(detrend_method, 5) / len(seg)
-                frac = 0.5 if frac > 1 else frac
+                frac = 1.0 if frac > 1 else frac
+                #print(len(seg), detrend_method, points_map.get(detrend_method, 5), frac)
 
                 if verbose:
                     t0 = time.time()
-                    print(f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} | points={points_map.get(detrend_method, 5)} | frac={frac}")
+                    print(
+                        f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} "
+                        f"| points={points_map.get(detrend_method, 5)} | frac={frac}"
+                    )
                 
-                y_smooth = lowess(seg[self.response_type], seg['ts'], frac=frac, return_sorted=False)
+                y_smooth = lowess(
+                    seg[self.response_type],
+                    seg['ts'],
+                    frac=frac,
+                    return_sorted=False
+                )
                 smoothed[seg.index] = y_smooth
             else:
                 smoothed[seg.index] = seg[self.response_type].values
@@ -635,16 +644,24 @@ class Normalizing():
         std['smoothed'] = smoothed
         return std[['analysis_datetime', 'run_time', 'smoothed']]
 
-    def merge_smoothed_data(self, df):
+    def merge_smoothed_data(
+        self,
+        df: pd.DataFrame,
+        detrend_method_num: int | None = None,
+    ) -> pd.DataFrame:
         """Merge smoothed standard data and calculate normalized response."""
         if 'smoothed' in df.columns:
             df = df.drop(columns=['smoothed'])
 
-        std = self.calculate_smoothed_std(df, min_pts=5)
+        std = self.calculate_smoothed_std(
+            df,
+            min_pts=5,
+            override_detrend_method_num=detrend_method_num,
+        )
 
         out = (
             df.merge(std, on=['analysis_datetime', 'run_time'], how='left')
-            .sort_values('analysis_datetime')
+              .sort_values('analysis_datetime')
         )
 
         # Fill missing smoothed values within each run_time
@@ -656,6 +673,7 @@ class Normalizing():
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
 
         return out
+
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
