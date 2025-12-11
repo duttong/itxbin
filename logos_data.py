@@ -263,6 +263,9 @@ class MainWindow(QMainWindow):
         
         self._save_payload = None       # data for the Save Cal2DB button
         self.run_type_num = None
+        self._fit_method_manual = False
+        self._fit_method_last_context = None
+        self._fit_method_updating = False
 
         self.init_ui()
 
@@ -654,7 +657,14 @@ class MainWindow(QMainWindow):
         self.on_run_type_changed()
 
     def on_fit_method_changed(self, _idx: int):
-        self.current_fit_degree = int(self.fit_method_cb.currentData())  # 1/2/3
+        data = self.fit_method_cb.currentData()
+        if data is None:
+            return
+
+        self.current_fit_degree = int(data)  # 1/2/3
+        if not self._fit_method_updating:
+            self._fit_method_manual = True
+
         # If you're on the Calibration view, you can re-render immediately:
         if self.plot_radio_group.checkedId() == 3:
             self.on_plot_type_changed(3)
@@ -1417,6 +1427,32 @@ class MainWindow(QMainWindow):
                     curves[c] = pd.NA
 
         curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+
+        # Reset manual override when run_time or analyte/channel changes
+        current_context = (sel_rt, self.current_pnum, self.current_channel)
+        if self._fit_method_last_context != current_context:
+            self._fit_method_manual = False
+            self._fit_method_last_context = current_context
+
+        # Determine which fit degree to use (DB value on first render, user override afterwards)
+        db_fit_degree = None
+        if 'func_index' in curves.columns:
+            match = curves.loc[curves['run_time'] == sel_rt, 'func_index']
+            if not match.empty and not pd.isna(match.iloc[0]):
+                db_fit_degree = int(match.iloc[0]) + 1
+
+        if self._fit_method_manual and self.fit_method_cb.count():
+            # honor the current combobox selection
+            current_data = self.fit_method_cb.currentData()
+            self.current_fit_degree = int(current_data) if current_data is not None else 2
+        else:
+            # use DB value (fallback to quadratic) and sync the combobox without flagging a user change
+            self.current_fit_degree = db_fit_degree or 2
+            idx = self.fit_method_cb.findData(self.current_fit_degree)
+            if idx != -1:
+                self._fit_method_updating = True
+                self.fit_method_cb.setCurrentIndex(idx)
+                self._fit_method_updating = False
 
         # file in scale_assignment values for calibration tanks in self.run
         self.populate_cal_mf()
@@ -2518,3 +2554,4 @@ def main():
     
 if __name__ == "__main__":
     main()
+    

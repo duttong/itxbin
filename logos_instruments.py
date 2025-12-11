@@ -1104,6 +1104,18 @@ class FE3_Instrument(HATS_DB_Functions):
             print(f"No calibration curves found for parameter {pnum} and channel '{channel}'.")
             return df
         df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
+
+        df['func_index'] = None  # default
+
+        # Condition 2: coef3 == 0 and abs(coef2) > 0 → func_index = 1
+        df.loc[(df['coef3'] == 0) & (df['coef2'].abs() > 0), 'func_index'] = 1
+
+        # Condition 3: abs(coef3) > 0 → func_index = 2
+        df.loc[df['coef3'].abs() > 0, 'func_index'] = 2
+
+        # Condition 1: coef3 == 0 and coef2 == 0 and abs(coef1) > 0 → func_index = 0
+        df.loc[(df['coef3'] == 0) & (df['coef2'] == 0) & (df['coef1'].abs() > 0), 'func_index'] = 0
+
         return df
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
