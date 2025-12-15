@@ -605,8 +605,8 @@ class Normalizing():
         smoothed = np.full(len(std), np.nan, dtype=float)
 
         # detrend_method_num: points
-        #points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7, 11:10, 12:15, 13:20, 14:25}
-        points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7}
+        points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7, 11:10, 12:15, 13:20, 14:25}
+        #points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7}
 
         # group-level loop, but minimal overhead
         for run_time, seg in std.groupby('run_time', sort=False):
