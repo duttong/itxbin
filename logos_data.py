@@ -2048,8 +2048,11 @@ class MainWindow(QMainWindow):
         em = self.end_month_cb.currentIndex() + 1
 
         # --- Convert to pandas timestamps ---
-        start = pd.Timestamp(f"{sy}-{sm:02d}-01")
-        end = pd.Timestamp(f"{ey}-{em:02d}-01") + pd.offsets.MonthEnd(1)
+        start = pd.Timestamp(f"{sy}-{sm:02d}-01 00:00:00")
+        end = pd.Timestamp(f"{ey}-{em:02d}-01 00:00:00") + pd.offsets.MonthEnd(1)
+
+        # Include the very end of the selected end month (23:59:59)
+        end = end + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
         # --- Handle reversed selection ---
         if start > end:
@@ -2064,7 +2067,7 @@ class MainWindow(QMainWindow):
             self.apply_dates()
 
         # --- Return valid date strings ---
-        return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")
     
     def set_runlist(self, initial_date=None):
         t0, t1 = self.get_load_range()
@@ -2099,6 +2102,34 @@ class MainWindow(QMainWindow):
             else r
             for r in runlist
         ]
+
+        def normalize_timestamp(value):
+            """Return pandas.Timestamp without tz info for reliable comparisons."""
+            if value is None:
+                return None
+            try:
+                ts = pd.to_datetime(value)
+            except Exception:
+                return None
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.tz_localize(None)
+            return ts
+
+        def find_run_index(target):
+            """Find run index even if target lacks suffix like ' (PFP)'."""
+            if target is None:
+                return None
+            target_str = str(target)
+            target_ts = normalize_timestamp(target_str)
+            for idx, label in enumerate(self.current_run_times):
+                base = label.split(" (")[0]
+                if label == target_str or base == target_str:
+                    return idx
+                if target_ts is not None:
+                    label_ts = normalize_timestamp(base)
+                    if label_ts is not None and label_ts == target_ts:
+                        return idx
+            return None
         
         # Fill the run_cb combo with these run_time strings
         self.run_cb.blockSignals(True)
@@ -2107,18 +2138,19 @@ class MainWindow(QMainWindow):
             self.run_cb.addItem(s)
 
         # Preserve the current_run_time if it exists in the new analyte's run_times
-        if self.current_run_time in self.current_run_times:
-            idx = self.current_run_times.index(self.current_run_time)
-            self.run_cb.setCurrentIndex(idx)
+        preserved_idx = find_run_index(self.current_run_time)
+        if preserved_idx is not None:
+            self.run_cb.setCurrentIndex(preserved_idx)
+            self.current_run_time = self.current_run_times[preserved_idx]
         elif self.current_run_times:
             # Default to the last run_time if the current_run_time is not found
             last_idx = len(self.current_run_times) - 1
             self.run_cb.setCurrentIndex(last_idx)
 
-        if str(initial_date) in self.current_run_times:
-            idx = self.current_run_times.index(str(initial_date))
-            self.run_cb.setCurrentIndex(idx)
-            self.current_run_time = self.current_run_times[idx] 
+        initial_idx = find_run_index(initial_date)
+        if initial_idx is not None:
+            self.run_cb.setCurrentIndex(initial_idx)
+            self.current_run_time = self.current_run_times[initial_idx]
         else:
             # Default to the last run_time if no initial_date provided
             try:

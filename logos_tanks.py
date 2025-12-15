@@ -596,7 +596,7 @@ class TimeseriesWidget(QWidget):
         if force or query_params != self._last_query_params:
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
-                   data_flag, site, sample_id, pair_id_num, run_type_num
+                   data_flag, site, sample_id, pair_id_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
               AND parameter_num = {pnum}
@@ -621,39 +621,14 @@ class TimeseriesWidget(QWidget):
         else:
             datasets["All samples"] = df.copy()
 
-        clean = df[df["data_flag"] == "..."].copy()
-        flask_runs = clean[(clean["run_type_num"] == 1) & (clean["pair_id_num"] > 0)].copy()
-        pfp_runs = clean[clean["run_type_num"] == 5].copy()
-
-        fm_cols = ["site", "sample_id", "sample_datetime", "mean", "std"]
-        if flask_runs.empty:
-            fm = pd.DataFrame(columns=fm_cols)
-        else:
-            fm = (flask_runs.groupby(["site", "sample_id", "sample_datetime"])
-                            .agg({"mole_fraction": ["mean", "std"]})
-                            .reset_index())
-            fm.columns = fm_cols
-
-        pm_frames = []
-        if not flask_runs.empty:
-            pm_flask = (flask_runs.groupby(["site", "pair_id_num"])
-                                 .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
-                                 .reset_index())
-            pm_flask.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
-            pm_frames.append(pm_flask)
-
-        if not pfp_runs.empty:
-            pm_pfp = (pfp_runs.groupby(["site", "sample_datetime"])
-                               .agg({"sample_id": "first", "mole_fraction": ["mean", "std"]})
-                               .reset_index())
-            pm_pfp.columns = ["site", "sample_datetime", "pair_id_num", "mean", "std"]
-            pm_pfp = pm_pfp[["site", "pair_id_num", "sample_datetime", "mean", "std"]]
-            pm_frames.append(pm_pfp)
-
-        if pm_frames:
-            pm = pd.concat(pm_frames, ignore_index=True)
-        else:
-            pm = pd.DataFrame(columns=["site", "pair_id_num", "sample_datetime", "mean", "std"])
+        clean = df[df["data_flag"] == "..."]
+        fm = (clean.groupby(["site", "sample_id", "sample_datetime"])
+                    .agg({"mole_fraction": ["mean", "std"]}).reset_index())
+        fm.columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
+        pm = (clean.groupby(["site", "pair_id_num"])
+                    .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
+                    .reset_index())
+        pm.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
 
         datasets["Flask mean"] = fm
         datasets["Pair mean"]  = pm
@@ -739,14 +714,14 @@ class TimeseriesWidget(QWidget):
             self.main_window.start_year_cb.setCurrentText(str(start_year))
             self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
             
-            # --- Ensure run type is "All" so PFPs show up too ---
+            # --- Set run type to "Flasks" ---
             self.main_window.runTypeCombo.blockSignals(True)
-            self.main_window.runTypeCombo.setCurrentText("All")
+            self.main_window.runTypeCombo.setCurrentText("Flasks")
             self.main_window.runTypeCombo.blockSignals(False)
     
             # --- Continue with loading the run ---
             self.main_window.set_runlist(initial_date=run_time)
             self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            self.main_window.current_run_time = str(run_time)
+            self.main_window.current_run_time = str(run_time) 
             # no need for the apply button highlight
             self.main_window.apply_date_btn.setStyleSheet("")
