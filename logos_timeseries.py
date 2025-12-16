@@ -10,7 +10,9 @@ from matplotlib.widgets import Button
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+from matplotlib.collections import PathCollection
 import pandas as pd
+import numpy as np
 import colorsys
 import time
 
@@ -74,6 +76,8 @@ class TimeseriesFigure:
 
         # --- Draw datasets ---
         self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
+        
+        self._rebuild_data_artists()
 
         # Tag each artist with its site (safety)
         for label, artists in self.dataset_handles.items():
@@ -186,6 +190,11 @@ class TimeseriesFigure:
 
                 dvis = self.dataset_visibility[dlabel]
                 a.set_visible(bool(svis and dvis))
+
+                vis = bool(svis and dvis)
+                a.set_visible(vis)
+                if hasattr(a, "set_picker") and hasattr(a, "_meta"):
+                    a.set_picker(5 if vis else False)   # False disables picking
         self._fig.canvas.draw_idle()
 
     # ────────────────────────────────────────────────────────────
@@ -236,6 +245,8 @@ class TimeseriesFigure:
         datasets = self.parent_widget.build_datasets(df)
         xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
         self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
+        
+        self._rebuild_data_artists()
 
         # Re-apply per-dataset visibility preferences
         for label, visible in self.dataset_visibility.items():
@@ -287,6 +298,73 @@ class TimeseriesFigure:
         btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
         self._reload_ax.set_position([btn_x, btn_y, btn_w, btn_h])
         fig.canvas.draw_idle()
+
+    def _rebuild_data_artists(self):
+        """Cache only artists that represent data points we can tooltip (have _meta)."""
+        self._data_artists = []
+        for artists in self.dataset_handles.values():
+            for a in artists:
+                if hasattr(a, "_meta") and hasattr(a, "contains"):
+                    self._data_artists.append(a)
+
+    def _pick_best_visible(self, mouseevent, max_px=15):
+        """
+        Return (artist, idx) for nearest visible data point under cursor.
+        Uses .contains(mouseevent) and resolves among candidates by pixel distance.
+        """
+        if mouseevent is None or mouseevent.inaxes != self._ax:
+            return (None, None)
+
+        mx, my = mouseevent.x, mouseevent.y  # display pixels
+        best_artist, best_idx, best_d2 = None, None, np.inf
+
+        for a in getattr(self, "_data_artists", []):
+            # only consider visible artists
+            if hasattr(a, "get_visible") and not a.get_visible():
+                continue
+
+            hit, info = a.contains(mouseevent)
+            if not hit:
+                continue
+
+            inds = info.get("ind", [])
+            if len(inds) == 0:
+                continue
+
+            # Get display coords for this artist's points
+            if isinstance(a, mlines.Line2D):
+                x = a.get_xdata(orig=False)
+                y = a.get_ydata(orig=False)
+                xy = np.column_stack([mdates.date2num(x), y]) if np.issubdtype(np.array(x).dtype, np.datetime64) else np.column_stack([x, y])
+                disp = self._ax.transData.transform(xy)
+            elif isinstance(a, PathCollection):
+                # scatter-like
+                disp = a.get_offsets()
+                disp = a.get_transform().transform(disp)
+            else:
+                # fallback for other artist types
+                try:
+                    x = a.get_xdata(orig=False)
+                    y = a.get_ydata(orig=False)
+                    xy = np.column_stack([x, y])
+                    disp = self._ax.transData.transform(xy)
+                except Exception:
+                    continue
+
+            for i in inds:
+                dx = disp[i, 0] - mx
+                dy = disp[i, 1] - my
+                d2 = dx * dx + dy * dy
+                if d2 < best_d2:
+                    best_artist, best_idx, best_d2 = a, int(i), d2
+
+        if best_artist is None:
+            return (None, None)
+
+        if best_d2 > (max_px * max_px):
+            return (None, None)
+
+        return (best_artist, best_idx)
 
     # ────────────────────────────────────────────────────────────
     def _on_pick_event(self, event):
@@ -348,8 +426,12 @@ class TimeseriesFigure:
                 self._apply_visibility()
                 return
 
-        # ─── Other clickable artists (tooltips, etc.) ───
-        self.parent_widget.on_point_pick(event)
+        # ─── Data point pick (always choose nearest VISIBLE) ───
+        picked_artist, picked_idx = self._pick_best_visible(event.mouseevent)
+        if picked_artist is None:
+            return
+
+        self.parent_widget.on_point_pick(event, artist=picked_artist, idx=picked_idx)
 
 class TimeseriesWidget(QWidget):
     def __init__(self, instrument=None, parent=None):
@@ -659,24 +741,24 @@ class TimeseriesWidget(QWidget):
         datasets["Pair mean"]  = pm
         return datasets
                 
-    def on_point_pick(self, event):
-        artist = event.artist
+    def on_point_pick(self, event, artist=None, idx=None):
+        artist = artist or event.artist
+
+        # ignore hidden artists
+        if hasattr(artist, "get_visible") and not artist.get_visible():
+            return
+
         if not hasattr(artist, "_meta"):
             return
-        if not hasattr(event, "ind") or len(event.ind) == 0:
-            return
 
-        mx, my = event.mouseevent.xdata, event.mouseevent.ydata
-        if mx is None or my is None:
-            return
+        # idx is now the authoritative point index
+        if idx is None:
+            if not hasattr(event, "ind") or len(event.ind) == 0:
+                return
+            # fallback: keep your old behavior
+            idx = int(event.ind[0])
 
-        # Only for distance calculation
-        xdata = mdates.date2num(artist.get_xdata())
-        ydata = artist.get_ydata()
-
-        candidates = event.ind
-        dists = [(i, (xdata[i] - mx)**2 + (ydata[i] - my)**2) for i in candidates]
-        nearest_idx = min(dists, key=lambda t: t[1])[0]
+        nearest_idx = idx
 
         # These values come straight from your DataFrame (no conversion)
         sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
