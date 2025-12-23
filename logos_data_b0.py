@@ -931,7 +931,20 @@ class MainWindow(QMainWindow):
                 )
                 if not stats_df.empty:
                     stats_df = stats_df.set_index('detrend_method_num')
-                    lines = []
+                    # Pick header based on instrument (e.g., BLD1 uses SD wording)
+                    inst_num = None
+                    if 'inst_num' in self.run.columns and not self.run['inst_num'].empty:
+                        try:
+                            inst_num = int(self.run['inst_num'].iloc[0])
+                        except Exception:
+                            inst_num = None
+                    if inst_num is None:
+                        try:
+                            inst_num = int(getattr(self.instrument, "inst_num", None))
+                        except Exception:
+                            inst_num = None
+
+                    lines = ['SD of norm resp'] if inst_num == 220 else ['Sample Pair RMS']
                     for m in method_order:
                         if m not in stats_df.index:
                             continue
