@@ -946,11 +946,26 @@ class Normalizing():
         best_rms : float
             RMS for the selected best_method (NaN if no data).
         """
+        
+        # use only unflagged data
+        run_df = run_df.loc[run_df['data_flag'] == '...'].copy()
+         
         if run_df.empty:
             return (
                 pd.DataFrame(columns=['run_time', 'detrend_method_num', 'rep_resp_rms', 'pair_resp_n']),
                 None,
                 np.nan,
+            )
+
+        # For BLD1 (inst_num == 220), use ref tank variability instead of sample_diffs
+        if 'inst_num' in run_df and int(run_df['inst_num'].iloc[0]) == 220:
+            return self.find_best_reftank_norm_resp(
+                run_df,
+                methods=methods,
+                default_method=default_method,
+                margin_frac=margin_frac,
+                ref_port=11,
+                verbose=verbose,
             )
 
         run_time = run_df['run_time'].iloc[0] if 'run_time' in run_df else None
@@ -1007,6 +1022,109 @@ class Normalizing():
         stats_df = pd.DataFrame(results)
         return stats_df, best_method, best_rms
 
+    def find_best_reftank_norm_resp(
+        self,
+        df: pd.DataFrame,
+        methods=(1, 2, 3, 4, 5, 6),
+        default_method: int = 2,
+        margin_frac: float = 0.10,
+        ref_port: int = 11,
+        verbose: bool = False,
+    ) -> tuple[pd.DataFrame, int | None, float]:
+        """
+        Find best detrend method for a single run_time using reference tank
+        variability (port == ref_port). Point-to-point (method 1) is ignored for
+        selection because it trivially returns zero.
+
+        Returns the same tuple shape as detrend_stats_for_run:
+        (stats_df, best_method, best_rms)
+        where stats_df has columns run_time, detrend_method_num, rep_resp_rms, rep_resp_n
+        (rep_resp_rms here is the ref tank std, rep_resp_n is its count).
+        """
+
+        if df.empty:
+            return (
+                pd.DataFrame(columns=['run_time', 'detrend_method_num', 'rep_resp_rms', 'rep_resp_n']),
+                None,
+                np.nan,
+            )
+            
+        if default_method == 1:
+            default_method = 2  # avoid point-to-point as default
+
+        run_time = df['run_time'].iloc[0] if 'run_time' in df else None
+        all_methods = sorted(set(methods) | {default_method})
+
+        # Precompute normalized data per method
+        norm_by_method: dict[int, pd.DataFrame] = {}
+        for meth in all_methods:
+            if verbose:
+                print(f"Building normalized data for method {meth}")
+            norm_by_method[meth] = self.merge_smoothed_data(
+                df, detrend_method_num=meth
+            )
+
+        def ref_stats(df_norm: pd.DataFrame) -> tuple[float, int]:
+            if 'port' in df_norm:
+                ref = df_norm.loc[df_norm['port'] == ref_port, 'normalized_resp']
+            elif 'port_idx' in df_norm:
+                ref = df_norm.loc[df_norm['port_idx'] == ref_port, 'normalized_resp']
+            else:
+                return np.nan, 0
+            ref = ref.dropna()
+            if ref.empty:
+                return np.nan, 0
+            return ref.std(), len(ref)
+
+        results = []
+        valid = []  # (meth, std, n)
+        default_stats = None
+
+        # Evaluate all methods
+        for meth in all_methods:
+            df_norm = norm_by_method[meth]
+            r_std, r_n = ref_stats(df_norm)
+
+            if verbose:
+                print(f"  method {meth}: STD={r_std:.6g} (n={r_n})")
+
+            results.append({
+                'run_time': run_time,
+                'detrend_method_num': meth,
+                'rep_resp_rms': r_std,
+                'rep_resp_n': r_n,
+            })
+
+            if meth == 1:
+                continue  # skip P2P for selection
+            if r_n == 0 or np.isnan(r_std):
+                continue
+
+            valid.append((meth, r_std, r_n))
+            if meth == default_method:
+                default_stats = (r_std, r_n)
+
+        # Select best method with margin rule
+        best_method = None
+        best_rms = np.nan
+
+        if not valid:
+            return pd.DataFrame(results), best_method, best_rms
+
+        if default_stats is not None:
+            best_method = default_method
+            best_rms = default_stats[0]
+            for meth, std, _ in valid:
+                if meth == default_method:
+                    continue
+                if std < best_rms * (1 - margin_frac):
+                    best_method = meth
+                    best_rms = std
+        else:
+            best_method, best_rms, _ = min(valid, key=lambda x: x[1])
+
+        stats_df = pd.DataFrame(results)
+        return stats_df, best_method, best_rms
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
