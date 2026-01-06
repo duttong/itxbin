@@ -13,6 +13,7 @@ import matplotlib.lines as mlines
 import pandas as pd
 import colorsys
 import time
+import sys
 
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
@@ -20,365 +21,59 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'BLD', 'MKO']
 
 
-def build_site_colors(sites):
-    """
-    Assign each site a consistent base color from a colormap.
-    Always returns a mapping for *all* sites in the list.
-    """
-    # use a perceptually uniform colormap with enough variety
-    cmap = plt.cm.get_cmap("jet", len(sites))
-    site_colors = {}
-    for i, site in enumerate(sorted(sites)):  # sort to keep stable order
-        site_colors[site] = cmap(i)
-    return site_colors
-
-def adjust_brightness(color, factor=1.0):
-    """Darken/lighten an RGBA color. factor < 1 darkens, > 1 lightens."""
-    r, g, b, a = color
-    h, l, s = colorsys.rgb_to_hls(r, g, b)
-    l = max(0, min(1, l * factor))
-    r, g, b = colorsys.hls_to_rgb(h, l, s)
-    return (r, g, b, a)
-
-
-class TimeseriesFigure:
-    """Manages a single interactive matplotlib figure for timeseries data."""
-
-    def __init__(self, parent_widget, df, analyte):
-        self.parent_widget = parent_widget
-        self.df = df
-        self.analyte = analyte
-        self.channel = parent_widget.current_channel
-
-        # Per-figure state (fully independent)
-        self._fig, self._ax = plt.subplots(figsize=(12, 6))
-        self.dataset_handles = {}
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
-
-        self._build_plot()
-        self._fig.canvas.mpl_connect("close_event", self._on_close)
-
-    # ────────────────────────────────────────────────────────────
-    def _on_close(self, evt):
-        # drop strong ref from parent so it can GC cleanly
-        try:
-            self.parent_widget.open_figures.remove(self)
-        except ValueError:
-            pass
-
-    # ────────────────────────────────────────────────────────────
-    def _build_plot(self):
-        """Build full figure layout and legends."""
-        datasets = self.parent_widget.build_datasets(self.df)
-        sites_by_lat = self.parent_widget.sites_by_lat
-
-        # --- Draw datasets ---
-        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
-
-        # Tag each artist with its site (safety)
-        for label, artists in self.dataset_handles.items():
-            for artist in artists:
-                artist._site = getattr(artist, "_site", None)
-
-        # Layout adjustments
-        self._fig.tight_layout(rect=[0, 0, 0.85, 1])
-        self._fig.subplots_adjust(top=0.90, bottom=0.12, left=0.05, right=0.85)
-        self._fig.canvas.draw()
-
-        # Positioning helpers
-        axpos = self._ax.get_position()
-        panel_left = axpos.x0 + axpos.width + 0.01
-        panel_top = axpos.y0 + axpos.height
-
-        # ─── Dataset Legend ───
-        legend_handles = []
-        for label in ["All samples", "Flask mean", "Pair mean"]:
-            dummy = mlines.Line2D([], [], color="black",
-                                marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
-                                linestyle="", markersize=6, label=label)
-            dummy._is_dataset_legend = True
-            if not self.dataset_visibility.get(label, True):
-                dummy.set_alpha(0.4)
-            legend_handles.append(dummy)
-
-        dataset_legend = self._ax.legend(
-            handles=legend_handles,
-            title="Datasets",
-            bbox_to_anchor=(panel_left, axpos.y0),
-            bbox_transform=self._fig.transFigure,
-            loc="lower left",
-            borderaxespad=0.0
-        )
-        self._ax.add_artist(dataset_legend)
-        self._dataset_legend = dataset_legend
-
-        for legline in dataset_legend.legendHandles:
-            legline.set_picker(5)
-            legline._is_dataset_legend = True
-
-        # ─── Site Legend ───
-        site_colors = build_site_colors(sites_by_lat)
-        sites = self.parent_widget.get_active_sites()
-
-        # Create dummy handles for legend
-        site_handles = {
-            s: self._ax.plot([], [], color=site_colors[s], marker="o", linestyle="", label=s)[0]
-            for s in sites
-        }
-
-        site_legend = self._ax.legend(
-            handles=site_handles.values(),
-            title="Sites",
-            bbox_to_anchor=(panel_left, panel_top),
-            bbox_transform=self._fig.transFigure,
-            loc="upper left",
-            ncol=2,
-            columnspacing=1.0,
-            handletextpad=0.2,
-            borderaxespad=0.0
-        )
-        self._ax.add_artist(site_legend)
-        self._site_legend = site_legend
-
-        for legline in site_legend.legendHandles:
-            legline.set_picker(5)
-            legline._site_legend = True
-
-        # ─── Build mapping of site → all artists ───
-        self._site_artists = {}
-        for artist in self._ax.get_lines() + self._ax.collections:
-            site = getattr(artist, "_site", None)
-            if site:
-                self._site_artists.setdefault(site, []).append(artist)
-
-        # ─── Initialize site visibility (all ON) ───
-        self._site_visibility = {s: True for s in self._site_artists.keys()}
-
-        # ─── Apply dataset + site visibility rules ───
-        self._apply_visibility()
-
-        # ─── Reload Button ───
-        self._add_reload_button_below(site_legend)
-
-        # Axes labels and cosmetics
-        self._ax.set_xlabel("Sample datetime")
-        self._ax.set_ylabel("Mole fraction")
-        self._ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {self.analyte}")
-        self._ax.grid(True, which="both", linestyle="--", alpha=0.5)
-        plt.xticks(rotation=45)
-        plt.show(block=False)
-
-        # Events
-        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
-        self._fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
-
-    def _apply_visibility(self):
-        """Enforce visibility = site_visibility AND dataset_visibility for all artists."""
-        for site, artists in getattr(self, "_site_artists", {}).items():
-            svis = self._site_visibility.get(site, True)
-            for a in artists:
-                # Try to get dataset label (either via .get_label() or custom tag)
-                dlabel = getattr(a, "_dataset_label", None)
-                if dlabel is None:
-                    dlabel = getattr(a, "get_label", lambda: None)()
-                if not dlabel or dlabel not in self.dataset_visibility:
-                    continue
-
-                dvis = self.dataset_visibility[dlabel]
-                a.set_visible(bool(svis and dvis))
-        self._fig.canvas.draw_idle()
-
-    # ────────────────────────────────────────────────────────────
-    def _add_reload_button_below(self, legend):
-        self._fig.canvas.draw()
-        renderer = self._fig.canvas.get_renderer()
-        leg_bbox = legend.get_window_extent(renderer=renderer).transformed(self._fig.transFigure.inverted())
-
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox.width * 0.9
-        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
-        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
-
-        self._reload_ax = self._fig.add_axes([btn_x, btn_y, btn_w, btn_h])
-        self._reload_btn = Button(self._reload_ax, "Reload")
-        self._reload_btn.on_clicked(lambda evt: self._on_reload_clicked())
-
-    # ────────────────────────────────────────────────────────────
-    def _on_reload_clicked(self):
-        """Reload data from parent instrument and preserve per-dataset visibility."""
-        # Flash the button yellow while reloading
-        self._reload_btn.label.set_text("Reloading...")
-        self._reload_ax.set_facecolor("#fff8cc")  # soft yellow
-        self._fig.canvas.draw_idle()
-
-        plt.pause(0.05)  # brief visual feedback (keeps GUI responsive)
-
-        # Query using the analyte/channel that this figure was created with
-        df = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
-        if df.empty:
-            print("No data to reload")
-            self._reload_btn.label.set_text("Reload")
-            self._reload_ax.set_facecolor("lightgray")
-            self._fig.canvas.draw_idle()
-            return
-
-        # Remove old dataset artists before redrawing
-        for handles in self.dataset_handles.values():
-            for h in handles:
-                try:
-                    h.remove()
-                except Exception:
-                    pass
-        self.dataset_handles.clear()
-
-        # Redraw datasets
-        datasets = self.parent_widget.build_datasets(df)
-        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
-        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
-
-        # Re-apply per-dataset visibility preferences
-        for label, visible in self.dataset_visibility.items():
-            if label in self.dataset_handles:
-                for h in self.dataset_handles[label]:
-                    h.set_visible(visible)
-
-        # Re-tag artists with site (if needed)
-        for site, artists in self.dataset_handles.items():
-            for artist in artists:
-                artist._site = getattr(artist, "_site", site)
-
-        # Rebuild site→artists map from dataset_handles
-        self._site_artists = {}
-        for _, artists in self.dataset_handles.items():
-            for a in artists:
-                site = getattr(a, "_site", None)
-                if site:
-                    self._site_artists.setdefault(site, []).append(a)
-
-        # Ensure _site_visibility has entries for all current sites (default True if new)
-        if not hasattr(self, "_site_visibility"):
-            self._site_visibility = {}
-        for s in self._site_artists.keys():
-            self._site_visibility.setdefault(s, True)
-
-        # Enforce combined visibility
-        self._apply_visibility()
-
-        # Restore limits
-        self._ax.set_xlim(xlim)
-        self._ax.set_ylim(ylim)
-
-        # Restore button to normal
-        self._reload_btn.label.set_text("Reload")
-        self._reload_ax.set_facecolor("lightgray")
-        self._fig.canvas.draw_idle()
-
-    def _reposition_reload_under_legend(self, event=None):
-        if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_ax", None):
-            return
-        fig = self._site_legend.axes.figure
-        renderer = fig.canvas.get_renderer()
-        leg_bbox = self._site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox.width * 0.9
-        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
-        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
-        self._reload_ax.set_position([btn_x, btn_y, btn_w, btn_h])
-        fig.canvas.draw_idle()
-
-    # ────────────────────────────────────────────────────────────
-    def _on_pick_event(self, event):
-        """Handle dataset legend toggles, site legend toggles, and point tooltips."""
-
-        # --- Prevent double-trigger ---
-        tnow = time.time()
-        if hasattr(self, "_last_pick_time") and (tnow - self._last_pick_time) < 0.15:
-            return
-        self._last_pick_time = tnow
+class TanksPlotter:
+    
+    
+    def __init__(self, db, inst_num):
+        self.db = db
+        self.inst_num = inst_num
         
-        artist = event.artist
+        
+    def return_active_tanks(self, start_year, end_year, parameter_num=None, channel=None):
+        """Return a list of tank serial numbers active in the given window."""
+        if parameter_num is None:
+            return []
 
-        # ─── Dataset Legend ───
-        if isinstance(artist, mlines.Line2D) and getattr(artist, "_is_dataset_legend", False):
-            label = artist.get_label()
-            if label not in self.dataset_visibility:
-                return
+        start_ts = f"{start_year}-01-01"
+        end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
 
-            # Flip dataset state
-            self.dataset_visibility[label] = not self.dataset_visibility[label]
+        sql = f"""
+            SELECT a.tank_serial_num
+            FROM hats.ng_analysis a
+            JOIN hats.ng_mole_fractions mf
+              ON mf.analysis_num = a.num
+            WHERE a.inst_num = {self.inst_num}
+              AND mf.parameter_num = {parameter_num}
+              AND a.tank_serial_num IS NOT NULL
+              AND a.run_time >= '{start_ts}'
+              AND a.run_time <  '{end_ts}'
+              {f"AND mf.channel = '{channel}'" if channel else ""}
+            GROUP BY a.tank_serial_num
+            ORDER BY a.tank_serial_num;
+        """
 
-            # Visual feedback for the legend icon
-            artist.set_alpha(1.0 if self.dataset_visibility[label] else 0.3)
+        if hasattr(self.db, "query_to_df"):
+            df = self.db.query_to_df(sql)
+        else:
+            df = pd.DataFrame(self.db.doquery(sql))
+        return df['tank_serial_num'].dropna().tolist()
+    
 
-            # Enforce across ALL sites via single pass
-            self._apply_visibility()
-            return
-
-        # ─── Site Legend ───
-        if hasattr(self, "_site_legend"):
-            leg = self._site_legend
-            label = None
-
-            # Identify clicked site legend entry
-            for text in leg.get_texts():
-                if event.artist == text:
-                    label = text.get_text()
-                    break
-            for handle in leg.legendHandles:
-                if event.artist == handle:
-                    label = handle.get_label()
-                    break
-
-            if label and label in getattr(self, "_site_visibility", {}):
-                # Flip site state
-                self._site_visibility[label] = not self._site_visibility[label]
-
-                # Dim legend entry when hidden
-                alpha = 1.0 if self._site_visibility[label] else 0.2
-                for text in leg.get_texts():
-                    if text.get_text() == label:
-                        text.set_alpha(alpha)
-                for handle in leg.legendHandles:
-                    if handle.get_label() == label:
-                        handle.set_alpha(alpha)
-
-                # Enforce site x dataset visibility
-                self._apply_visibility()
-                return
-
-        # ─── Other clickable artists (tooltips, etc.) ───
-        self.parent_widget.on_point_pick(event)
-
-class TimeseriesWidget(QWidget):
+class TanksWidget(QWidget):
+    """
+    Simple control pane for selecting a year range + gas and showing tanks
+    as a 3-column grid of checkboxes.
+    """
     def __init__(self, instrument=None, parent=None):
         super().__init__(parent)
         self.instrument = instrument
-        self.main_window = self.parent()
-        self.open_figures = []
+        self.tanks_plotter = TanksPlotter(self.instrument.db, self.instrument.inst_num) if self.instrument else None
+        self.tank_checks: list[QCheckBox] = []
+        self.analyte_checks: list[QCheckBox] = []
+        self._ready = False
+        self._reload_dirty = False
 
-        self.analytes = self.instrument.analytes or {}
-        self.current_analyte = None
-        self.current_channel = None
-
-        # defualts
-        if self.instrument.inst_num == 193:     # FE3
-            self.current_analyte = 'CFC11 (c)'
-            self.current_channel = 'c'
-        
-        self.sites = sorted(LOGOS_sites) if LOGOS_sites else []
-        self.sites_df = self.get_site_info() if self.instrument else pd.DataFrame()
-        self.sites_by_lat = self.sites_df.sort_values("lat", ascending=False)["code"].tolist()
-       
-        # cache for last loaded data
-        self._cached_df = None
-        self._last_query_params = None  # (start, end, analyte)
-        
-        # remember dataset visibility across refreshes
-        self._dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}   
-        
-        # --- Main layout ---
+        # --- Layout scaffold (mirror logos_timeseries style) ---
         controls = QVBoxLayout()
 
         # Year range selection
@@ -388,340 +83,199 @@ class TimeseriesWidget(QWidget):
         year_layout = QHBoxLayout()
         self.start_year = QSpinBox()
         self.start_year.setRange(i_start, i_end)
-        self.start_year.setValue(i_end - 2)
+        self.start_year.setValue(max(i_start, i_end - 2))
         self.end_year = QSpinBox()
         self.end_year.setRange(i_start, i_end)
         self.end_year.setValue(i_end)
+        self.reload_btn = QPushButton("Reload Tanks")
+        self.reload_btn.clicked.connect(self._on_reload)
         year_layout.addWidget(QLabel("Start"))
         year_layout.addWidget(self.start_year)
         year_layout.addWidget(QLabel("End"))
         year_layout.addWidget(self.end_year)
+        year_layout.addWidget(self.reload_btn)
         year_group.setLayout(year_layout)
         controls.addWidget(year_group)
 
-        # --- Analyte selector ---
-        analyte_group = QGroupBox("Analyte")
+        # Analyte selector
+        analyte_group = QGroupBox("Gas / Parameter")
         analyte_layout = QVBoxLayout()
-        self.analyte_combo = QComboBox()
-
-        # Populate using names only
-        for name in self.analytes.keys():
-            self.analyte_combo.addItem(name)
-
-        analyte_layout.addWidget(self.analyte_combo)
+        analyte_container = QWidget()
+        analyte_container.setStyleSheet("background-color: #fffbe6; border: 1px solid #f2e6b3;")
+        analyte_checks_layout = QGridLayout()
+        analyte_checks_layout.setContentsMargins(6, 6, 6, 6)
+        analyte_checks_layout.setHorizontalSpacing(8)
+        analyte_checks_layout.setVerticalSpacing(4)
+        cols_analyte = 5
+        for idx, name in enumerate((self.instrument.analytes or {}).keys() if self.instrument else []):
+            cb = QCheckBox(name)
+            if idx == 0:
+                cb.setChecked(True)
+            self.analyte_checks.append(cb)
+            row, col = divmod(idx, cols_analyte)
+            analyte_checks_layout.addWidget(cb, row, col)
+        analyte_container.setLayout(analyte_checks_layout)
+        analyte_layout.addWidget(analyte_container)
+        self.tanks_status = QLabel("Select a year range and gas to load tanks.")
+        self.tanks_status.setWordWrap(True)
+        self.tank_grid = QGridLayout()
+        self.tank_grid.setContentsMargins(0, 0, 0, 0)
+        self.tank_grid.setHorizontalSpacing(8)
+        self.tank_grid.setVerticalSpacing(4)
+        analyte_layout.addWidget(self.tanks_status)
+        analyte_layout.addLayout(self.tank_grid)
         analyte_group.setLayout(analyte_layout)
         controls.addWidget(analyte_group)
-
-        # --- Site selection with 3 columns ---
-        site_group = QGroupBox("Sites")
-        site_layout = QVBoxLayout()
-        grid = QGridLayout()
-        self.site_checks = []
-        
-        initial_sites = ['BRW', 'MLO', 'SMO', 'SPO']  # default ON
-        cols = 3
-        for i, site in enumerate(self.sites_by_lat):
-            cb = QCheckBox(site)
-            cb.setChecked(site in initial_sites)   # only check if in subset
-            self.site_checks.append(cb)
-            row, col = divmod(i, cols)
-            grid.addWidget(cb, row, col)
-        site_layout.addLayout(grid)
-
-        btns_layout = QHBoxLayout()
-        select_all = QPushButton("Select All")
-        select_none = QPushButton("Select None")
-        select_all.clicked.connect(self.select_all_sites)
-        select_none.clicked.connect(self.select_none_sites)
-        btns_layout.addWidget(select_all)
-        btns_layout.addWidget(select_none)
-        site_layout.addLayout(btns_layout)
-
-        site_group.setLayout(site_layout)
-        controls.addWidget(site_group)
-                
-        # ----- Set default selection -----
-        self.set_current_analyte(self.current_analyte)
-        
-        # ------ Flagging options ------
-        self.hide_flagged = QCheckBox("Hide flagged data")
-        self.hide_flagged.setChecked(True)
-        controls.addWidget(self.hide_flagged)
-
-        # Plot button
-        self.plot_button = QPushButton("Plot it")
-        self.plot_button.clicked.connect(self.timeseries_plot)
-        controls.addWidget(self.plot_button)
 
         controls.addStretch()
         self.setLayout(controls)
 
-    # --- Helpers ---
-    def set_current_analyte(self, analyte_name: str | None):
-        if not analyte_name:  # handles None or ""
-            self.current_analyte = None
-            self.current_channel = None
+        # Wire date change after widgets exist
+        self.start_year.valueChanged.connect(self._mark_reload_needed)
+        self.end_year.valueChanged.connect(self._mark_reload_needed)
+
+        # Populate tanks initially if any analyte starts checked
+        self._ready = True
+        if any(cb.isChecked() for cb in self.analyte_checks):
+            self.refresh_tanks()
+
+    # --- Slots / helpers ---
+    def _mark_reload_needed(self):
+        """Mark that dates changed and a reload is needed."""
+        if not getattr(self, "_ready", False):
+            return
+        if self._reload_dirty:
+            return
+        self._reload_dirty = True
+        self.reload_btn.setStyleSheet("background-color: 'lightgreen';")  # light green
+
+    def _on_reload(self):
+        """Reload tanks and clear the pending visual cue."""
+        self.refresh_tanks()
+        self._reload_dirty = False
+        self.reload_btn.setStyleSheet("")
+
+    def _selected_analytes(self) -> list[tuple[str, int, str | None]]:
+        """Return list of (name, parameter_num, channel)."""
+        if not self.instrument:
+            return []
+        selected = []
+        for cb in self.analyte_checks:
+            if not cb.isChecked():
+                continue
+            name = cb.text()
+            pnum = (self.instrument.analytes or {}).get(name)
+            channel = None
+            if "(" in name and ")" in name:
+                _, ch = name.split("(", 1)
+                channel = ch.strip(") ").strip()
+            if pnum is not None:
+                selected.append((name, pnum, channel))
+        return selected
+
+    def refresh_tanks(self):
+        """Query DB for tanks matching the selected year range + analyte."""
+        if not self.instrument or not self.tanks_plotter:
+            self._rebuild_tank_checks([], "Select a gas to load tanks.")
             return
 
-        idx = self.analyte_combo.findText(analyte_name, Qt.MatchExactly)
-        if idx >= 0:
-            self.analyte_combo.setCurrentIndex(idx)
-
-        self.current_channel = None
-        if "(" in analyte_name and ")" in analyte_name:
-            analyte, channel = analyte_name.split("(", 1)
-            self.current_channel = channel.strip(") ")
-
-        self.current_analyte = analyte_name
-        
-    def get_site_info(self):
-        sql = f""" SELECT 
-            code, lat, lon, elev from gmd.site
-            WHERE code in {tuple(LOGOS_sites)}
-            ORDER BY code;
-            """
-        df = pd.DataFrame(self.instrument.doquery(sql))
-        return df        
-        
-    def select_all_sites(self):
-        for cb in self.site_checks:
-            cb.setChecked(True)
-
-    def select_none_sites(self):
-        for cb in self.site_checks:
-            cb.setChecked(False)
-
-    def _draw_dataset_artists(self, ax, datasets, analyte):
-        """Draw datasets on a specific Axes, return dataset_handles dict."""
-        dataset_handles = {}
-
-        sites = self.get_active_sites()
-        site_colors = build_site_colors(self.sites_by_lat)
-        styles = {
-            "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 3, "alpha": 0.4},
-            "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
-            "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
-        }
-
-        for label, dset in datasets.items():
-            for site, grp in dset.groupby("site"):
-                if site not in sites:
-                    continue
-
-                base = site_colors[site]
-                style = styles[label]
-                color = adjust_brightness(base, style["shade"])
-
-                # determine visibility for this dataset
-                visible = self._dataset_visibility.get(label, True)
-
-                if label == "All samples":
-                    line, = ax.plot(
-                        grp["sample_datetime"], grp["mole_fraction"],
-                        marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], alpha=style["alpha"],
-                        label=label, mfc=color, mec='gray', picker=5
-                    )
-                    line._site = site
-                    line._dataset_label = label
-                    line._meta = {
-                        "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
-                        "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
-                        "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
-                        "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
-                        "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
-                        "analyte": analyte,
-                        "channel": self.current_channel,
-                    }
-                    line.set_visible(visible)
-                    dataset_handles.setdefault(label, []).append(line)
-
-                else:
-                    # draw errorbar and tag all its parts
-                    container = ax.errorbar(
-                        grp["sample_datetime"], grp["mean"], yerr=grp["std"],
-                        marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
-                        mfc='none', mec=color, label=label
-                    )
-
-                    # Flatten all visible artist components
-                    parts = []
-                    for child in container:
-                        if isinstance(child, (list, tuple)):
-                            parts.extend(child)
-                        else:
-                            parts.append(child)
-
-                    # Apply site label + visibility to every piece
-                    for p in parts:
-                        if hasattr(p, "set_visible"):
-                            p._site = site
-                            p._dataset_label = label
-                            p.set_visible(visible)
-
-                    dataset_handles.setdefault(label, []).extend(parts)
-
-        ax.figure.canvas.draw_idle()
-        return dataset_handles
-
-    def timeseries_plot(self):
-        df = self.query_flask_data(force=False)
-        if df.empty:
-            print("No data to plot")
-            return
-        analyte = self.analyte_combo.currentText()
-        fig = TimeseriesFigure(self, df, analyte)
-        self.open_figures.append(fig)
-
-    # ---------- Data plumbing ----------
-    def get_active_sites(self):
-        return [cb.text() for cb in self.site_checks if cb.isChecked()]
-
-    def query_flask_data(self, force: bool = False, analyte: str | None = None, channel: str | None = None) -> pd.DataFrame:
         start = self.start_year.value()
-        end   = self.end_year.value()
+        end = self.end_year.value()
+        if start > end:
+            start, end = end, start
+            self.start_year.setValue(start)
+            self.end_year.setValue(end)
 
-        analyte = analyte or self.analyte_combo.currentText()
-        pnum    = self.analytes.get(analyte)
-        self.set_current_analyte(analyte)
-        channel = channel or self.current_channel
-
-        if pnum is None:
-            return pd.DataFrame()
-
-        ch_str = '' if channel is None else f'AND channel = "{channel}"'
-        query_params = (start, end, analyte)
-
-        if force or query_params != self._last_query_params:
-            sql = f"""
-            SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
-                   data_flag, site, sample_id, pair_id_num
-            FROM hats.ng_data_processing_view
-            WHERE inst_num = {self.instrument.inst_num}
-              AND parameter_num = {pnum}
-              {ch_str}
-              AND YEAR(sample_datetime) BETWEEN {start} AND {end}
-            ORDER BY sample_datetime;
-            """
-            df = pd.DataFrame(self.instrument.doquery(sql))
-            if df.empty:
-                self._cached_df = pd.DataFrame()
-            else:
-                df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
-                self._cached_df = df
-            self._last_query_params = query_params
-
-        return self._cached_df.copy() if self._cached_df is not None else pd.DataFrame()
-
-    def build_datasets(self, df: pd.DataFrame) -> dict:
-        datasets = {}
-        if self.hide_flagged.isChecked():
-            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
-        else:
-            datasets["All samples"] = df.copy()
-
-        clean = df[df["data_flag"] == "..."]
-        fm = (clean.groupby(["site", "sample_id", "sample_datetime"])
-                    .agg({"mole_fraction": ["mean", "std"]}).reset_index())
-        fm.columns = ["site", "sample_id", "sample_datetime", "mean", "std"]
-        pm = (clean.groupby(["site", "pair_id_num"])
-                    .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
-                    .reset_index())
-        pm.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
-
-        datasets["Flask mean"] = fm
-        datasets["Pair mean"]  = pm
-        return datasets
-                
-    def on_point_pick(self, event):
-        artist = event.artist
-        if not hasattr(artist, "_meta"):
-            return
-        if not hasattr(event, "ind") or len(event.ind) == 0:
+        selections = self._selected_analytes()
+        if not selections:
+            self._rebuild_tank_checks([], "Select at least one gas to load tanks.")
             return
 
-        mx, my = event.mouseevent.xdata, event.mouseevent.ydata
-        if mx is None or my is None:
+        tanks_set: set[str] = set()
+        for _, pnum, channel in selections:
+            tanks = self.tanks_plotter.return_active_tanks(
+                start, end, parameter_num=pnum, channel=channel
+            )
+            tanks_set.update(tanks)
+
+        self._rebuild_tank_checks(sorted(tanks_set))
+
+    def _rebuild_tank_checks(self, tanks: list[str], empty_msg: str = None):
+        """Clear and rebuild the checkbox grid."""
+        # Remove existing widgets from the grid
+        for i in reversed(range(self.tank_grid.count())):
+            item = self.tank_grid.itemAt(i)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+
+        self.tank_checks.clear()
+
+        if not tanks:
+            self.tanks_status.setText(empty_msg or "No tanks found for that selection.")
             return
 
-        # Only for distance calculation
-        xdata = mdates.date2num(artist.get_xdata())
-        ydata = artist.get_ydata()
+        self.tanks_status.setText(f"{len(tanks)} tanks found.")
+        cols = 5
+        for idx, tank in enumerate(tanks):
+            cb = QCheckBox(str(tank))
+            cb.setChecked(False)
+            self.tank_checks.append(cb)
+            row, col = divmod(idx, cols)
+            self.tank_grid.addWidget(cb, row, col)
 
-        candidates = event.ind
-        dists = [(i, (xdata[i] - mx)**2 + (ydata[i] - my)**2) for i in candidates]
-        nearest_idx = min(dists, key=lambda t: t[1])[0]
+    def selected_tanks(self) -> list[str]:
+        """Return checked tank serial numbers."""
+        return [cb.text() for cb in self.tank_checks if cb.isChecked()]
 
-        # These values come straight from your DataFrame (no conversion)
-        sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
-        pair_id_num = artist._meta.get("pair_id_num", [None])[nearest_idx]
-        run_time    = artist._meta.get("run_time", [None])[nearest_idx]
-        sample_time = artist._meta.get("sample_datetime", [None])[nearest_idx]
-        site        = artist._meta.get("site", [None])[nearest_idx]
-        analyte     = artist._meta.get("analyte", "Unknown")
-        channel     = artist._meta.get("channel", None)
 
-        # Always show tooltip
-        text = (
-            f"<b>Site:</b> {site}<br>"
-            f"<b>Sample ID:</b> {sample_id}<br>"
-            f"<b>Pair ID:</b> {pair_id_num}<br>"
-            f"<b>Sample time:</b> {sample_time}<br>"
-            f"<b>Run time:</b> {run_time}"
-        )
-        QToolTip.showText(QCursor.pos(), text)
+if __name__ == "__main__":
+    """
+    Minimal harness to exercise the widget standalone using the real M4 instrument/DB.
+    Falls back to fake data if initialization fails (e.g., DB connectivity issues).
+    """
+    from PyQt5.QtWidgets import QApplication
 
-        # Right click adds extra action -- loads the run in main window
-        if event.mouseevent.button == 3:  # right click
-            self.main_window.current_run_time = str(run_time)
-            self.main_window.current_pnum = int(self.analytes.get(analyte))
-            self.main_window.current_channel = channel
+    try:
+        from logos_instruments import M4_Instrument
+    except Exception as exc:  # pragma: no cover - import-time failure path
+        print(f"Could not import M4_Instrument: {exc}", file=sys.stderr)
+        M4_Instrument = None  # type: ignore
 
-            # --- Update the analyte selection UI ---
-            if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
-                # Handle radio buttons
-                for rb in self.main_window.radio_group.buttons():
-                    if rb.text() == analyte:
-                        rb.setChecked(True)
-                        break
+    class _FakeDB:
+        def query_to_df(self, sql):
+            # Pretend the query returned a small tank list.
+            return pd.DataFrame(
+                [
+                    {"tank_serial_num": "TNK-001"},
+                    {"tank_serial_num": "TNK-002"},
+                    {"tank_serial_num": "TNK-003"},
+                    {"tank_serial_num": "TNK-004"},
+                    {"tank_serial_num": "TNK-005"},
+                ]
+            )
 
-            elif hasattr(self.main_window, "analyte_combo"):
-                # Handle combo box
-                idx = self.main_window.analyte_combo.findText(analyte, Qt.MatchExactly)
-                if idx >= 0:
-                    self.main_window.analyte_combo.setCurrentIndex(idx)
+    class _FakeInstrument:
+        def __init__(self):
+            self.db = _FakeDB()
+            self.inst_num = 999
+            self.analytes = {"CO2 (C)": 44, "CH4 (W)": 77, "N2O": 88}
+            self.start_date = "2018-01-01"
 
-            if hasattr(self.main_window, "tabs"):
-                self.main_window.tabs.setCurrentIndex(0)  # switch to first tab ("Processing")
+    def build_instrument():
+        if M4_Instrument is None:
+            return None
+        try:
+            return M4_Instrument()
+        except Exception as exc:
+            print(f"Failed to initialize M4_Instrument (using fake data): {exc}", file=sys.stderr)
+            return None
 
-            # --- Update date range UI ---
-            # Ensure run_time is a datetime (not string)
-            if not isinstance(run_time, pd.Timestamp):
-                run_time = pd.to_datetime(run_time)
-
-            end_year = run_time.year
-            end_month = run_time.month
-
-            # One month prior
-            start_dt = (run_time - pd.DateOffset(months=1))
-            start_year = start_dt.year
-            start_month = start_dt.month
-
-            # Update combo boxes
-            self.main_window.end_year_cb.setCurrentText(str(end_year))
-            self.main_window.end_month_cb.setCurrentIndex(end_month - 1)
-            self.main_window.start_year_cb.setCurrentText(str(start_year))
-            self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
-            
-            # --- Set run type to "Flasks" ---
-            self.main_window.runTypeCombo.blockSignals(True)
-            self.main_window.runTypeCombo.setCurrentText("Flasks")
-            self.main_window.runTypeCombo.blockSignals(False)
+    app = QApplication(sys.argv)
+    instrument = build_instrument() or _FakeInstrument()
+    widget = TanksWidget(instrument=instrument)
+    widget.setWindowTitle("TanksWidget Test Harness (M4)")
+    widget.resize(320, 420)
+    widget.show()
+    sys.exit(app.exec_())
     
-            # --- Continue with loading the run ---
-            self.main_window.set_runlist(initial_date=run_time)
-            self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            self.main_window.current_run_time = str(run_time) 
-            # no need for the apply button highlight
-            self.main_window.apply_date_btn.setStyleSheet("")
