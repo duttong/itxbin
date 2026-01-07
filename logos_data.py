@@ -507,15 +507,15 @@ class MainWindow(QMainWindow):
         self.smoothing_label = QLabel("Response smoothing:")
         self.smoothing_cb = QComboBox()
         self.smoothing_cb.addItems([
-            "Point to Point",   # maps to 1
-            "Lowess 2-points",  # maps to 5
-            "Lowess 3-points",  # maps to 6
-            "Lowess 4-points",  # maps to 7
-            "Lowess 5-points",  # maps to 8
-            "Lowess 6-points",  # maps to 9
-            "Lowess 7-points",  # maps to 10
+            "Point to Point (linear)",  # 1
+            "2-point moving average",   # 3
+            "Lowess ~5 points",         # 2
+            "3-point boxcar",           # 4
+            "5-point boxcar",           # 6
+            "Lowess ~10 points",        # 5
+            "Auto Detect",               # auto (use existing per-run detrend selection)
         ])
-        self.smoothing_cb.setCurrentIndex(4)  # show "Lowess 5-points" by default
+        self.smoothing_cb.setCurrentIndex(2)  # show "Lowess ~5 points" by default
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
@@ -671,8 +671,13 @@ class MainWindow(QMainWindow):
             
     def on_smoothing_changed(self, idx: int):
         #print(f"Smoothing changed to index: {idx} get_selected_detrend_method = {self.get_selected_detrend_method()}", )
-        self.run['detrend_method_num'] = self.get_selected_detrend_method()
-        self.run = self.instrument.norm.merge_smoothed_data(self.run)
+        selected_method = self.get_selected_detrend_method()
+        dm_override = None
+        if selected_method is not None:
+            self.run['detrend_method_num'] = selected_method
+            dm_override = selected_method
+
+        self.run = self.instrument.norm.merge_smoothed_data(self.run, detrend_method_num=dm_override)
         self.run = self.instrument.calc_mole_fraction(self.run)
         self.madechanges = True
         self.smoothing_changed = True
@@ -904,6 +909,69 @@ class MainWindow(QMainWindow):
             cal_delta_time = self.run['analysis_datetime'].min() - pd.to_datetime(current_curve_date, utc=True)
             l = current_curve_date.strftime('\nCal Date:\n%Y-%m-%d %H:%M\n') + f'{cal_delta_time.days} days ago'
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
+
+        # --- Detrend summary box for resp/ratio plots ---
+        if yparam in ('ratio', 'resp'):
+            try:
+                # Order from least to most smoothing
+                method_order = [1, 3, 2, 4, 6, 5]
+                labels = {
+                    1: "Point-to-point",
+                    3: "2-pt avg",
+                    2: "Lowess~5",
+                    4: "3-pt box",
+                    6: "5-pt box",
+                    5: "Lowess~10",
+                }
+                stats_df, best_method, _ = self.instrument.norm.detrend_stats_for_run(
+                    self.run,
+                    methods=method_order,
+                    drop_outlier=False,
+                    verbose=False,
+                )
+                if not stats_df.empty:
+                    stats_df = stats_df.set_index('detrend_method_num')
+                    # Pick header based on instrument (e.g., BLD1 uses SD wording)
+                    inst_num = None
+                    if 'inst_num' in self.run.columns and not self.run['inst_num'].empty:
+                        try:
+                            inst_num = int(self.run['inst_num'].iloc[0])
+                        except Exception:
+                            inst_num = None
+                    if inst_num is None:
+                        try:
+                            inst_num = int(getattr(self.instrument, "inst_num", None))
+                        except Exception:
+                            inst_num = None
+
+                    lines = ['SD of norm resp'] if inst_num == 220 else ['Sample Pair RMS']
+                    for m in method_order:
+                        if m not in stats_df.index:
+                            continue
+                        rms = stats_df.at[m, 'rep_resp_rms']
+                        if pd.isna(rms):
+                            continue
+                        label = labels.get(m, f"Method {m}")
+                        marker = "● " if best_method == m else "  "
+                        lines.append(f"{marker}{label}: {rms:.4f}")
+
+                    if lines:
+                        ax.text(
+                            0.98, 0.98,
+                            "\n".join(lines),
+                            transform=ax.transAxes,
+                            ha='right',
+                            va='top',
+                            fontsize=9,
+                            bbox=dict(
+                                boxstyle='round,pad=0.35',
+                                facecolor='white',
+                                edgecolor='lightgray',
+                                alpha=0.9,
+                            ),
+                        )
+            except Exception as e:
+                print(f"Warning: unable to compute detrend summary ({e})")
 
         # --- Always append Save/Revert legend "buttons" ---
         spacer_handle     = Line2D([], [], linestyle='None', label='\u2009')
@@ -2264,27 +2332,27 @@ class MainWindow(QMainWindow):
     def update_smoothing_combobox(self):
         """
         Set the smoothing combobox index based on self.run['detrend_method_num'].
-        If not found or invalid, defaults to 'Lowess 5-points(default)'.
+        If not found or invalid, defaults to 'Lowess ~5 points'.
         """
         index_to_detrend_method = {
-            0: 1,  # Point to Point
-            1: 5,  # Lowess 2-points
-            2: 6,  # Lowess 3-points
-            3: 7,  # 4-points
-            4: 8,  # 5-points
-            5: 9,  # 6-points 
-            6: 10,  # 7-points
+            0: 1,  # Point to Point (linear)
+            1: 3,  # 2-point moving average
+            2: 2,  # Lowess ~5 points
+            3: 4,  # 3-point boxcar
+            4: 6,  # 5-point boxcar
+            5: 5,  # Lowess ~10 points
+            6: None,  # Auto Detect
         }
-        detrend_to_index = {v: k for k, v in index_to_detrend_method.items()}
+        detrend_to_index = {v: k for k, v in index_to_detrend_method.items() if v is not None}
 
         self.smoothing_cb.blockSignals(True)
         try:
             dm = int(self.run["detrend_method_num"].iat[0])
-            idx = detrend_to_index.get(dm, 4) # default to Lowess 5-points
+            idx = detrend_to_index.get(dm, 2) # default to Lowess ~5 points
             self.smoothing_cb.setCurrentIndex(idx)
         except Exception as e:
             #print(f"Warning: could not set smoothing combobox ({e})")
-            self.smoothing_cb.setCurrentIndex(4)
+            self.smoothing_cb.setCurrentIndex(2)
         self.smoothing_cb.blockSignals(False)
 
     def get_selected_detrend_method(self):
@@ -2292,16 +2360,16 @@ class MainWindow(QMainWindow):
         Return the detrend_method_num corresponding to the current combobox selection.
         """
         index_to_detrend_method = {
-            0: 1,  # Point to Point
-            1: 5,  # Lowess 2-points
-            2: 6,  # Lowess 3-points
-            3: 7,  # Lowess 4
-            4: 8,  # Lowess 5
-            5: 9,  # Lowess 6
-            6: 10,  # Lowess 7
+            0: 1,  # Point to Point (linear)
+            1: 3,  # 2-point moving average
+            2: 2,  # Lowess ~5 points
+            3: 4,  # 3-point boxcar
+            4: 6,  # 5-point boxcar
+            5: 5,  # Lowess ~10 points
+            6: None,  # Auto Detect
         }
-        #print(f"Selected detrend method index: {self.smoothing_cb.currentIndex()}, {index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 8)}")
-        return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 8)  # default to Lowess 5-points
+        #print(f"Selected detrend method index: {self.smoothing_cb.currentIndex()}, {index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)}")
+        return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)  # default to Lowess ~5 points
 
     def set_current_analyte(self, name):
         """

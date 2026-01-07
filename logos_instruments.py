@@ -577,8 +577,16 @@ class Normalizing():
     ):
         """
         Calculate smoothed standard deviation per run_time.
-        Each run_time can have its own detrend_method_num controlling the LOWESS fraction,
+        Each run_time can have its own detrend_method_num controlling the smoothing,
         or you can override all of them with override_detrend_method_num.
+
+        detrend_method_num options (least → most smoothing):
+          1: point-to-point linear interpolation
+          3: 2-point moving average
+          2: LOWESS using roughly 5 points
+          4: 3-point boxcar mean
+          6: 5-point boxcar mean
+          5: LOWESS using roughly 10 points
         """
 
         std = (
@@ -594,8 +602,8 @@ class Normalizing():
         std = std.reset_index(drop=True)
 
         # skip first points for M4
-        if self.inst_id == 'm4':
-            std = std[std.groupby('run_time').cumcount() > 0].reset_index(drop=True)
+        #if self.inst_id == 'm4':
+        #    std = std[std.groupby('run_time').cumcount() > 0].reset_index(drop=True)
 
         if len(std) < min_pts:
             std['smoothed'] = np.nan
@@ -604,9 +612,9 @@ class Normalizing():
         std['ts'] = std['analysis_datetime'].astype(np.int64) // 10**9
         smoothed = np.full(len(std), np.nan, dtype=float)
 
-        # detrend_method_num: points
-        points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7, 11:10, 12:15, 13:20, 14:25}
-        #points_map = {1:1, 2:5, 3:5, 4:1, 5:2, 6:3, 7:4, 8:5, 9:6, 10:7}
+        lowess_points = {2: 5, 5: 10}
+        boxcar_windows = {4: 3, 6: 5}
+        moving_avg_windows = {3: 2}
 
         # group-level loop, but minimal overhead
         for run_time, seg in std.groupby('run_time', sort=False):
@@ -615,31 +623,61 @@ class Normalizing():
                 detrend_method = override_detrend_method_num
             else:
                 detrend_method = seg['detrend_method_num'].iloc[0]
-            
-            if len(seg) >= 3 and seg['ts'].max() > seg['ts'].min():
-                frac = points_map.get(detrend_method, 5) / len(seg)
-                frac = 1.0 if frac > 1 else frac
-                #print(len(seg), detrend_method, points_map.get(detrend_method, 5), frac)
 
-                if verbose:
-                    t0 = time.time()
-                    print(
-                        f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} "
-                        f"| points={points_map.get(detrend_method, 5)} | frac={frac}"
-                    )
-                
+            detrend_method = 2 if pd.isna(detrend_method) else int(detrend_method)
+            if detrend_method not in (1, 2, 3, 4, 5, 6):
+                detrend_method = 2
+
+            seg = seg.sort_values('ts')
+            t0 = time.time() if verbose else None
+
+            if (
+                detrend_method in lowess_points
+                and len(seg) >= 3
+                and seg['ts'].max() > seg['ts'].min()
+            ):
+                points = lowess_points[detrend_method]
+                frac = min(points / len(seg), 1.0)
                 y_smooth = lowess(
                     seg[self.response_type],
                     seg['ts'],
                     frac=frac,
                     return_sorted=False
                 )
-                smoothed[seg.index] = y_smooth
+                method_desc = f"lowess_{points}pt_frac{frac:.3f}"
+            elif detrend_method in boxcar_windows:
+                window = boxcar_windows[detrend_method]
+                y_smooth = (
+                    seg[self.response_type]
+                    .rolling(window=window, center=True, min_periods=1)
+                    .mean()
+                    .to_numpy()
+                )
+                method_desc = f"boxcar_{window}pt"
+            elif detrend_method in moving_avg_windows:
+                window = moving_avg_windows[detrend_method]
+                y_smooth = (
+                    seg[self.response_type]
+                    .rolling(window=window, center=True, min_periods=1)
+                    .mean()
+                    .to_numpy()
+                )
+                method_desc = f"moving_avg_{window}pt"
             else:
-                smoothed[seg.index] = seg[self.response_type].values
+                y_smooth = (
+                    seg.set_index('ts')[self.response_type]
+                    .interpolate(method='index', limit_direction='both')
+                    .to_numpy()
+                )
+                method_desc = "linear_interp"
+
+            smoothed[seg.index] = y_smooth
 
             if verbose:
-                print(f"  done in {time.time()-t0:.4f}s")
+                print(
+                    f"run_time={run_time} | n={len(seg)} | detrend={detrend_method} "
+                    f"| method={method_desc} | time={time.time()-t0:.4f}s"
+                )
 
         std['smoothed'] = smoothed
         return std[['analysis_datetime', 'run_time', 'smoothed']]
@@ -674,6 +712,419 @@ class Normalizing():
 
         return out
 
+    def extract_digits(self, s: str) -> str:
+        """Extract digits from the serial portion, ignoring prefix and the last underscore part."""
+        # Split on '_' but remove the last part
+        parts = s.split('_')
+        core = "_".join(parts[:-1])  # everything except the last section
+        return ''.join(re.findall(r'\d+', core))
+
+
+    def compute_rms(self, series: pd.Series, drop_outlier: bool = False) -> tuple[float, int]:
+        """
+        Compute RMS and number of points from a Series, ignoring NaNs.
+
+        Parameters
+        ----------
+        series : pd.Series
+            Input series to evaluate.
+        drop_outlier : bool, default False
+            If True, drop the single largest absolute value before computing RMS and n.
+
+        Returns
+        -------
+        rms : float
+            Root-mean-square of the non-NaN values (0.0 if no data).
+        n : int
+            Number of non-NaN values used.
+        """
+        s = series.dropna()
+        if drop_outlier and len(s) > 0:
+            idx = s.abs().idxmax()
+            s = s.drop(idx)
+        n = len(s)
+        if n == 0:
+            return 0.0, 0
+        rms = np.sqrt((s**2).mean())
+        return rms, n
+
+    def sample_diffs(self,
+        run_df: pd.DataFrame,
+        verbose: bool = True,
+        drop_outlier: bool = False,
+    ) -> tuple[float, int]:
+        """
+        Compute sample pair RMS differences (normalized_resp) for flask (run_type_num == 1)
+        and tank (run_type_num == 7) data for a single run_time.
+
+        Returns
+        -------
+        pair_resp_rms : float
+            RMS of sample pair response differences.
+        pair_resp_n : int
+            Number of points used in the sample pair RMS.
+        """
+
+        run_time = run_df['run_time'].iloc[0]
+        df = run_df.loc[run_df['data_flag_int'] == 0].copy()
+
+        # ---------- Flask pairs (run_type_num == 1) ----------
+        flask_df = (
+            df.loc[df['run_type_num'] == 1]
+            .groupby('sample_id')
+            .agg({
+                'pair_id_num': 'first',
+                'normalized_resp': 'mean',
+            })
+        )
+
+        if not flask_df.empty:
+            flask_df['resp_diff'] = flask_df.groupby('pair_id_num')['normalized_resp'].diff()
+        else:
+            flask_df['resp_diff'] = pd.Series(dtype='float64')
+
+        # ---------- Tank repeated runs (run_type_num == 7) ----------
+        tank_df = (
+            df.loc[df['run_type_num'] == 7]
+            .groupby('port_info')
+            .agg({
+                'normalized_resp': 'mean',
+            })
+        )
+
+        if not tank_df.empty:
+            tank_df = tank_df.reset_index()
+            tank_df['serial_num'] = tank_df['port_info'].apply(self.extract_digits)
+            tank_df['resp_diff']  = tank_df.groupby('serial_num')['normalized_resp'].diff()
+        else:
+            tank_df = pd.DataFrame(
+                columns=['port_info', 'normalized_resp', 'serial_num', 'resp_diff']
+            )
+
+        # ---------- Combine flask + tank replicate diffs ----------
+        resp_pieces = []
+        if not flask_df['resp_diff'].empty:
+            resp_pieces.append(flask_df['resp_diff'])
+        if not tank_df['resp_diff'].empty:
+            resp_pieces.append(tank_df['resp_diff'])
+
+        if resp_pieces:
+            combined_resp_diff = pd.concat(resp_pieces, ignore_index=True)
+        else:
+            combined_resp_diff = pd.Series(dtype='float64')
+
+        pair_resp_rms, pair_resp_n = self.compute_rms(combined_resp_diff, drop_outlier=drop_outlier)
+
+        if verbose:
+            print(
+                f"{run_time}: pair resp RMS = {pair_resp_rms:0.4f} (n={pair_resp_n})"
+            )
+
+        return pair_resp_rms, pair_resp_n
+
+    def find_best_detrend_per_run(self,
+        df: pd.DataFrame,
+        methods=(1, 2, 3, 4, 5, 6),
+        default_method: int = 2,
+        margin_frac: float = 0.10,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """
+        For each run_time in df, pick the detrend_method_num that beats the default
+        method by at least `margin_frac` on rep_resp_rms. If no method clears the
+        margin, stick with the default (Lowess ~5 points).
+
+        Returns a DataFrame with columns: run_time, best_method, best_rms, stats
+        """
+
+        # Ensure default is included
+        all_methods = sorted(set(methods) | {default_method})
+
+        # 1) Build normalized data once per method
+        norm_by_method: dict[int, pd.DataFrame] = {}
+        for meth in all_methods:
+            if verbose:
+                print(f"Building normalized data for method {meth}")
+            norm_by_method[meth] = self.merge_smoothed_data(
+                df, detrend_method_num=meth
+            )
+
+        run_times = sorted(df['run_time'].unique())
+        results = []
+
+        # 2) Loop over run_times
+        for rt in run_times:
+            if verbose:
+                print(f"=== run_time {rt} ===")
+
+            best_method = default_method
+            best_stats = (np.inf, 0)
+
+            # Evaluate default first
+            default_df = norm_by_method[default_method]
+            default_run = default_df.loc[default_df['run_time'] == rt].copy()
+            if not default_run.empty:
+                default_stats = self.sample_diffs(default_run, verbose=False)
+                best_stats = default_stats
+                if verbose:
+                    print(
+                        f"  default {default_method}: RMS={default_stats[0]:.6g} (n={default_stats[1]})"
+                    )
+            else:
+                if verbose:
+                    print(f"  default {default_method}: no data for this run_time")
+
+            # 3) Try each other method for this run_time
+            for meth in all_methods:
+                if meth == default_method:
+                    continue
+
+                df_norm = norm_by_method[meth]
+                run_df = df_norm.loc[df_norm['run_time'] == rt].copy()
+                if run_df.empty:
+                    if verbose:
+                        print(f"  method {meth}: no data for this run_time")
+                    continue
+
+                stats = self.sample_diffs(run_df, verbose=False)
+                rep_resp_rms, pair_resp_n = stats
+
+                if verbose:
+                    print(f"  method {meth}: RMS={rep_resp_rms:.6g} (n={pair_resp_n})")
+
+                # Skip if no valid points
+                if pair_resp_n == 0 or np.isnan(rep_resp_rms):
+                    continue
+
+                # Enforce margin rule vs current best (starts at default)
+                if rep_resp_rms < best_stats[0] * (1 - margin_frac):
+                    best_stats = stats
+                    best_method = meth
+
+            results.append({
+                'run_time': rt,
+                'best_method': best_method,
+                'best_rms': best_stats[0],
+                'stats': best_stats,
+            })
+
+        return pd.DataFrame(results)
+
+    def detrend_stats_for_run(self,
+        run_df: pd.DataFrame,
+        methods=(1, 2, 3, 4, 5, 6),
+        default_method: int = 2,
+        margin_frac: float = 0.10,
+        drop_outlier: bool = False,
+        verbose: bool = False,
+    ) -> tuple[pd.DataFrame, int | None, float]:
+        """
+        Compute rep_resp_rms for a single run_time across multiple detrend methods.
+        Also return the best method using the same margin rule as find_best_detrend_per_run.
+
+        Parameters
+        ----------
+        run_df : pd.DataFrame
+            Dataframe already filtered to a single run_time.
+        methods : iterable[int]
+            detrend_method_num values to evaluate.
+        default_method : int
+            Baseline method (Lowess ~5 points) that others must beat by margin_frac.
+        margin_frac : float
+            Required fractional improvement over the default to switch methods.
+        drop_outlier : bool, default False
+            Drop the single largest absolute diff before RMS (passed to sample_diffs).
+        verbose : bool, default False
+            Print per-method RMS.
+
+        Returns
+        -------
+        stats_df : pd.DataFrame
+            Columns: run_time, detrend_method_num, rep_resp_rms, pair_resp_n
+        best_method : int | None
+            Method chosen via margin rule (or min RMS if default missing); None if no data.
+        best_rms : float
+            RMS for the selected best_method (NaN if no data).
+        """
+        
+        # use only unflagged data
+        run_df = run_df.loc[run_df['data_flag'] == '...'].copy()
+         
+        if run_df.empty:
+            return (
+                pd.DataFrame(columns=['run_time', 'detrend_method_num', 'rep_resp_rms', 'pair_resp_n']),
+                None,
+                np.nan,
+            )
+
+        # For BLD1 (inst_num == 220), use ref tank variability instead of sample_diffs
+        if 'inst_num' in run_df and int(run_df['inst_num'].iloc[0]) == 220:
+            return self.find_best_reftank_norm_resp(
+                run_df,
+                methods=methods,
+                default_method=default_method,
+                margin_frac=margin_frac,
+                ref_port=11,
+                verbose=verbose,
+            )
+
+        run_time = run_df['run_time'].iloc[0] if 'run_time' in run_df else None
+        results = []
+        valid = []  # (meth, rms, n)
+        default_stats = None
+
+        all_methods = sorted(set(methods) | {default_method})
+
+        for meth in all_methods:
+            df_norm = self.merge_smoothed_data(run_df, detrend_method_num=meth)
+            rep_resp_rms, pair_resp_n = self.sample_diffs(
+                df_norm,
+                verbose=False,
+                drop_outlier=drop_outlier,
+            )
+
+            if verbose:
+                print(f"method {meth}: RMS={rep_resp_rms:.6g} (n={pair_resp_n})")
+
+            results.append({
+                'run_time': run_time,
+                'detrend_method_num': meth,
+                'rep_resp_rms': rep_resp_rms,
+                'pair_resp_n': pair_resp_n,
+            })
+
+            if pair_resp_n > 0 and not np.isnan(rep_resp_rms):
+                valid.append((meth, rep_resp_rms, pair_resp_n))
+                if meth == default_method:
+                    default_stats = (rep_resp_rms, pair_resp_n)
+
+        # Select best method
+        best_method = None
+        best_rms = np.nan
+
+        if not valid:
+            stats_df = pd.DataFrame(results)
+            return stats_df, best_method, best_rms
+
+        if default_stats is not None:
+            best_method = default_method
+            best_rms = default_stats[0]
+            for meth, rms, _ in valid:
+                if meth == default_method:
+                    continue
+                if rms < best_rms * (1 - margin_frac):
+                    best_method = meth
+                    best_rms = rms
+        else:
+            # Default missing; pick the lowest RMS
+            best_method, best_rms, _ = min(valid, key=lambda x: x[1])
+
+        stats_df = pd.DataFrame(results)
+        return stats_df, best_method, best_rms
+
+    def find_best_reftank_norm_resp(
+        self,
+        df: pd.DataFrame,
+        methods=(1, 2, 3, 4, 5, 6),
+        default_method: int = 2,
+        margin_frac: float = 0.10,
+        ref_port: int = 11,
+        verbose: bool = False,
+    ) -> tuple[pd.DataFrame, int | None, float]:
+        """
+        Find best detrend method for a single run_time using reference tank
+        variability (port == ref_port). Point-to-point (method 1) is ignored for
+        selection because it trivially returns zero.
+
+        Returns the same tuple shape as detrend_stats_for_run:
+        (stats_df, best_method, best_rms)
+        where stats_df has columns run_time, detrend_method_num, rep_resp_rms, rep_resp_n
+        (rep_resp_rms here is the ref tank std, rep_resp_n is its count).
+        """
+
+        if df.empty:
+            return (
+                pd.DataFrame(columns=['run_time', 'detrend_method_num', 'rep_resp_rms', 'rep_resp_n']),
+                None,
+                np.nan,
+            )
+            
+        if default_method == 1:
+            default_method = 2  # avoid point-to-point as default
+
+        run_time = df['run_time'].iloc[0] if 'run_time' in df else None
+        all_methods = sorted(set(methods) | {default_method})
+
+        # Precompute normalized data per method
+        norm_by_method: dict[int, pd.DataFrame] = {}
+        for meth in all_methods:
+            if verbose:
+                print(f"Building normalized data for method {meth}")
+            norm_by_method[meth] = self.merge_smoothed_data(
+                df, detrend_method_num=meth
+            )
+
+        def ref_stats(df_norm: pd.DataFrame) -> tuple[float, int]:
+            if 'port' in df_norm:
+                ref = df_norm.loc[df_norm['port'] == ref_port, 'normalized_resp']
+            elif 'port_idx' in df_norm:
+                ref = df_norm.loc[df_norm['port_idx'] == ref_port, 'normalized_resp']
+            else:
+                return np.nan, 0
+            ref = ref.dropna()
+            if ref.empty:
+                return np.nan, 0
+            return ref.std(), len(ref)
+
+        results = []
+        valid = []  # (meth, std, n)
+        default_stats = None
+
+        # Evaluate all methods
+        for meth in all_methods:
+            df_norm = norm_by_method[meth]
+            r_std, r_n = ref_stats(df_norm)
+
+            if verbose:
+                print(f"  method {meth}: STD={r_std:.6g} (n={r_n})")
+
+            results.append({
+                'run_time': run_time,
+                'detrend_method_num': meth,
+                'rep_resp_rms': r_std,
+                'rep_resp_n': r_n,
+            })
+
+            if meth == 1:
+                continue  # skip P2P for selection
+            if r_n == 0 or np.isnan(r_std):
+                continue
+
+            valid.append((meth, r_std, r_n))
+            if meth == default_method:
+                default_stats = (r_std, r_n)
+
+        # Select best method with margin rule
+        best_method = None
+        best_rms = np.nan
+
+        if not valid:
+            return pd.DataFrame(results), best_method, best_rms
+
+        if default_stats is not None:
+            best_method = default_method
+            best_rms = default_stats[0]
+            for meth, std, _ in valid:
+                if meth == default_method:
+                    continue
+                if std < best_rms * (1 - margin_frac):
+                    best_method = meth
+                    best_rms = std
+        else:
+            best_method, best_rms, _ = min(valid, key=lambda x: x[1])
+
+        stats_df = pd.DataFrame(results)
+        return stats_df, best_method, best_rms
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
