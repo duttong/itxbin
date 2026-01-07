@@ -1,3 +1,5 @@
+#! /usr/bin/env python
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
@@ -30,7 +32,9 @@ class TanksPlotter:
         
         
     def return_active_tanks(self, start_year, end_year, parameter_num=None, channel=None):
-        """Return a list of tank serial numbers active in the given window."""
+        """
+        Return a list of tank records (serial + latest fill metadata) active in the window.
+        """
         if parameter_num is None:
             return []
 
@@ -38,25 +42,42 @@ class TanksPlotter:
         end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
 
         sql = f"""
-            SELECT a.tank_serial_num
-            FROM hats.ng_analysis a
-            JOIN hats.ng_mole_fractions mf
-              ON mf.analysis_num = a.num
-            WHERE a.inst_num = {self.inst_num}
-              AND mf.parameter_num = {parameter_num}
-              AND a.tank_serial_num IS NOT NULL
-              AND a.run_time >= '{start_ts}'
-              AND a.run_time <  '{end_ts}'
-              {f"AND mf.channel = '{channel}'" if channel else ""}
-            GROUP BY a.tank_serial_num
-            ORDER BY a.tank_serial_num;
+            SELECT
+                t.tank_serial_num,
+                f.`date` AS fill_date,
+                f.code,
+                f.location,
+                f.method,
+                f.notes
+            FROM (
+                SELECT DISTINCT a.tank_serial_num
+                FROM hats.ng_analysis a
+                JOIN hats.ng_mole_fractions mf
+                  ON mf.analysis_num = a.num
+                WHERE a.inst_num = {self.inst_num}
+                  AND mf.parameter_num = {parameter_num}
+                  {f"AND mf.channel = '{channel}'" if channel else ""}
+                  AND a.tank_serial_num IS NOT NULL
+                  AND a.run_time >= '{start_ts}'
+                  AND a.run_time <  '{end_ts}'
+            ) AS t
+            LEFT JOIN (
+                SELECT serial_number, MAX(`date`) AS max_date
+                FROM reftank.fill
+                GROUP BY serial_number
+            ) AS latest
+              ON latest.serial_number = t.tank_serial_num
+            LEFT JOIN reftank.fill AS f
+              ON f.serial_number = latest.serial_number
+             AND f.`date` = latest.max_date
+            ORDER BY t.tank_serial_num;
         """
 
         if hasattr(self.db, "query_to_df"):
             df = self.db.query_to_df(sql)
         else:
             df = pd.DataFrame(self.db.doquery(sql))
-        return df['tank_serial_num'].dropna().tolist()
+        return df.to_dict(orient="records")
     
 
 class TanksWidget(QWidget):
@@ -191,16 +212,27 @@ class TanksWidget(QWidget):
             self._rebuild_tank_checks([], "Select at least one gas to load tanks.")
             return
 
-        tanks_set: set[str] = set()
+        tanks_info: dict[str, str | None] = {}
         for _, pnum, channel in selections:
             tanks = self.tanks_plotter.return_active_tanks(
                 start, end, parameter_num=pnum, channel=channel
             )
-            tanks_set.update(tanks)
+            for entry in tanks:
+                if isinstance(entry, dict):
+                    serial = entry.get("tank_serial_num")
+                    method = entry.get("method")
+                else:
+                    serial = str(entry)
+                    method = None
+                if not serial:
+                    continue
+                if serial not in tanks_info:
+                    tanks_info[serial] = method if method else None
 
-        self._rebuild_tank_checks(sorted(tanks_set))
+        tanks_list = [(serial, tanks_info[serial]) for serial in sorted(tanks_info.keys())]
+        self._rebuild_tank_checks(tanks_list)
 
-    def _rebuild_tank_checks(self, tanks: list[str], empty_msg: str = None):
+    def _rebuild_tank_checks(self, tanks, empty_msg: str = None):
         """Clear and rebuild the checkbox grid."""
         # Remove existing widgets from the grid
         for i in reversed(range(self.tank_grid.count())):
@@ -218,8 +250,15 @@ class TanksWidget(QWidget):
         self.tanks_status.setText(f"{len(tanks)} tanks found.")
         cols = 5
         for idx, tank in enumerate(tanks):
-            cb = QCheckBox(str(tank))
+            serial = tank.get("tank_serial_num") if isinstance(tank, dict) else None
+            method = tank.get("method") if isinstance(tank, dict) else None
+            if isinstance(tank, tuple):
+                serial, method = tank
+            label = str(serial or tank)
+            cb = QCheckBox(label)
             cb.setChecked(False)
+            if method and method.lower() == "gravimetric":
+                cb.setStyleSheet("color: #8b0000;")  # dark red
             self.tank_checks.append(cb)
             row, col = divmod(idx, cols)
             self.tank_grid.addWidget(cb, row, col)
