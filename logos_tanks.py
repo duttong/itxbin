@@ -41,16 +41,13 @@ class TanksPlotter:
         start_ts = f"{start_year}-01-01"
         end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
 
-        sql = f"""
+        # Query 1: find the latest fill_idx per tank observed in the window for this instrument/parameter/channel.
+        fills_sql = f"""
             SELECT
-                t.tank_serial_num,
-                f.`date` AS fill_date,
-                f.code,
-                f.location,
-                f.method,
-                f.notes
+                f.idx
             FROM (
-                SELECT DISTINCT a.tank_serial_num
+                SELECT DISTINCT
+                    a.tank_serial_num
                 FROM hats.ng_analysis a
                 JOIN hats.ng_mole_fractions mf
                   ON mf.analysis_num = a.num
@@ -62,7 +59,9 @@ class TanksPlotter:
                   AND a.run_time <  '{end_ts}'
             ) AS t
             LEFT JOIN (
-                SELECT serial_number, MAX(`date`) AS max_date
+                SELECT
+                    serial_number,
+                    MAX(`date`) AS max_date
                 FROM reftank.fill
                 GROUP BY serial_number
             ) AS latest
@@ -70,13 +69,84 @@ class TanksPlotter:
             LEFT JOIN reftank.fill AS f
               ON f.serial_number = latest.serial_number
              AND f.`date` = latest.max_date
-            ORDER BY t.tank_serial_num;
+            WHERE f.idx IS NOT NULL
+            ORDER BY
+                t.tank_serial_num;
+        """
+
+        fills_df = (
+            self.db.query_to_df(fills_sql)
+            if hasattr(self.db, "query_to_df")
+            else pd.DataFrame(self.db.doquery(fills_sql))
+        )
+        fill_ids = [str(idx) for idx in fills_df["idx"].dropna().unique()] if not fills_df.empty else []
+        if not fill_ids:
+            return []
+
+        fill_list = ",".join(fill_ids)
+
+        # Query 2: fetch metadata for those fill_idx values.
+        sql = f"""
+            SELECT
+                h.num,
+                h.fill_idx,
+                f.serial_number,
+                f.`date`,
+                f.code,
+                f.location,
+                u.abbr        AS use_short,
+                g.species,
+                g.species_num AS parameter_num,
+                g.mf_value,
+                h.site_num,
+                h.start,
+                h.end,
+                h.comment,
+                f.notes AS fill_notes,
+                g.notes AS grav_notes
+            FROM hats.ng_tank_use_history h
+            JOIN reftank.fill f
+              ON f.idx = h.fill_idx
+            LEFT JOIN hats.ng_tank_uses u
+              ON u.num = h.ng_tank_uses_num
+            LEFT JOIN reftank.gravs_corrected g
+              ON g.fill_num = h.fill_idx
+            WHERE h.fill_idx IN ({fill_list})
+            ORDER BY f.serial_number, f.`date` DESC;
         """
 
         if hasattr(self.db, "query_to_df"):
             df = self.db.query_to_df(sql)
         else:
             df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            return []
+
+        # Only keep Grav rows matching the selected parameter; keep Archive/other uses regardless.
+        if "use_short" in df.columns and "parameter_num" in df.columns:
+            use_lower = df["use_short"].fillna("").str.lower()
+            is_grav = use_lower.str.startswith("grav")
+            param_series = pd.to_numeric(df["parameter_num"], errors="coerce")
+            grav_match = param_series == pd.to_numeric(parameter_num)
+            grav_total = int(is_grav.sum())
+            grav_kept = int((is_grav & grav_match).sum())
+            grav_dropped = grav_total - grav_kept
+            non_grav = ~is_grav
+            df = df[non_grav | grav_match]
+
+        if "date" in df.columns:
+            df = df.rename(columns={"date": "fill_date"})
+        # Prefer Grav rows (matching parameter) for a serial when present; otherwise take latest.
+        if "serial_number" in df.columns:
+            df = df.copy()
+            df["__is_grav"] = df["use_short"].fillna("").str.lower() == "grav"
+            df = df.sort_values(
+                ["serial_number", "__is_grav", "fill_date"],
+                ascending=[True, False, False],
+            )
+            df = df.drop_duplicates(subset=["serial_number"], keep="first")
+            df = df.drop(columns=["__is_grav"], errors="ignore")
+
         return df.to_dict(orient="records")
     
 
@@ -132,6 +202,7 @@ class TanksWidget(QWidget):
             cb = QCheckBox(name)
             if idx == 0:
                 cb.setChecked(True)
+            cb.toggled.connect(lambda checked, cb=cb: self._on_analyte_toggled(cb, checked))
             self.analyte_checks.append(cb)
             row, col = divmod(idx, cols_analyte)
             analyte_checks_layout.addWidget(cb, row, col)
@@ -176,6 +247,22 @@ class TanksWidget(QWidget):
         self._reload_dirty = False
         self.reload_btn.setStyleSheet("")
 
+    def _on_analyte_toggled(self, cb: QCheckBox, checked: bool):
+        """Keep analyte selection single-choice and refresh tanks when changed."""
+        if not getattr(self, "_ready", False):
+            return
+        if checked:
+            for other in self.analyte_checks:
+                if other is cb:
+                    continue
+                other.blockSignals(True)
+                other.setChecked(False)
+                other.blockSignals(False)
+            self.refresh_tanks()
+        else:
+            if not any(c.isChecked() for c in self.analyte_checks):
+                self.refresh_tanks()
+
     def _selected_analytes(self) -> list[tuple[str, int, str | None]]:
         """Return list of (name, parameter_num, channel)."""
         if not self.instrument:
@@ -218,16 +305,18 @@ class TanksWidget(QWidget):
                 start, end, parameter_num=pnum, channel=channel
             )
             for entry in tanks:
+                serial = None
+                use_short = None
                 if isinstance(entry, dict):
-                    serial = entry.get("tank_serial_num")
-                    method = entry.get("method")
+                    serial = entry.get("serial_number") or entry.get("tank_serial_num")
+                    use_short = entry.get("use_short")
                 else:
                     serial = str(entry)
-                    method = None
                 if not serial:
                     continue
-                if serial not in tanks_info:
-                    tanks_info[serial] = method if method else None
+                serial_str = str(serial)
+                if serial_str not in tanks_info:
+                    tanks_info[serial_str] = use_short if use_short else None
 
         tanks_list = [(serial, tanks_info[serial]) for serial in sorted(tanks_info.keys())]
         self._rebuild_tank_checks(tanks_list)
@@ -247,18 +336,32 @@ class TanksWidget(QWidget):
             self.tanks_status.setText(empty_msg or "No tanks found for that selection.")
             return
 
-        self.tanks_status.setText(f"{len(tanks)} tanks found.")
+        self.tanks_status.setText(
+            f"{len(tanks)} tanks found. "
+            f"<span style='color: darkred;'>Grav</span> "
+            f"| <span style='color: darkgreen;'>Archive</span>"
+        )
         cols = 5
         for idx, tank in enumerate(tanks):
-            serial = tank.get("tank_serial_num") if isinstance(tank, dict) else None
-            method = tank.get("method") if isinstance(tank, dict) else None
-            if isinstance(tank, tuple):
-                serial, method = tank
+            serial = None
+            use_short = None
+            if isinstance(tank, dict):
+                serial = tank.get("serial_number") or tank.get("tank_serial_num")
+                use_short = tank.get("use_short")
+            elif isinstance(tank, tuple):
+                if len(tank) >= 1:
+                    serial = tank[0]
+                if len(tank) >= 2:
+                    use_short = tank[1]
             label = str(serial or tank)
+            use_lower = str(use_short).lower() if use_short is not None else ""
             cb = QCheckBox(label)
             cb.setChecked(False)
-            if method and method.lower() == "gravimetric":
-                cb.setStyleSheet("color: #8b0000;")  # dark red
+            if use_lower:
+                if use_lower.startswith("grav"):
+                    cb.setStyleSheet("color: darkred;")
+                elif use_lower.startswith("archive"):
+                    cb.setStyleSheet("color: darkgreen;")
             self.tank_checks.append(cb)
             row, col = divmod(idx, cols)
             self.tank_grid.addWidget(cb, row, col)
