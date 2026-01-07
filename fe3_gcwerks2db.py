@@ -119,12 +119,21 @@ class FE3_Prepare(fe3_inst):
         return pd.concat(dfs, axis=0)
 
     @staticmethod
-    def _seq2list(df, drop_initial=None):
+    def _seq2list(df, drop_initial=None, run_id=None):
         """Turn the raw seq string into two lists (descriptions, flask_indices)
         of exactly len(df) items, dropping a leading header char only if needed."""
 
         # how many points to fill
         n = len(df)
+        # best-effort run label for messages
+        if run_id is None or (isinstance(run_id, float) and pd.isna(run_id)):
+            if 'dir' in df.columns and pd.notna(df['dir'].iat[0]):
+                run_id = df['dir'].iat[0]
+            elif getattr(df, 'name', None) is not None and pd.notna(df.name):
+                run_id = df.name
+            else:
+                run_id = '<unknown>'
+        run_id = str(run_id)
 
         # raw values
         raw_seq    = df['seq'].iat[0]
@@ -137,6 +146,16 @@ class FE3_Prepare(fe3_inst):
             drop_initial = (len(raw_seq) == n + 1)
 
         seq = raw_seq[1:] if drop_initial else raw_seq
+        seq_len = len(seq)
+
+        if seq_len != n:
+            warn(
+                f"Seq/Data length mismatch for run {run_id}: "
+                f"{seq_len} seq chars vs {n} GC rows. "
+                "Padding/truncating to continue; check for missing meta files."
+            )
+            # keep at most n entries so we never overrun the GC data slice
+            seq = seq[:n]
 
         # build stable lists from your dicts (if they’re dicts)
         ports  = list(raw_ports.values())  if isinstance(raw_ports, dict)  else raw_ports
@@ -160,14 +179,20 @@ class FE3_Prepare(fe3_inst):
                 des.append(ports[p])
                 idx .append('')
             else:
-                raise ValueError(f"Bad seq char {ch!r} in run {df.iloc[0].dir}")
+                raise ValueError(f"Bad seq char {ch!r} in run {run_id}")
 
-        # safety check
+        # safety check with padding/truncation so we don't bail on missing/extra seq chars
         if len(des) != n or len(idx) != n:
-            if df.iloc[0].time.strftime('%Y-%m-%d %H:%M:%S') != '2019-12-20 18:20:00':
-                print(f'Unexpected length mismatch in _seq2list {df.iloc[0].time}')
-                raise ValueError("Length of des/idx does not match df length")
-            return None, None
+            if len(des) < n:
+                missing = n - len(des)
+                des.extend([''] * missing)
+                idx.extend([''] * missing)
+            elif len(des) > n:
+                des = des[:n]
+                idx = idx[:n]
+
+            warn(f"Adjusted seq lists for run {run_id}: "
+                 f"gc rows={n}, port entries={len(des)}, flask entries={len(idx)}")
 
         return des, idx
 
@@ -213,7 +238,7 @@ class FE3_Prepare(fe3_inst):
             if grp.name not in runs:
                 return grp
 
-            port_id, flask_port = self._seq2list(grp)
+            port_id, flask_port = self._seq2list(grp, run_id=grp.name)
             return grp.assign(
                 port_id    = port_id,
                 flask_port = flask_port,
