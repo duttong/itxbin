@@ -2,6 +2,7 @@
 
 import json
 import os
+import math
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -99,7 +100,8 @@ class TanksPlotter:
                 f.`date`,
                 f.code,
                 f.location,
-                u.abbr        AS use_short,
+                u.abbr         AS use_short,
+                u.description  AS use_desc,
                 g.species,
                 g.species_num AS parameter_num,
                 g.mf_value,
@@ -172,6 +174,7 @@ class TanksWidget(QWidget):
         self.active_set_idx: int | None = None
         self.set_buttons: list[QPushButton] = []
         self._loading_set = False
+        self._tank_metadata: dict[str, dict] = {}
 
         # --- Layout scaffold (mirror logos_timeseries style) ---
         controls = QVBoxLayout()
@@ -329,6 +332,7 @@ class TanksWidget(QWidget):
             return
 
         tanks_info: dict[str, str | None] = {}
+        self._tank_metadata = {}
         for _, pnum, channel in selections:
             tanks = self.tanks_plotter.return_active_tanks(
                 start, end, parameter_num=pnum, channel=channel
@@ -339,6 +343,8 @@ class TanksWidget(QWidget):
                 if isinstance(entry, dict):
                     serial = entry.get("serial_number") or entry.get("tank_serial_num")
                     use_short = entry.get("use_short")
+                    if serial:
+                        self._tank_metadata[str(serial)] = entry
                 else:
                     serial = str(entry)
                 if not serial:
@@ -387,6 +393,10 @@ class TanksWidget(QWidget):
             cb = QCheckBox(label)
             cb.setChecked(False)
             cb.toggled.connect(self._on_tank_toggled)
+            cb.setContextMenuPolicy(Qt.CustomContextMenu)
+            cb.customContextMenuRequested.connect(
+                lambda pos, cb=cb, serial=label: self._on_tank_context(cb, pos, serial)
+            )
             if use_lower:
                 if use_lower.startswith("grav"):
                     cb.setStyleSheet("color: darkred;")
@@ -614,6 +624,42 @@ class TanksWidget(QWidget):
     def _toast(self, message: str):
         """Show a small tooltip-style notification."""
         QToolTip.showText(QCursor.pos(), message, self)
+
+    def _on_tank_context(self, cb: QCheckBox, pos, serial: str):
+        """Show tank metadata tooltip on right-click."""
+        meta = self._tank_metadata.get(serial, {})
+        tooltip = self._build_tank_tooltip(meta, serial)
+        if tooltip:
+            global_pos = cb.mapToGlobal(pos)
+            QToolTip.showText(global_pos, tooltip, cb)
+
+    def _build_tank_tooltip(self, meta: dict, serial_fallback: str) -> str:
+        """Build an HTML tooltip with tank metadata."""
+        parts = []
+        serial_val = meta.get("serial_number") or serial_fallback
+        parts.append(f"<b>Serial Number:</b> {serial_val}")
+        use_desc = meta.get("use_desc") or meta.get("use_short")
+        if use_desc:
+            parts.append(f"<b>Use:</b> {use_desc}")
+        species = meta.get("species")
+        if species:
+            parts.append(f"<b>Species:</b> {species}")
+        mf_value = meta.get("mf_value")
+        if mf_value is not None:
+            try:
+                mf_val = float(mf_value)
+                if not math.isnan(mf_val):
+                    parts.append(f"<b>Mole Fraction:</b> {mf_val:.2f}")
+            except (ValueError, TypeError):
+                if mf_value not in ("", None):
+                    parts.append(f"<b>Mole Fraction:</b> {mf_value}")
+        fill_note = meta.get("fill_notes")
+        if fill_note:
+            parts.append(f"<b>Fill Note:</b> {fill_note}")
+        grav_note = meta.get("grav_notes")
+        if grav_note:
+            parts.append(f"<b>Grav Note:</b> {grav_note}")
+        return "<br>".join(parts)
 
     def _is_set_available(self, saved: dict | None) -> bool:
         """Return True if set matches current instrument and analytes."""
