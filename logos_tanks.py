@@ -7,7 +7,7 @@ import math
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip
+    QToolTip, QApplication
 )
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
@@ -247,6 +247,13 @@ class TanksWidget(QWidget):
         controls.addWidget(analyte_group)
 
         controls.addStretch()
+
+        plot_bar = QHBoxLayout()
+        plot_bar.addStretch()
+        self.plot_tanks_btn = QPushButton("Plot Tanks")
+        self.plot_tanks_btn.clicked.connect(self._on_plot_tanks)
+        plot_bar.addWidget(self.plot_tanks_btn)
+        controls.addLayout(plot_bar)
         self.setLayout(controls)
 
         # Wire date change after widgets exist
@@ -701,6 +708,134 @@ class TanksWidget(QWidget):
         if inst_num is None or pnum is None:
             return None
         return f"{inst_num}:{pnum}:{channel}"
+
+    # --- Plotting ---
+    def _resolve_inst_id(self) -> str | None:
+        """Return string instrument id (e.g., 'm4'), falling back from inst_num."""
+        if not self.instrument:
+            return None
+        inst_id = getattr(self.instrument, "inst_id", None)
+        if inst_id:
+            return str(inst_id)
+        inst_num = getattr(self.instrument, "inst_num", None)
+        mapping = getattr(self.instrument, "INSTRUMENTS", {})
+        if isinstance(mapping, dict):
+            for key, val in mapping.items():
+                if val == inst_num:
+                    return str(key)
+        return None
+
+    def _fetch_calibration_df(self, serial: str, parameter_num: int, inst_id: str) -> pd.DataFrame:
+        """Query calibration mole fractions for a tank/parameter."""
+        serial_safe = str(serial).replace("'", "''")
+        inst_safe = str(inst_id).replace("'", "''")
+        sql = f"""
+            SELECT c.date, c.time, c.mixratio, c.stddev, c.num
+            FROM hats.calibrations c
+            WHERE c.serial_number = '{serial_safe}'
+              AND c.inst = '{inst_safe}'
+              AND c.parameter_num = {int(parameter_num)}
+            ORDER BY c.date, c.time;
+        """
+        try:
+            if hasattr(self.instrument.db, "query_to_df"):
+                return self.instrument.db.query_to_df(sql)  # type: ignore[attr-defined]
+            return pd.DataFrame(self.instrument.db.doquery(sql))
+        except Exception as exc:
+            self._toast(f"DB error for tank {serial}: {exc}")
+            return pd.DataFrame()
+
+    def _on_plot_tanks(self):
+        """Pop up a matplotlib figure with mole fraction history for selected tanks."""
+        if not self.instrument:
+            self._toast("Instrument not configured.")
+            return
+        selections = self._selected_analytes()
+        if not selections:
+            self._toast("Select a gas before plotting.")
+            return
+        parameter_name, parameter_num, _channel = selections[0]
+        if parameter_num is None:
+            self._toast("Invalid parameter number for selection.")
+            return
+        tanks = self.selected_tanks()
+        if not tanks:
+            self._toast("Select at least one tank to plot.")
+            return
+        inst_id = self._resolve_inst_id()
+        if not inst_id:
+            self._toast("Instrument id unavailable; cannot query calibrations.")
+            return
+
+        btn = getattr(self, "plot_tanks_btn", None)
+        if btn:
+            btn.setText("Loading...")
+            btn.setStyleSheet("background-color: gold;")
+            btn.setEnabled(False)
+        # Force a repaint so the user sees the busy state before the DB call.
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+        fig, ax = plt.subplots(figsize=(9, 5))
+        any_data = False
+
+        try:
+            for serial in tanks:
+                df = self._fetch_calibration_df(serial, parameter_num, inst_id)
+                if df is None or df.empty:
+                    continue
+                df = df.copy()
+                date_part = pd.to_datetime(df["date"], errors="coerce")
+                time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
+                if time_part.isna().all():
+                    time_part = pd.to_timedelta(0)
+                df["datetime"] = date_part + time_part
+                df["mixratio"] = pd.to_numeric(df["mixratio"], errors="coerce")
+                df["stddev"] = pd.to_numeric(df["stddev"], errors="coerce")
+                df = df.dropna(subset=["datetime", "mixratio"]).sort_values("datetime")
+                if df.empty:
+                    continue
+
+                ax.errorbar(
+                    df["datetime"],
+                    df["mixratio"],
+                    yerr=df["stddev"] if "stddev" in df.columns else None,
+                    fmt="o-",
+                    markersize=4,
+                    linewidth=1,
+                    capsize=3,
+                    label=str(serial),
+                )
+                any_data = True
+
+            if not any_data:
+                plt.close(fig)
+                self._toast("No calibration data found for the selected tanks/parameter.")
+                return
+
+            species = None
+            try:
+                pnum_int = int(parameter_num)
+                species = getattr(self.instrument, "analytes_inv", {}).get(pnum_int)
+            except Exception:
+                species = None
+            label_species = species or parameter_name or "Species"
+            ax.set_title(f"Calibrations for {parameter_name} ({inst_id.upper()})")
+            ax.set_xlabel("Datetime")
+            ax.set_ylabel(f"Mole Fraction ({label_species})")
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            fig.autofmt_xdate()
+            fig.tight_layout()
+            fig.show()
+        finally:
+            if btn:
+                btn.setText("Plot Tanks")
+                btn.setStyleSheet("")
+                btn.setEnabled(True)
 
 
 if __name__ == "__main__":
