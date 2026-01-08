@@ -1,5 +1,8 @@
 #! /usr/bin/env python
 
+import json
+import os
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
@@ -21,6 +24,8 @@ import sys
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MKO']
+
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
 
 
 class TanksPlotter:
@@ -109,7 +114,7 @@ class TanksPlotter:
               ON f.idx = h.fill_idx
             LEFT JOIN hats.ng_tank_uses u
               ON u.num = h.ng_tank_uses_num
-            LEFT JOIN reftank.gravs_corrected g
+            LEFT JOIN reftank.grav_view g
               ON g.fill_num = h.fill_idx
             WHERE h.fill_idx IN ({fill_list})
             ORDER BY f.serial_number, f.`date` DESC;
@@ -163,6 +168,10 @@ class TanksWidget(QWidget):
         self.analyte_checks: list[QCheckBox] = []
         self._ready = False
         self._reload_dirty = False
+        self.saved_sets: dict[str, list[dict | None]] = {}
+        self.active_set_idx: int | None = None
+        self.set_buttons: list[QPushButton] = []
+        self._loading_set = False
 
         # --- Layout scaffold (mirror logos_timeseries style) ---
         controls = QVBoxLayout()
@@ -216,6 +225,21 @@ class TanksWidget(QWidget):
         self.tank_grid.setVerticalSpacing(4)
         analyte_layout.addWidget(self.tanks_status)
         analyte_layout.addLayout(self.tank_grid)
+        sets_bar = QHBoxLayout()
+        self.save_set_btn = QPushButton("Save Tank Set")
+        self.save_set_btn.clicked.connect(self._on_save_set)
+        sets_bar.addWidget(self.save_set_btn)
+        self.set_buttons_container = QWidget()
+        self.set_buttons_layout = QHBoxLayout()
+        self.set_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.set_buttons_layout.setSpacing(6)
+        self.set_buttons_container.setLayout(self.set_buttons_layout)
+        sets_bar.addWidget(self.set_buttons_container)
+        self.delete_set_btn = QPushButton("Delete Tank Set")
+        self.delete_set_btn.clicked.connect(self._on_delete_set)
+        sets_bar.addWidget(self.delete_set_btn)
+        sets_bar.addStretch()
+        analyte_layout.addLayout(sets_bar)
         analyte_group.setLayout(analyte_layout)
         controls.addWidget(analyte_group)
 
@@ -228,6 +252,8 @@ class TanksWidget(QWidget):
 
         # Populate tanks initially if any analyte starts checked
         self._ready = True
+        self._load_saved_sets()
+        self._refresh_set_buttons()
         if any(cb.isChecked() for cb in self.analyte_checks):
             self.refresh_tanks()
 
@@ -252,6 +278,7 @@ class TanksWidget(QWidget):
         if not getattr(self, "_ready", False):
             return
         if checked:
+            self._clear_active_set_selection()
             for other in self.analyte_checks:
                 if other is cb:
                     continue
@@ -259,9 +286,11 @@ class TanksWidget(QWidget):
                 other.setChecked(False)
                 other.blockSignals(False)
             self.refresh_tanks()
+            self._refresh_set_buttons()
         else:
             if not any(c.isChecked() for c in self.analyte_checks):
                 self.refresh_tanks()
+                self._refresh_set_buttons()
 
     def _selected_analytes(self) -> list[tuple[str, int, str | None]]:
         """Return list of (name, parameter_num, channel)."""
@@ -338,7 +367,7 @@ class TanksWidget(QWidget):
 
         self.tanks_status.setText(
             f"{len(tanks)} tanks found. "
-            f"<span style='color: darkred;'>Grav</span> "
+            f"<span style='color: darkred;'>Gravimetric</span> "
             f"| <span style='color: darkgreen;'>Archive</span>"
         )
         cols = 5
@@ -357,6 +386,7 @@ class TanksWidget(QWidget):
             use_lower = str(use_short).lower() if use_short is not None else ""
             cb = QCheckBox(label)
             cb.setChecked(False)
+            cb.toggled.connect(self._on_tank_toggled)
             if use_lower:
                 if use_lower.startswith("grav"):
                     cb.setStyleSheet("color: darkred;")
@@ -370,53 +400,312 @@ class TanksWidget(QWidget):
         """Return checked tank serial numbers."""
         return [cb.text() for cb in self.tank_checks if cb.isChecked()]
 
+    # --- Tank set persistence helpers ---
+    def _load_saved_sets(self):
+        """Load saved tank sets from disk."""
+        if not os.path.exists(CONFIG_PATH):
+            return
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            sets_by_analyte = {}
+            if isinstance(data, dict) and isinstance(data.get("sets_by_analyte"), dict):
+                for key, lst in data["sets_by_analyte"].items():
+                    sets_by_analyte[key] = [
+                        entry if isinstance(entry, dict) else None
+                        for entry in (lst if isinstance(lst, list) else [])
+                    ][:3] + [None] * max(0, 3 - len(lst))
+            elif isinstance(data, dict) and isinstance(data.get("sets"), list):
+                # Legacy format: assign sets to their inferred keys.
+                for entry in data["sets"]:
+                    if not isinstance(entry, dict):
+                        continue
+                    key = self._key_for_saved_entry(entry)
+                    if not key:
+                        continue
+                    lst = sets_by_analyte.setdefault(key, [None, None, None])
+                    for idx in range(3):
+                        if lst[idx] is None:
+                            lst[idx] = entry
+                            break
+            self.saved_sets = sets_by_analyte
+        except Exception:
+            # Ignore malformed files; keep defaults.
+            self.saved_sets = {}
+
+    def _persist_sets(self):
+        """Persist saved sets to a JSON config."""
+        payload = {"sets_by_analyte": self.saved_sets}
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+        except Exception:
+            # Silent failure to avoid UI crash; caller may re-attempt.
+            return
+
+    def _refresh_set_buttons(self):
+        """Rebuild the dynamic set buttons for compatible saved sets."""
+        key = self._current_analyte_key()
+        sets = self._sets_for_key(key)
+        if self.active_set_idx is not None:
+            if self.active_set_idx >= len(sets) or not self._is_set_available(sets[self.active_set_idx]):
+                self.active_set_idx = None
+        # Clear existing buttons
+        for i in reversed(range(self.set_buttons_layout.count())):
+            item = self.set_buttons_layout.itemAt(i)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+        self.set_buttons.clear()
+
+        if not sets:
+            self.delete_set_btn.setEnabled(False)
+            return
+
+        for idx, saved in enumerate(sets):
+            if not self._is_set_available(saved):
+                continue
+            btn = QPushButton(f"Tanks {idx + 1}")
+            btn.setCheckable(True)
+            btn.setChecked(idx == self.active_set_idx)
+            btn.setStyleSheet("background-color: lightgreen;" if idx == self.active_set_idx else "")
+            btn.clicked.connect(lambda checked, i=idx: self._on_set_clicked(i))
+            self.set_buttons.append(btn)
+            self.set_buttons_layout.addWidget(btn)
+        self.delete_set_btn.setEnabled(self.active_set_idx is not None)
+
+    def _on_save_set(self):
+        """Save current selection to a slot."""
+        selections = self._selected_analytes()
+        if not selections:
+            self._toast("Select a gas before saving a tank set.")
+            return
+        tanks = self.selected_tanks()
+        if not tanks:
+            self._toast("Select at least one tank before saving.")
+            return
+        name, pnum, channel = selections[0]
+        key = self._current_analyte_key()
+        if not key:
+            self._toast("Unable to determine analyte key for saving.")
+            return
+        entry = {
+            "instrument": getattr(self.instrument, "inst_num", None),
+            "parameter_name": name,
+            "parameter_num": pnum,
+            "channel": channel,
+            "tanks": tanks,
+        }
+        sets = self._sets_for_key(key, ensure=True)
+        if self.active_set_idx is not None:
+            target_idx = self.active_set_idx
+        else:
+            empty_idx = next((i for i, val in enumerate(sets) if val is None), None)
+            target_idx = empty_idx if empty_idx is not None else 0
+        sets[target_idx] = entry
+        self.saved_sets[key] = sets
+        self.active_set_idx = target_idx
+        self._persist_sets()
+        self._refresh_set_buttons()
+        self._toast(f"Saved tank set to Tanks {target_idx + 1}.")
+
+    def _on_set_clicked(self, idx: int):
+        """Load a saved set and mark it active."""
+        self._apply_saved_set(idx)
+
+    def _apply_saved_set(self, idx: int):
+        key = self._current_analyte_key()
+        sets = self._sets_for_key(key)
+        if idx >= len(sets):
+            return
+        saved = sets[idx]
+        if not saved:
+            return
+        inst_num = getattr(self.instrument, "inst_num", None)
+        saved_inst = saved.get("instrument")
+        if inst_num is not None and saved_inst not in (None, inst_num):
+            self._toast("Saved set is for a different instrument.")
+            return
+        if not self._apply_parameter_selection(saved):
+            self._toast("Saved parameter not available; cannot load set.")
+            return
+        self.active_set_idx = idx
+        self.refresh_tanks()
+        self._apply_tank_selection(saved.get("tanks", []))
+        self._refresh_set_buttons()
+        self._update_set_button_styles()
+
+    def _find_matching_analyte_cb(self, saved: dict) -> QCheckBox | None:
+        """Return checkbox matching saved analyte if available."""
+        target_name = saved.get("parameter_name")
+        target_num = saved.get("parameter_num")
+        target_channel = saved.get("channel")
+        for cb in self.analyte_checks:
+            name = cb.text()
+            pnum = (self.instrument.analytes or {}).get(name) if self.instrument else None
+            channel = None
+            if "(" in name and ")" in name:
+                _, ch = name.split("(", 1)
+                channel = ch.strip(") ").strip()
+            if target_name and name == target_name:
+                return cb
+            if target_num is not None and pnum == target_num and (target_channel is None or channel == target_channel):
+                return cb
+        return None
+
+    def _apply_parameter_selection(self, saved: dict) -> bool:
+        """Select the saved analyte if present."""
+        matched_cb = self._find_matching_analyte_cb(saved)
+        if not matched_cb:
+            return False
+        for cb in self.analyte_checks:
+            cb.blockSignals(True)
+            cb.setChecked(cb is matched_cb)
+            cb.blockSignals(False)
+        return True
+
+    def _apply_tank_selection(self, tanks: list[str]):
+        """Apply saved tank selections without triggering clears."""
+        self._loading_set = True
+        desired = set(str(t) for t in tanks)
+        for cb in self.tank_checks:
+            cb.blockSignals(True)
+            cb.setChecked(cb.text() in desired)
+            cb.blockSignals(False)
+        self._loading_set = False
+
+    def _on_delete_set(self):
+        """Delete the active saved set."""
+        if self.active_set_idx is None:
+            self._toast("Select a saved set before deleting.")
+            return
+        key = self._current_analyte_key()
+        sets = self._sets_for_key(key)
+        if not sets:
+            self._toast("No saved sets for this analyte.")
+            return
+        sets[self.active_set_idx] = None
+        deleted_idx = self.active_set_idx
+        self.saved_sets[key] = sets
+        self.active_set_idx = None
+        self._persist_sets()
+        self._refresh_set_buttons()
+        self._toast(f"Deleted Tanks {deleted_idx + 1}.")
+
+    def _on_tank_toggled(self, _checked: bool):
+        """Tank clicks clear the active-set highlight."""
+        if self._loading_set:
+            return
+        self._clear_active_set_selection()
+
+    def _clear_active_set_selection(self):
+        """Reset active set highlight and delete enablement."""
+        self.active_set_idx = None
+        self._update_set_button_styles()
+
+    def _update_set_button_styles(self):
+        for idx, btn in enumerate(self.set_buttons):
+            btn.blockSignals(True)
+            btn.setChecked(idx == self.active_set_idx)
+            btn.setStyleSheet("background-color: lightgreen;" if idx == self.active_set_idx else "")
+            btn.blockSignals(False)
+        self.delete_set_btn.setEnabled(self.active_set_idx is not None)
+
+    def _toast(self, message: str):
+        """Show a small tooltip-style notification."""
+        QToolTip.showText(QCursor.pos(), message, self)
+
+    def _is_set_available(self, saved: dict | None) -> bool:
+        """Return True if set matches current instrument and analytes."""
+        if not saved:
+            return False
+        inst_num = getattr(self.instrument, "inst_num", None)
+        saved_inst = saved.get("instrument")
+        if inst_num is not None and saved_inst not in (None, inst_num):
+            return False
+        if not self.instrument:
+            return False
+        return self._find_matching_analyte_cb(saved) is not None
+
+    def _current_analyte_key(self) -> str | None:
+        """Return a stable key for the selected analyte."""
+        selections = self._selected_analytes()
+        if not selections or not self.instrument:
+            return None
+        _, pnum, channel = selections[0]
+        inst_num = getattr(self.instrument, "inst_num", None)
+        if inst_num is None or pnum is None:
+            return None
+        channel_str = channel if channel is not None else ""
+        return f"{inst_num}:{pnum}:{channel_str}"
+
+    def _sets_for_key(self, key: str | None, ensure: bool = False) -> list[dict | None]:
+        """Get the list of sets for a key; optionally create."""
+        if not key:
+            return []
+        if key not in self.saved_sets and ensure:
+            self.saved_sets[key] = [None, None, None]
+        return self.saved_sets.get(key, [None, None, None])
+
+    def _key_for_saved_entry(self, entry: dict) -> str | None:
+        """Compute key from saved entry."""
+        inst_num = entry.get("instrument")
+        pnum = entry.get("parameter_num")
+        channel = entry.get("channel") or ""
+        if inst_num is None or pnum is None:
+            return None
+        return f"{inst_num}:{pnum}:{channel}"
+
 
 if __name__ == "__main__":
     """
     Minimal harness to exercise the widget standalone using the real M4 instrument/DB.
     Falls back to fake data if initialization fails (e.g., DB connectivity issues).
     """
+    import argparse
     from PyQt5.QtWidgets import QApplication
 
     try:
-        from logos_instruments import M4_Instrument
+        from logos_instruments import M4_Instrument, FE3_Instrument, BLD1_Instrument
     except Exception as exc:  # pragma: no cover - import-time failure path
-        print(f"Could not import M4_Instrument: {exc}", file=sys.stderr)
-        M4_Instrument = None  # type: ignore
+        print(f"Could not import instrument classes: {exc}", file=sys.stderr)
+        M4_Instrument = FE3_Instrument = BLD1_Instrument = None  # type: ignore
 
-    class _FakeDB:
-        def query_to_df(self, sql):
-            # Pretend the query returned a small tank list.
-            return pd.DataFrame(
-                [
-                    {"tank_serial_num": "TNK-001"},
-                    {"tank_serial_num": "TNK-002"},
-                    {"tank_serial_num": "TNK-003"},
-                    {"tank_serial_num": "TNK-004"},
-                    {"tank_serial_num": "TNK-005"},
-                ]
-            )
-
-    class _FakeInstrument:
-        def __init__(self):
-            self.db = _FakeDB()
-            self.inst_num = 999
-            self.analytes = {"CO2 (C)": 44, "CH4 (W)": 77, "N2O": 88}
-            self.start_date = "2018-01-01"
-
-    def build_instrument():
-        if M4_Instrument is None:
+    def build_instrument(inst_key: str):
+        """Factory to build an instrument by key, with fallback."""
+        inst_key = inst_key.lower()
+        class_map = {
+            "m4": M4_Instrument,
+            "fe3": FE3_Instrument,
+            "bld1": BLD1_Instrument,
+        }
+        cls = class_map.get(inst_key)
+        if cls is None:
+            print(f"Unknown instrument '{inst_key}', using fake instrument.", file=sys.stderr)
             return None
         try:
-            return M4_Instrument()
+            return cls()
         except Exception as exc:
-            print(f"Failed to initialize M4_Instrument (using fake data): {exc}", file=sys.stderr)
+            print(f"Failed to initialize {cls.__name__}: {exc}", file=sys.stderr)
             return None
 
+    parser = argparse.ArgumentParser(description="TanksWidget test harness")
+    parser.add_argument(
+        "-i",
+        "--instrument",
+        choices=["m4", "fe3", "bld1"],
+        default="m4",
+        help="Instrument to load (default: m4)",
+    )
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
-    instrument = build_instrument() or _FakeInstrument()
+    instrument = build_instrument(args.instrument)
+    if instrument is None:
+        print("Could not initialize instrument; exiting.", file=sys.stderr)
+        sys.exit(1)
     widget = TanksWidget(instrument=instrument)
-    widget.setWindowTitle("TanksWidget Test Harness (M4)")
+    widget.setWindowTitle(f"TanksWidget Test Harness ({args.instrument.upper()})")
     widget.resize(320, 420)
     widget.show()
     sys.exit(app.exec_())
