@@ -20,6 +20,7 @@ import pandas as pd
 import colorsys
 import time
 import sys
+from collections import defaultdict
 
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
@@ -102,6 +103,8 @@ class TanksPlotter:
             ORDER BY f.serial_number, f.`date` DESC;
         """
 
+        #print(sql)
+        
         df = pd.DataFrame(self.db.doquery(sql))
         if df.empty:
             return []
@@ -133,7 +136,7 @@ class TanksPlotter:
                 ["serial_number", "__is_grav", "fill_date"],
                 ascending=[True, False, False],
             )
-            df = df.drop_duplicates(subset=["serial_number"], keep="first")
+            df = df.drop_duplicates(subset=["fill_idx"], keep="first")
             df = df.drop(columns=["__is_grav"], errors="ignore")
 
         return df.to_dict(orient="records")
@@ -320,7 +323,11 @@ class TanksWidget(QWidget):
             self._rebuild_tank_checks([], "Select at least one gas to load tanks.")
             return
 
-        tanks_info: dict[str, str | None] = {}
+        def _fill_key(serial_val, fill_idx_val, fill_code_val):
+            return f"{serial_val}::{fill_idx_val if fill_idx_val is not None else 'na'}::{fill_code_val or ''}"
+
+        tanks_list: list[dict] = []
+        tanks_seen: set[str] = set()
         self._tank_metadata = {}
         for _, pnum, channel in selections:
             tanks = self.tanks_plotter.return_active_tanks(
@@ -329,20 +336,43 @@ class TanksWidget(QWidget):
             for entry in tanks:
                 serial = None
                 use_short = None
+                fill_idx = None
+                fill_code = None
+                fill_date = None
                 if isinstance(entry, dict):
                     serial = entry.get("serial_number") or entry.get("tank_serial_num")
                     use_short = entry.get("use_short")
-                    if serial:
-                        self._tank_metadata[str(serial)] = entry
+                    fill_idx = entry.get("fill_idx")
+                    fill_code = entry.get("code") or entry.get("fill_code")
+                    fill_date = entry.get("fill_date") or entry.get("date")
                 else:
                     serial = str(entry)
                 if not serial:
                     continue
                 serial_str = str(serial)
-                if serial_str not in tanks_info:
-                    tanks_info[serial_str] = use_short if use_short else None
+                fill_key = _fill_key(serial_str, fill_idx, fill_code)
+                if fill_key in tanks_seen:
+                    continue
+                tanks_seen.add(fill_key)
+                if isinstance(entry, dict):
+                    self._tank_metadata[fill_key] = entry
+                tanks_list.append(
+                    {
+                        "serial": serial_str,
+                        "use_short": use_short,
+                        "fill_idx": fill_idx,
+                        "fill_code": fill_code,
+                        "fill_key": fill_key,
+                        "fill_date": fill_date,
+                    }
+                )
 
-        tanks_list = [(serial, tanks_info[serial]) for serial in sorted(tanks_info.keys())]
+        self._annotate_next_fill_dates()
+
+        tanks_list = sorted(
+            tanks_list,
+            key=lambda t: (t.get("serial") or "", str(t.get("fill_date") or t.get("fill_idx") or "")),
+        )
         self._rebuild_tank_checks(tanks_list)
 
     def _rebuild_tank_checks(self, tanks, empty_msg: str = None):
@@ -369,22 +399,29 @@ class TanksWidget(QWidget):
         for idx, tank in enumerate(tanks):
             serial = None
             use_short = None
+            fill_code = None
+            fill_key = None
             if isinstance(tank, dict):
-                serial = tank.get("serial_number") or tank.get("tank_serial_num")
+                serial = tank.get("serial") or tank.get("serial_number") or tank.get("tank_serial_num")
                 use_short = tank.get("use_short")
+                fill_code = tank.get("fill_code") or tank.get("code")
+                fill_key = tank.get("fill_key")
             elif isinstance(tank, tuple):
                 if len(tank) >= 1:
                     serial = tank[0]
                 if len(tank) >= 2:
                     use_short = tank[1]
-            label = str(serial or tank)
+            serial_str = str(serial or tank)
+            label = f"{serial_str} ({fill_code})" if fill_code else serial_str
             use_lower = str(use_short).lower() if use_short is not None else ""
             cb = QCheckBox(label)
+            cb.setProperty("serial", serial_str)
+            cb.setProperty("fill_key", fill_key or serial_str)
             cb.setChecked(False)
             cb.toggled.connect(self._on_tank_toggled)
             cb.setContextMenuPolicy(Qt.CustomContextMenu)
             cb.customContextMenuRequested.connect(
-                lambda pos, cb=cb, serial=label: self._on_tank_context(cb, pos, serial)
+                lambda pos, cb=cb, key=(fill_key or serial_str): self._on_tank_context(cb, pos, key)
             )
             if use_lower:
                 if use_lower.startswith("grav"):
@@ -396,8 +433,17 @@ class TanksWidget(QWidget):
             self.tank_grid.addWidget(cb, row, col)
 
     def selected_tanks(self) -> list[str]:
-        """Return checked tank serial numbers."""
-        return [cb.text() for cb in self.tank_checks if cb.isChecked()]
+        """Return checked tank identifiers keyed by fill (fill_key)."""
+        selected = []
+        for cb in self.tank_checks:
+            if not cb.isChecked():
+                continue
+            fill_key = cb.property("fill_key")
+            if fill_key is None:
+                serial = cb.property("serial")
+                fill_key = serial if serial is not None else cb.text().split(" ", 1)[0]
+            selected.append(str(fill_key))
+        return selected
 
     # --- Tank set persistence helpers ---
     def _load_saved_sets(self):
@@ -569,7 +615,14 @@ class TanksWidget(QWidget):
         desired = set(str(t) for t in tanks)
         for cb in self.tank_checks:
             cb.blockSignals(True)
-            cb.setChecked(cb.text() in desired)
+            fill_key = cb.property("fill_key") or cb.text()
+            serial_base = cb.property("serial")
+            should_check = (
+                str(fill_key) in desired
+                or (serial_base is not None and str(serial_base) in desired)
+                or cb.text() in desired
+            )
+            cb.setChecked(should_check)
             cb.blockSignals(False)
         self._loading_set = False
 
@@ -617,16 +670,36 @@ class TanksWidget(QWidget):
     def _on_tank_context(self, cb: QCheckBox, pos, serial: str):
         """Show tank metadata tooltip on right-click."""
         meta = self._tank_metadata.get(serial, {})
-        tooltip = self._build_tank_tooltip(meta, serial)
+        fallback_serial = meta.get("serial_number") or meta.get("tank_serial_num") or serial.split("::")[0]
+        tooltip = self._build_tank_tooltip(meta, fallback_serial)
         if tooltip:
             global_pos = cb.mapToGlobal(pos)
             QToolTip.showText(global_pos, tooltip, cb)
+
+    def _annotate_next_fill_dates(self):
+        """Add next_fill_date to metadata so plotting can bracket fills."""
+        per_serial: dict[str, list[tuple[pd.Timestamp, str]]] = defaultdict(list)
+        for key, meta in self._tank_metadata.items():
+            serial_val = meta.get("serial_number") or meta.get("tank_serial_num") or str(key).split("::")[0]
+            fill_date = pd.to_datetime(meta.get("fill_date") or meta.get("date"), errors="coerce")
+            if pd.notnull(fill_date):
+                per_serial[str(serial_val)].append((fill_date, key))
+
+        for serial, items in per_serial.items():
+            items_sorted = sorted(items, key=lambda t: t[0])
+            for idx, (fill_dt, key) in enumerate(items_sorted):
+                next_dt = items_sorted[idx + 1][0] if idx + 1 < len(items_sorted) else None
+                if key in self._tank_metadata:
+                    self._tank_metadata[key]["next_fill_date"] = next_dt
 
     def _build_tank_tooltip(self, meta: dict, serial_fallback: str) -> str:
         """Build an HTML tooltip with tank metadata."""
         parts = []
         serial_val = meta.get("serial_number") or serial_fallback
         parts.append(f"<b>Serial Number:</b> {serial_val}")
+        fill_code = meta.get("code") or meta.get("fill_code")
+        if fill_code:
+            parts.append(f"<b>Fill code:</b> {fill_code}")
         use_desc = meta.get("use_desc") or meta.get("use_short")
         if use_desc:
             parts.append(f"<b>Use:</b> {use_desc}")
@@ -642,6 +715,9 @@ class TanksWidget(QWidget):
             except (ValueError, TypeError):
                 if mf_value not in ("", None):
                     parts.append(f"<b>Mole Fraction:</b> {mf_value}")
+        fill_date = meta.get("fill_date")
+        if fill_date:
+            parts.append(f"<b>Fill date:</b> {fill_date}")
         fill_note = meta.get("fill_notes")
         if fill_note:
             parts.append(f"<b>Fill Note:</b> {fill_note}")
@@ -738,8 +814,8 @@ class TanksWidget(QWidget):
         if parameter_num is None:
             self._toast("Invalid parameter number for selection.")
             return
-        tanks = self.selected_tanks()
-        if not tanks:
+        tank_keys = self.selected_tanks()
+        if not tank_keys:
             self._toast("Select at least one tank to plot.")
             return
         inst_id = self._resolve_inst_id()
@@ -762,8 +838,17 @@ class TanksWidget(QWidget):
         any_data = False
 
         try:
-            for serial in tanks:
+            for fill_key in tank_keys:
+                meta = self._tank_metadata.get(str(fill_key), {})
+                serial = (
+                    meta.get("serial_number")
+                    or meta.get("tank_serial_num")
+                    or str(fill_key).split("::")[0]
+                )
                 df = self._fetch_calibration_df(serial, parameter_num, inst_id)
+                fill_date = meta.get("fill_date") or meta.get("date")
+                fill_code = meta.get("code") or meta.get("fill_code")
+                next_fill_date = meta.get("next_fill_date")
                 if df is None or df.empty:
                     continue
                 df = df.copy()
@@ -774,6 +859,14 @@ class TanksWidget(QWidget):
                 df["datetime"] = date_part + time_part
                 df["mixratio"] = pd.to_numeric(df["mixratio"], errors="coerce")
                 df["stddev"] = pd.to_numeric(df["stddev"], errors="coerce")
+                if fill_date:
+                    fill_dt = pd.to_datetime(fill_date, errors="coerce")
+                    if pd.notnull(fill_dt):
+                        df = df[df["datetime"] >= fill_dt]
+                if next_fill_date:
+                    next_dt = pd.to_datetime(next_fill_date, errors="coerce")
+                    if pd.notnull(next_dt):
+                        df = df[df["datetime"] < next_dt]
                 df = df.dropna(subset=["datetime", "mixratio"]).sort_values("datetime")
                 if df.empty:
                     continue
@@ -786,7 +879,7 @@ class TanksWidget(QWidget):
                     markersize=4,
                     linewidth=1,
                     capsize=3,
-                    label=str(serial),
+                    label=f"{serial} ({fill_code})" if fill_code else str(serial),
                 )
                 any_data = True
 
