@@ -41,56 +41,36 @@ class TanksPlotter:
         """
         Return a list of tank records (serial + latest fill metadata) active in the window.
         """
-        if parameter_num is None:
-            return []
-
         start_ts = f"{start_year}-01-01"
         end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
 
-        # Query 1: find the latest fill_idx per tank observed in the window for this instrument/parameter/channel.
+        # Query 1: find the latest fill_idx per tank observed in the window for this instrument.
         fills_sql = f"""
             SELECT
-                f.idx
-            FROM (
-                SELECT DISTINCT
-                    a.tank_serial_num
-                FROM hats.ng_analysis a
-                JOIN hats.ng_mole_fractions mf
-                  ON mf.analysis_num = a.num
-                WHERE a.inst_num = {self.inst_num}
-                  AND mf.parameter_num = {parameter_num}
-                  {f"AND mf.channel = '{channel}'" if channel else ""}
-                  AND a.tank_serial_num IS NOT NULL
-                  AND a.run_time >= '{start_ts}'
-                  AND a.run_time <  '{end_ts}'
-            ) AS t
-            LEFT JOIN (
-                SELECT
-                    serial_number,
-                    MAX(`date`) AS max_date
-                FROM reftank.fill
-                GROUP BY serial_number
-            ) AS latest
-              ON latest.serial_number = t.tank_serial_num
-            LEFT JOIN reftank.fill AS f
-              ON f.serial_number = latest.serial_number
-             AND f.`date` = latest.max_date
-            WHERE f.idx IS NOT NULL
-            ORDER BY
-                t.tank_serial_num;
+                DISTINCT r.idx
+            FROM hats.ng_analysis a
+            JOIN reftank.fill r
+              ON r.serial_number = a.tank_serial_num
+             AND r.`date` = (
+                  SELECT MAX(f2.`date`)
+                  FROM reftank.fill f2
+                  WHERE f2.serial_number = a.tank_serial_num
+                    AND f2.`date` <= a.analysis_time
+              )
+            WHERE a.inst_num = {self.inst_num}
+              AND a.tank_serial_num IS NOT NULL
+              AND a.run_time >= '{start_ts}'
+              AND a.run_time <  '{end_ts}'
+            ORDER BY r.serial_number;
         """
 
-        fills_df = (
-            self.db.query_to_df(fills_sql)
-            if hasattr(self.db, "query_to_df")
-            else pd.DataFrame(self.db.doquery(fills_sql))
-        )
+        fills_df = pd.DataFrame(self.db.doquery(fills_sql))
         fill_ids = [str(idx) for idx in fills_df["idx"].dropna().unique()] if not fills_df.empty else []
         if not fill_ids:
             return []
 
         fill_list = ",".join(fill_ids)
-
+        
         # Query 2: fetch metadata for those fill_idx values.
         sql = f"""
             SELECT
@@ -122,10 +102,7 @@ class TanksPlotter:
             ORDER BY f.serial_number, f.`date` DESC;
         """
 
-        if hasattr(self.db, "query_to_df"):
-            df = self.db.query_to_df(sql)
-        else:
-            df = pd.DataFrame(self.db.doquery(sql))
+        df = pd.DataFrame(self.db.doquery(sql))
         if df.empty:
             return []
 
@@ -134,7 +111,12 @@ class TanksPlotter:
             use_lower = df["use_short"].fillna("").str.lower()
             is_grav = use_lower.str.startswith("grav")
             param_series = pd.to_numeric(df["parameter_num"], errors="coerce")
-            grav_match = param_series == pd.to_numeric(parameter_num)
+            param_value = (
+                pd.to_numeric(parameter_num, errors="coerce")
+                if parameter_num is not None
+                else None
+            )
+            grav_match = param_series == param_value if param_value is not None else True
             grav_total = int(is_grav.sum())
             grav_kept = int((is_grav & grav_match).sum())
             grav_dropped = grav_total - grav_kept
@@ -733,13 +715,11 @@ class TanksWidget(QWidget):
             SELECT c.date, c.time, c.mixratio, c.stddev, c.num
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
-              AND c.inst = '{inst_safe}'
+            AND c.inst = '{inst_safe}'
               AND c.parameter_num = {int(parameter_num)}
             ORDER BY c.date, c.time;
         """
         try:
-            if hasattr(self.instrument.db, "query_to_df"):
-                return self.instrument.db.query_to_df(sql)  # type: ignore[attr-defined]
             return pd.DataFrame(self.instrument.db.doquery(sql))
         except Exception as exc:
             self._toast(f"DB error for tank {serial}: {exc}")
