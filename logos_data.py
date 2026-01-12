@@ -2280,6 +2280,10 @@ class MainWindow(QMainWindow):
             if w:
                 w.setParent(None)
 
+        # Reset analyte selectors
+        self.analyte_combo = None
+        self.radio_group = None
+
         names = list(self.analytes.keys())
         if len(names) <= 12:
             # Use radio buttons in two columns: first 6 left, rest right
@@ -2336,7 +2340,8 @@ class MainWindow(QMainWindow):
             combo_container = QWidget()
             combo_container.setLayout(combo_row)
             self.analyte_layout.addWidget(combo_container, 0, 0, 1, 2)
-            self._setup_analyte_shortcuts()
+
+        self._setup_analyte_shortcuts()
 
     def on_analyte_radio_toggled(self):
         """
@@ -2372,41 +2377,59 @@ class MainWindow(QMainWindow):
         """
         Move the analyte selection one index backward, if possible.
         """
-        if not hasattr(self, "analyte_combo"):
+        # Combobox mode (>12 analytes)
+        if self.analyte_combo:
+            combo = self.analyte_combo
+            if combo.count() == 0:
+                return
+
+            combo.blockSignals(True)
+            idx = combo.currentIndex()
+            if idx > 0:
+                combo.setCurrentIndex(idx - 1)
+                self.on_analyte_combo_changed(combo.currentText())
+            combo.blockSignals(False)
             return
 
-        combo = self.analyte_combo
-        if combo.count() == 0:
-            return
-
-        combo.blockSignals(True)
-        idx = combo.currentIndex()
-        if idx > 0:
-            combo.setCurrentIndex(idx - 1)
-            self.on_analyte_combo_changed(combo.currentText())
-        combo.blockSignals(False)
+        # Radio button mode (<=12 analytes)
+        if self.radio_group:
+            buttons = self.radio_group.buttons()
+            if not buttons:
+                return
+            current_idx = next((i for i, b in enumerate(buttons) if b.isChecked()), 0)
+            new_idx = max(0, current_idx - 1)
+            buttons[new_idx].setChecked(True)
 
     def on_next_analyte(self):
         """
         Move the analyte selection one index forward, if possible.
         """
-        if not hasattr(self, "analyte_combo"):
+        # Combobox mode (>12 analytes)
+        if self.analyte_combo:
+            combo = self.analyte_combo
+            if combo.count() == 0:
+                return
+
+            combo.blockSignals(True)
+            idx = combo.currentIndex()
+            if idx < (combo.count() - 1):
+                combo.setCurrentIndex(idx + 1)
+                self.on_analyte_combo_changed(combo.currentText())
+            combo.blockSignals(False)
             return
 
-        combo = self.analyte_combo
-        if combo.count() == 0:
-            return
-
-        combo.blockSignals(True)
-        idx = combo.currentIndex()
-        if idx < (combo.count() - 1):
-            combo.setCurrentIndex(idx + 1)
-            self.on_analyte_combo_changed(combo.currentText())
-        combo.blockSignals(False)
+        # Radio button mode (<=12 analytes)
+        if self.radio_group:
+            buttons = self.radio_group.buttons()
+            if not buttons:
+                return
+            current_idx = next((i for i, b in enumerate(buttons) if b.isChecked()), 0)
+            new_idx = min(len(buttons) - 1, current_idx + 1)
+            buttons[new_idx].setChecked(True)
 
     def _setup_analyte_shortcuts(self):
         """
-        Assign keyboard shortcuts to cycle analytes when using the combobox.
+        Assign keyboard shortcuts to cycle analytes for both combobox and radio layouts.
         """
         # Clear any existing shortcuts to avoid duplicates
         for sc in getattr(self, "analyte_shortcuts", []):
