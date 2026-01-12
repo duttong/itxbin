@@ -933,7 +933,7 @@ class MainWindow(QMainWindow):
                 # Order from least to most smoothing
                 method_order = [1, 3, 2, 4, 6, 5]
                 labels = {
-                    1: "Point-to-point",
+                    1: "Pt-to-pt",
                     3: "2-pt avg",
                     2: "Lowess~5",
                     4: "3-pt box",
@@ -944,7 +944,8 @@ class MainWindow(QMainWindow):
                 stats_df, best_method, _ = self.instrument.norm.detrend_stats_for_run(
                     self.run,
                     methods=method_order,
-                    drop_outlier=False,
+                    margin_frac=0.2,
+                    drop_outlier=True,
                     verbose=False,
                 )
                 if not stats_df.empty:
