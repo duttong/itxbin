@@ -2312,7 +2312,24 @@ class MainWindow(QMainWindow):
             for name in names:
                 self.analyte_combo.addItem(name)
             self.analyte_combo.currentTextChanged.connect(self.on_analyte_combo_changed)
-            self.analyte_layout.addWidget(self.analyte_combo, 0, 0)
+
+            self.analyte_prev_btn = QPushButton("◀")
+            self.analyte_next_btn = QPushButton("▶")
+            self.analyte_prev_btn.setToolTip("Previous analyte")
+            self.analyte_next_btn.setToolTip("Next analyte")
+            self.analyte_prev_btn.clicked.connect(self.on_prev_analyte)
+            self.analyte_next_btn.clicked.connect(self.on_next_analyte)
+
+            combo_row = QHBoxLayout()
+            combo_row.setContentsMargins(0, 0, 0, 0)
+            combo_row.setSpacing(4)
+            combo_row.addWidget(self.analyte_combo, 1)
+            combo_row.addWidget(self.analyte_prev_btn)
+            combo_row.addWidget(self.analyte_next_btn)
+
+            combo_container = QWidget()
+            combo_container.setLayout(combo_row)
+            self.analyte_layout.addWidget(combo_container, 0, 0, 1, 2)
 
     def on_analyte_radio_toggled(self):
         """
@@ -2343,6 +2360,42 @@ class MainWindow(QMainWindow):
         pnum = self.analytes[name]
         self.current_pnum = int(pnum)
         self.set_current_analyte(name)
+
+    def on_prev_analyte(self):
+        """
+        Move the analyte selection one index backward, if possible.
+        """
+        if not hasattr(self, "analyte_combo"):
+            return
+
+        combo = self.analyte_combo
+        if combo.count() == 0:
+            return
+
+        combo.blockSignals(True)
+        idx = combo.currentIndex()
+        if idx > 0:
+            combo.setCurrentIndex(idx - 1)
+            self.on_analyte_combo_changed(combo.currentText())
+        combo.blockSignals(False)
+
+    def on_next_analyte(self):
+        """
+        Move the analyte selection one index forward, if possible.
+        """
+        if not hasattr(self, "analyte_combo"):
+            return
+
+        combo = self.analyte_combo
+        if combo.count() == 0:
+            return
+
+        combo.blockSignals(True)
+        idx = combo.currentIndex()
+        if idx < (combo.count() - 1):
+            combo.setCurrentIndex(idx + 1)
+            self.on_analyte_combo_changed(combo.currentText())
+        combo.blockSignals(False)
         
     def load_selected_run(self):
         # call sql load function from instrument class
