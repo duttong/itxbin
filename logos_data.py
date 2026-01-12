@@ -10,13 +10,13 @@ import warnings
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem
+from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
-    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame
+    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut
 )
 from PyQt5.QtCore import Qt, QTimer
 
@@ -2330,6 +2330,7 @@ class MainWindow(QMainWindow):
             combo_container = QWidget()
             combo_container.setLayout(combo_row)
             self.analyte_layout.addWidget(combo_container, 0, 0, 1, 2)
+            self._setup_analyte_shortcuts()
 
     def on_analyte_radio_toggled(self):
         """
@@ -2396,6 +2397,27 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(idx + 1)
             self.on_analyte_combo_changed(combo.currentText())
         combo.blockSignals(False)
+
+    def _setup_analyte_shortcuts(self):
+        """
+        Assign keyboard shortcuts to cycle analytes when using the combobox.
+        """
+        # Clear any existing shortcuts to avoid duplicates
+        for sc in getattr(self, "analyte_shortcuts", []):
+            sc.setParent(None)
+        self.analyte_shortcuts = []
+
+        # Use Ctrl+Shift+arrows for reliable cross-platform behavior over SSH
+        shortcuts = [
+            (["Ctrl+Shift+Left", "Ctrl+Shift+Up"], self.on_prev_analyte),
+            (["Ctrl+Shift+Right", "Ctrl+Shift+Down"], self.on_next_analyte),
+        ]
+
+        for seq_list, handler in shortcuts:
+            for seq in seq_list:
+                sc = QShortcut(QKeySequence(seq), self)
+                sc.activated.connect(handler)
+                self.analyte_shortcuts.append(sc)
         
     def load_selected_run(self):
         # call sql load function from instrument class
