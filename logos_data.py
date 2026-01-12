@@ -956,19 +956,14 @@ class MainWindow(QMainWindow):
                         lines.append(f"{marker}{label}: {rms:.4f}")
 
                     if lines:
-                        ax.text(
-                            0.98, 0.98,
-                            "\n".join(lines),
-                            transform=ax.transAxes,
-                            ha='right',
-                            va='top',
-                            fontsize=9,
-                            bbox=dict(
-                                boxstyle='round,pad=0.35',
-                                facecolor='white',
-                                edgecolor='lightgray',
-                                alpha=0.9,
-                            ),
+                        legend_handles.append(Line2D([], [], linestyle='None', label='\u2009'))
+                        legend_handles.append(
+                            Line2D(
+                                [],
+                                [],
+                                linestyle='None',
+                                label="\n".join(lines)
+                            )
                         )
             except Exception as e:
                 print(f"Warning: unable to compute detrend summary ({e})")
@@ -1051,6 +1046,14 @@ class MainWindow(QMainWindow):
                 self._spacer2_text = txt
                 txt.set_fontsize(10)
                 txt.set_color((0, 0, 0, 0))  # fully transparent
+            elif "sample pair rms" in t.lower():
+                txt.set_bbox(dict(
+                    boxstyle='round,pad=0.35',
+                    facecolor='white',
+                    edgecolor='gray',
+                    linewidth=0.8,
+                    alpha=0.9,
+                ))
 
         box = ax.get_position()
         ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
