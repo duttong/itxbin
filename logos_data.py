@@ -923,6 +923,7 @@ class MainWindow(QMainWindow):
                     6: "5-pt box",
                     5: "Lowess~10",
                 }
+                label_width = max(len(v) for v in labels.values())
                 stats_df, best_method, _ = self.instrument.norm.detrend_stats_for_run(
                     self.run,
                     methods=method_order,
@@ -953,7 +954,7 @@ class MainWindow(QMainWindow):
                             continue
                         label = labels.get(m, f"Method {m}")
                         marker = "● " if best_method == m else "  "
-                        lines.append(f"{marker}{label}: {rms:.4f}")
+                        lines.append(f"{marker}{label:>{label_width}}: {rms:<8.4f}")
 
                     if lines:
                         legend_handles.append(Line2D([], [], linestyle='None', label='\u2009'))
@@ -1047,6 +1048,7 @@ class MainWindow(QMainWindow):
                 txt.set_fontsize(10)
                 txt.set_color((0, 0, 0, 0))  # fully transparent
             elif "sample pair rms" in t.lower():
+                txt.set_fontfamily('monospace')
                 txt.set_bbox(dict(
                     boxstyle='round,pad=0.35',
                     facecolor='white',
