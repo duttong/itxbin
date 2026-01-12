@@ -790,6 +790,7 @@ class Normalizing():
             .agg({
                 'normalized_resp': 'mean',
             })
+            .query("normalized_resp >= 0.1")    # filter out very low responses
         )
 
         if not tank_df.empty:
