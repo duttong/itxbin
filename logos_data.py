@@ -408,6 +408,7 @@ class MainWindow(QMainWindow):
         runsel_hbox.addWidget(self.run_cb, stretch=1)
         runsel_hbox.addWidget(self.next_btn)
         run_layout.addLayout(runsel_hbox)
+        self._setup_run_shortcuts()
         run_layout.addLayout(runtype_row)
 
         # Add group box to main layout
@@ -560,6 +561,11 @@ class MainWindow(QMainWindow):
             processing_layout.addWidget(self.save_csv_btn) 
 
         # Stretch to push everything to the top
+        help_label = QLabel("Ctrl+Shift+Left/Right for Run Selection\nCtrl+Shift+Up/Down for Analyte Selection")
+        help_label.setStyleSheet("color: #555; font-size: 10px;")
+        help_label.setAlignment(Qt.AlignLeft)
+        help_label.setWordWrap(True)
+        processing_layout.addWidget(help_label)
         processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # ── TABS ──
@@ -2407,10 +2413,10 @@ class MainWindow(QMainWindow):
             sc.setParent(None)
         self.analyte_shortcuts = []
 
-        # Use Ctrl+Shift+arrows for reliable cross-platform behavior over SSH
+        # Use Ctrl+Shift+Up/Down for reliable cross-platform behavior over SSH
         shortcuts = [
-            (["Ctrl+Shift+Left", "Ctrl+Shift+Up"], self.on_prev_analyte),
-            (["Ctrl+Shift+Right", "Ctrl+Shift+Down"], self.on_next_analyte),
+            (["Ctrl+Shift+Up"], self.on_prev_analyte),
+            (["Ctrl+Shift+Down"], self.on_next_analyte),
         ]
 
         for seq_list, handler in shortcuts:
@@ -2418,6 +2424,25 @@ class MainWindow(QMainWindow):
                 sc = QShortcut(QKeySequence(seq), self)
                 sc.activated.connect(handler)
                 self.analyte_shortcuts.append(sc)
+
+    def _setup_run_shortcuts(self):
+        """
+        Assign keyboard shortcuts to cycle run dates via the run combobox.
+        """
+        for sc in getattr(self, "run_shortcuts", []):
+            sc.setParent(None)
+        self.run_shortcuts = []
+
+        shortcuts = [
+            (["Ctrl+Shift+Left"], self.on_prev_run),
+            (["Ctrl+Shift+Right"], self.on_next_run),
+        ]
+
+        for seq_list, handler in shortcuts:
+            for seq in seq_list:
+                sc = QShortcut(QKeySequence(seq), self)
+                sc.activated.connect(handler)
+                self.run_shortcuts.append(sc)
         
     def load_selected_run(self):
         # call sql load function from instrument class
