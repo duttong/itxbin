@@ -593,6 +593,7 @@ class MainWindow(QMainWindow):
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
+        self.gc_plot(self._current_yparam)
 
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
@@ -785,9 +786,16 @@ class MainWindow(QMainWindow):
             base_label = self.run.loc[self.run['port_idx'] == port, 'port_label'].iloc[0]
             if base_label == 'Push port':
                 continue
+            subset_port = self.run.loc[self.run['port_idx'] == port]
+            skip_stats = False
+            if yparam in ('ratio', 'mole_fraction') and 'run_type_num' in subset_port.columns:
+                try:
+                    skip_stats = (subset_port['run_type_num'].astype(int) == 5).any()
+                except Exception:
+                    skip_stats = False
 
             stats = stats_map.get(port)
-            if stats is not None:
+            if stats is not None and not skip_stats:
                 if yparam == 'resp':
                     label = f"{base_label}"
                 elif yparam == 'ratio':
@@ -879,11 +887,14 @@ class MainWindow(QMainWindow):
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
             
-        main = f"{self.current_run_time} - {tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})"
-        ax.set_title(main, pad=12)
+        main_title = "\n".join([
+            f"{self.current_run_time}",
+            f"{tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})",
+        ])
+        ax.set_title(main_title, pad=16)
         if sub_info:
             ax.text(
-                0.5, .98, sub_info,
+                0.5, .965, sub_info,
                 transform=ax.transAxes, ha='center', va='bottom',
                 fontsize=9, color='white', clip_on=False,
                 bbox=dict(
@@ -984,10 +995,6 @@ class MainWindow(QMainWindow):
             save2dball_handle
         ])
 
-        # Put legend outside and create it ONCE
-        box = ax.get_position()
-        ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
-
         leg = ax.legend(
             handles=legend_handles,
             loc='center left',
@@ -1057,8 +1064,6 @@ class MainWindow(QMainWindow):
                     alpha=0.9,
                 ))
 
-        box = ax.get_position()
-        ax.set_position([box.x0, box.y0, box.width * 0.85, box.height])
         ax.format_coord = self._fmt_gc_plot
  
         if not hasattr(self, "_legend_pick_cid") or self._legend_pick_cid is None:
@@ -1112,17 +1117,7 @@ class MainWindow(QMainWindow):
         # Make sure the rectangle selector attaches to the current axes
         self._reattach_rect_selector()
 
-        # --- estimate margin from longest legend label ---
-        texts = [t.get_text() for t in leg.texts]
-        if texts:
-            max_len = max(len(t) for t in texts)
-            # map longest label length to a right margin between 0.75–0.95
-            right_margin = max(0.75, min(0.95, 1.0 - (max_len * 0.01)))
-        else:
-            right_margin = 0.9  # fallback if no legend entries
-
-        self.figure.tight_layout(rect=[0, 0, right_margin, 1])
-        self.canvas.draw_idle()
+        self._adjust_layout_for_legend(leg)
 
         if self._pick_cid is None:
             self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)
@@ -1167,6 +1162,36 @@ class MainWindow(QMainWindow):
         """
         if getattr(self, "canvas", None):
             self.canvas.draw_idle()
+
+    def _adjust_layout_for_legend(self, leg):
+        """
+        Ensure the legend is visible without squeezing the plot. This does a
+        two-pass draw to measure the legend and sets the right margin based
+        on its actual width.
+        """
+        if leg is None:
+            return
+
+        # Exclude legend from layout
+        try:
+            leg.set_in_layout(False)
+        except Exception:
+            pass
+
+        # First draw to obtain a renderer and legend size
+        self.canvas.draw()
+        renderer = self.canvas.get_renderer()
+        try:
+            leg_bb = leg.get_window_extent(renderer=renderer).transformed(self.figure.transFigure.inverted())
+            legend_width = leg_bb.width
+            pad = 0.01
+            right = max(0.65, 1.0 - legend_width - pad)
+        except Exception:
+            right = 0.8
+
+        # Apply margins and redraw
+        self.figure.subplots_adjust(right=right, left=0.08, bottom=0.12, top=0.88)
+        self.canvas.draw_idle()
 
     def clear_plot(self, message="No data available"):
         """Clear the main GC plot and legend, resetting interactive elements."""
