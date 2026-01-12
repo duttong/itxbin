@@ -1238,6 +1238,14 @@ class M4_Instrument(HATS_DB_Functions):
         res = base.copy()
         res.loc[mask] = pfp.loc[mask]          # explicit assignment avoids where/mask downcast warning
         df['port_idx'] = res.round().astype('Int64')   # final, intentional cast to nullable int
+
+        # Keep PFP packages distinct in the legend: make port_idx unique per (sample_id, flask_port)
+        if mask.any():
+            flask_ports = pd.to_numeric(df.loc[mask, 'flask_port'], errors='coerce').fillna(-1).astype(int)
+            sample_ids = df.loc[mask, 'sample_id'].fillna('').astype(str).str.strip()
+            combos = pd.Series(list(zip(flask_ports, sample_ids)), index=df.index[mask])
+            pfp_codes = pd.Series(pd.factorize(combos)[0] + 200, index=df.index[mask])  # offset to avoid collisions with real ports
+            df.loc[mask, 'port_idx'] = pfp_codes.astype('Int64')
         
         df = self.add_port_labels(df)       # port labels, colors, and markers
         
