@@ -28,6 +28,7 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'BLD', 'MKO']
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
+MAX_SAVED_SETS = 5
 
 
 class TanksPlotter:
@@ -456,10 +457,12 @@ class TanksWidget(QWidget):
             sets_by_analyte = {}
             if isinstance(data, dict) and isinstance(data.get("sets_by_analyte"), dict):
                 for key, lst in data["sets_by_analyte"].items():
-                    sets_by_analyte[key] = [
+                    trimmed = [
                         entry if isinstance(entry, dict) else None
                         for entry in (lst if isinstance(lst, list) else [])
-                    ][:3] + [None] * max(0, 3 - len(lst))
+                    ][:MAX_SAVED_SETS]
+                    trimmed += [None] * max(0, MAX_SAVED_SETS - len(trimmed))
+                    sets_by_analyte[key] = trimmed
             elif isinstance(data, dict) and isinstance(data.get("sets"), list):
                 # Legacy format: assign sets to their inferred keys.
                 for entry in data["sets"]:
@@ -468,8 +471,8 @@ class TanksWidget(QWidget):
                     key = self._key_for_saved_entry(entry)
                     if not key:
                         continue
-                    lst = sets_by_analyte.setdefault(key, [None, None, None])
-                    for idx in range(3):
+                    lst = sets_by_analyte.setdefault(key, [None] * MAX_SAVED_SETS)
+                    for idx in range(MAX_SAVED_SETS):
                         if lst[idx] is None:
                             lst[idx] = entry
                             break
@@ -510,7 +513,7 @@ class TanksWidget(QWidget):
         for idx, saved in enumerate(sets):
             if not self._is_set_available(saved):
                 continue
-            btn = QPushButton(f"Tanks {idx + 1}")
+            btn = QPushButton(f"Set {idx + 1}")
             btn.setCheckable(True)
             btn.setChecked(idx == self.active_set_idx)
             btn.setStyleSheet("background-color: lightgreen;" if idx == self.active_set_idx else "")
@@ -552,7 +555,7 @@ class TanksWidget(QWidget):
         self.active_set_idx = target_idx
         self._persist_sets()
         self._refresh_set_buttons()
-        self._toast(f"Saved tank set to Tanks {target_idx + 1}.")
+        self._toast(f"Saved tank set to Set {target_idx + 1}.")
 
     def _on_set_clicked(self, idx: int):
         """Load a saved set and mark it active."""
@@ -642,7 +645,7 @@ class TanksWidget(QWidget):
         self.active_set_idx = None
         self._persist_sets()
         self._refresh_set_buttons()
-        self._toast(f"Deleted Tanks {deleted_idx + 1}.")
+        self._toast(f"Deleted Set {deleted_idx + 1}.")
 
     def _on_tank_toggled(self, _checked: bool):
         """Tank clicks clear the active-set highlight."""
@@ -755,8 +758,8 @@ class TanksWidget(QWidget):
         if not key:
             return []
         if key not in self.saved_sets and ensure:
-            self.saved_sets[key] = [None, None, None]
-        return self.saved_sets.get(key, [None, None, None])
+            self.saved_sets[key] = [None] * MAX_SAVED_SETS
+        return self.saved_sets.get(key, [None] * MAX_SAVED_SETS)
 
     def _key_for_saved_entry(self, entry: dict) -> str | None:
         """Compute key from saved entry."""
