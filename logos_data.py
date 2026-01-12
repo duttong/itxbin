@@ -1184,8 +1184,9 @@ class MainWindow(QMainWindow):
         try:
             leg_bb = leg.get_window_extent(renderer=renderer).transformed(self.figure.transFigure.inverted())
             legend_width = leg_bb.width
-            pad = 0.01
+            pad = 0.03
             right = max(0.65, 1.0 - legend_width - pad)
+            #print(f"Adjusting right margin to {right:0.3f} to fit legend width {legend_width:0.3f}")
         except Exception:
             right = 0.8
 
