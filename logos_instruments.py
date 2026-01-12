@@ -1072,6 +1072,7 @@ class Normalizing():
             else:
                 return np.nan, 0
             ref = ref.dropna()
+            print(ref.shape)
             if ref.empty:
                 return np.nan, 0
             return ref.std(), len(ref)
