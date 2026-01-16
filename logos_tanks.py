@@ -120,9 +120,14 @@ class TanksPlotter:
             )
             grav_match = param_series == param_value if param_value is not None else True
             non_grav = ~is_grav
-            df = df[non_grav | grav_match]
+            grav_other = is_grav & ~grav_match
+            df_other = df[grav_other].copy()
+            if not df_other.empty:
+                df_other["use_short"] = "Other Gravs"
+            df = pd.concat([df[non_grav | grav_match], df_other], ignore_index=True)
 
-        df["__is_grav"] = df["use_short"].fillna("").str.lower() == "grav"
+        use_lower = df["use_short"].fillna("").str.lower()
+        df["__is_grav"] = use_lower.str.contains("grav")
         df = df.sort_values(
             ["serial_number", "__is_grav", "fill_date"],
             ascending=[True, False, False],
@@ -223,11 +228,29 @@ class TanksWidget(QWidget):
         analyte_layout.addWidget(analyte_container)
         self.tanks_status = QLabel("Select a year range and gas to load tanks.")
         self.tanks_status.setWordWrap(True)
+        category_bar = QHBoxLayout()
+        self.show_grav_cb = QCheckBox("Gravimetric")
+        self.show_grav_cb.setChecked(True)
+        self.show_grav_cb.setStyleSheet("color: darkred;")
+        self.show_grav_cb.toggled.connect(self._on_category_toggle)
+        self.show_other_grav_cb = QCheckBox("Other Gravs")
+        self.show_other_grav_cb.setChecked(False)
+        self.show_other_grav_cb.setStyleSheet("color: darkblue;")
+        self.show_other_grav_cb.toggled.connect(self._on_category_toggle)
+        self.show_archive_cb = QCheckBox("Archive")
+        self.show_archive_cb.setChecked(True)
+        self.show_archive_cb.setStyleSheet("color: darkgreen;")
+        self.show_archive_cb.toggled.connect(self._on_category_toggle)
+        category_bar.addWidget(self.show_grav_cb)
+        category_bar.addWidget(self.show_other_grav_cb)
+        category_bar.addWidget(self.show_archive_cb)
+        category_bar.addStretch()
         self.tank_grid = QGridLayout()
         self.tank_grid.setContentsMargins(0, 0, 0, 0)
         self.tank_grid.setHorizontalSpacing(8)
         self.tank_grid.setVerticalSpacing(4)
         analyte_layout.addWidget(self.tanks_status)
+        analyte_layout.addLayout(category_bar)
         analyte_layout.addLayout(self.tank_grid)
         selection_bar = QHBoxLayout()
         self.deselect_btn = QPushButton("Deselect All")
@@ -453,7 +476,7 @@ class TanksWidget(QWidget):
                         "fill_key": fill_key,
                         "fill_date": fill_date,
                     }
-                )
+            )
 
         self._annotate_next_fill_dates()
 
@@ -461,6 +484,7 @@ class TanksWidget(QWidget):
             tanks_list,
             key=lambda t: (t.get("serial") or "", str(t.get("fill_date") or t.get("fill_idx") or "")),
         )
+        tanks_list = self._filter_tanks_by_category(tanks_list)
         empty_msg = None
         if not tanks_list and self._reload_dirty and self._tank_cache_range:
             cached_start, cached_end = self._tank_cache_range
@@ -485,11 +509,7 @@ class TanksWidget(QWidget):
             self.tanks_status.setText(empty_msg or "No tanks found for that selection.")
             return
 
-        self.tanks_status.setText(
-            f"{len(tanks)} tanks found. "
-            f"<span style='color: darkred;'>Gravimetric</span> "
-            f"| <span style='color: darkgreen;'>Archive</span>"
-        )
+        self.tanks_status.setText(f"{len(tanks)} tanks found.")
         cols = 5
         for idx, tank in enumerate(tanks):
             serial = None
@@ -520,7 +540,9 @@ class TanksWidget(QWidget):
                 lambda pos, cb=cb, key=(fill_key or serial_str): self._on_tank_context(cb, pos, key)
             )
             if use_lower:
-                if use_lower.startswith("grav"):
+                if use_lower.startswith("other gravs") or use_lower.startswith("other_gravs"):
+                    cb.setStyleSheet("color: darkblue;")
+                elif use_lower.startswith("grav"):
                     cb.setStyleSheet("color: darkred;")
                 elif use_lower.startswith("archive"):
                     cb.setStyleSheet("color: darkgreen;")
@@ -803,6 +825,30 @@ class TanksWidget(QWidget):
             cb.blockSignals(False)
         self._loading_set = False
         self._clear_active_set_selection()
+
+    def _filter_tanks_by_category(self, tanks: list[dict]) -> list[dict]:
+        """Apply category toggle filters to tank list."""
+        filtered: list[dict] = []
+        show_grav = self.show_grav_cb.isChecked() if hasattr(self, "show_grav_cb") else True
+        show_other = self.show_other_grav_cb.isChecked() if hasattr(self, "show_other_grav_cb") else True
+        show_archive = self.show_archive_cb.isChecked() if hasattr(self, "show_archive_cb") else True
+        for tank in tanks:
+            use_lower = str(tank.get("use_short") or "").lower()
+            is_other = use_lower.startswith("other grav")
+            is_grav = use_lower.startswith("grav") and not is_other
+            is_archive = use_lower.startswith("archive")
+            if is_other and not show_other:
+                continue
+            if is_grav and not show_grav:
+                continue
+            if is_archive and not show_archive:
+                continue
+            filtered.append(tank)
+        return filtered
+
+    def _on_category_toggle(self, _checked: bool):
+        """Refresh tank view when category filters change."""
+        self.refresh_tanks()
 
     def _update_set_button_styles(self):
         for idx, btn in enumerate(self.set_buttons):
