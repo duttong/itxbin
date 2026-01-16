@@ -2,6 +2,7 @@
 
 import argparse
 import pandas as pd
+import re
 
 from logos_instruments import M4_Instrument
 
@@ -515,6 +516,100 @@ class M4_SampleLogs(M4_Instrument):
             AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}';
         """
         self.db.doquery(sql)
+        
+class M4_Serial_Numbers(M4_Instrument):
+
+    SX_RE  = re.compile(r"(?i)\b(?:e)?sx[\s_-]*([0-9]{3,})(?![0-9])")  # esx-3531 / sx_3531 / sx 3531
+    DIG_RE = re.compile(r"([0-9]{4,})")
+      
+    def __init__(self):
+        super().__init__()
+    
+    def find_missing_serials(self):
+        """ Finds missing serial numbers in the M4 instrument. """
+        sql = f"""
+            SELECT * FROM hats.ng_analysis 
+            where inst_num = 192
+            and tank_serial_num is NULL
+            and pair_id_num = 0
+            and port NOT in (1, 2, 12, 14)   # exclues Zero Air, PFP, and Reference ports
+            and port_info not like "%zero%"
+            and port_info not like "%junk%"
+            and port_info != ''
+            and tank_serial_num is NULL
+            and run_time > '2023-12-01'
+            order by analysis_time;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        return df
+
+    def port_key(self, port_info):
+        """
+        Returns:
+        - 'sx-####' if an sx/esx tag is present
+        - otherwise the first digit run found anywhere
+        - otherwise None
+        """
+        if port_info is None or (isinstance(port_info, float) and pd.isna(port_info)):
+            return None
+
+        s = str(port_info).strip().lower()
+
+        m = self.SX_RE.search(s)
+        if m:
+            return f"sx-{m.group(1)}"
+
+        m = self.DIG_RE.search(s)
+        if m:
+            return m.group(1)
+        return None
+
+    def lookup_fill_serial(self, port_key):
+        if port_key is None or (isinstance(port_key, float) and pd.isna(port_key)):
+            return None
+        key = str(port_key).replace("'", "''")
+        sql = f"SELECT serial_number FROM reftank.fill WHERE serial_number LIKE '%{key}%';"
+        rows = self.db.doquery(sql)
+        if not rows:
+            return None
+
+        serials = [r.get('serial_number') for r in rows if r.get('serial_number')]
+        if not serials:
+            return None
+        unique_serials = list(dict.fromkeys(serials))
+        if len(unique_serials) > 1:
+            print(f"Warning: multiple distinct serial_number matches for port_key {port_key}: {unique_serials}")
+            return None
+        return unique_serials[0]
+    
+    def insert_fill_serial(self, row):
+        serial = row.get('fill_serial_match')
+        if serial is None or (isinstance(serial, float) and pd.isna(serial)):
+            return "skipped: no fill_serial_match"
+
+        serial_sql = str(serial).replace("'", "''")
+
+        if 'num' in row and pd.notna(row['num']):
+            where_clause = f"num = {int(row['num'])} AND inst_num = {self.inst_num}"
+        else:
+            a_time = str(row.get('analysis_time'))[:19]
+            if not a_time or a_time.lower() == 'nan':
+                return "skipped: no key for update"
+            where_clause = f"analysis_time = '{a_time}' AND inst_num = {self.inst_num}"
+
+        sql = f"""UPDATE hats.ng_analysis
+                  SET tank_serial_num = '{serial_sql}'
+                  WHERE {where_clause};"""
+        self.db.doquery(sql)
+        return f"updated {where_clause} -> {serial}"
+    
+    def add_fill_serial_matches(self, df):
+        df = df.copy()
+        if 'port_key' not in df.columns:
+            df['port_key'] = df['port_info'].apply(self.port_key)
+        df['fill_serial_match'] = df['port_key'].apply(self.lookup_fill_serial)
+        return df
+
 
 if __name__ == '__main__':
 
@@ -532,6 +627,8 @@ if __name__ == '__main__':
     options = opt.parse_args()
     
     m4 = M4_SampleLogs()
+    sn = M4_Serial_Numbers()
+    
     if options.all:
         df = m4.merged_rundata(duration='all')
     else:
@@ -541,5 +638,19 @@ if __name__ == '__main__':
         pd.set_option('future.no_silent_downcasting', True)
         df = m4.ng_analysis(df)
         m4.insert_ancillary_data(df)
+        sn_df = sn.find_missing_serials()
+        if not sn_df.empty:
+            sn_df = sn.add_fill_serial_matches(sn_df)
+            sn_df.apply(sn.insert_fill_serial, axis=1)
+            
         print(f'Inserted or updated {df.shape[0]} rows in hats.ng_analysis and ng_ancillary_data.')
+    else:
+        # Just surface missing-serial warnings without updating DB
+        print( "Finding missing serial numbers (no DB updates)...")
+        sn_df = sn.find_missing_serials()
+        if not sn_df.empty:
+            sn_df = sn.add_fill_serial_matches(sn_df)
+            sn_df = sn_df.dropna(subset=['port_key'])
+            unique_sn_df = sn_df.drop_duplicates(subset='port_key')
+            print(unique_sn_df[['analysis_time', 'port_info', 'port_key', 'fill_serial_match']])
     
