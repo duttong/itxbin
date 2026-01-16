@@ -7,7 +7,7 @@ import math
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip, QApplication
+    QToolTip, QApplication, QInputDialog
 )
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
@@ -37,16 +37,12 @@ class TanksPlotter:
     def __init__(self, db, inst_num):
         self.db = db
         self.inst_num = inst_num
-        
-        
-    def return_active_tanks(self, start_year, end_year, parameter_num=None, channel=None):
-        """
-        Return a list of tank records (serial + latest fill metadata) active in the window.
-        """
+
+    def _active_tanks_dataframe(self, start_year, end_year) -> pd.DataFrame:
+        """Return raw DataFrame of active tanks across all analytes for a window."""
         start_ts = f"{start_year}-01-01"
         end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
 
-        # Query 1: find the latest fill_idx per tank observed in the window for this instrument.
         fills_sql = f"""
             SELECT
                 DISTINCT r.idx
@@ -65,15 +61,13 @@ class TanksPlotter:
               AND a.run_time <  '{end_ts}'
             ORDER BY r.serial_number;
         """
-
         fills_df = pd.DataFrame(self.db.doquery(fills_sql))
         fill_ids = [str(idx) for idx in fills_df["idx"].dropna().unique()] if not fills_df.empty else []
         if not fill_ids:
-            return []
+            return pd.DataFrame()
 
         fill_list = ",".join(fill_ids)
         
-        # Query 2: fetch metadata for those fill_idx values.
         sql = f"""
             SELECT
                 h.num,
@@ -103,14 +97,18 @@ class TanksPlotter:
             WHERE h.fill_idx IN ({fill_list})
             ORDER BY f.serial_number, f.`date` DESC;
         """
-
-        #print(sql)
-        
         df = pd.DataFrame(self.db.doquery(sql))
-        if df.empty:
+        if "date" in df.columns:
+            df = df.rename(columns={"date": "fill_date"})
+        return df
+
+    def _filter_active_tanks(self, df: pd.DataFrame, parameter_num=None) -> list[dict]:
+        """Filter a tank DataFrame down to parameter-specific rows."""
+        if df is None or df.empty:
             return []
 
-        # Only keep Grav rows matching the selected parameter; keep Archive/other uses regardless.
+        df = df.copy()
+
         if "use_short" in df.columns and "parameter_num" in df.columns:
             use_lower = df["use_short"].fillna("").str.lower()
             is_grav = use_lower.str.startswith("grav")
@@ -121,26 +119,34 @@ class TanksPlotter:
                 else None
             )
             grav_match = param_series == param_value if param_value is not None else True
-            grav_total = int(is_grav.sum())
-            grav_kept = int((is_grav & grav_match).sum())
-            grav_dropped = grav_total - grav_kept
             non_grav = ~is_grav
             df = df[non_grav | grav_match]
 
-        if "date" in df.columns:
-            df = df.rename(columns={"date": "fill_date"})
-        # Prefer Grav rows (matching parameter) for a serial when present; otherwise take latest.
-        if "serial_number" in df.columns:
-            df = df.copy()
-            df["__is_grav"] = df["use_short"].fillna("").str.lower() == "grav"
-            df = df.sort_values(
-                ["serial_number", "__is_grav", "fill_date"],
-                ascending=[True, False, False],
-            )
-            df = df.drop_duplicates(subset=["fill_idx"], keep="first")
-            df = df.drop(columns=["__is_grav"], errors="ignore")
+        df["__is_grav"] = df["use_short"].fillna("").str.lower() == "grav"
+        df = df.sort_values(
+            ["serial_number", "__is_grav", "fill_date"],
+            ascending=[True, False, False],
+        )
+        df = df.drop_duplicates(subset=["fill_idx"], keep="first")
+        df = df.drop(columns=["__is_grav"], errors="ignore")
 
         return df.to_dict(orient="records")
+        
+        
+    def return_active_tanks(self, start_year, end_year, parameter_num=None, channel=None):
+        """
+        Return a list of tank records (serial + latest fill metadata) active in the window.
+        """
+        df = self._active_tanks_dataframe(start_year, end_year)
+        return self._filter_active_tanks(df, parameter_num)
+
+    def return_active_tanks_df(self, start_year, end_year) -> pd.DataFrame:
+        """Expose raw tank dataframe (all analytes) for caching."""
+        return self._active_tanks_dataframe(start_year, end_year)
+
+    def filter_active_tanks(self, df: pd.DataFrame, parameter_num=None) -> list[dict]:
+        """Public wrapper to filter cached tank data by parameter."""
+        return self._filter_active_tanks(df, parameter_num)
     
 
 class TanksWidget(QWidget):
@@ -161,6 +167,9 @@ class TanksWidget(QWidget):
         self.set_buttons: list[QPushButton] = []
         self._loading_set = False
         self._tank_metadata: dict[str, dict] = {}
+        self._tank_cache: dict[str, list[dict]] = {}
+        self._tank_cache_range: tuple[int, int] | None = None
+        self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
 
         # --- Layout scaffold (mirror logos_timeseries style) ---
         controls = QVBoxLayout()
@@ -189,21 +198,27 @@ class TanksWidget(QWidget):
         # Analyte selector
         analyte_group = QGroupBox("Gas / Parameter")
         analyte_layout = QVBoxLayout()
+        alpha_row = QHBoxLayout()
+        self.alpha_sort_cb = QCheckBox("List Alphabetically")
+        self.alpha_sort_cb.toggled.connect(self._on_alpha_sort_toggled)
+        alpha_row.addWidget(self.alpha_sort_cb)
+        alpha_row.addStretch()
+        analyte_layout.addLayout(alpha_row)
         analyte_container = QWidget()
         analyte_container.setStyleSheet("background-color: #fffbe6; border: 1px solid #f2e6b3;")
         analyte_checks_layout = QGridLayout()
         analyte_checks_layout.setContentsMargins(6, 6, 6, 6)
         analyte_checks_layout.setHorizontalSpacing(8)
         analyte_checks_layout.setVerticalSpacing(4)
+        self._analyte_checks_layout = analyte_checks_layout
         cols_analyte = 5
-        for idx, name in enumerate((self.instrument.analytes or {}).keys() if self.instrument else []):
+        for idx, name in enumerate(self._analyte_names):
             cb = QCheckBox(name)
             if idx == 0:
                 cb.setChecked(True)
             cb.toggled.connect(lambda checked, cb=cb: self._on_analyte_toggled(cb, checked))
             self.analyte_checks.append(cb)
-            row, col = divmod(idx, cols_analyte)
-            analyte_checks_layout.addWidget(cb, row, col)
+        self._reflow_analyte_grid(cols_analyte)
         analyte_container.setLayout(analyte_checks_layout)
         analyte_layout.addWidget(analyte_container)
         self.tanks_status = QLabel("Select a year range and gas to load tanks.")
@@ -214,6 +229,15 @@ class TanksWidget(QWidget):
         self.tank_grid.setVerticalSpacing(4)
         analyte_layout.addWidget(self.tanks_status)
         analyte_layout.addLayout(self.tank_grid)
+        selection_bar = QHBoxLayout()
+        self.deselect_btn = QPushButton("Deselect All")
+        self.deselect_btn.clicked.connect(self._on_deselect_all)
+        self.all_gravs_btn = QPushButton("All Gravs")
+        self.all_gravs_btn.clicked.connect(self._on_select_all_gravs)
+        selection_bar.addWidget(self.deselect_btn)
+        selection_bar.addWidget(self.all_gravs_btn)
+        selection_bar.addStretch()
+        analyte_layout.addLayout(selection_bar)
         sets_bar = QHBoxLayout()
         self.save_set_btn = QPushButton("Save Tank Set")
         self.save_set_btn.clicked.connect(self._on_save_set)
@@ -251,7 +275,7 @@ class TanksWidget(QWidget):
         self._load_saved_sets()
         self._refresh_set_buttons()
         if any(cb.isChecked() for cb in self.analyte_checks):
-            self.refresh_tanks()
+            self.refresh_tanks(force_reload=True)
 
     # --- Slots / helpers ---
     def _mark_reload_needed(self):
@@ -265,7 +289,7 @@ class TanksWidget(QWidget):
 
     def _on_reload(self):
         """Reload tanks and clear the pending visual cue."""
-        self.refresh_tanks()
+        self.refresh_tanks(force_reload=True)
         self._reload_dirty = False
         self.reload_btn.setStyleSheet("")
 
@@ -298,15 +322,73 @@ class TanksWidget(QWidget):
                 continue
             name = cb.text()
             pnum = (self.instrument.analytes or {}).get(name)
-            channel = None
-            if "(" in name and ")" in name:
-                _, ch = name.split("(", 1)
-                channel = ch.strip(") ").strip()
+            channel = self._analyte_channel(name)
             if pnum is not None:
                 selected.append((name, pnum, channel))
         return selected
 
-    def refresh_tanks(self):
+    def _reflow_analyte_grid(self, cols: int = 5):
+        """Re-layout analyte checkboxes based on sort toggle."""
+        layout = getattr(self, "_analyte_checks_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                layout.removeWidget(w)
+        if self.alpha_sort_cb.isChecked():
+            ordered = sorted(self.analyte_checks, key=lambda cb: cb.text().lower())
+        else:
+            name_to_cb = {cb.text(): cb for cb in self.analyte_checks}
+            ordered = []
+            for name in self._analyte_names:
+                cb = name_to_cb.get(name)
+                if cb:
+                    ordered.append(cb)
+            # append any new analytes not in original list
+            for cb in self.analyte_checks:
+                if cb not in ordered:
+                    ordered.append(cb)
+        self.analyte_checks = ordered
+        for idx, cb in enumerate(ordered):
+            row, col = divmod(idx, cols)
+            layout.addWidget(cb, row, col)
+
+    def _on_alpha_sort_toggled(self, _checked: bool):
+        """Handle alphabetical sort toggle."""
+        self._reflow_analyte_grid()
+
+    def _cache_key(self, parameter_num: int | None, channel: str | None) -> str:
+        """Return a stable cache key for an analyte."""
+        channel_str = channel or ""
+        return f"{parameter_num}:{channel_str}"
+
+    def _analyte_channel(self, name: str) -> str | None:
+        """Extract channel from analyte display name if present."""
+        if "(" in name and ")" in name:
+            _, ch = name.split("(", 1)
+            return ch.strip(") ").strip()
+        return None
+
+    def _build_tank_cache(self, start: int, end: int):
+        """Populate cached tanks for all analytes for the given date range."""
+        if not self.instrument or not self.tanks_plotter:
+            self._tank_cache = {}
+            self._tank_cache_range = None
+            return
+        cache: dict[str, list[dict]] = {}
+        df_all = self.tanks_plotter.return_active_tanks_df(start, end)
+        for name, pnum in (self.instrument.analytes or {}).items():
+            channel = self._analyte_channel(name)
+            cache_key = self._cache_key(pnum, channel)
+            cache[cache_key] = self.tanks_plotter.filter_active_tanks(
+                df_all, parameter_num=pnum
+            )
+        self._tank_cache = cache
+        self._tank_cache_range = (start, end)
+
+    def refresh_tanks(self, force_reload: bool = False):
         """Query DB for tanks matching the selected year range + analyte."""
         if not self.instrument or not self.tanks_plotter:
             self._rebuild_tank_checks([], "Select a gas to load tanks.")
@@ -324,6 +406,12 @@ class TanksWidget(QWidget):
             self._rebuild_tank_checks([], "Select at least one gas to load tanks.")
             return
 
+        should_rebuild = force_reload or self._tank_cache_range is None
+        if not should_rebuild and self._tank_cache_range != (start, end) and not self._reload_dirty:
+            should_rebuild = True
+        if should_rebuild:
+            self._build_tank_cache(start, end)
+
         def _fill_key(serial_val, fill_idx_val, fill_code_val):
             return f"{serial_val}::{fill_idx_val if fill_idx_val is not None else 'na'}::{fill_code_val or ''}"
 
@@ -331,9 +419,8 @@ class TanksWidget(QWidget):
         tanks_seen: set[str] = set()
         self._tank_metadata = {}
         for _, pnum, channel in selections:
-            tanks = self.tanks_plotter.return_active_tanks(
-                start, end, parameter_num=pnum, channel=channel
-            )
+            cache_key = self._cache_key(pnum, channel)
+            tanks = self._tank_cache.get(cache_key, [])
             for entry in tanks:
                 serial = None
                 use_short = None
@@ -374,7 +461,14 @@ class TanksWidget(QWidget):
             tanks_list,
             key=lambda t: (t.get("serial") or "", str(t.get("fill_date") or t.get("fill_idx") or "")),
         )
-        self._rebuild_tank_checks(tanks_list)
+        empty_msg = None
+        if not tanks_list and self._reload_dirty and self._tank_cache_range:
+            cached_start, cached_end = self._tank_cache_range
+            empty_msg = (
+                f"No cached tanks for this analyte. Reload tanks for {cached_start}-{cached_end} "
+                f"or press Reload Tanks after adjusting the date range."
+            )
+        self._rebuild_tank_checks(tanks_list, empty_msg)
 
     def _rebuild_tank_checks(self, tanks, empty_msg: str = None):
         """Clear and rebuild the checkbox grid."""
@@ -418,6 +512,7 @@ class TanksWidget(QWidget):
             cb = QCheckBox(label)
             cb.setProperty("serial", serial_str)
             cb.setProperty("fill_key", fill_key or serial_str)
+            cb.setProperty("use_short", use_short)
             cb.setChecked(False)
             cb.toggled.connect(self._on_tank_toggled)
             cb.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -513,7 +608,8 @@ class TanksWidget(QWidget):
         for idx, saved in enumerate(sets):
             if not self._is_set_available(saved):
                 continue
-            btn = QPushButton(f"Set {idx + 1}")
+            label = saved.get("name") or f"Set {idx + 1}"
+            btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setChecked(idx == self.active_set_idx)
             btn.setStyleSheet("background-color: lightgreen;" if idx == self.active_set_idx else "")
@@ -537,25 +633,45 @@ class TanksWidget(QWidget):
         if not key:
             self._toast("Unable to determine analyte key for saving.")
             return
+        sets = self._sets_for_key(key, ensure=True)
+        # Default target slot for prompt; may change after naming to overwrite by name.
+        if self.active_set_idx is not None:
+            target_idx = self.active_set_idx
+        else:
+            empty_idx = next((i for i, val in enumerate(sets) if val is None), None)
+            target_idx = empty_idx if empty_idx is not None else 0
+        existing_name = sets[target_idx].get("name") if isinstance(sets[target_idx], dict) else ""
+        prompt_default = existing_name or f"Set {target_idx + 1}"
+        save_name, ok = QInputDialog.getText(
+            self,
+            "Save Tank Set",
+            "Enter a name for this tank set:",
+            text=prompt_default,
+        )
+        if not ok:
+            return
+        save_name = save_name.strip() or prompt_default
+        # If a set with this name already exists, overwrite it.
+        matching_idx = next(
+            (i for i, val in enumerate(sets) if isinstance(val, dict) and val.get("name") == save_name),
+            None,
+        )
+        if matching_idx is not None:
+            target_idx = matching_idx
         entry = {
             "instrument": getattr(self.instrument, "inst_num", None),
             "parameter_name": name,
             "parameter_num": pnum,
             "channel": channel,
             "tanks": tanks,
+            "name": save_name,
         }
-        sets = self._sets_for_key(key, ensure=True)
-        if self.active_set_idx is not None:
-            target_idx = self.active_set_idx
-        else:
-            empty_idx = next((i for i, val in enumerate(sets) if val is None), None)
-            target_idx = empty_idx if empty_idx is not None else 0
         sets[target_idx] = entry
         self.saved_sets[key] = sets
         self.active_set_idx = target_idx
         self._persist_sets()
         self._refresh_set_buttons()
-        self._toast(f"Saved tank set to Set {target_idx + 1}.")
+        self._toast(f"Saved tank set '{save_name}'.")
 
     def _on_set_clicked(self, idx: int):
         """Load a saved set and mark it active."""
@@ -591,10 +707,7 @@ class TanksWidget(QWidget):
         for cb in self.analyte_checks:
             name = cb.text()
             pnum = (self.instrument.analytes or {}).get(name) if self.instrument else None
-            channel = None
-            if "(" in name and ")" in name:
-                _, ch = name.split("(", 1)
-                channel = ch.strip(") ").strip()
+            channel = self._analyte_channel(name)
             if target_name and name == target_name:
                 return cb
             if target_num is not None and pnum == target_num and (target_channel is None or channel == target_channel):
@@ -645,7 +758,7 @@ class TanksWidget(QWidget):
         self.active_set_idx = None
         self._persist_sets()
         self._refresh_set_buttons()
-        self._toast(f"Deleted Set {deleted_idx + 1}.")
+        self._toast("Deleted saved tank set.")
 
     def _on_tank_toggled(self, _checked: bool):
         """Tank clicks clear the active-set highlight."""
@@ -657,6 +770,39 @@ class TanksWidget(QWidget):
         """Reset active set highlight and delete enablement."""
         self.active_set_idx = None
         self._update_set_button_styles()
+
+    def _on_deselect_all(self):
+        """Uncheck all tank boxes."""
+        self._loading_set = True
+        for cb in self.tank_checks:
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
+        self._loading_set = False
+        self._clear_active_set_selection()
+
+    def _on_select_all_gravs(self):
+        """Select only gravimetric tanks."""
+        desired_keys = set()
+        for key, meta in self._tank_metadata.items():
+            use_lower = str(meta.get("use_short") or "").lower()
+            if use_lower.startswith("grav"):
+                desired_keys.add(str(key))
+        if not desired_keys and self.tank_checks:
+            # Fallback to checkbox property if metadata missing
+            for cb in self.tank_checks:
+                use_lower = str(cb.property("use_short") or "").lower()
+                if use_lower.startswith("grav"):
+                    fill_key = cb.property("fill_key") or cb.property("serial") or cb.text()
+                    desired_keys.add(str(fill_key))
+        self._loading_set = True
+        for cb in self.tank_checks:
+            cb.blockSignals(True)
+            fill_key = cb.property("fill_key") or cb.property("serial") or cb.text()
+            cb.setChecked(str(fill_key) in desired_keys)
+            cb.blockSignals(False)
+        self._loading_set = False
+        self._clear_active_set_selection()
 
     def _update_set_button_styles(self):
         for idx, btn in enumerate(self.set_buttons):
