@@ -93,7 +93,7 @@ class FastNavigationToolbar(NavigationToolbar):
 
         self.on_flag_toggle = on_flag_toggle
         self.addSeparator()
-        self.flag_action = QAction("Tagging", self)
+        self.flag_action = QAction("Tagging (g)", self)
         self.flag_action.setCheckable(True)
         self.flag_action.setShortcut("G")
         self.flag_action.setToolTip("Toggle Tagging mode (g)")
