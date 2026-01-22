@@ -245,7 +245,10 @@ class MainWindow(QMainWindow):
         self.calcurves = []
         self.selected_calc_curve = None  # currently selected calibration curve date
         self.smoothing_cb = QComboBox()
-        self.toggle_scale_cb = QCheckBox()  
+        self.autoscale_samples_rb = QRadioButton()
+        self.autoscale_standard_rb = QRadioButton()
+        self.autoscale_fullscale_rb = QRadioButton()
+        self.autoscale_group = QButtonGroup()
         self.lock_y_axis_cb = QCheckBox()
 
         self.tagging_enabled = False
@@ -540,12 +543,22 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.toggle_scale_cb = QCheckBox("Autoscale (a)")  # Properly initialize toggle_scale_cb
-        self.toggle_scale_cb.setShortcut("A") # Directly maps the 'A' key
-        self.toggle_scale_cb.stateChanged.connect(self.on_toggle_scale_toggled)
-        self.toggle_scale_cb.setChecked(True)  # Default to showing grid
-        self.toggle_scale_cb.setToolTip("Toggle autoscale (shortcut: a)")
-        options_layout.addWidget(self.toggle_scale_cb)
+        self.autoscale_label = QLabel("Autoscale:")
+        options_layout.addWidget(self.autoscale_label)
+
+        self.autoscale_group = QButtonGroup(self)
+        self.autoscale_samples_rb = QRadioButton("Autoscale Samples")
+        self.autoscale_standard_rb = QRadioButton("Autoscale Standard")
+        self.autoscale_fullscale_rb = QRadioButton("Fullscale")
+
+        self.autoscale_group.addButton(self.autoscale_samples_rb, id=0)
+        self.autoscale_group.addButton(self.autoscale_standard_rb, id=1)
+        self.autoscale_group.addButton(self.autoscale_fullscale_rb, id=2)
+        self.autoscale_samples_rb.setChecked(True)
+
+        for rb in (self.autoscale_samples_rb, self.autoscale_standard_rb, self.autoscale_fullscale_rb):
+            rb.toggled.connect(self.on_autoscale_mode_changed)
+            options_layout.addWidget(rb)
 
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("Plot and Options")
@@ -573,7 +586,7 @@ class MainWindow(QMainWindow):
             "Ctrl+Shift+Up/Down for Analyte Selection\n"
             "r/t/m for Response, Ratio, Mole Fraction\n"
             "p/l for point-to-point / Lowess smoothing\n"
-            "a to toggle Autoscale\n"
+            "Autoscale: Samples / Standard / Fullscale\n"
             "s to 'Save Current Gas' results\n"
         )
         help_label.setStyleSheet("color: #555; font-size: 10px;")
@@ -1103,21 +1116,29 @@ class MainWindow(QMainWindow):
 
         else:
             # Only adjust y-limits if not locked
-            if self.toggle_scale_cb.isChecked():
+            autoscale_mode = self._get_autoscale_mode()
+            if autoscale_mode in {"samples", "standard"}:
                 exclude = self.instrument.EXCLUDE
                 if self.instrument.inst_id == 'm4':
+                    # m4 uses run_type_num to exclude blanks/calibrations
                     exclude_variable = 'run_type_num'
+                    standard = self.instrument.STANDARD_RUN_TYPE
                 else:
+                    # fe3, bld1 use port to exclude push ports
                     exclude_variable = 'port'
+                    standard = self.instrument.STANDARD_PORT_NUM
 
-                scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
+                if autoscale_mode == "standard":
+                    scale_df = self.run.loc[self.run[exclude_variable] == standard, yvar]
+                else:
+                    scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
                 if not scale_df.empty:
                     ymin, ymax = scale_df.min(), scale_df.max()
                     if ymin == ymax:
                         ymin -= 0.05 * abs(ymin) if ymin != 0 else 0.05
                         ymax += 0.05 * abs(ymax) if ymax != 0 else 0.05
                     if pd.notna(ymin) and pd.notna(ymax) and np.isfinite(ymin) and np.isfinite(ymax):
-                        ax.set_ylim(ymin * 0.95, ymax * 1.05)
+                        ax.set_ylim(ymin * 0.98, ymax * 1.02)
             else:
                 try:
                     ax.set_ylim(
@@ -2790,9 +2811,16 @@ class MainWindow(QMainWindow):
             #print("Y-Axis scale unlocked.")
         self.on_plot_type_changed(self.current_plot_type)
 
-    def on_toggle_scale_toggled(self, state):
+    def _get_autoscale_mode(self) -> str:
+        if self.autoscale_samples_rb.isChecked():
+            return "samples"
+        if self.autoscale_standard_rb.isChecked():
+            return "standard"
+        return "fullscale"
+
+    def on_autoscale_mode_changed(self, state):
         """
-        Called when the toggle_scale_cb checkbox is toggled.
+        Called when the autoscale mode is toggled.
         """
         self.on_plot_type_changed(self.current_plot_type)
 
