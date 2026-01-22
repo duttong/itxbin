@@ -519,7 +519,7 @@ class MainWindow(QMainWindow):
             "5-point boxcar",           # 6
             "Lowess ~10 points",        # 5
         ])
-        self.smoothing_cb.setCurrentIndex(2)  # show "Lowess ~5 points" by default
+        self.smoothing_cb.setCurrentIndex(3)  # show "Lowess 5 points" by default
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
@@ -572,7 +572,9 @@ class MainWindow(QMainWindow):
             "Ctrl+Shift+Left/Right for Run Selection\n"
             "Ctrl+Shift+Up/Down for Analyte Selection\n"
             "r/t/m for Response, Ratio, Mole Fraction\n"
-            "a to toggle Autoscale"
+            "p/l for point-to-point / Lowess smoothing\n"
+            "a to toggle Autoscale\n"
+            "s to 'Save Current Gas' results\n"
         )
         help_label.setStyleSheet("color: #555; font-size: 10px;")
         help_label.setAlignment(Qt.AlignLeft)
@@ -947,10 +949,10 @@ class MainWindow(QMainWindow):
                 labels = {
                     1: "Pt-to-pt",
                     3: "2-pt avg",
-                    2: "Lowess~5",
+                    2: "Lowess 5",
                     4: "3-pt box",
                     6: "5-pt box",
-                    5: "Lowess~10",
+                    5: "Lowess 10",
                 }
                 label_width = max(len(v) for v in labels.values())
                 stats_df, best_method, _ = self.instrument.norm.detrend_stats_for_run(
