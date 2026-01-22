@@ -70,7 +70,8 @@ class FE3_Prepare(fe3_inst):
             return pd.read_parquet(out_pqt, engine=engine)
 
         # stale-check - read parquet data if the meta data files are older
-        if out_pqt.exists():
+        # Only use this cache when generate=False; current year should always regenerate.
+        if (not generate) and out_pqt.exists():
             pkl_mtime   = out_pqt.stat().st_mtime
             latest_meta = max(p.stat().st_mtime for p in incoming.rglob('meta_*.json'))
             if pkl_mtime >= latest_meta:
@@ -152,7 +153,7 @@ class FE3_Prepare(fe3_inst):
             warn(
                 f"Seq/Data length mismatch for run {run_id}: "
                 f"{seq_len} seq chars vs {n} GC rows. "
-                "Padding/truncating to continue; check for missing meta files."
+                "Most likely an aborted run."
             )
             # keep at most n entries so we never overrun the GC data slice
             seq = seq[:n]
