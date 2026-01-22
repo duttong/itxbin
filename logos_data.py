@@ -538,12 +538,7 @@ class MainWindow(QMainWindow):
         options_layout.addWidget(line)
         options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space below
 
-        self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")
-        self.lock_y_axis_cb.setChecked(False)
-        self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
-        options_layout.addWidget(self.lock_y_axis_cb)
-
-        self.autoscale_label = QLabel("Autoscale:")
+        self.autoscale_label = QLabel("Autoscale (a):")
         options_layout.addWidget(self.autoscale_label)
 
         self.autoscale_group = QButtonGroup(self)
@@ -559,6 +554,12 @@ class MainWindow(QMainWindow):
         for rb in (self.autoscale_samples_rb, self.autoscale_standard_rb, self.autoscale_fullscale_rb):
             rb.toggled.connect(self.on_autoscale_mode_changed)
             options_layout.addWidget(rb)
+        self._setup_autoscale_shortcuts()
+
+        self.lock_y_axis_cb = QCheckBox("Lock Y-Axis Scale")
+        self.lock_y_axis_cb.setChecked(False)
+        self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
+        options_layout.addWidget(self.lock_y_axis_cb)
 
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("Plot and Options")
@@ -586,7 +587,7 @@ class MainWindow(QMainWindow):
             "Ctrl+Shift+Up/Down for Analyte Selection\n"
             "r/t/m for Response, Ratio, Mole Fraction\n"
             "p/l for point-to-point / Lowess smoothing\n"
-            "Autoscale: Samples / Standard / Fullscale\n"
+            "a for Autoscale toggle: Samples / Standard / Fullscale\n"
             "s to 'Save Current Gas' results\n"
         )
         help_label.setStyleSheet("color: #555; font-size: 10px;")
@@ -2497,6 +2498,26 @@ class MainWindow(QMainWindow):
             sc = QShortcut(QKeySequence(key), self)
             sc.activated.connect(lambda lbl=label: self._set_smoothing_index_by_label(lbl))
             self.smoothing_shortcuts.append(sc)
+
+    def _cycle_autoscale_mode(self) -> None:
+        modes = [
+            self.autoscale_samples_rb,
+            self.autoscale_standard_rb,
+            self.autoscale_fullscale_rb,
+        ]
+        current_idx = next((i for i, rb in enumerate(modes) if rb.isChecked()), 0)
+        next_idx = (current_idx + 1) % len(modes)
+        modes[next_idx].setChecked(True)
+
+    def _setup_autoscale_shortcuts(self):
+        """Assign single-key shortcut for autoscale selection."""
+        for sc in getattr(self, "autoscale_shortcuts", []):
+            sc.setParent(None)
+        self.autoscale_shortcuts = []
+
+        sc = QShortcut(QKeySequence("A"), self)
+        sc.activated.connect(self._cycle_autoscale_mode)
+        self.autoscale_shortcuts.append(sc)
 
     def _save_current_gas_action(self) -> None:
         """Save the current gas only when the legend button is active."""
