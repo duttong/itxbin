@@ -512,19 +512,20 @@ class MainWindow(QMainWindow):
         self.smoothing_label = QLabel("Response smoothing:")
         self.smoothing_cb = QComboBox()
         self.smoothing_cb.addItems([
-            "Point to Point (linear)",  # 1
+            "Point to Point (p)",       # 1
             "2-point moving average",   # 3
-            "Lowess ~5 points",         # 2
+            "Lowess 5 point (l)",        # 2
             "3-point boxcar",           # 4
             "5-point boxcar",           # 6
             "Lowess ~10 points",        # 5
-            "Auto Detect",               # auto (use existing per-run detrend selection)
         ])
         self.smoothing_cb.setCurrentIndex(2)  # show "Lowess ~5 points" by default
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
         self.smoothing_cb.currentIndexChanged.connect(self.on_smoothing_changed)
+        self._setup_smoothing_shortcuts()
+        self._setup_save_shortcuts()
 
         # --- Horizontal separator ---
         options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space above
@@ -1000,7 +1001,7 @@ class MainWindow(QMainWindow):
 
         # --- Always append Save/Revert legend "buttons" ---
         spacer_handle     = Line2D([], [], linestyle='None', label='\u2009')
-        save2db_handle    = Line2D([], [], linestyle='None', label='Save current gas')
+        save2db_handle    = Line2D([], [], linestyle='None', label='Save current gas (s)')
         save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
         revert_handle     = Line2D([], [], linestyle='None', label='Revert changes')
 
@@ -1033,7 +1034,7 @@ class MainWindow(QMainWindow):
 
         for txt in leg.get_texts():
             t = txt.get_text().strip()
-            if t == 'Save current gas':
+            if t == 'Save current gas (s)':
                 self._save2db_text = txt
                 txt.set_picker(True)
                 txt.set_color('white')
@@ -2049,17 +2050,7 @@ class MainWindow(QMainWindow):
         elif art is getattr(self, '_flag_text', None):
             self.toggle_flag_current_curve()
         elif art is self._save2db_text:
-            if not self.madechanges:
-                return
-            #print(f"Save 2DB clicked")
-            if self.selected_calc_curve is None:
-                self.instrument.upsert_mole_fractions(self.run)
-            else:    
-                id = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]['id'].iat[0]
-                self.instrument.upsert_mole_fractions(self.run, response_id=id)
-            self.madechanges = False
-            self.smoothing_changed = False
-            self.gc_plot(self._current_yparam, sub_info='SAVED')
+            self._save_current_gas_action()
         elif art is self._save2dball_text:
             if not self.madechanges:
                 return
@@ -2462,6 +2453,53 @@ class MainWindow(QMainWindow):
             sc.activated.connect(lambda b=button: self._activate_plot_radio(b))
             self.plot_shortcuts.append(sc)
 
+    def _set_smoothing_index_by_label(self, label: str) -> None:
+        """Update smoothing combobox selection by label text."""
+        idx = self.smoothing_cb.findText(label)
+        if idx >= 0:
+            self.smoothing_cb.setCurrentIndex(idx)
+
+    def _setup_smoothing_shortcuts(self):
+        """Assign single-key shortcuts for smoothing selection."""
+        for sc in getattr(self, "smoothing_shortcuts", []):
+            sc.setParent(None)
+        self.smoothing_shortcuts = []
+
+        shortcuts = [
+            ("P", "Point to Point (p)"),
+            ("L", "Lowess 5 point (l)"),
+        ]
+
+        for key, label in shortcuts:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(lambda lbl=label: self._set_smoothing_index_by_label(lbl))
+            self.smoothing_shortcuts.append(sc)
+
+    def _save_current_gas_action(self) -> None:
+        """Save the current gas only when the legend button is active."""
+        if not self.madechanges:
+            return
+        if getattr(self, "_save2db_text", None) is None:
+            return
+        if self.selected_calc_curve is None:
+            self.instrument.upsert_mole_fractions(self.run)
+        else:
+            id = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]['id'].iat[0]
+            self.instrument.upsert_mole_fractions(self.run, response_id=id)
+        self.madechanges = False
+        self.smoothing_changed = False
+        self.gc_plot(self._current_yparam, sub_info='SAVED')
+
+    def _setup_save_shortcuts(self):
+        """Assign single-key shortcuts for save actions."""
+        for sc in getattr(self, "save_shortcuts", []):
+            sc.setParent(None)
+        self.save_shortcuts = []
+
+        sc = QShortcut(QKeySequence("S"), self)
+        sc.activated.connect(self._save_current_gas_action)
+        self.save_shortcuts.append(sc)
+
     def _setup_analyte_shortcuts(self):
         """
         Assign keyboard shortcuts to cycle analytes for both combobox and radio layouts.
@@ -2521,16 +2559,15 @@ class MainWindow(QMainWindow):
     def update_smoothing_combobox(self):
         """
         Set the smoothing combobox index based on self.run['detrend_method_num'].
-        If not found or invalid, defaults to 'Lowess ~5 points'.
+        If not found or invalid, defaults to 'Lowess 5 point (l)'.
         """
         index_to_detrend_method = {
-            0: 1,  # Point to Point (linear)
+            0: 1,  # Point to Point (p)
             1: 3,  # 2-point moving average
-            2: 2,  # Lowess ~5 points
+            2: 2,  # Lowess 5 point (l)
             3: 4,  # 3-point boxcar
             4: 6,  # 5-point boxcar
             5: 5,  # Lowess ~10 points
-            6: None,  # Auto Detect
         }
         detrend_to_index = {v: k for k, v in index_to_detrend_method.items() if v is not None}
 
@@ -2549,13 +2586,12 @@ class MainWindow(QMainWindow):
         Return the detrend_method_num corresponding to the current combobox selection.
         """
         index_to_detrend_method = {
-            0: 1,  # Point to Point (linear)
+            0: 1,  # Point to Point (p)
             1: 3,  # 2-point moving average
-            2: 2,  # Lowess ~5 points
+            2: 2,  # Lowess 5 point (l)
             3: 4,  # 3-point boxcar
             4: 6,  # 5-point boxcar
             5: 5,  # Lowess ~10 points
-            6: None,  # Auto Detect
         }
         #print(f"Selected detrend method index: {self.smoothing_cb.currentIndex()}, {index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)}")
         return index_to_detrend_method.get(self.smoothing_cb.currentIndex(), 2)  # default to Lowess ~5 points
