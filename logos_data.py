@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QLabel, QComboBox, QPushButton, QRadioButton, QAction,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QEvent
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -95,8 +95,8 @@ class FastNavigationToolbar(NavigationToolbar):
         self.addSeparator()
         self.flag_action = QAction("Tagging", self)
         self.flag_action.setCheckable(True)
-        self.flag_action.setShortcut("T")
-        self.flag_action.setToolTip("Toggle Tagging mode (T)")
+        self.flag_action.setShortcut("G")
+        self.flag_action.setToolTip("Toggle Tagging mode (g)")
         self.flag_action.toggled.connect(self._toggle_flag)
         self.addAction(self.flag_action)
 
@@ -438,17 +438,20 @@ class MainWindow(QMainWindow):
         plot_gb.setLayout(self.plot_layout)
 
         self.plot_radio_group = QButtonGroup(self)
-        self.resp_rb = QRadioButton("Response")
-        ratio_rb = QRadioButton("Ratio")
-        mole_fraction_rb = QRadioButton("Mole Fraction")
+        self.resp_rb = QRadioButton("Response (r)")
+        self.resp_rb.setToolTip("Switch to Response plot (shortcut: r)")
+        self.ratio_rb = QRadioButton("Ratio (t)")
+        self.ratio_rb.setToolTip("Switch to Ratio plot (shortcut: t)")
+        self.mole_fraction_rb = QRadioButton("Mole Fraction (m)")
+        self.mole_fraction_rb.setToolTip("Switch to Mole Fraction plot (shortcut: m)")
         self.calibration_rb = QRadioButton("Calibration")
         self.calibration_rb.setEnabled(False)
         self.draw2zero_cb = QCheckBox("Zero")
         self.oldcurves_cb = QCheckBox("Other Curves")
 
         self.plot_layout.addWidget(self.resp_rb)
-        self.plot_layout.addWidget(ratio_rb)
-        self.plot_layout.addWidget(mole_fraction_rb)
+        self.plot_layout.addWidget(self.ratio_rb)
+        self.plot_layout.addWidget(self.mole_fraction_rb)
         
         self.calcurve_label = QLabel("Cal Date")
         self.calcurve_combo = QComboBox()
@@ -492,11 +495,12 @@ class MainWindow(QMainWindow):
         # -----------------------------------------------
 
         self.plot_radio_group.addButton(self.resp_rb, id=0)
-        self.plot_radio_group.addButton(ratio_rb, id=1)
-        self.plot_radio_group.addButton(mole_fraction_rb, id=2)
+        self.plot_radio_group.addButton(self.ratio_rb, id=1)
+        self.plot_radio_group.addButton(self.mole_fraction_rb, id=2)
         self.plot_radio_group.addButton(self.calibration_rb, id=3)
         self.resp_rb.setChecked(True)
         self.plot_radio_group.idClicked[int].connect(self.on_plot_type_changed)
+        self._setup_plot_shortcuts()
 
         # Options GroupBox
         options_gb = QGroupBox("Options")
@@ -535,9 +539,11 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.toggle_scale_cb = QCheckBox("Autoscale")  # Properly initialize toggle_scale_cb
-        self.toggle_scale_cb.setChecked(True)  # Default to showing grid
+        self.toggle_scale_cb = QCheckBox("Autoscale (a)")  # Properly initialize toggle_scale_cb
+        self.toggle_scale_cb.setShortcut("A") # Directly maps the 'A' key
         self.toggle_scale_cb.stateChanged.connect(self.on_toggle_scale_toggled)
+        self.toggle_scale_cb.setChecked(True)  # Default to showing grid
+        self.toggle_scale_cb.setToolTip("Toggle autoscale (shortcut: a)")
         options_layout.addWidget(self.toggle_scale_cb)
 
         # Combine plot_gb and options_gb into a single group box
@@ -561,7 +567,12 @@ class MainWindow(QMainWindow):
             processing_layout.addWidget(self.save_csv_btn) 
 
         # Stretch to push everything to the top
-        help_label = QLabel("Ctrl+Shift+Left/Right for Run Selection\nCtrl+Shift+Up/Down for Analyte Selection")
+        help_label = QLabel(
+            "Ctrl+Shift+Left/Right for Run Selection\n"
+            "Ctrl+Shift+Up/Down for Analyte Selection\n"
+            "r/t/m for Response, Ratio, Mole Fraction\n"
+            "a to toggle Autoscale"
+        )
         help_label.setStyleSheet("color: #555; font-size: 10px;")
         help_label.setAlignment(Qt.AlignLeft)
         help_label.setWordWrap(True)
@@ -2427,6 +2438,29 @@ class MainWindow(QMainWindow):
             current_idx = next((i for i, b in enumerate(buttons) if b.isChecked()), 0)
             new_idx = min(len(buttons) - 1, current_idx + 1)
             buttons[new_idx].setChecked(True)
+
+    def _activate_plot_radio(self, button: QRadioButton) -> None:
+        """Activate a plot radio button via keyboard shortcut."""
+        if button is None:
+            return
+        button.click()
+
+    def _setup_plot_shortcuts(self):
+        """Assign single-key shortcuts for plot type selection."""
+        for sc in getattr(self, "plot_shortcuts", []):
+            sc.setParent(None)
+        self.plot_shortcuts = []
+
+        shortcuts = [
+            ("R", self.resp_rb),
+            ("T", self.ratio_rb),
+            ("M", self.mole_fraction_rb),
+        ]
+
+        for key, button in shortcuts:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(lambda b=button: self._activate_plot_radio(b))
+            self.plot_shortcuts.append(sc)
 
     def _setup_analyte_shortcuts(self):
         """
