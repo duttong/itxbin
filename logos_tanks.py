@@ -175,6 +175,12 @@ class TanksWidget(QWidget):
         self._tank_cache: dict[str, list[dict]] = {}
         self._tank_cache_range: tuple[int, int] | None = None
         self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
+        self._preferred_channels = self._load_preferred_channels()
+        if self._preferred_channels:
+            self._analyte_names = [
+                name for name in self._analyte_names
+                if self._is_preferred_channel(name)
+            ]
 
         # --- Layout scaffold (mirror logos_timeseries style) ---
         controls = QVBoxLayout()
@@ -393,6 +399,54 @@ class TanksWidget(QWidget):
             _, ch = name.split("(", 1)
             return ch.strip(") ").strip()
         return None
+
+    def _load_preferred_channels(self) -> dict[int, set[str]]:
+        """Return parameter_num -> preferred channels mapping."""
+        if not self.instrument or not getattr(self.instrument, "db", None):
+            return {}
+        inst_num = getattr(self.instrument, "inst_num", None)
+        if inst_num is None:
+            return {}
+        sql = (
+            "SELECT parameter_num, channel "
+            "FROM hats.ng_preferred_channel "
+            f"WHERE inst_num = {int(inst_num)};"
+        )
+        try:
+            rows = self.instrument.db.doquery(sql)
+        except Exception:
+            return {}
+        prefs: dict[int, set[str]] = {}
+        for row in rows or []:
+            try:
+                pnum = row.get("parameter_num")
+                channel = row.get("channel")
+            except AttributeError:
+                # Non-dict row; skip
+                continue
+            if pnum is None or channel in (None, ""):
+                continue
+            try:
+                pnum_int = int(pnum)
+            except (TypeError, ValueError):
+                continue
+            prefs.setdefault(pnum_int, set()).add(str(channel).strip())
+        return prefs
+
+    def _is_preferred_channel(self, analyte_name: str) -> bool:
+        """Return True if analyte channel is in preferred list or no filter."""
+        if not self.instrument:
+            return True
+        pnum = (self.instrument.analytes or {}).get(analyte_name)
+        if pnum is None:
+            return True
+        preferred = self._preferred_channels.get(int(pnum))
+        if not preferred:
+            return True
+        channel = self._analyte_channel(analyte_name)
+        if not channel:
+            return True
+        return channel in preferred
 
     def _build_tank_cache(self, start: int, end: int):
         """Populate cached tanks for all analytes for the given date range."""
@@ -730,6 +784,7 @@ class TanksWidget(QWidget):
             name = cb.text()
             pnum = (self.instrument.analytes or {}).get(name) if self.instrument else None
             channel = self._analyte_channel(name)
+            print(pnum, channel)
             if target_name and name == target_name:
                 return cb
             if target_num is not None and pnum == target_num and (target_channel is None or channel == target_channel):
@@ -978,7 +1033,12 @@ class TanksWidget(QWidget):
                     return str(key)
         return None
 
-    def _fetch_calibration_df(self, serial: str, parameter_num: int, inst_id: str) -> pd.DataFrame:
+    def _fetch_calibration_df(
+        self,
+        serial: str,
+        parameter_num: int,
+        inst_id: str,
+    ) -> pd.DataFrame:
         """Query calibration mole fractions for a tank/parameter."""
         serial_safe = str(serial).replace("'", "''")
         inst_safe = str(inst_id).replace("'", "''")
@@ -1005,7 +1065,7 @@ class TanksWidget(QWidget):
         if not selections:
             self._toast("Select a gas before plotting.")
             return
-        parameter_name, parameter_num, _channel = selections[0]
+        parameter_name, parameter_num, channel = selections[0]
         if parameter_num is None:
             self._toast("Invalid parameter number for selection.")
             return
