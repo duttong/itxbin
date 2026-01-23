@@ -33,6 +33,7 @@ from matplotlib.widgets import RectangleSelector
 
 import logos_instruments as li
 from logos_timeseries import TimeseriesWidget
+from logos_tanks import TanksWidget
 
 
 def _is_blank(value):
@@ -602,6 +603,8 @@ class MainWindow(QMainWindow):
 
         self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
         tabs.addTab(self.timeseries_tab, "Timeseries")
+        self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
+        tabs.addTab(self.tanks_tab, "Tanks")
         self.tabs = tabs
     
         # Right pane: matplotlib figure for plotting
