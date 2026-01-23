@@ -485,9 +485,10 @@ class M4_SampleLogs(M4_Instrument):
         self.db.doMultiInsert(sql_insert, params, all=True)
 
     def flag_first_reference_run(self, df):
-        """ Flags the first reference run for each run_time group. 
-            Sets the flag in hats.ng_mole_fractions to 'X..' for the first analysis_time
-            in each run_time group within the time range of the provided dataframe."""
+        """ Flags the first reference run for each run_time group.
+            Sets mf.flag to 'X..' and mf.qc_status to 'F' only when mf.qc_status = 'P'
+            for the first analysis_time in each run_time group within the time range
+            of the provided dataframe."""
         
         start_time = df['dt_run'].min()
         end_time = df['dt_run'].max()
@@ -510,10 +511,12 @@ class M4_SampleLogs(M4_Instrument):
             ) firsts
             ON a.run_time = firsts.run_time
             AND a.analysis_time = firsts.first_analysis_time
-            SET mf.flag = 'X..'
+            SET mf.flag = 'X..',
+                mf.qc_status = 'F'
             WHERE a.inst_num = {self.inst_num}
             AND a.run_type_num = 8
-            AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}';
+            AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}'
+            AND mf.qc_status = 'P';
         """
         self.db.doquery(sql)
         
