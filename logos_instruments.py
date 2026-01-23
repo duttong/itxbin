@@ -1205,7 +1205,6 @@ class M4_Instrument(HATS_DB_Functions):
             SELECT * FROM hats.ng_data_processing_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
-                #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
         """
