@@ -289,6 +289,7 @@ class MainWindow(QMainWindow):
         processing_pane = QWidget()
         processing_pane.setMinimumWidth(420)
         processing_pane.setMaximumWidth(420)
+        self.processing_pane = processing_pane
         processing_layout = QVBoxLayout()
         processing_layout.setContentsMargins(4, 4, 4, 4)
         processing_layout.setSpacing(6)
@@ -606,7 +607,15 @@ class MainWindow(QMainWindow):
         self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
         tabs.addTab(self.tanks_tab, "Tanks")
         self.tabs = tabs
-    
+        tabs.currentChanged.connect(self._on_tab_changed)
+
+        left_container = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(tabs)
+        left_container.setLayout(left_layout)
+        self.left_container = left_container
+
         # Right pane: matplotlib figure for plotting
         right_placeholder = QGroupBox("Plot Area")
         right_layout = QVBoxLayout()
@@ -616,10 +625,17 @@ class MainWindow(QMainWindow):
         # Add a NavigationToolbar for the figure
         self.toolbar = FastNavigationToolbar(self.canvas, self, on_flag_toggle=self.on_flag_mode_toggled)  # Pass self explicitly
         right_layout.addWidget(self.toolbar)
+        self.right_placeholder = right_placeholder
+
+        right_spacer = QWidget()
+        right_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_spacer.setVisible(False)
+        self.right_spacer = right_spacer
 
         # Add both panes to the main hbox
-        h_main.addWidget(tabs, stretch=0)  # Fixed width for left pane
+        h_main.addWidget(left_container, stretch=0)  # Fixed width for left pane
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
+        h_main.addWidget(right_spacer, stretch=1)
 
         self.populate_analyte_controls()
         
@@ -631,6 +647,27 @@ class MainWindow(QMainWindow):
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
         self.gc_plot(self._current_yparam)
+        self._on_tab_changed(self.tabs.currentIndex())
+
+    def _on_tab_changed(self, _idx: int):
+        current = self.tabs.currentWidget() if self.tabs else None
+        if not current:
+            return
+        if current is self.timeseries_tab:
+            width = max(
+                self.processing_pane.sizeHint().width(),
+                self.processing_pane.minimumSizeHint().width(),
+                self.processing_pane.minimumWidth(),
+                self.processing_pane.width(),
+            )
+        else:
+            width = max(current.sizeHint().width(), current.minimumSizeHint().width())
+            if width <= 0:
+                width = current.minimumWidth() or current.width() or 420
+        self.left_container.setFixedWidth(width)
+        show_plot = current is self.processing_pane
+        self.right_placeholder.setVisible(show_plot)
+        self.right_spacer.setVisible(not show_plot)
 
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
