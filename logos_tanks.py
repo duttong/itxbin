@@ -279,14 +279,14 @@ class TanksWidget(QWidget):
         analyte_group.setLayout(analyte_layout)
         controls.addWidget(analyte_group)
 
-        controls.addStretch()
-
         plot_bar = QHBoxLayout()
         plot_bar.addStretch()
         self.plot_tanks_btn = QPushButton("Plot Tanks")
         self.plot_tanks_btn.clicked.connect(self._on_plot_tanks)
         plot_bar.addWidget(self.plot_tanks_btn)
         controls.addLayout(plot_bar)
+
+        controls.addStretch()
         self.setLayout(controls)
 
         # Wire date change after widgets exist
