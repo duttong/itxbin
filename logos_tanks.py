@@ -1043,15 +1043,17 @@ class TanksWidget(QWidget):
         serial_safe = str(serial).replace("'", "''")
         inst_safe = str(inst_id).replace("'", "''")
         sql = f"""
-            SELECT c.date, c.time, c.mixratio, c.stddev, c.num
+            SELECT c.date, c.time, c.mixratio, c.stddev, c.num, c.run_number
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
             AND c.inst = '{inst_safe}'
               AND c.parameter_num = {int(parameter_num)}
+              AND c.mixratio is not NULL
             ORDER BY c.date, c.time;
         """
         try:
-            return pd.DataFrame(self.instrument.db.doquery(sql))
+            df = pd.DataFrame(self.instrument.db.doquery(sql))
+            return df
         except Exception as exc:
             self._toast(f"DB error for tank {serial}: {exc}")
             return pd.DataFrame()
@@ -1091,6 +1093,7 @@ class TanksWidget(QWidget):
 
         fig, ax = plt.subplots(figsize=(9, 5))
         any_data = False
+        pick_map: dict[mlines.Line2D, dict] = {}
 
         try:
             for fill_key in tank_keys:
@@ -1125,8 +1128,9 @@ class TanksWidget(QWidget):
                 df = df.dropna(subset=["datetime", "mixratio"]).sort_values("datetime")
                 if df.empty:
                     continue
+                df = df.reset_index(drop=True)
 
-                ax.errorbar(
+                err_container = ax.errorbar(
                     df["datetime"],
                     df["mixratio"],
                     yerr=df["stddev"] if "stddev" in df.columns else None,
@@ -1136,6 +1140,14 @@ class TanksWidget(QWidget):
                     capsize=3,
                     label=f"{serial} ({fill_code})" if fill_code else str(serial),
                 )
+                line = err_container.lines[0] if err_container.lines else None
+                if line is not None:
+                    line.set_picker(5)
+                    pick_map[line] = {
+                        "df": df,
+                        "serial": serial,
+                        "fill_code": fill_code,
+                    }
                 any_data = True
 
             if not any_data:
@@ -1158,6 +1170,152 @@ class TanksWidget(QWidget):
             ax.legend()
             fig.autofmt_xdate()
             fig.tight_layout()
+
+            def _format_value(value, digits: int = 6) -> str:
+                if value is None:
+                    return "N/A"
+                try:
+                    if isinstance(value, float) and math.isnan(value):
+                        return "N/A"
+                except TypeError:
+                    pass
+                if isinstance(value, (int,)):
+                    return str(value)
+                if isinstance(value, (float,)):
+                    return f"{value:.{digits}g}"
+                return str(value)
+
+            def _format_run_dt(row: pd.Series) -> str:
+                dt_val = row.get("datetime")
+                dt = pd.to_datetime(dt_val, errors="coerce")
+                if pd.isna(dt):
+                    date_part = row.get("date")
+                    time_part = row.get("time")
+                    if date_part is not None or time_part is not None:
+                        return f"{date_part} {time_part}".strip()
+                    return "N/A"
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            def _line_numeric_points(line: mlines.Line2D):
+                if not hasattr(line, "get_xdata") or not hasattr(line, "get_ydata"):
+                    return None
+                try:
+                    xdata = line.get_xdata(orig=False)
+                except TypeError:
+                    xdata = line.get_xdata()
+                try:
+                    ydata = line.get_ydata(orig=False)
+                except TypeError:
+                    ydata = line.get_ydata()
+                if len(xdata) == 0:
+                    return None
+                x_series = pd.Series(xdata)
+                y_series = pd.Series(ydata)
+                x_num = pd.to_numeric(x_series, errors="coerce")
+                y_num = pd.to_numeric(y_series, errors="coerce")
+                mask = x_num.notna() & y_num.notna()
+                if not mask.any():
+                    return None
+                x_vals = x_num[mask].tolist()
+                y_vals = y_num[mask].tolist()
+                idxs = list(x_num[mask].index)
+                return x_vals, y_vals, idxs
+
+            def _line_xy_at(line: mlines.Line2D, idx: int):
+                try:
+                    xdata = line.get_xdata(orig=False)
+                except TypeError:
+                    xdata = line.get_xdata()
+                try:
+                    ydata = line.get_ydata(orig=False)
+                except TypeError:
+                    ydata = line.get_ydata()
+                if idx >= len(xdata) or idx >= len(ydata):
+                    return None
+                x_val = pd.to_numeric(pd.Series([xdata[idx]]), errors="coerce").iloc[0]
+                y_val = pd.to_numeric(pd.Series([ydata[idx]]), errors="coerce").iloc[0]
+                if pd.isna(x_val) or pd.isna(y_val):
+                    return None
+                return x_val, y_val
+
+            def _nearest_point(line: mlines.Line2D, mouseevent, max_px: int = 10):
+                if not line.get_visible():
+                    return None
+                pts_data = _line_numeric_points(line)
+                if pts_data is None:
+                    return None
+                x_vals, y_vals, idxs = pts_data
+                pts = ax.transData.transform(list(zip(x_vals, y_vals)))
+                mx, my = mouseevent.x, mouseevent.y
+                best_idx = None
+                best_dist = None
+                for i, (px, py) in enumerate(pts):
+                    dx = px - mx
+                    dy = py - my
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        best_idx = i
+                if best_dist is None or best_dist > max_px:
+                    return None
+                return idxs[best_idx]
+
+            def _on_press(event):
+                if event.button != 1:
+                    return
+                best_line = None
+                best_idx = None
+                best_dist = None
+                for line in pick_map:
+                    idx = _nearest_point(line, event, max_px=10)
+                    if idx is None:
+                        continue
+                    xy = _line_xy_at(line, idx)
+                    if xy is None:
+                        continue
+                    px, py = ax.transData.transform(xy)
+                    dx = px - event.x
+                    dy = py - event.y
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        best_line = line
+                        best_idx = idx
+                if best_line is None or best_idx is None:
+                    QToolTip.hideText()
+                    return
+                data = pick_map.get(best_line)
+                if not data:
+                    QToolTip.hideText()
+                    return
+                df_line = data["df"]
+                if best_idx < 0 or best_idx >= len(df_line):
+                    QToolTip.hideText()
+                    return
+                row = df_line.iloc[best_idx]
+                serial_val = data.get("serial")
+                run_dt = _format_run_dt(row)
+                mixratio = _format_value(row.get("mixratio"))
+                stddev = _format_value(row.get("stddev"))
+                num_samples = _format_value(row.get("num"))
+                text = (
+                    f"<b>Serial number:</b> {serial_val}<br>"
+                    f"<b>Run date/time:</b> {run_dt}<br>"
+                    f"<b>Mixing ratio:</b> {mixratio}<br>"
+                    f"<b>Standard deviation:</b> {stddev}<br>"
+                    f"<b>Number of samples:</b> {num_samples}"
+                )
+                QToolTip.showText(QCursor.pos(), text)
+
+            def _on_release(event):
+                if event.button == 1:
+                    QToolTip.hideText()
+
+            app = QApplication.instance()
+            if app is not None:
+                app.setStyleSheet("QToolTip { background-color: #fff59d; }")
+            fig.canvas.mpl_connect("button_press_event", _on_press)
+            fig.canvas.mpl_connect("button_release_event", _on_release)
             fig.show()
         finally:
             if btn:
