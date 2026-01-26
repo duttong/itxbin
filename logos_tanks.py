@@ -162,6 +162,7 @@ class TanksWidget(QWidget):
     def __init__(self, instrument=None, parent=None):
         super().__init__(parent)
         self.instrument = instrument
+        self.main_window = self.parent()
         self.tanks_plotter = TanksPlotter(self.instrument.db, self.instrument.inst_num) if self.instrument else None
         self.tank_checks: list[QCheckBox] = []
         self.analyte_checks: list[QCheckBox] = []
@@ -174,6 +175,7 @@ class TanksWidget(QWidget):
         self._tank_metadata: dict[str, dict] = {}
         self._tank_cache: dict[str, list[dict]] = {}
         self._tank_cache_range: tuple[int, int] | None = None
+        self.analytes = self.instrument.analytes or {} if self.instrument else {}
         self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
         self._preferred_channels = self._load_preferred_channels()
         if self._preferred_channels:
@@ -1261,7 +1263,7 @@ class TanksWidget(QWidget):
                 return idxs[best_idx]
 
             def _on_press(event):
-                if event.button != 1:
+                if event.button not in (1, 3):
                     return
                 best_line = None
                 best_idx = None
@@ -1298,6 +1300,7 @@ class TanksWidget(QWidget):
                 mixratio = _format_value(row.get("mixratio"))
                 stddev = _format_value(row.get("stddev"))
                 num_samples = _format_value(row.get("num"))
+                run_time = row.get("datetime", None)
                 text = (
                     f"<b>Serial number:</b> {serial_val}<br>"
                     f"<b>Run date/time:</b> {run_dt}<br>"
@@ -1306,6 +1309,54 @@ class TanksWidget(QWidget):
                     f"<b>Number of samples:</b> {num_samples}"
                 )
                 QToolTip.showText(QCursor.pos(), text)
+                # Right mouse button: set main window to this tank/run
+                if event.button == 3 and self.main_window is not None:
+                    analyte = parameter_name
+                    try:
+                        self.main_window.current_run_time = str(run_time)
+                    except Exception:
+                        self.main_window.current_run_time = str(run_dt)
+                    try:
+                        self.main_window.current_pnum = int(parameter_num)
+                    except Exception:
+                        pass
+                    self.main_window.current_channel = channel
+
+                    if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
+                        for rb in self.main_window.radio_group.buttons():
+                            if rb.text() == analyte:
+                                rb.setChecked(True)
+                                break
+                    elif hasattr(self.main_window, "analyte_combo"):
+                        idx = self.main_window.analyte_combo.findText(analyte, Qt.MatchExactly)
+                        if idx >= 0:
+                            self.main_window.analyte_combo.setCurrentIndex(idx)
+
+                    if hasattr(self.main_window, "tabs"):
+                        self.main_window.tabs.setCurrentIndex(0)
+
+                    if not isinstance(run_time, pd.Timestamp):
+                        run_time = pd.to_datetime(run_time)
+
+                    end_year = run_time.year
+                    end_month = run_time.month
+                    start_dt = (run_time - pd.DateOffset(months=1))
+                    start_year = start_dt.year
+                    start_month = start_dt.month
+
+                    self.main_window.end_year_cb.setCurrentText(str(end_year))
+                    self.main_window.end_month_cb.setCurrentIndex(end_month - 1)
+                    self.main_window.start_year_cb.setCurrentText(str(start_year))
+                    self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
+
+                    self.main_window.runTypeCombo.blockSignals(True)
+                    self.main_window.runTypeCombo.setCurrentText("All")
+                    self.main_window.runTypeCombo.blockSignals(False)
+
+                    self.main_window.set_runlist(initial_date=run_time)
+                    self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
+                    self.main_window.current_run_time = str(run_time)
+                    self.main_window.apply_date_btn.setStyleSheet("")
 
             def _on_release(event):
                 if event.button == 1:
