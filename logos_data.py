@@ -1031,7 +1031,7 @@ class MainWindow(QMainWindow):
                         except Exception:
                             inst_num = None
 
-                    lines = ['SD of norm resp'] if inst_num == 220 else ['Sample Pair RMS']
+                    lines = ['SD of reference'] if inst_num == 220 else ['Sample Pair RMS']
                     for m in method_order:
                         if m not in stats_df.index:
                             continue
@@ -1090,6 +1090,13 @@ class MainWindow(QMainWindow):
 
         for txt in leg.get_texts():
             t = txt.get_text().strip()
+            if "Sample Pair RMS" in t or "SD of reference" in t:
+                txt.set_bbox(dict(
+                    boxstyle='square,pad=0.3',
+                    facecolor='white',
+                    edgecolor='black',
+                    linewidth=0.6
+                ))
             if t == 'Save current gas (s)':
                 self._save2db_text = txt
                 txt.set_picker(True)
