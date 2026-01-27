@@ -931,6 +931,7 @@ class MainWindow(QMainWindow):
                 "sample_id": subset["sample_id"].astype(str).tolist() if "sample_id" in subset else [""] * len(subset),
                 "pair_id": subset["pair_id_num"].astype(str).tolist() if "pair_id_num" in subset else [""] * len(subset),
                 "port_info": subset["port_info"].astype(str).tolist() if "port_info" in subset else [""] * len(subset),
+                "tank_serial": subset["tank_serial_num"].astype(str).tolist() if "tank_serial_num" in subset else [""] * len(subset),
                 "net_pressure": (
                     subset["net_pressure"].map(lambda x: f"{x:.3f}" if pd.notnull(x) else "").tolist()
                     if "net_pressure" in subset
@@ -939,6 +940,7 @@ class MainWindow(QMainWindow):
                 "mole_fraction": subset["mole_fraction"].round(3).astype(str).tolist() if "mole_fraction" in subset else [""] * len(subset),
                 "response": subset[f"{self.instrument.response_type}"].round(5).astype(str).tolist() if f"{self.instrument.response_type}" in subset else [""] * len(subset),
                 "ratio": subset["normalized_resp"].round(5).astype(str).tolist() if "normalized_resp" in subset else [""] * len(subset),
+                "status_comments": subset["status_comments"].astype(str).tolist() if "status_comments" in subset else [""] * len(subset),
 
             }
             self._scatter_main.append(scatter)
@@ -1432,6 +1434,9 @@ class MainWindow(QMainWindow):
             sample_id = meta.get("sample_id", [None])[nearest_idx]
             pair_id = meta.get("pair_id", [None])[nearest_idx]
             net_pressure = meta.get("net_pressure", [None])[nearest_idx]
+            port_info = meta.get("port_info", [''])[nearest_idx]
+            tank_serial = meta.get("tank_serial", [''])[nearest_idx]
+            comments = meta.get("status_comments", [''])[nearest_idx]
 
             parts = []
 
@@ -1460,7 +1465,11 @@ class MainWindow(QMainWindow):
                 if pid and pid not in {"0", "000", "None", "nan"}:
                     parts.append(f"<b>Pair ID:</b> {pid}")
 
-            parts.append(f"<b>Port Info:</b> {meta.get('port_info', [''])[nearest_idx]}")
+            if not _is_blank(port_info):
+                parts.append(f"<b>Port Info:</b> {port_info}")
+
+            if not _is_blank(tank_serial):
+                parts.append(f"<b>Tank Serial Num:</b> {tank_serial}")
 
             # Pair ID — show only if not "0" or blank
             if isinstance(net_pressure, str):
@@ -1474,6 +1483,9 @@ class MainWindow(QMainWindow):
 
             # Analysis time — always shown
             parts.append(f"<b>Analysis time:</b> {analysis_time}")
+            
+            if not _is_blank(comments):
+                parts.append(f"<b>Comments:</b> {comments}")
             
             # Combine for tooltip
             text = "<br>".join(parts)
