@@ -1184,7 +1184,7 @@ class TanksWidget(QWidget):
                 if isinstance(value, (int,)):
                     return str(value)
                 if isinstance(value, (float,)):
-                    return f"{value:.{digits}g}"
+                    return f"{value:.{digits}f}"
                 return str(value)
 
             def _format_run_dt(row: pd.Series) -> str:
@@ -1296,13 +1296,15 @@ class TanksWidget(QWidget):
                     return
                 row = df_line.iloc[best_idx]
                 serial_val = data.get("serial")
+                fill_code = data.get("fill_code")
                 run_dt = _format_run_dt(row)
-                mixratio = _format_value(row.get("mixratio"))
-                stddev = _format_value(row.get("stddev"))
+                mixratio = _format_value(row.get("mixratio"), 3)
+                stddev = _format_value(row.get("stddev"), 3)
                 num_samples = _format_value(row.get("num"))
                 run_time = row.get("datetime", None)
                 text = (
                     f"<b>Serial number:</b> {serial_val}<br>"
+                    f"<b>Fill code:</b> {fill_code}<br>"
                     f"<b>Run date/time:</b> {run_dt}<br>"
                     f"<b>Mixing ratio:</b> {mixratio}<br>"
                     f"<b>Standard deviation:</b> {stddev}<br>"
