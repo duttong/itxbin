@@ -907,6 +907,8 @@ class MainWindow(QMainWindow):
                 picker=True,
                 pickradius=7
             )
+            # Map pick indices back to the DataFrame rows for this scatter
+            scatter._df_index = subset.index.to_numpy()
         
             scatter._meta = {
                 "site": subset["site"].astype(str).tolist() if "site" in subset else [""] * len(subset),
@@ -1374,9 +1376,10 @@ class MainWindow(QMainWindow):
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
             return
-        if not self.tagging_enabled or event.artist is not self._scatter_main:
+        if not self.tagging_enabled or event.artist not in self._scatter_main:
             return
 
+        scatter = event.artist
         inds = np.asarray(event.ind, dtype=int)
         if inds.size == 0:
             return
@@ -1385,18 +1388,18 @@ class MainWindow(QMainWindow):
         if mx is None or my is None:
             i = inds[0]
         else:
-            x_all = self._x_num
-            y_all = self.run[self._current_yvar].to_numpy()
-            dx = x_all[inds] - mx
-            dy = y_all[inds] - my
-            dx = pd.to_numeric(dx, errors="coerce")
-            dy = pd.to_numeric(dy, errors="coerce")
+            offsets = np.asarray(scatter.get_offsets())
+            if offsets.size == 0:
+                return
+            dx = offsets[inds, 0] - mx
+            dy = offsets[inds, 1] - my
             ok = np.isfinite(dx) & np.isfinite(dy)
             if not ok.any():
                 return
             i = inds[ok][np.argmin(dx[ok] ** 2 + dy[ok] ** 2)]
 
-        row_idx = self.run.index[i]
+        df_index = getattr(scatter, "_df_index", None)
+        row_idx = df_index[i] if df_index is not None else self.run.index[i]
         self._toggle_flags([row_idx])
 
     def _on_click_tooltip(self, event):
