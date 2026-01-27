@@ -76,6 +76,7 @@ class TanksPlotter:
                 f.`date`,
                 f.code,
                 f.location,
+                h.ng_tank_uses_num,
                 u.abbr         AS use_short,
                 u.description  AS use_desc,
                 g.species,
@@ -108,6 +109,11 @@ class TanksPlotter:
             return []
 
         df = df.copy()
+
+        if "ng_tank_uses_num" in df.columns:
+            other_mask = df["ng_tank_uses_num"].isna()
+            if other_mask.any():
+                df.loc[other_mask, "use_short"] = "Other"
 
         if "use_short" in df.columns and "parameter_num" in df.columns:
             use_lower = df["use_short"].fillna("").str.lower()
@@ -225,9 +231,18 @@ class TanksWidget(QWidget):
         analyte_checks_layout.setVerticalSpacing(4)
         self._analyte_checks_layout = analyte_checks_layout
         cols_analyte = 5
+        default_analyte = None
+        if self.instrument and getattr(self.instrument, "inst_id", None) == "fe3":
+            for name in self._analyte_names:
+                if name == "N2O" or name.startswith("N2O"):
+                    default_analyte = name
+                    break
         for idx, name in enumerate(self._analyte_names):
             cb = QCheckBox(name)
-            if idx == 0:
+            if default_analyte is not None:
+                if name == default_analyte:
+                    cb.setChecked(True)
+            elif idx == 0:
                 cb.setChecked(True)
             cb.toggled.connect(lambda checked, cb=cb: self._on_analyte_toggled(cb, checked))
             self.analyte_checks.append(cb)
@@ -245,13 +260,23 @@ class TanksWidget(QWidget):
         self.show_other_grav_cb.setChecked(False)
         self.show_other_grav_cb.setStyleSheet("color: darkblue;")
         self.show_other_grav_cb.toggled.connect(self._on_category_toggle)
+        self.show_other_cb = QCheckBox("Other")
+        self.show_other_cb.setChecked(True)
+        self.show_other_cb.setStyleSheet("color: dimgray;")
+        self.show_other_cb.toggled.connect(self._on_category_toggle)
+        self.show_cal_cb = QCheckBox("Cal Tanks")
+        self.show_cal_cb.setChecked(True)
+        self.show_cal_cb.setStyleSheet("color: #66aadd;")
+        self.show_cal_cb.toggled.connect(self._on_category_toggle)
         self.show_archive_cb = QCheckBox("Archive")
         self.show_archive_cb.setChecked(True)
         self.show_archive_cb.setStyleSheet("color: darkgreen;")
         self.show_archive_cb.toggled.connect(self._on_category_toggle)
         category_bar.addWidget(self.show_grav_cb)
         category_bar.addWidget(self.show_other_grav_cb)
+        category_bar.addWidget(self.show_cal_cb)
         category_bar.addWidget(self.show_archive_cb)
+        category_bar.addWidget(self.show_other_cb)
         category_bar.addStretch()
         self.tank_grid = QGridLayout()
         self.tank_grid.setContentsMargins(0, 0, 0, 0)
@@ -598,6 +623,8 @@ class TanksWidget(QWidget):
             if use_lower:
                 if use_lower.startswith("other gravs") or use_lower.startswith("other_gravs"):
                     cb.setStyleSheet("color: darkblue;")
+                elif use_lower in ("cal", "second", "tert"):
+                    cb.setStyleSheet("color: #66aadd;")
                 elif use_lower.startswith("grav"):
                     cb.setStyleSheet("color: darkred;")
                 elif use_lower.startswith("archive"):
@@ -888,13 +915,21 @@ class TanksWidget(QWidget):
         filtered: list[dict] = []
         show_grav = self.show_grav_cb.isChecked() if hasattr(self, "show_grav_cb") else True
         show_other = self.show_other_grav_cb.isChecked() if hasattr(self, "show_other_grav_cb") else True
+        show_other_misc = self.show_other_cb.isChecked() if hasattr(self, "show_other_cb") else True
+        show_cal = self.show_cal_cb.isChecked() if hasattr(self, "show_cal_cb") else True
         show_archive = self.show_archive_cb.isChecked() if hasattr(self, "show_archive_cb") else True
         for tank in tanks:
             use_lower = str(tank.get("use_short") or "").lower()
-            is_other = use_lower.startswith("other grav")
-            is_grav = use_lower.startswith("grav") and not is_other
+            is_other_grav = use_lower.startswith("other grav")
+            is_other = use_lower == "other"
+            is_grav = use_lower.startswith("grav") and not is_other_grav
+            is_cal = use_lower in ("cal", "second", "tert")
             is_archive = use_lower.startswith("archive")
-            if is_other and not show_other:
+            if is_other_grav and not show_other:
+                continue
+            if is_other and not show_other_misc:
+                continue
+            if is_cal and not show_cal:
                 continue
             if is_grav and not show_grav:
                 continue
