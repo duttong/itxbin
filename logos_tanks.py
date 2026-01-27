@@ -813,7 +813,6 @@ class TanksWidget(QWidget):
             name = cb.text()
             pnum = (self.instrument.analytes or {}).get(name) if self.instrument else None
             channel = self._analyte_channel(name)
-            print(pnum, channel)
             if target_name and name == target_name:
                 return cb
             if target_num is not None and pnum == target_num and (target_channel is None or channel == target_channel):
