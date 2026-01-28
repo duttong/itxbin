@@ -1428,7 +1428,6 @@ class MainWindow(QMainWindow):
             analysis_time = meta.get("analysis_time", [None])[nearest_idx]
             sample_time = meta.get("sample_datetime", [None])[nearest_idx]
             resp = meta.get("response", [None])[nearest_idx]
-            resp = meta.get("response", [None])[nearest_idx]
             ratio = meta.get("ratio", [None])[nearest_idx]
             mf = meta.get("mole_fraction", [None])[nearest_idx]
             sample_id = meta.get("sample_id", [None])[nearest_idx]
