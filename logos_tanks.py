@@ -7,9 +7,9 @@ import math
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip, QApplication, QInputDialog
+    QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut
 )
-from PyQt5.QtGui import QCursor
+from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
 
 from matplotlib.widgets import Button
@@ -1128,84 +1128,188 @@ class TanksWidget(QWidget):
             pass
 
         fig, ax = plt.subplots(figsize=(9, 5))
-        any_data = False
         pick_map: dict[mlines.Line2D, dict] = {}
+        state = {
+            "parameter_name": parameter_name,
+            "parameter_num": parameter_num,
+            "channel": channel,
+            "pick_map": pick_map,
+        }
 
         try:
-            for fill_key in tank_keys:
-                meta = self._tank_metadata.get(str(fill_key), {})
-                serial = (
-                    meta.get("serial_number")
-                    or meta.get("tank_serial_num")
-                    or str(fill_key).split("::")[0]
-                )
-                df = self._fetch_calibration_df(serial, parameter_num, inst_id)
-                fill_date = meta.get("fill_date") or meta.get("date")
-                fill_code = meta.get("code") or meta.get("fill_code")
-                next_fill_date = meta.get("next_fill_date")
-                if df is None or df.empty:
-                    continue
-                df = df.copy()
-                date_part = pd.to_datetime(df["date"], errors="coerce")
-                time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
-                if time_part.isna().all():
-                    time_part = pd.to_timedelta(0)
-                df["datetime"] = date_part + time_part
-                df["mixratio"] = pd.to_numeric(df["mixratio"], errors="coerce")
-                df["stddev"] = pd.to_numeric(df["stddev"], errors="coerce")
-                if fill_date:
-                    fill_dt = pd.to_datetime(fill_date, errors="coerce")
-                    if pd.notnull(fill_dt):
-                        df = df[df["datetime"] >= fill_dt]
-                if next_fill_date:
-                    next_dt = pd.to_datetime(next_fill_date, errors="coerce")
-                    if pd.notnull(next_dt):
-                        df = df[df["datetime"] < next_dt]
-                df = df.dropna(subset=["datetime", "mixratio"]).sort_values("datetime")
-                if df.empty:
-                    continue
-                df = df.reset_index(drop=True)
+            def _plot_for(param_name: str, param_num: int, param_channel: str | None,
+                          *, close_on_empty: bool = False) -> bool:
+                nonlocal pick_map
+                state["parameter_name"] = param_name
+                state["parameter_num"] = param_num
+                state["channel"] = param_channel
+                ax.clear()
+                pick_map = {}
+                any_data = False
 
-                err_container = ax.errorbar(
-                    df["datetime"],
-                    df["mixratio"],
-                    yerr=df["stddev"] if "stddev" in df.columns else None,
-                    fmt="o-",
-                    markersize=4,
-                    linewidth=1,
-                    capsize=3,
-                    label=f"{serial} ({fill_code})" if fill_code else str(serial),
-                )
-                line = err_container.lines[0] if err_container.lines else None
-                if line is not None:
-                    line.set_picker(5)
-                    pick_map[line] = {
-                        "df": df,
-                        "serial": serial,
-                        "fill_code": fill_code,
-                    }
-                any_data = True
+                for fill_key in tank_keys:
+                    meta = self._tank_metadata.get(str(fill_key), {})
+                    serial = (
+                        meta.get("serial_number")
+                        or meta.get("tank_serial_num")
+                        or str(fill_key).split("::")[0]
+                    )
+                    df = self._fetch_calibration_df(serial, param_num, inst_id)
+                    fill_date = meta.get("fill_date") or meta.get("date")
+                    fill_code = meta.get("code") or meta.get("fill_code")
+                    next_fill_date = meta.get("next_fill_date")
+                    if df is None or df.empty:
+                        continue
+                    df = df.copy()
+                    date_part = pd.to_datetime(df["date"], errors="coerce")
+                    time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
+                    if time_part.isna().all():
+                        time_part = pd.to_timedelta(0)
+                    df["datetime"] = date_part + time_part
+                    df["mixratio"] = pd.to_numeric(df["mixratio"], errors="coerce")
+                    df["stddev"] = pd.to_numeric(df["stddev"], errors="coerce")
+                    if fill_date:
+                        fill_dt = pd.to_datetime(fill_date, errors="coerce")
+                        if pd.notnull(fill_dt):
+                            df = df[df["datetime"] >= fill_dt]
+                    if next_fill_date:
+                        next_dt = pd.to_datetime(next_fill_date, errors="coerce")
+                        if pd.notnull(next_dt):
+                            df = df[df["datetime"] < next_dt]
+                    df = df.dropna(subset=["datetime", "mixratio"]).sort_values("datetime")
+                    if df.empty:
+                        continue
+                    df = df.reset_index(drop=True)
 
-            if not any_data:
-                plt.close(fig)
+                    err_container = ax.errorbar(
+                        df["datetime"],
+                        df["mixratio"],
+                        yerr=df["stddev"] if "stddev" in df.columns else None,
+                        fmt="o-",
+                        markersize=4,
+                        linewidth=1,
+                        capsize=3,
+                        label=f"{serial} ({fill_code})" if fill_code else str(serial),
+                    )
+                    line = err_container.lines[0] if err_container.lines else None
+                    if line is not None:
+                        line.set_picker(5)
+                        pick_map[line] = {
+                            "df": df,
+                            "serial": serial,
+                            "fill_code": fill_code,
+                        }
+                    any_data = True
+
+                state["pick_map"] = pick_map
+
+                species = None
+                try:
+                    pnum_int = int(param_num)
+                    species = getattr(self.instrument, "analytes_inv", {}).get(pnum_int)
+                except Exception:
+                    species = None
+                label_species = species or param_name or "Species"
+                ax.set_xlabel("Datetime")
+                ax.set_ylabel(f"Mole Fraction ({label_species})")
+                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
+                ax.grid(True, alpha=0.3)
+
+                if not any_data:
+                    ax.set_title(f"No calibration data for {param_name} ({inst_id.upper()})")
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No calibration data found.",
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="center",
+                    )
+                    fig.canvas.draw_idle()
+                    if close_on_empty:
+                        plt.close(fig)
+                    return False
+
+                ax.set_title(f"Calibrations for {param_name} ({inst_id.upper()})")
+                ax.legend()
+                fig.autofmt_xdate()
+                fig.tight_layout()
+                fig.canvas.draw_idle()
+                return True
+
+            if not _plot_for(parameter_name, parameter_num, channel, close_on_empty=True):
                 self._toast("No calibration data found for the selected tanks/parameter.")
                 return
 
-            species = None
-            try:
-                pnum_int = int(parameter_num)
-                species = getattr(self.instrument, "analytes_inv", {}).get(pnum_int)
-            except Exception:
-                species = None
-            label_species = species or parameter_name or "Species"
-            ax.set_title(f"Calibrations for {parameter_name} ({inst_id.upper()})")
-            ax.set_xlabel("Datetime")
-            ax.set_ylabel(f"Mole Fraction ({label_species})")
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-            fig.autofmt_xdate()
-            fig.tight_layout()
+            analyte_names = list((self.instrument.analytes or {}).keys())
+            if not analyte_names:
+                analyte_names = [parameter_name]
+            analyte_combo = QComboBox()
+            analyte_combo.addItems(analyte_names)
+            idx = analyte_combo.findText(parameter_name, Qt.MatchExactly)
+            if idx >= 0:
+                analyte_combo.setCurrentIndex(idx)
+
+            def _on_combo_changed(name: str):
+                if not name:
+                    return
+                new_pnum = (self.instrument.analytes or {}).get(name)
+                if new_pnum is None:
+                    self._toast("Invalid parameter number for selection.")
+                    return
+                new_channel = self._analyte_channel(name)
+                analyte_combo.setStyleSheet("background-color: gold;")
+                analyte_combo.setEnabled(False)
+                try:
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+                try:
+                    if not _plot_for(name, new_pnum, new_channel):
+                        self._toast("No calibration data found for the selected tanks/parameter.")
+                finally:
+                    analyte_combo.setStyleSheet("")
+                    analyte_combo.setEnabled(True)
+
+            analyte_combo.currentTextChanged.connect(_on_combo_changed)
+            fig._analyte_combo = analyte_combo
+
+            def _step_analyte(delta: int):
+                if analyte_combo.count() == 0:
+                    return
+                idx = analyte_combo.currentIndex()
+                new_idx = idx + delta
+                if new_idx < 0 or new_idx >= analyte_combo.count():
+                    return
+                analyte_combo.blockSignals(True)
+                analyte_combo.setCurrentIndex(new_idx)
+                analyte_combo.blockSignals(False)
+                _on_combo_changed(analyte_combo.currentText())
+
+            fig._analyte_shortcuts = []
+            for seq, delta in (("Ctrl+Shift+Up", -1), ("Ctrl+Shift+Down", 1)):
+                sc = QShortcut(QKeySequence(seq), fig.canvas)
+                sc.activated.connect(lambda d=delta: _step_analyte(d))
+                fig._analyte_shortcuts.append(sc)
+
+            toolbar = getattr(getattr(fig.canvas, "manager", None), "toolbar", None)
+            if toolbar is not None and hasattr(toolbar, "addWidget"):
+                spacer = QWidget()
+                spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                toolbar.addWidget(spacer)
+                toolbar.addWidget(analyte_combo)
+                fig._analyte_combo_spacer = spacer
+            else:
+                analyte_combo.setParent(fig.canvas)
+                analyte_combo.show()
+
+                def _reposition_combo(_event=None):
+                    margin = 12
+                    x = max(margin, fig.canvas.width() - analyte_combo.sizeHint().width() - margin)
+                    analyte_combo.move(x, margin)
+
+                fig.canvas.mpl_connect("resize_event", _reposition_combo)
+                _reposition_combo()
 
             def _format_value(value, digits: int = 6) -> str:
                 if value is None:
@@ -1302,7 +1406,7 @@ class TanksWidget(QWidget):
                 best_line = None
                 best_idx = None
                 best_dist = None
-                for line in pick_map:
+                for line in state.get("pick_map", {}):
                     idx = _nearest_point(line, event, max_px=10)
                     if idx is None:
                         continue
@@ -1320,7 +1424,7 @@ class TanksWidget(QWidget):
                 if best_line is None or best_idx is None:
                     QToolTip.hideText()
                     return
-                data = pick_map.get(best_line)
+                data = state.get("pick_map", {}).get(best_line)
                 if not data:
                     QToolTip.hideText()
                     return
@@ -1347,16 +1451,16 @@ class TanksWidget(QWidget):
                 QToolTip.showText(QCursor.pos(), text)
                 # Right mouse button: set main window to this tank/run
                 if event.button == 3 and self.main_window is not None:
-                    analyte = parameter_name
+                    analyte = state.get("parameter_name")
                     try:
                         self.main_window.current_run_time = str(run_time)
                     except Exception:
                         self.main_window.current_run_time = str(run_dt)
                     try:
-                        self.main_window.current_pnum = int(parameter_num)
+                        self.main_window.current_pnum = int(state.get("parameter_num"))
                     except Exception:
                         pass
-                    self.main_window.current_channel = channel
+                    self.main_window.current_channel = state.get("channel")
 
                     if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
                         for rb in self.main_window.radio_group.buttons():
