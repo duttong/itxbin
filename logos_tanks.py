@@ -498,6 +498,8 @@ class TanksWidget(QWidget):
             self._rebuild_tank_checks([], "Select a gas to load tanks.")
             return
 
+        prev_selected = self.selected_tanks()
+
         start = self.start_year.value()
         end = self.end_year.value()
         if start > end:
@@ -574,6 +576,8 @@ class TanksWidget(QWidget):
                 f"or press Reload Tanks after adjusting the date range."
             )
         self._rebuild_tank_checks(tanks_list, empty_msg)
+        if prev_selected:
+            self._apply_tank_selection(prev_selected)
 
     def _rebuild_tank_checks(self, tanks, empty_msg: str = None):
         """Clear and rebuild the checkbox grid."""
