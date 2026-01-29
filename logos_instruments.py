@@ -10,7 +10,7 @@ import time
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
-    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220} 
+    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220, 'pr1': 58} 
     
     LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
