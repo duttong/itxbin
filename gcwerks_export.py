@@ -116,7 +116,10 @@ class GCwerks_export:
         df = pd.read_csv(results_file, parse_dates=True, skipinitialspace=True, index_col='time')
 
         # save two years of data
-        df = df.last('24M')
+        if not df.empty:
+            end = df.index.max()
+            start = end - pd.DateOffset(months=24)
+            df = df.loc[df.index >= start]
         print(f'Creating {outfile}')
         df.to_csv(outfile, index=True)
         chmod(outfile, 0o0664)
