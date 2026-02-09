@@ -10,7 +10,7 @@ import time
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
-    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220, 'pr1': 58} 
+    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220, 'pr1': 58, 'ie3': 236} 
     
     LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
@@ -1574,6 +1574,203 @@ class FE3_Instrument(HATS_DB_Functions):
 
         # Condition 1: coef3 == 0 and coef2 == 0 and abs(coef1) > 0 → func_index = 0
         df.loc[(df['coef3'] == 0) & (df['coef2'] == 0) & (df['coef1'].abs() > 0), 'func_index'] = 0
+
+        return df
+
+class IE3_Instrument(HATS_DB_Functions):
+    """Class for accessing IE3 specific functions in the HATS database."""
+
+    RUN_TYPE_MAP = {
+        "All": None,        # no filter
+    }
+    DEFAULT_ANALYTE_NAME = "N2O (a)"
+    DEFAULT_ANALYTE_CHANNEL = "a"
+    STANDARD_PORT_NUM = 5
+    EXCLUDE = []
+
+    def __init__(self, site: str = "smo"):
+        super().__init__('ie3')
+        site = site.lower()
+        valid_sites = {"smo", "mlo", "spo", "brw"}
+        if site not in valid_sites:
+            raise ValueError(f"Invalid site {site!r}. Valid sites: {sorted(valid_sites)}")
+        self.site = site
+        self.start_date = '20251001'
+        self.gc_dir = Path(f"/hats/gc/{site}")
+        self.export_dir = self.gc_dir / "results"
+        self.response_type = 'height'
+
+        # query raw molecule/analyte dicts
+        self.molecules = self.query_molecules()
+        analyte_rows = self.db.doquery(
+            "SELECT display_name, param_num, channel "
+            f"FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
+        )
+        df_analytes = pd.DataFrame(analyte_rows)
+        df_analytes['channel'] = df_analytes['channel'].fillna('').astype(str).str.lower().str.strip()
+        df_analytes = df_analytes.sort_values(['channel', 'display_name'])
+        df_analytes['display_name_ch'] = df_analytes.apply(
+            lambda r: f"{r['display_name']} ({r['channel']})" if r['channel'] else r['display_name'],
+            axis=1,
+        )
+        self.analytes = dict(zip(df_analytes['display_name_ch'], df_analytes['param_num']))
+        self.analytes_inv = {
+            int(v): k for k, v in self.analytes.items()
+        }
+        self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME
+        self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+
+    def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
+        """Return run_time list for IE3 from ng_insitu_analysis."""
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+
+        sql = f"""
+            SELECT DISTINCT run_time
+            FROM hats.ng_insitu_analysis
+            WHERE inst_num = {self.inst_num}
+                AND site_num = (SELECT num FROM gmd.site WHERE lower(code) = '{self.site}')
+                AND run_time BETWEEN '{start_date}' AND '{end_date}'
+            ORDER BY run_time;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            return []
+        df['run_time'] = pd.to_datetime(df['run_time']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df['run_time'].to_list()
+
+    def load_data(
+        self,
+        pnum,
+        channel=None,
+        run_type_num=None,
+        start_date=None,
+        end_date=None,
+        site_num=None,
+        verbose=True,
+    ):
+        """Load data from ng_insitu tables with date filtering.
+
+        Args:
+            pnum (int): Parameter number to filter data.
+            channel (str, optional): Channel to filter data. Defaults to None.
+            start_date (str, optional): Start date in YYMM format. Defaults to None.
+            end_date (str, optional): End date in YYMM format. Defaults to None.
+            site_num (int, optional): Site number filter. Defaults to None.
+        """
+        if pnum is None:
+            pnum = self._default_pnum()
+            if pnum is None:
+                if verbose:
+                    print(
+                        "IE3 load_data called with pnum=None and no default analyte found; "
+                        "returning empty DataFrame."
+                    )
+                return pd.DataFrame()
+        if isinstance(start_date, str) and " (" in start_date:
+            start_date = start_date.split(" (")[0]
+        if isinstance(end_date, str) and " (" in end_date:
+            end_date = end_date.split(" (")[0]
+
+        if end_date is None:
+            end_date = datetime.today()
+        elif len(end_date) == 4:
+            end_date = datetime.strptime(end_date, "%y%m")
+            end_date = end_date.strftime("%Y-%m-31")
+
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+        elif len(start_date) == 4:
+            start_date = datetime.strptime(start_date, "%y%m")
+            start_date = start_date.strftime("%Y-%m-01")
+
+        channel_str = f"AND m.channel = '{channel}'" if channel else ""
+        site_str = f"AND a.site_num = {site_num}" if site_num is not None else ""
+
+        if verbose:
+            print(f"Loading IE3 data from {start_date} to {end_date} for parameter {pnum}")
+
+        if str(start_date) == str(end_date):
+            time_filter = f"AND a.run_time = '{start_date}'"
+        else:
+            time_filter = f"AND a.analysis_time BETWEEN '{start_date}' AND '{end_date}'"
+
+        query = f"""
+            SELECT
+                a.num AS analysis_num,
+                a.analysis_time,
+                a.run_time,
+                a.site_num,
+                a.inst_num,
+                a.port,
+                m.parameter_num,
+                m.channel,
+                m.height,
+                m.area,
+                m.retention_time
+            FROM hats.ng_insitu_analysis AS a
+            JOIN hats.ng_insitu_mole_fractions AS m
+                ON m.analysis_num = a.num
+            WHERE a.inst_num = {self.inst_num}
+                AND m.parameter_num = {pnum}
+                {channel_str}
+                {site_str}
+                AND m.height <> -999
+                {time_filter}
+            ORDER BY a.analysis_time;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            print(f"No data found for parameter {pnum} in the specified date range.")
+            return pd.DataFrame()
+
+        df['analysis_time'] = pd.to_datetime(df['analysis_time'], errors='raise', utc=True)
+        df['analysis_datetime'] = df['analysis_time']
+        df['run_time'] = pd.to_datetime(df['run_time'], errors='raise', utc=True)
+        df['parameter_num'] = df['parameter_num'].astype(int)
+        df['run_type_num'] = 0  # IE3 doesn't have run types, so set to 0 or some default
+        df['height'] = df['height'].astype(float)
+        df['area'] = df['area'].astype(float)
+        df['retention_time'] = df['retention_time'].astype(float)
+
+        df['data_flag'] = '...'
+        df['data_flag_int'] = 0
+        df['detrend_method_num'] = 2
+        df = self.norm.merge_smoothed_data(df)
+        df = self.add_port_labels(df)
+
+        return df.sort_values('analysis_datetime')
+
+    def _default_pnum(self) -> int | None:
+        """Return a default parameter number for IE3."""
+        if self.DEFAULT_ANALYTE_NAME in self.analytes:
+            return self.analytes[self.DEFAULT_ANALYTE_NAME]
+        sql = (
+            "SELECT display_name, param_num "
+            "FROM hats.analyte_list "
+            f"WHERE inst_num = {self.inst_num} "
+            f"AND channel = '{self.DEFAULT_ANALYTE_CHANNEL}' "
+            "AND display_name LIKE 'CFC11%' "
+            "ORDER BY display_name "
+            "LIMIT 1;"
+        )
+        rows = self.db.doquery(sql)
+        if rows:
+            return rows[0]["param_num"]
+        return None
+
+    def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add simple port labels and colors based on port number."""
+        df['port_idx'] = df['port'].astype(int)
+        df['port_label'] = df['port'].astype(int).astype(str)
+        df['port_marker'] = 'o'
+
+        cmap = plt.get_cmap('tab20')
+        ports = sorted(df['port'].dropna().unique())
+        port_colors = {p: cmap(i % 20) for i, p in enumerate(ports)}
+        df['port_color'] = df['port'].map(port_colors).fillna('gray')
 
         return df
 class BLD1_Instrument(HATS_DB_Functions):
