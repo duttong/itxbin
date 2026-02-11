@@ -32,8 +32,7 @@ MAX_SAVED_SETS = 5
 
 
 class TanksPlotter:
-    
-    
+        
     def __init__(self, db, inst_num):
         self.db = db
         self.inst_num = inst_num
@@ -41,9 +40,11 @@ class TanksPlotter:
     def _active_tanks_dataframe(self, start_year, end_year) -> pd.DataFrame:
         """Return raw DataFrame of active tanks across all analytes for a window."""
         start_ts = f"{start_year}-01-01"
-        end_ts = f"{end_year + 1}-01-01"  # half-open interval on year boundary
+        end_ts = f"{end_year + 1}-01-01"
+        
+        inst_map = {193: "fe3", 192: "m4", 220: "bld1", 236: "ie3"}
 
-        fills_sql = f"""
+        fills_sql_old = f"""
             SELECT
                 DISTINCT r.idx
             FROM hats.ng_analysis a
@@ -60,6 +61,24 @@ class TanksPlotter:
               AND a.run_time >= '{start_ts}'
               AND a.run_time <  '{end_ts}'
             ORDER BY r.serial_number;
+        """
+        
+        # working on a new query using updated hats.calibrations table.
+        fills_sql = f"""
+            select 
+                DISTINCT r.idx
+            from hats.calibrations c
+                JOIN reftank.fill r
+                 ON r.serial_number = c.serial_number
+                AND r.`date` = (
+                    SELECT MAX(f2.`date`)
+                    FROM reftank.fill f2
+                    WHERE f2.serial_number = c.serial_number
+                    AND f2.`date` <= c.date
+                )
+            WHERE inst = '{inst_map.get(self.inst_num, "")}'
+            AND c.date > '{start_ts}'
+            AND c.date <  '{end_ts}';
         """
         fills_df = pd.DataFrame(self.db.doquery(fills_sql))
         fill_ids = [str(idx) for idx in fills_df["idx"].dropna().unique()] if not fills_df.empty else []
@@ -595,7 +614,7 @@ class TanksWidget(QWidget):
             return
 
         self.tanks_status.setText(f"{len(tanks)} tanks found.")
-        cols = 5
+        cols = 6
         for idx, tank in enumerate(tanks):
             serial = None
             use_short = None
