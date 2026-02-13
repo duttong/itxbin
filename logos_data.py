@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 import sys
 from datetime import datetime, timedelta, timezone
-import pandas as pd
 import numpy as np
 import math
 import re
 from functools import lru_cache
 import warnings
+import pandas as pd
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence
+from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence, QTextOption
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget,
-    QLabel, QComboBox, QPushButton, QRadioButton, QAction,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QInputDialog,
+    QLabel, QComboBox, QPushButton, QRadioButton, QAction, QPlainTextEdit,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut
 )
 from PyQt5.QtCore import Qt, QTimer, QEvent
@@ -419,6 +419,13 @@ class MainWindow(QMainWindow):
         # Add group box to main layout
         if self.change_runtype_enabled:
             run_layout.addWidget(change_runtype)
+
+        # Edit Run Notes button
+        self.edit_notes_btn = QPushButton("Edit/View Run Notes")
+        self.edit_notes_btn.setToolTip("Add or edit notes for the selected run.")
+        self.edit_notes_btn.clicked.connect(self.on_edit_run_notes)
+        self.edit_notes_btn.setStyleSheet("background-color: lightgreen;")
+        run_layout.addWidget(self.edit_notes_btn)
 
         processing_layout.addWidget(run_gb)
 
@@ -2746,6 +2753,64 @@ class MainWindow(QMainWindow):
 
         self.load_selected_run()
         self.on_plot_type_changed(self.current_plot_type)
+
+    def on_edit_run_notes(self):
+        """Handle the 'Edit Run Notes' button click."""
+        if not self.current_run_time:
+            QMessageBox.warning(self, "No Run Selected", "Please select a run first.")
+            return
+
+        # Clean up run_time string (e.g., remove ' (Cal)')
+        run_time_str = self.current_run_time.split(" (")[0]
+
+        # 1. Fetch existing notes
+        query = (
+            "SELECT notes FROM hats.ng_run_notes "
+            f"WHERE inst_num = {self.instrument.inst_num} "
+            f"AND run_time = '{run_time_str}';"
+        )
+        result = self.instrument.db.doquery(query)
+        current_notes = result[0]['notes'] if result and result[0]['notes'] else ""
+
+        # 2. Create and customize an input dialog to control its size
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Edit Run Notes")
+        dialog.setLabelText(f"Notes for run: {run_time_str}")
+        dialog.setTextValue(current_notes)
+        dialog.setInputMode(QInputDialog.TextInput)
+        # This option makes the text input a multi-line editor
+        dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
+        # Set the size of the dialog (width, height)
+        dialog.resize(500, 300)
+        
+        # Find the QPlainTextEdit widget and enable word wrapping
+        text_edit = dialog.findChild(QPlainTextEdit)
+        if text_edit:
+            text_edit.setWordWrapMode(QTextOption.WordWrap)
+
+
+        if dialog.exec_() == QInputDialog.Accepted:
+            new_notes = dialog.textValue()
+        else:
+            return # User cancelled
+
+        # 3. Save the new notes
+        # Use INSERT ... ON DUPLICATE KEY UPDATE to handle both new and existing notes
+        save_sql = """
+            INSERT INTO hats.ng_run_notes (inst_num, run_time, notes)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE notes = VALUES(notes);
+        """
+        try:
+            self.instrument.db.doquery(save_sql, [self.instrument.inst_num, run_time_str, new_notes.strip()])
+            QToolTip.showText(
+                self.mapToGlobal(self.edit_notes_btn.pos()),
+                "Notes saved successfully!",
+                self.edit_notes_btn
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Database Error", f"Failed to save notes: {e}")
+            print(f"Error saving run notes: {e}")
 
     def set_runtype_combo(self):
         """Set the combo box to the current run's run type."""
