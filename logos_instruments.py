@@ -1409,6 +1409,7 @@ class FE3_Instrument(HATS_DB_Functions):
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
             end_date = end_date.strftime("%Y-%m-31")    # end of the month
+            end_date = end_date[:19]  # ensure consistent formatting for SQL query
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass
@@ -1419,6 +1420,7 @@ class FE3_Instrument(HATS_DB_Functions):
             # check for YYMM format
             start_date = datetime.strptime(start_date, "%y%m")
             start_date = start_date.strftime("%Y-%m-01")    # beginning of the month
+            start_date = start_date[:19]  # ensure consistent formatting for SQL query
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass
@@ -1441,7 +1443,6 @@ class FE3_Instrument(HATS_DB_Functions):
                 {channel_str}
                 {run_type_filter}
                 AND height <> -999
-                #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
         """
