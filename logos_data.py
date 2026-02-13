@@ -2778,6 +2778,7 @@ class MainWindow(QMainWindow):
         dialog.setLabelText(f"Notes for run: {run_time_str}")
         dialog.setTextValue(current_notes)
         dialog.setInputMode(QInputDialog.TextInput)
+        dialog.setOkButtonText("Save")
         # This option makes the text input a multi-line editor
         dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
         # Set the size of the dialog (width, height)
@@ -2787,7 +2788,6 @@ class MainWindow(QMainWindow):
         text_edit = dialog.findChild(QPlainTextEdit)
         if text_edit:
             text_edit.setWordWrapMode(QTextOption.WordWrap)
-
 
         if dialog.exec_() == QInputDialog.Accepted:
             new_notes = dialog.textValue()
