@@ -421,9 +421,11 @@ class MainWindow(QMainWindow):
             run_layout.addWidget(change_runtype)
 
         # Edit Run Notes button
-        self.edit_notes_btn = QPushButton("Edit/View Run Notes")
-        self.edit_notes_btn.setToolTip("Add or edit notes for this run.")
+        self.edit_notes_btn = QPushButton("Edit/View Run Notes (n)")
+        self.edit_notes_btn.setToolTip("Add or edit notes for this run. (n)")
         self.edit_notes_btn.clicked.connect(self.on_edit_run_notes)
+        self.notes_shortcut = QShortcut(QKeySequence("n"), self)
+        self.notes_shortcut.activated.connect(self.on_edit_run_notes)
         run_layout.addWidget(self.edit_notes_btn)
 
         processing_layout.addWidget(run_gb)
@@ -2788,14 +2790,11 @@ class MainWindow(QMainWindow):
         # Find the QPlainTextEdit widget and enable word wrapping
         text_edit = dialog.findChild(QPlainTextEdit)
         if text_edit:
-            def deselect_text():
-                """Move cursor to the end to deselect text."""
-                cursor = text_edit.textCursor()
-                cursor.movePosition(QTextCursor.End)
-                text_edit.setTextCursor(cursor)
-
             text_edit.setWordWrapMode(QTextOption.WordWrap)
-            QTimer.singleShot(0, deselect_text)
+            # Move cursor to the end to prevent accidental deletion of existing text
+            cursor = text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            text_edit.setTextCursor(cursor)
 
         if dialog.exec_() == QInputDialog.Accepted:
             new_notes = dialog.textValue()
@@ -2946,7 +2945,7 @@ class MainWindow(QMainWindow):
         result = self.instrument.db.doquery(query)
         has_note = result and result[0]['notes'] and result[0]['notes'].strip()
 
-        self.edit_notes_btn.setText("Edit/View Run Notes" if has_note else "Add Run Notes")
+        self.edit_notes_btn.setText("Edit/View Run Notes (n)" if has_note else "Add Run Notes (n)")
         color = "lightgreen" if has_note else "#d3d3d3" # lightgrey
         self.edit_notes_btn.setStyleSheet(f"background-color: {color};")
                 
