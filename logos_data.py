@@ -10,7 +10,7 @@ import pandas as pd
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence, QTextOption
+from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence, QTextOption, QTextCursor
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
@@ -422,9 +422,8 @@ class MainWindow(QMainWindow):
 
         # Edit Run Notes button
         self.edit_notes_btn = QPushButton("Edit/View Run Notes")
-        self.edit_notes_btn.setToolTip("Add or edit notes for the selected run.")
+        self.edit_notes_btn.setToolTip("Add or edit notes for this run.")
         self.edit_notes_btn.clicked.connect(self.on_edit_run_notes)
-        self.edit_notes_btn.setStyleSheet("background-color: lightgreen;")
         run_layout.addWidget(self.edit_notes_btn)
 
         processing_layout.addWidget(run_gb)
@@ -2361,6 +2360,7 @@ class MainWindow(QMainWindow):
         self.run_cb.blockSignals(False)
         
         self.load_selected_run()
+        self._update_notes_button_style()
         self.gc_plot('resp')
             
     def populate_analyte_controls(self):
@@ -2752,6 +2752,7 @@ class MainWindow(QMainWindow):
         self.current_run_time = self.current_run_times[index]
 
         self.load_selected_run()
+        self._update_notes_button_style()
         self.on_plot_type_changed(self.current_plot_type)
 
     def on_edit_run_notes(self):
@@ -2787,7 +2788,14 @@ class MainWindow(QMainWindow):
         # Find the QPlainTextEdit widget and enable word wrapping
         text_edit = dialog.findChild(QPlainTextEdit)
         if text_edit:
+            def deselect_text():
+                """Move cursor to the end to deselect text."""
+                cursor = text_edit.textCursor()
+                cursor.movePosition(QTextCursor.End)
+                text_edit.setTextCursor(cursor)
+
             text_edit.setWordWrapMode(QTextOption.WordWrap)
+            QTimer.singleShot(0, deselect_text)
 
         if dialog.exec_() == QInputDialog.Accepted:
             new_notes = dialog.textValue()
@@ -2808,6 +2816,7 @@ class MainWindow(QMainWindow):
                 "Notes saved successfully!",
                 self.edit_notes_btn
             )
+            self._update_notes_button_style()
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to save notes: {e}")
             print(f"Error saving run notes: {e}")
@@ -2920,6 +2929,26 @@ class MainWindow(QMainWindow):
         self.set_runlist()
         self.load_selected_run()
         self.on_plot_type_changed(self.current_plot_type)
+        self._update_notes_button_style()
+
+    def _update_notes_button_style(self):
+        """Update the run notes button text and color based on note existence."""
+        if not self.current_run_time:
+            self.edit_notes_btn.setText("Add Run Notes")
+            self.edit_notes_btn.setStyleSheet("background-color: #d3d3d3;") # lightgrey
+            return
+
+        run_time_str = self.current_run_time.split(" (")[0]
+        query = (
+            "SELECT notes FROM hats.ng_run_notes "
+            f"WHERE inst_num = {self.instrument.inst_num} AND run_time = '{run_time_str}';"
+        )
+        result = self.instrument.db.doquery(query)
+        has_note = result and result[0]['notes'] and result[0]['notes'].strip()
+
+        self.edit_notes_btn.setText("Edit/View Run Notes" if has_note else "Add Run Notes")
+        color = "lightgreen" if has_note else "#d3d3d3" # lightgrey
+        self.edit_notes_btn.setStyleSheet(f"background-color: {color};")
                 
     def on_prev_run(self):
         """
@@ -3053,6 +3082,10 @@ def main():
     w.resize(1400, 800)
     w.show()
     sys.exit(app.exec_())
+    
+if __name__ == "__main__":
+    main()
+    
     
 if __name__ == "__main__":
     main()
