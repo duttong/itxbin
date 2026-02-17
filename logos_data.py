@@ -10,7 +10,9 @@ import pandas as pd
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, QKeySequence, QTextOption, QTextCursor
+from PyQt5.QtGui import (QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, 
+    QKeySequence, QTextOption, QTextCursor
+)
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
