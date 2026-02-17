@@ -437,9 +437,11 @@ class TankHistEditor(QtWidgets.QMainWindow):
             self.comment_input.setText(str(selected_row.get("comment") if selected_row else "" or ""))
             self.comment_input.blockSignals(False)
             if selected_row:
-                use_idx = self.use_combo.findData(int(selected_row.get("ng_tank_uses_num")))
-                if use_idx >= 0:
-                    self.use_combo.setCurrentIndex(use_idx)
+                use_num = selected_row.get("ng_tank_uses_num")
+                if use_num is not None:
+                    use_idx = self.use_combo.findData(int(use_num))
+                    if use_idx >= 0:
+                        self.use_combo.setCurrentIndex(use_idx)
                 start_value = selected_row.get("start")
                 if start_value:
                     qdate = QtCore.QDate.fromString(str(start_value), "yyyy-MM-dd")
