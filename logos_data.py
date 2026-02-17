@@ -11,16 +11,16 @@ import argparse
 
 from PyQt5 import QtCore
 from PyQt5.QtGui import (QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, 
-    QKeySequence, QTextOption, QTextCursor
+    QKeySequence, QTextCursor
 )
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QToolTip, QFileDialog,
-    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QInputDialog,
+    QApplication, QMainWindow, QWidget, QToolTip, QFileDialog, QDialog,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QStyle,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction, QPlainTextEdit,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut
 )
-from PyQt5.QtCore import Qt, QTimer, QEvent
+from PyQt5.QtCore import Qt, QTimer
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -2777,29 +2777,10 @@ class MainWindow(QMainWindow):
         result = self.instrument.db.doquery(query)
         current_notes = result[0]['notes'] if result and result[0]['notes'] else ""
 
-        # 2. Create and customize an input dialog to control its size
-        dialog = QInputDialog(self)
-        dialog.setWindowTitle("Edit Run Notes")
-        dialog.setLabelText(f"Notes for run: {run_time_str}")
-        dialog.setTextValue(current_notes)
-        dialog.setInputMode(QInputDialog.TextInput)
-        dialog.setOkButtonText("Save")
-        # This option makes the text input a multi-line editor
-        dialog.setOption(QInputDialog.UsePlainTextEditForTextInput, True)
-        # Set the size of the dialog (width, height)
-        dialog.resize(500, 300)
-        
-        # Find the QPlainTextEdit widget and enable word wrapping
-        text_edit = dialog.findChild(QPlainTextEdit)
-        if text_edit:
-            text_edit.setWordWrapMode(QTextOption.WordWrap)
-            # Move cursor to the end to prevent accidental deletion of existing text
-            cursor = text_edit.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            text_edit.setTextCursor(cursor)
-
-        if dialog.exec_() == QInputDialog.Accepted:
-            new_notes = dialog.textValue()
+        dialog = RunNotesDialog(run_time_str, current_notes, self)
+  
+        if dialog.exec_() == QDialog.Accepted:
+            new_notes = dialog.get_notes()
         else:
             return # User cancelled
 
@@ -3040,7 +3021,57 @@ class MainWindow(QMainWindow):
         if file:
             self.instrument.export_run_alldata(self.run, file)
         
+class RunNotesDialog(QDialog):
+    def __init__(self, run_time_str, current_notes="", parent=None):
+        super().__init__(parent)
 
+        self.setWindowTitle("Edit Run Notes")
+        self.resize(500, 300)
+
+        layout = QVBoxLayout(self)
+
+        # Label
+        label = QLabel(f"Notes for run: {run_time_str}")
+        layout.addWidget(label)
+
+        # Text editor
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlainText(current_notes)
+
+        # Wrap at widget width
+        self.text_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+
+        # Prevent tabs from inserting tab characters
+        self.text_edit.setTabChangesFocus(True)
+
+        # Move cursor to end (no selection)
+        self.text_edit.moveCursor(QTextCursor.End)
+
+        layout.addWidget(self.text_edit)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        self.save_button = QPushButton("Save")
+        self.cancel_button = QPushButton("Cancel")
+
+        # Add native icons
+        self.save_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.cancel_button.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
+
+        button_layout.addWidget(self.save_button)
+        button_layout.addWidget(self.cancel_button)
+
+        layout.addLayout(button_layout)
+
+        # Connections
+        self.save_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+    def get_notes(self):
+        return self.text_edit.toPlainText()
+    
 def get_instrument_for(instrument_id: str):
     """
     Look up the Instrument class, instantiate.
