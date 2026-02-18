@@ -2278,14 +2278,7 @@ class MainWindow(QMainWindow):
         # If runTypeCombo is set, filter the data by run_type_num
         run_type = self.runTypeCombo.currentText()
         self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
-        
-        cal_num = (getattr(self.instrument, "RUN_TYPE_MAP", {}) or {}).get("Calibrations")
-        if self.run_type_num == cal_num:
-            self.calibration_rb.setEnabled(True)
-        else:
-            self.calibration_rb.setEnabled(False)
-        if cal_num is None:
-            self.calibration_rb.setEnabled(False)
+        self._update_calibration_button_state()
         
         # make run_time lists
         cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
@@ -2366,6 +2359,7 @@ class MainWindow(QMainWindow):
         self.load_selected_run()
         self._update_notes_button_style()
         self.gc_plot('resp')
+        self._update_calibration_button_state()
             
     def populate_analyte_controls(self):
         """
@@ -2755,7 +2749,16 @@ class MainWindow(QMainWindow):
             return
         self.current_run_time = self.current_run_times[index]
 
+        # If Calibration plot is active but the new run is not a calibration run,
+        # switch to the Response plot to prevent a crash.
+        is_cal_plot_selected = self.plot_radio_group.checkedId() == 3
+        is_cal_run = "(Cal)" in self.current_run_time
+        if is_cal_plot_selected and not is_cal_run:
+            self.resp_rb.setChecked(True)
+            self.current_plot_type = 0  # set to resp plot type
+
         self.load_selected_run()
+        self._update_calibration_button_state()
         self._update_notes_button_style()
         self.on_plot_type_changed(self.current_plot_type)
 
@@ -2931,6 +2934,21 @@ class MainWindow(QMainWindow):
         self.edit_notes_btn.setText("Edit/View Run Notes (n)" if has_note else "Add Run Notes (n)")
         color = "lightgreen" if has_note else "#d3d3d3" # lightgrey
         self.edit_notes_btn.setStyleSheet(f"background-color: {color};")
+
+    def _update_calibration_button_state(self):
+        """Enable the calibration radio button if the current run is a calibration run."""
+        cal_num = (getattr(self.instrument, "RUN_TYPE_MAP", {}) or {}).get("Calibrations")
+        if cal_num is None:
+            self.calibration_rb.setEnabled(False)
+            return
+
+        is_cal_type_selected = self.run_type_num == cal_num
+        is_cal_run_selected = self.current_run_time and "(Cal)" in self.current_run_time
+
+        if is_cal_type_selected or is_cal_run_selected:
+            self.calibration_rb.setEnabled(True)
+        else:
+            self.calibration_rb.setEnabled(False)
                 
     def on_prev_run(self):
         """
