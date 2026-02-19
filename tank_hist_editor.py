@@ -198,6 +198,7 @@ class TankHistEditor(QtWidgets.QMainWindow):
         search_row = QtWidgets.QHBoxLayout()
         self.serial_input = QtWidgets.QLineEdit()
         self.serial_input.setPlaceholderText("Enter tank serial (best guess)")
+        self.serial_input.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.serial_input.returnPressed.connect(self.search_serials)
         self.search_btn = QtWidgets.QPushButton("Search")
         self.search_btn.clicked.connect(self.search_serials)
@@ -219,6 +220,8 @@ class TankHistEditor(QtWidgets.QMainWindow):
         self.fill_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.fill_table.itemSelectionChanged.connect(self._fill_selected)
         self.fill_table.horizontalHeader().setStretchLastSection(True)
+        self.fill_table.setWordWrap(True)
+        self.fill_table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         layout.addWidget(self.fill_table)
 
         edit_group = QtWidgets.QGroupBox("Editing Tank History")
@@ -289,6 +292,12 @@ class TankHistEditor(QtWidgets.QMainWindow):
 
         self.setCentralWidget(root)
 
+    def _show_serial_input_context_menu(self, pos):
+        """Create and show a context menu for the serial input field."""
+        menu = self.serial_input.createStandardContextMenu()
+        # The standard menu should include Paste, this just ensures it's shown.
+        menu.exec_(self.serial_input.mapToGlobal(pos))
+
     def _populate_instruments(self, inst_id):
         self.inst_combo.blockSignals(True)
         self.inst_combo.clear()
@@ -297,6 +306,7 @@ class TankHistEditor(QtWidgets.QMainWindow):
         idx = self.inst_combo.findText(inst_id)
         if idx >= 0:
             self.inst_combo.setCurrentIndex(idx)
+        self.serial_input.customContextMenuRequested.connect(self._show_serial_input_context_menu)
         self.inst_combo.currentIndexChanged.connect(self._inst_changed)
         self.inst_combo.blockSignals(False)
         self._inst_changed()
