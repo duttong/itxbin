@@ -1649,23 +1649,33 @@ class MainWindow(QMainWindow):
 
         # Determine which fit degree to use (DB value on first render, user override afterwards)
         db_fit_degree = None
-        if 'func_index' in curves.columns:
-            match = curves.loc[curves['run_time'] == sel_rt, 'func_index']
-            if not match.empty and not pd.isna(match.iloc[0]):
-                db_fit_degree = int(match.iloc[0]) + 1
+        match_row = curves.loc[curves['run_time'] == sel_rt]
+        if not match_row.empty:
+            row = match_row.iloc[0]
+            # Treat NaN/None as 0 for degree detection
+            c3 = np.nan_to_num(pd.to_numeric(row.get('coef3'), errors='coerce'))
+            c2 = np.nan_to_num(pd.to_numeric(row.get('coef2'), errors='coerce'))
+            c1 = np.nan_to_num(pd.to_numeric(row.get('coef1'), errors='coerce'))
 
-        if self._fit_method_manual and self.fit_method_cb.count():
-            # honor the current combobox selection
-            current_data = self.fit_method_cb.currentData()
-            self.current_fit_degree = int(current_data) if current_data is not None else 2
-        else:
+            if abs(c3) > 1e-12:
+                db_fit_degree = 3
+            elif abs(c2) > 1e-12:
+                db_fit_degree = 2
+            elif abs(c1) > 1e-12:
+                db_fit_degree = 1
+                
+        if not self._fit_method_manual:
             # use DB value (fallback to quadratic) and sync the combobox without flagging a user change
-            self.current_fit_degree = db_fit_degree or 2
-            idx = self.fit_method_cb.findData(self.current_fit_degree)
+            fit_degree_from_db = db_fit_degree or 2
+            idx = self.fit_method_cb.findData(fit_degree_from_db)
             if idx != -1:
                 self._fit_method_updating = True
                 self.fit_method_cb.setCurrentIndex(idx)
                 self._fit_method_updating = False
+
+        # Always use the value from the combobox for the calculation
+        current_data = self.fit_method_cb.currentData()
+        self.current_fit_degree = int(current_data) if current_data is not None else 2
 
         # file in scale_assignment values for calibration tanks in self.run
         self.populate_cal_mf()
@@ -1898,10 +1908,12 @@ class MainWindow(QMainWindow):
                     ax.plot(xgrid, ygrid, linewidth=1, color='red', linestyle='-', alpha=0.7)
             legend_handles.append(Line2D([], [], color='red', linewidth=3, label=f"Other fits"))
         
-        # potentially a new fit (green, thicker)
-        ygrid_new = np.polyval(new_fit_coefs, xgrid)
-        ax.plot(xgrid, ygrid_new, linewidth=3, color='green', alpha=0.7)
-        legend_handles.append(Line2D([], [], color='green', linewidth=3, label="New Fit"))
+        # Show the new fit line (green) only if there was no existing curve for this run,
+        # or if the user has manually changed the fit degree.
+        if not calcurve_exists or self._fit_method_manual:
+            ygrid_new = np.polyval(new_fit_coefs, xgrid)
+            ax.plot(xgrid, ygrid_new, linewidth=3, color='green', alpha=0.7)
+            legend_handles.append(Line2D([], [], color='green', linewidth=3, label="New Fit"))
         
         # Warning box if new curve
         if calcurve_exists == False:

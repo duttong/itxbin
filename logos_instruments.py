@@ -1151,7 +1151,7 @@ class M4_Instrument(HATS_DB_Functions):
     def __init__(self):
         super().__init__()
         self.inst_id = 'm4'
-        self.inst_num = 192
+        self.inst_num = self.INSTRUMENTS.get(self.inst_id)  # Lookup inst_num from INSTRUMENTS
         self.start_date = '20231223'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/m4")
         self.export_dir = self.gc_dir / "results"
@@ -1710,7 +1710,8 @@ class IE3_Instrument(HATS_DB_Functions):
                 m.channel,
                 m.height,
                 m.area,
-                m.retention_time
+                m.retention_time,
+                m.mole_fraction
             FROM hats.ng_insitu_analysis AS a
             JOIN hats.ng_insitu_mole_fractions AS m
                 ON m.analysis_num = a.num
@@ -1811,7 +1812,7 @@ class BLD1_Instrument(HATS_DB_Functions):
     def __init__(self):
         super().__init__()
         self.inst_id = 'bld1'
-        self.inst_num = 220
+        self.inst_num = self.INSTRUMENTS.get(self.inst_id)  # Lookup inst_num from INSTRUMENTS
         self.start_date = '20210906'         # data before this date is not used.
         self.gc_dir = Path("/hats/gc/bld1")
         self.export_dir = self.gc_dir / "results"
