@@ -1681,6 +1681,13 @@ class MainWindow(QMainWindow):
         self.populate_cal_mf()
         new_fit = self.instrument._fit_row_for_current_run(self.run, order=self.current_fit_degree)
         # save new fit info for Save Cal2DB button
+        if new_fit is None:
+            self.clear_plot(
+                "Could not generate calibration fit.\n"
+                "Not enough valid calibration points."
+            )
+            return
+
         self._save_payload = new_fit
 
         # ── Create/append as needed ───────────────────────────────────────────────────
@@ -2134,12 +2141,15 @@ class MainWindow(QMainWindow):
                 (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON DUPLICATE KEY UPDATE
                 channel = VALUES(channel),
+                site = VALUES(site),
+                scale_num = VALUES(scale_num),
                 coef0 = VALUES(coef0),
                 coef1 = VALUES(coef1),
                 coef2 = VALUES(coef2),
                 coef3 = VALUES(coef3),
                 flag  = VALUES(flag),
-                function = VALUES(function)
+                function = VALUES(function),
+                serial_number = VALUES(serial_number)
             """
         params = [payload.get(c) for c in fields]
         #print(sql); print(params)
