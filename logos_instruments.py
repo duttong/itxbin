@@ -342,6 +342,11 @@ class HATS_DB_Functions(LOGOS_Instruments):
         
         M4 uses this method.
         """
+        if df.empty:
+            df_out = df.copy()
+            df_out['mole_fraction'] = pd.Series(dtype='float64')
+            return df_out
+
         pnum     = df['parameter_num'].iat[0]
         baseline = pd.Timestamp('1900-01-01', tz='UTC')
         mf       = pd.Series(index=df.index, dtype=float)
@@ -383,6 +388,11 @@ class HATS_DB_Functions(LOGOS_Instruments):
             
             FE3 uses this method.
         """
+        if df.empty:
+            df_out = df.copy()
+            df_out['mole_fraction'] = pd.Series(dtype='float64')
+            return df_out
+
         df = df.copy()
         cols = ["normalized_resp", "coef0", "coef1", "coef2", "coef3"]
         arr = df[cols].to_numpy()
@@ -431,8 +441,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
                         if (r >= mf_min) and (mf_max is None or r <= mf_max)]
             if not candidates:
                 return np.nan
-            # Heuristic: pick the smaller non-negative (often right for concave response curves)
-            return min(candidates)
+            # Heuristic for two roots when both are in the valid range:
+            # For convex parabolas (a2 > 0), we are usually on the increasing
+            # part of the curve, so we want the larger root.
+            # For concave parabolas (a2 < 0), we are usually on the increasing
+            # part (before the vertex), so we want the smaller root.
+            if a2 > 0:  # convex
+                return max(candidates)
+            else:  # concave
+                return min(candidates)
 
         # Cubic: y = a0 + a1*x + a2*x^2 + a3*x^3  ->  a3*x^3 + a2*x^2 + a1*x + (a0 - y) = 0
         coeffs = [a3, a2, a1, a0 - y]
@@ -1541,9 +1558,14 @@ class FE3_Instrument(HATS_DB_Functions):
 
         return df
             
-    def load_calcurves(self, pnum, channel, earliest_run):
+    def load_calcurves(self, pnum, channel, selected_run):
         """
         Returns the calibration curves from ng_response for a given parameter number and channel.
+        Only curves within 60 days before and 7 days after the selected run date are returned.
+        The function applies the following logic to determine the function index:
+        - If coef3 == 0 and coef2 == 0 and abs(coef1) > 0 → func_index = 0
+        - If coef3 == 0 and abs(coef2) > 0 → func_index = 1
+        - If abs(coef3) > 0 → func_index = 2
         """
         scale_num = self.qurey_return_scale_num(pnum)
         
@@ -1556,7 +1578,7 @@ class FE3_Instrument(HATS_DB_Functions):
                 where inst_num = {self.inst_num}
                 and scale_num = {scale_num}
                 {ch}
-                and run_date >= '{earliest_run}'
+                and run_date BETWEEN DATE_SUB('{selected_run}', INTERVAL 60 DAY) AND DATE_ADD('{selected_run}', INTERVAL 7 DAY)
             order by run_date desc;
         """
         df = pd.DataFrame(self.db.doquery(sql))
@@ -1943,6 +1965,8 @@ class BLD1_Instrument(HATS_DB_Functions):
     def load_calcurves(self, pnum, channel, earliest_run):
         """
         Returns the calibration curves from ng_response for a given parameter number and channel.
+        
+        NOTE: I updated load_calcurves for FE3 and may need to update it for BLD1 as well!!!
         """
         scale_num = self.qurey_return_scale_num(pnum)
         
