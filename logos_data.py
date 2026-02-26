@@ -1347,7 +1347,7 @@ class MainWindow(QMainWindow):
         self.calcurves = self.instrument.load_calcurves(
             self.current_pnum,
             self.current_channel,
-            sel_time - pd.DateOffset(months=3)
+            sel_time
         )
 
         if self.calcurves.empty:
@@ -1625,8 +1625,7 @@ class MainWindow(QMainWindow):
         sel_rt = self.run['run_time'].iat[0]  # current selected run_time (UTC-aware)
 
         # ── Load & normalize curves ───────────────────────────────────────────────────
-        earliest_time = self.run['run_time'].min() - pd.DateOffset(months=6)
-        curves = self.instrument.load_calcurves(self.current_pnum, self.current_channel, earliest_time)
+        curves = self.instrument.load_calcurves(self.current_pnum, self.current_channel, sel_rt)
         REQ_COLS = ["run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
 
         if curves is None or curves.empty:
