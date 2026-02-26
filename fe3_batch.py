@@ -91,7 +91,8 @@ class FE3_batch(FE3_Instrument):
                 print(f"Processing analyte: {gas} (Parameter {pnum} channel {ch})")
                 
                 df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
-                self.upsert_mole_fractions(df)
+                if args.insert:
+                    self.upsert_mole_fractions(df)
 
             print(f"Processing complete for all analytes. Total time: {time.time() - self.t0:.2f} seconds")
         else:
@@ -103,7 +104,10 @@ class FE3_batch(FE3_Instrument):
                 ch = self.return_preferred_channel(gas)
             
             df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
-            self.upsert_mole_fractions(df)
+            #sub = df[['analysis_num', 'run_time', 'analysis_datetime', 'port_info', 'mole_fraction', 'coef0', 'coef1', 'coef2']]
+            #print(sub.loc[sub['run_time'] == '2023-11-02 15:13:59'])
+            if args.insert:
+                self.upsert_mole_fractions(df)
                                     
             print(f"Processing complete for {df.shape[0]} rows. Total time: {time.time() - self.t0:.2f} seconds")  
         
