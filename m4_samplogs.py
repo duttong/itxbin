@@ -111,12 +111,19 @@ class M4_SampleLogs(M4_Instrument):
         """ Load all .xl pressure files into a single dataframe. Drop duplicate rows. """
         dfs = []
         for file in self.xlfiles:
-            #print(file)
+            print(file)
             df = self.read_custom_xl_file(file)
-            df['dt_xl'] = pd.to_datetime(df['xl_date'].astype(str) + ' ' + df['xl_time'].astype(str))
+            # xl files can contain mixed date formats (e.g. MM/DD/YYYY and YYYY-MM-DD).
+            # Parse per-row to avoid hard failures when formats differ across files/rows.
+            df['dt_xl'] = pd.to_datetime(
+                df['xl_date'].astype(str) + ' ' + df['xl_time'].astype(str),
+                format='mixed',
+                errors='coerce'
+            )
             dfs.append(df)
             
         df = pd.concat(dfs, axis=0)
+        df = df.dropna(subset=['dt_xl'])
         df['dt_sync'] = df['dt_xl'] + pd.Timedelta(minutes=-self.TIME_OFFSET)
         df = df.drop_duplicates(subset='dt_xl', keep='first')
         df = df.set_index('dt_xl')
