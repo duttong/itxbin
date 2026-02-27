@@ -5,10 +5,19 @@ import argparse
 import pandas as pd
 from pandas.tseries.offsets import DateOffset
 from pathlib import Path
-from warnings import warn
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 from logos_instruments import FE3_Instrument as fe3_inst
+
+
+def _custom_formatwarning(message, category, filename, lineno, line=None):
+    """A custom warning formatter that omits the source code line."""
+    return f'{filename}:{lineno}: {category.__name__}: {message}\n'
+
+
+warnings.formatwarning = _custom_formatwarning
+
 
 class FE3_Prepare(fe3_inst):
     """ Class for preparing data for the HATS DB. This class is used to prepare data
@@ -82,7 +91,7 @@ class FE3_Prepare(fe3_inst):
             try:
                 data = json.loads(path.read_text())
             except Exception as e:
-                warn(f"Failed to parse {path!r}: {e}")
+                warnings.warn(f"Failed to parse {path!r}: {e}")
                 return None
             return {
                 'time':    self.return_datetime(path),
@@ -150,11 +159,7 @@ class FE3_Prepare(fe3_inst):
         seq_len = len(seq)
 
         if seq_len != n:
-            warn(
-                f"Seq/Data length mismatch for run {run_id}: "
-                f"{seq_len} seq chars vs {n} GC rows. "
-                "Most likely an aborted run."
-            )
+            warnings.warn(f"Seq/Data length mismatch for run {run_id}: {seq_len} seq chars vs {n} GC rows. Most likely an aborted run.")
             # keep at most n entries so we never overrun the GC data slice
             seq = seq[:n]
 
@@ -192,8 +197,7 @@ class FE3_Prepare(fe3_inst):
                 des = des[:n]
                 idx = idx[:n]
 
-            warn(f"Adjusted seq lists for run {run_id}: "
-                 f"gc rows={n}, port entries={len(des)}, flask entries={len(idx)}")
+            warnings.warn(f"Adjusted seq lists for run {run_id}: gc rows={n}, port entries={len(des)}, flask entries={len(idx)}")
 
         return des, idx
 
