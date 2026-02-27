@@ -150,10 +150,21 @@ class FE3_Prepare(fe3_inst):
         raw_ports  = df['ports'].iat[0]
         raw_flasks = df['flasks'].iat[0]
 
-        # auto‐decide whether to drop the first char by comparing lengths
+        # auto-decide whether to drop the first seq char
         if drop_initial is None:
-            # if seq is exactly one longer than rows, assume header char
+            # common case: seq has one leading setup char (junk injection) beyond GC rows
             drop_initial = (len(raw_seq) == n + 1)
+
+            # fallback: if first observed GC port aligns with seq[1] (not seq[0]), drop one
+            # this catches runs where merge_asof expands n and length-based detection is ambiguous
+            if (not drop_initial) and len(raw_seq) >= 2 and 'port' in df.columns and n:
+                p0 = df['port'].iat[0]
+                try:
+                    p0 = str(int(p0))
+                except (TypeError, ValueError):
+                    p0 = str(p0)
+                if (raw_seq[0] != p0) and (raw_seq[1] == p0):
+                    drop_initial = True
 
         seq = raw_seq[1:] if drop_initial else raw_seq
         seq_len = len(seq)
