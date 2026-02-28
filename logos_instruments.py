@@ -238,7 +238,9 @@ class HATS_DB_Functions(LOGOS_Instruments):
             # Convert pandas NaN → Python None so INSERT writes a NULL
             mf = row.mole_fraction
             mole_fraction = None if pd.isna(mf) else float(mf)
-            id = 0 if response_id is None else response_id
+            
+            # For now, we are using the same response_id for all rows in this batch (GSD 20260227)
+            #id = 0 if response_id is None else response_id
 
             params.append((
                 row.analysis_num,
