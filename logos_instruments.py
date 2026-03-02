@@ -1606,7 +1606,9 @@ class FE3_Instrument(HATS_DB_Functions):
         return df
 
 class IE3_Instrument(HATS_DB_Functions):
-    """Class for accessing IE3 specific functions in the HATS database."""
+    """Class for accessing IE3 specific functions in the HATS database.
+       Currently only one deployed at SMO, but code is structured to support multiple sites if needed in the future.
+    """
 
     RUN_TYPE_MAP = {
         "All": None,        # no filter
@@ -1619,10 +1621,12 @@ class IE3_Instrument(HATS_DB_Functions):
     def __init__(self, site: str = "smo"):
         super().__init__('ie3')
         site = site.lower()
-        valid_sites = {"smo", "mlo", "spo", "brw"}
-        if site not in valid_sites:
-            raise ValueError(f"Invalid site {site!r}. Valid sites: {sorted(valid_sites)}")
+        valid_sites_dict = self.get_valid_sites()
+        if site not in valid_sites_dict:
+            raise ValueError(f"Invalid site {site!r}. Valid sites: {sorted(valid_sites_dict.keys())}")
+
         self.site = site
+        self.site_num = valid_sites_dict[site]
         self.start_date = '20251001'
         self.gc_dir = Path(f"/hats/gc/{site}")
         self.export_dir = self.gc_dir / "results"
@@ -1646,7 +1650,36 @@ class IE3_Instrument(HATS_DB_Functions):
             int(v): k for k, v in self.analytes.items()
         }
         self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME
+        self.port_config = self._load_port_config()
         self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+
+    def get_valid_sites(self):
+        """ Returns a dictionary of valid IE3 site codes and site numbers. """
+        sql = "SELECT num, code FROM gmd.site WHERE code IN ('SMO', 'BRW', 'SPO', 'MLO');"
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            return {}
+        return dict(zip(df['code'].str.lower(), df['num']))
+
+    def _load_port_config(self):
+        """ Load port configuration once from the database. 
+            If there was a tank change, in the period of data processing, this 
+            will not capture that. But for simplicity, we assume the port configuration is stable over time.
+            TODO: if needed, we could modify this to return a time-varying configuration.
+        """
+        sql = """
+            SELECT start_datetime, site_num, port_num, abbr, serial_number FROM ng_port_info pi 
+            JOIN ng_port_inlet_types pt ON pi.port_type_num=pt.num;
+        """
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            return None
+            
+        df['start_datetime'] = pd.to_datetime(df['start_datetime'], errors='coerce', utc=True)
+        df = df.sort_values('start_datetime')
+        df['label'] = df['serial_number'].fillna(df['abbr'])
+        config = df.drop_duplicates(subset=['site_num', 'port_num'], keep='last')
+        return config[['site_num', 'port_num', 'label']]
 
     def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
         """Return run_time list for IE3 from ng_insitu_analysis."""
@@ -1793,10 +1826,30 @@ class IE3_Instrument(HATS_DB_Functions):
 
     def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add simple port labels and colors based on port number."""
-        df['port_idx'] = df['port'].astype(int)
-        df['port_label'] = df['port'].astype(int).astype(str)
-        df['port_marker'] = 'o'
+        
+        if self.port_config is not None:
+            # Merge into main dataframe
+            df = df.merge(
+                self.port_config,
+                left_on=['site_num', 'port'],
+                right_on=['site_num', 'port_num'],
+                how='left'
+            )
+            
+            # Format port_label
+            df['port_label'] = df.apply(
+                lambda row: f"{row['label']} ({int(row['port'])})" if pd.notna(row['label']) else str(int(row['port'])),
+                axis=1
+            )
+            df = df.drop(columns=['port_num', 'label'])
+        else:
+            df['port_label'] = df['port'].astype(int).astype(str)
 
+        df['port_idx'] = df['port'].astype(int)
+        df['port_marker'] = 'o'
+        df['port_info'] = df['port_label']  # for compatibility with normalization and tooltips
+
+        # Assign colors to ports using a colormap
         cmap = plt.get_cmap('tab20')
         ports = sorted(df['port'].dropna().unique())
         port_colors = {p: cmap(i % 20) for i, p in enumerate(ports)}
