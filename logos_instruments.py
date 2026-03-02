@@ -241,6 +241,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             
             # For now, we are using the same response_id for all rows in this batch (GSD 20260227)
             #id = 0 if response_id is None else response_id
+            id = response_id
 
             params.append((
                 row.analysis_num,
@@ -1229,7 +1230,8 @@ class M4_Instrument(HATS_DB_Functions):
         """
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
+            if verbose:
+                print(f"No data found for parameter {pnum} in the specified date range.")
             return pd.DataFrame()
         
         df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
@@ -1467,7 +1469,8 @@ class FE3_Instrument(HATS_DB_Functions):
         """
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
+            if verbose:
+                print(f"No data found for parameter {pnum} in the specified date range.")
             return pd.DataFrame()
         
         #print(f"Data loaded in {time.time()-t0:.4f}s, {len(df)} rows.")
@@ -1749,7 +1752,8 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
+            if verbose:
+                print(f"No data found for parameter {pnum} in the specified date range.")
             return pd.DataFrame()
 
         df['analysis_time'] = pd.to_datetime(df['analysis_time'], errors='raise', utc=True)
@@ -1909,7 +1913,8 @@ class BLD1_Instrument(HATS_DB_Functions):
         """
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
-            print(f"No data found for parameter {pnum} in the specified date range.")
+            if verbose:
+                print(f"No data found for parameter {pnum} in the specified date range.")
             return pd.DataFrame()
         
         #print(f"Data loaded in {time.time()-t0:.4f}s, {len(df)} rows.")

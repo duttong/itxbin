@@ -1626,7 +1626,7 @@ class MainWindow(QMainWindow):
 
         # ── Load & normalize curves ───────────────────────────────────────────────────
         curves = self.instrument.load_calcurves(self.current_pnum, self.current_channel, sel_rt)
-        REQ_COLS = ["run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
+        REQ_COLS = ["id", "run_date","serial_number","coef3","coef2","coef1","coef0","function","flag"]
 
         if curves is None or curves.empty:
             # Start a fresh frame with the expected schema
@@ -1709,7 +1709,12 @@ class MainWindow(QMainWindow):
             curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         else:
-            current_cal_flag = curves.loc[curves['run_time'] == sel_rt, 'flag'].iat[0]
+            match = curves.loc[curves['run_time'] == sel_rt]
+            current_cal_flag = match['flag'].iat[0]
+            if 'id' in match.columns:
+                val = match['id'].iat[0]
+                if pd.notna(val):
+                    self._save_payload['id'] = int(val)
             
         self._save_payload['flag'] = current_cal_flag
 
@@ -2119,6 +2124,64 @@ class MainWindow(QMainWindow):
                 alpha=0.9
             ))
 
+    def recalculate_dependent_data(self, response_id):
+        if response_id is None:
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            # Find all run_times that use this response_id
+            sql = f"""
+                SELECT DISTINCT a.run_time
+                FROM hats.ng_mole_fractions mf
+                JOIN hats.ng_analysis a ON mf.analysis_num = a.num
+                WHERE mf.ng_response_id = {response_id}
+            """
+            rows = self.instrument.db.doquery(sql)
+            if not rows:
+                return
+            
+            run_times = [r['run_time'] for r in rows]
+            print(f"Recalculating {len(run_times)} runs for response_id {response_id}...")
+            
+            current_run_updated = False
+            current_rt_ts = None
+            if self.current_run_time:
+                ts_str = self.current_run_time.split(" (")[0]
+                current_rt_ts = pd.to_datetime(ts_str, utc=True)
+
+            for rt in run_times:
+                rt_ts = pd.to_datetime(rt, utc=True)
+                # Use a small window to avoid precision issues with exact string matching
+                t0 = (rt_ts - timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+                t1 = (rt_ts + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+                
+                df = self.instrument.load_data(
+                    pnum=self.current_pnum,
+                    channel=self.current_channel,
+                    start_date=t0,
+                    end_date=t1,
+                    verbose=False
+                )
+                if df.empty:
+                    continue
+                
+                df = self.instrument.calc_mole_fraction(df)
+                
+                if 'ng_response_id' in df.columns:
+                    df_sub = df[df['ng_response_id'].fillna(-1).astype(int) == int(response_id)]
+                    if not df_sub.empty:
+                        self.instrument.upsert_mole_fractions(df_sub, response_id=response_id)
+                
+                if current_rt_ts is not None and rt_ts == current_rt_ts:
+                    current_run_updated = True
+
+            if current_run_updated:
+                self.load_selected_run()
+                
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def save_current_curve(self, flag_value=None):
         payload = getattr(self, "_save_payload", None)
         if payload is None:
@@ -2154,6 +2217,9 @@ class MainWindow(QMainWindow):
         #print(sql); print(params)
         self.instrument.db.doquery(sql, params)
         self.calibration_plot()
+        
+        if self._save_payload and 'id' in self._save_payload:
+            self.recalculate_dependent_data(self._save_payload['id'])
           
     def _on_legend_pick(self, event):
         art = event.artist
@@ -2612,11 +2678,32 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_save2db_text", None) is None:
             return
-        if self.selected_calc_curve is None:
-            self.instrument.upsert_mole_fractions(self.run)
+        
+        response_id = None
+        
+        # 1. Try from selected_calc_curve (if set via combo box)
+        if self.selected_calc_curve is not None and isinstance(self.calcurves, pd.DataFrame) and not self.calcurves.empty:
+            match = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]
+            if not match.empty:
+                response_id = match['id'].iat[0]
+
+        # 2. If not found, try from _save_payload (if set via selection or other means)
+        if response_id is None and self._save_payload is not None:
+            response_id = self._save_payload.get('id')
+
+        # 3. If still not found, try to use the existing ng_response_id from the data
+        if response_id is None and 'ng_response_id' in self.run.columns:
+            val = self.run['ng_response_id'].iat[0]
+            if pd.notna(val) and val != 0:
+                response_id = int(val)
+
+        if response_id is not None:
+            print(f"Saving with response_id: {response_id}")
+            self.instrument.upsert_mole_fractions(self.run, response_id=response_id)
         else:
-            id = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]['id'].iat[0]
-            self.instrument.upsert_mole_fractions(self.run, response_id=id)
+            print("Warning: No calibration ID found. Saving with NULL.")
+            self.instrument.upsert_mole_fractions(self.run, response_id=None)
+
         self.madechanges = False
         self.smoothing_changed = False
         self.gc_plot(self._current_yparam, sub_info='SAVED')
