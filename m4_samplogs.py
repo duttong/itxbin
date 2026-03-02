@@ -111,7 +111,6 @@ class M4_SampleLogs(M4_Instrument):
         """ Load all .xl pressure files into a single dataframe. Drop duplicate rows. """
         dfs = []
         for file in self.xlfiles:
-            print(file)
             df = self.read_custom_xl_file(file)
             # xl files can contain mixed date formats (e.g. MM/DD/YYYY and YYYY-MM-DD).
             # Parse per-row to avoid hard failures when formats differ across files/rows.
