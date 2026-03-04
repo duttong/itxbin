@@ -1101,7 +1101,8 @@ class TanksWidget(QWidget):
         """Query calibration mole fractions for a tank/parameter."""
         serial_safe = str(serial).replace("'", "''")
         inst_safe = str(inst_id).replace("'", "''")
-        sql = f"""
+        # this is the calibration table version
+        sql_old = f"""
             SELECT c.date, c.time, c.mixratio, c.stddev, c.num, c.run_number
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
@@ -1110,6 +1111,67 @@ class TanksWidget(QWidget):
               AND c.mixratio is not NULL
             ORDER BY c.date, c.time;
         """
+        
+        inst_num = self.instrument.inst_num
+        TANK_RUN = 'AND v.run_type_num in (4, 7)'
+        if inst_num == 192:
+            TANK_RUN = 'AND v.run_type_num = 7'
+            
+        sql = f"""
+            WITH t_preferred_channel AS (
+                SELECT
+                    t.*,
+                    IFNULL(
+                        (SELECT MIN(t2.start_date)
+                        FROM ng_preferred_channel t2
+                        WHERE t2.inst_num = t.inst_num
+                        AND t2.parameter_num = t.parameter_num
+                        AND t2.start_date > t.start_date),
+                        '9999-12-31'
+                    ) AS end_date
+                FROM ng_preferred_channel t
+            )
+            SELECT
+                v.run_time,
+                v.tank_serial_num,
+                AVG(v.mole_fraction)      AS mixratio,
+                STDDEV(v.mole_fraction)   AS stddev,
+                COUNT(*)                  AS num,
+                MIN(v.analysis_num)       AS run_number
+            FROM hats.ng_data_processing_view v
+            LEFT JOIN t_preferred_channel pc
+            ON pc.inst_num = v.inst_num
+            AND pc.parameter_num = v.parameter_num
+            AND v.run_time >= pc.start_date
+            AND v.run_time <  pc.end_date
+            WHERE v.inst_num = {inst_num}
+            AND v.parameter_num = {parameter_num}
+            {TANK_RUN}
+            AND v.data_flag = '...'
+            #AND v.tank_serial_num IS NOT NULL
+            AND tank_serial_num = '{serial_safe}'
+            AND (
+                    -- If there is NO preferred-channel config for this inst/parameter, allow all channels
+                    NOT EXISTS (
+                        SELECT 1
+                        FROM ng_preferred_channel p
+                        WHERE p.inst_num = v.inst_num
+                        AND p.parameter_num = v.parameter_num
+                    )
+                    -- Otherwise, require the preferred channel for the active date window
+                    OR v.channel = pc.channel
+                )
+            GROUP BY
+                v.run_time,
+                v.tank_serial_num
+            HAVING
+                mixratio IS NOT NULL
+                AND mixratio != 0
+                AND num > 3
+            ORDER BY
+                v.run_time,
+                v.tank_serial_num;
+                """
         try:
             df = pd.DataFrame(self.instrument.db.doquery(sql))
             return df
@@ -1184,11 +1246,12 @@ class TanksWidget(QWidget):
                     if df is None or df.empty:
                         continue
                     df = df.copy()
-                    date_part = pd.to_datetime(df["date"], errors="coerce")
-                    time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
-                    if time_part.isna().all():
-                        time_part = pd.to_timedelta(0)
-                    df["datetime"] = date_part + time_part
+                    #date_part = pd.to_datetime(df["date"], errors="coerce")
+                    #time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
+                    #if time_part.isna().all():
+                    #    time_part = pd.to_timedelta(0)
+                    #df["datetime"] = date_part + time_part
+                    df["datetime"] = pd.to_datetime(df["run_time"], errors="coerce")
                     df["mixratio"] = pd.to_numeric(df["mixratio"], errors="coerce")
                     df["stddev"] = pd.to_numeric(df["stddev"], errors="coerce")
                     if fill_date:
