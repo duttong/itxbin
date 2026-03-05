@@ -17,8 +17,6 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import pandas as pd
-import colorsys
-import time
 import sys
 from collections import defaultdict
 
@@ -1246,6 +1244,7 @@ class TanksWidget(QWidget):
                     if df is None or df.empty:
                         continue
                     df = df.copy()
+                    # This logic is for the old calibration table; the new view already has a run_time timestamp column
                     #date_part = pd.to_datetime(df["date"], errors="coerce")
                     #time_part = pd.to_timedelta(df["time"].astype(str).str.strip(), errors="coerce")
                     #if time_part.isna().all():
@@ -1336,63 +1335,66 @@ class TanksWidget(QWidget):
             if idx >= 0:
                 analyte_combo.setCurrentIndex(idx)
 
-            def _on_combo_changed(name: str):
+            reload_button = QPushButton("Reload")
+
+            def _do_plot_for_analyte(name: str):
                 if not name:
                     return
-                new_pnum = (self.instrument.analytes or {}).get(name)
-                if new_pnum is None:
+                pnum = (self.instrument.analytes or {}).get(name)
+                if pnum is None:
                     self._toast("Invalid parameter number for selection.")
                     return
-                new_channel = self._analyte_channel(name)
+                channel = self._analyte_channel(name)
                 analyte_combo.setStyleSheet("background-color: gold;")
                 analyte_combo.setEnabled(False)
+                reload_button.setText("...")
+                reload_button.setEnabled(False)
                 try:
                     QApplication.processEvents()
                 except Exception:
                     pass
                 try:
-                    if not _plot_for(name, new_pnum, new_channel):
+                    if not _plot_for(name, pnum, channel):
                         self._toast("No calibration data found for the selected tanks/parameter.")
                 finally:
                     analyte_combo.setStyleSheet("")
                     analyte_combo.setEnabled(True)
+                    reload_button.setText("Reload")
+                    reload_button.setEnabled(True)
+
+            def _on_combo_changed(name: str):
+                _do_plot_for_analyte(name)
+
+            def _on_reload_clicked():
+                _do_plot_for_analyte(analyte_combo.currentText())
 
             analyte_combo.currentTextChanged.connect(_on_combo_changed)
+            reload_button.clicked.connect(_on_reload_clicked)
             fig._analyte_combo = analyte_combo
 
-            def _step_analyte(delta: int):
-                if analyte_combo.count() == 0:
-                    return
-                idx = analyte_combo.currentIndex()
-                new_idx = idx + delta
-                if new_idx < 0 or new_idx >= analyte_combo.count():
-                    return
-                analyte_combo.blockSignals(True)
-                analyte_combo.setCurrentIndex(new_idx)
-                analyte_combo.blockSignals(False)
-                _on_combo_changed(analyte_combo.currentText())
-
-            fig._analyte_shortcuts = []
-            for seq, delta in (("Ctrl+Shift+Up", -1), ("Ctrl+Shift+Down", 1)):
-                sc = QShortcut(QKeySequence(seq), fig.canvas)
-                sc.activated.connect(lambda d=delta: _step_analyte(d))
-                fig._analyte_shortcuts.append(sc)
+            combo_container = QWidget()
+            combo_layout = QHBoxLayout()
+            combo_layout.setContentsMargins(0, 0, 0, 0)
+            combo_layout.setSpacing(4)
+            combo_layout.addWidget(analyte_combo)
+            combo_layout.addWidget(reload_button)
+            combo_container.setLayout(combo_layout)
 
             toolbar = getattr(getattr(fig.canvas, "manager", None), "toolbar", None)
             if toolbar is not None and hasattr(toolbar, "addWidget"):
                 spacer = QWidget()
                 spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                 toolbar.addWidget(spacer)
-                toolbar.addWidget(analyte_combo)
+                toolbar.addWidget(combo_container)
                 fig._analyte_combo_spacer = spacer
             else:
-                analyte_combo.setParent(fig.canvas)
-                analyte_combo.show()
+                combo_container.setParent(fig.canvas)
+                combo_container.show()
 
                 def _reposition_combo(_event=None):
                     margin = 12
-                    x = max(margin, fig.canvas.width() - analyte_combo.sizeHint().width() - margin)
-                    analyte_combo.move(x, margin)
+                    x = max(margin, fig.canvas.width() - combo_container.sizeHint().width() - margin)
+                    combo_container.move(x, margin)
 
                 fig.canvas.mpl_connect("resize_event", _reposition_combo)
                 _reposition_combo()
