@@ -1165,11 +1165,11 @@ class TanksWidget(QWidget):
             HAVING
                 mixratio IS NOT NULL
                 AND mixratio != 0
-                AND num > 3
+                AND num >= 3            # Require at least 3 measurements for a valid calibration point
             ORDER BY
                 v.run_time,
                 v.tank_serial_num;
-                """
+        """
         try:
             df = pd.DataFrame(self.instrument.db.doquery(sql))
             return df
