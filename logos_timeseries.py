@@ -707,10 +707,10 @@ class TimeseriesWidget(QWidget):
         controls.addWidget(self.hide_flagged)
 
         # Plot button
-        self.plot_button = QPushButton("Mole Fractions Plot")
+        self.plot_button = QPushButton("Mole Fractions Figure")
         self.plot_button.clicked.connect(self.timeseries_plot)
         controls.addWidget(self.plot_button)
-        self.rel_plot_button = QPushButton("Relative Std Plot")
+        self.rel_plot_button = QPushButton("Relative Stddev Figure")
         self.rel_plot_button.clicked.connect(self.rel_stddev_plot)
         controls.addWidget(self.rel_plot_button)
 
