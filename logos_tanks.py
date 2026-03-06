@@ -611,8 +611,14 @@ class TanksWidget(QWidget):
             self.tanks_status.setText(empty_msg or "No tanks found for that selection.")
             return
 
-        self.tanks_status.setText(f"{len(tanks)} tanks found.")
-        cols = 6
+        num_tanks = len(tanks)
+        self.tanks_status.setText(f"{num_tanks} tanks found.")
+
+        if num_tanks > 60:
+            # Keep the number of tanks per row at 15 or less
+            cols = math.ceil(num_tanks / 15)
+        else:
+            cols = 6
         for idx, tank in enumerate(tanks):
             serial = None
             use_short = None
