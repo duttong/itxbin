@@ -1108,25 +1108,6 @@ class TimeseriesWidget(QWidget):
             self.main_window.current_run_time = str(run_time)
             # no need for the apply button highlight
             self.main_window.apply_date_btn.setStyleSheet("")
-        # ----- Set default selection -----
-        self.set_current_analyte(self.current_analyte)
-        
-        # ------ Flagging options ------
-        self.hide_flagged = QCheckBox("Hide flagged data")
-        self.hide_flagged.setChecked(True)
-        controls.addWidget(self.hide_flagged)
-
-        # Plot button
-        self.plot_button = QPushButton("Mole Fractions Plot")
-        self.plot_button.clicked.connect(self.timeseries_plot)
-        controls.addWidget(self.plot_button)
-
-        self.rel_plot_button = QPushButton("Relative Std Plot")
-        self.rel_plot_button.clicked.connect(self.rel_stddev_plot)
-        controls.addWidget(self.rel_plot_button)
-
-        controls.addStretch()
-        self.setLayout(controls)
 
     # --- Helpers ---
     def set_current_analyte(self, analyte_name: str | None):
