@@ -1,9 +1,9 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip
+    QToolTip, QSizePolicy, QApplication, QShortcut
 )
-from PyQt5.QtGui import QCursor
+from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
 
 from matplotlib.widgets import Button, RadioButtons
@@ -57,8 +57,11 @@ class TimeseriesFigure:
         self.dataset_handles = {}
         self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
 
+        self._setup_toolbar_widgets()
+        self._setup_shortcuts()
         self._build_plot()
         self._fig.canvas.mpl_connect("close_event", self._on_close)
+        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
 
     # ────────────────────────────────────────────────────────────
     def _on_close(self, evt):
@@ -67,6 +70,56 @@ class TimeseriesFigure:
             self.parent_widget.open_figures.remove(self)
         except ValueError:
             pass
+
+    def _setup_toolbar_widgets(self):
+        analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
+        if not analyte_names:
+            analyte_names = [self.analyte]
+        
+        self.analyte_combo = QComboBox()
+        self.analyte_combo.addItems(analyte_names)
+        idx = self.analyte_combo.findText(self.analyte, Qt.MatchExactly)
+        if idx >= 0:
+            self.analyte_combo.setCurrentIndex(idx)
+
+        self.reload_btn = QPushButton("Reload")
+
+        self.analyte_combo.currentTextChanged.connect(self._on_analyte_changed)
+        self.reload_btn.clicked.connect(self._on_reload_clicked)
+
+        combo_container = QWidget()
+        combo_layout = QHBoxLayout()
+        combo_layout.setContentsMargins(0, 0, 0, 0)
+        combo_layout.setSpacing(4)
+        combo_layout.addWidget(self.analyte_combo)
+        combo_layout.addWidget(self.reload_btn)
+        combo_container.setLayout(combo_layout)
+
+        toolbar = getattr(getattr(self._fig.canvas, "manager", None), "toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "addWidget"):
+            spacer = QWidget()
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            toolbar.addWidget(spacer)
+            toolbar.addWidget(combo_container)
+        else:
+            combo_container.setParent(self._fig.canvas)
+            combo_container.show()
+
+    def _setup_shortcuts(self):
+        self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
+        self.prev_shortcut.activated.connect(self._prev_analyte)
+        self.next_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Down"), self._fig.canvas)
+        self.next_shortcut.activated.connect(self._next_analyte)
+
+    def _prev_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx > 0:
+            self.analyte_combo.setCurrentIndex(idx - 1)
+
+    def _next_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx < self.analyte_combo.count() - 1:
+            self.analyte_combo.setCurrentIndex(idx + 1)
 
     # ────────────────────────────────────────────────────────────
     def _build_plot(self):
@@ -161,9 +214,6 @@ class TimeseriesFigure:
         # ─── Apply dataset + site visibility rules ───
         self._apply_visibility()
 
-        # ─── Reload Button ───
-        self._add_reload_button_below(site_legend)
-
         # Axes labels and cosmetics
         self._ax.set_xlabel("Sample datetime")
         self._ax.set_ylabel("Mole fraction")
@@ -172,9 +222,6 @@ class TimeseriesFigure:
         plt.xticks(rotation=45)
         plt.show(block=False)
 
-        # Events
-        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
-        self._fig.canvas.mpl_connect("resize_event", self._reposition_reload_under_legend)
 
     def _apply_visibility(self):
         """Enforce visibility = site_visibility AND dataset_visibility for all artists."""
@@ -197,107 +244,36 @@ class TimeseriesFigure:
                     a.set_picker(5 if vis else False)   # False disables picking
         self._fig.canvas.draw_idle()
 
-    # ────────────────────────────────────────────────────────────
-    def _add_reload_button_below(self, legend):
-        self._fig.canvas.draw()
-        renderer = self._fig.canvas.get_renderer()
-        leg_bbox = legend.get_window_extent(renderer=renderer).transformed(self._fig.transFigure.inverted())
-
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox.width * 0.9
-        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
-        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
-
-        self._reload_ax = self._fig.add_axes([btn_x, btn_y, btn_w, btn_h])
-        self._reload_btn = Button(self._reload_ax, "Reload")
-        self._reload_btn.on_clicked(lambda evt: self._on_reload_clicked())
+    def _on_analyte_changed(self, text):
+        self.analyte = text
+        if "(" in text and ")" in text:
+            _, channel = text.split("(", 1)
+            self.channel = channel.strip(") ")
+        else:
+            self.channel = None
+        self._on_reload_clicked()
 
     # ────────────────────────────────────────────────────────────
     def _on_reload_clicked(self):
         """Reload data from parent instrument and preserve per-dataset visibility."""
-        # Flash the button yellow while reloading
-        self._reload_btn.label.set_text("Reloading...")
-        self._reload_ax.set_facecolor("#fff8cc")  # soft yellow
-        self._fig.canvas.draw_idle()
-
-        plt.pause(0.05)  # brief visual feedback (keeps GUI responsive)
+        self.reload_btn.setText("Reloading...")
+        self.reload_btn.setEnabled(False)
+        QApplication.processEvents()
 
         # Query using the analyte/channel that this figure was created with
         df = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
         if df.empty:
             print("No data to reload")
-            self._reload_btn.label.set_text("Reload")
-            self._reload_ax.set_facecolor("lightgray")
-            self._fig.canvas.draw_idle()
+            self.reload_btn.setText("Reload")
+            self.reload_btn.setEnabled(True)
             return
 
-        # Remove old dataset artists before redrawing
-        for handles in self.dataset_handles.values():
-            for h in handles:
-                try:
-                    h.remove()
-                except Exception:
-                    pass
-        self.dataset_handles.clear()
+        self.df = df
+        self._ax.clear()
+        self._build_plot()
 
-        # Redraw datasets
-        datasets = self.parent_widget.build_datasets(df)
-        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
-        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
-        
-        self._rebuild_data_artists()
-
-        # Re-apply per-dataset visibility preferences
-        for label, visible in self.dataset_visibility.items():
-            if label in self.dataset_handles:
-                for h in self.dataset_handles[label]:
-                    h.set_visible(visible)
-
-        # Re-tag artists with site (if needed)
-        for site, artists in self.dataset_handles.items():
-            for artist in artists:
-                artist._site = getattr(artist, "_site", site)
-
-        # Rebuild site→artists map from dataset_handles
-        self._site_artists = {}
-        for _, artists in self.dataset_handles.items():
-            for a in artists:
-                site = getattr(a, "_site", None)
-                if site:
-                    self._site_artists.setdefault(site, []).append(a)
-
-        # Ensure _site_visibility has entries for all current sites (default True if new)
-        if not hasattr(self, "_site_visibility"):
-            self._site_visibility = {}
-        for s in self._site_artists.keys():
-            self._site_visibility.setdefault(s, True)
-
-        # Enforce combined visibility
-        self._apply_visibility()
-
-        # Restore limits
-        self._ax.set_xlim(xlim)
-        self._ax.set_ylim(ylim)
-
-        # Restore button to normal
-        self._reload_btn.label.set_text("Reload")
-        self._reload_ax.set_facecolor("lightgray")
-        self._fig.canvas.draw_idle()
-
-    def _reposition_reload_under_legend(self, event=None):
-        if not getattr(self, "_site_legend", None) or not getattr(self, "_reload_ax", None):
-            return
-        fig = self._site_legend.axes.figure
-        renderer = fig.canvas.get_renderer()
-        leg_bbox = self._site_legend.get_window_extent(renderer=renderer).transformed(fig.transFigure.inverted())
-        pad_h = 0.01
-        btn_h = 0.035
-        btn_w = leg_bbox.width * 0.9
-        btn_x = leg_bbox.x0 + (leg_bbox.width - btn_w) / 2
-        btn_y = max(0.02, leg_bbox.y0 - pad_h - btn_h)
-        self._reload_ax.set_position([btn_x, btn_y, btn_w, btn_h])
-        fig.canvas.draw_idle()
+        self.reload_btn.setText("Reload")
+        self.reload_btn.setEnabled(True)
 
     def _rebuild_data_artists(self):
         """Cache only artists that represent data points we can tooltip (have _meta)."""
@@ -453,14 +429,84 @@ class RelStdDevFigure:
         self._radio_ax = None
         self._radio = None
 
+        self._setup_toolbar_widgets()
+        self._setup_shortcuts()
         self._build_plot()
         self._fig.canvas.mpl_connect("close_event", self._on_close)
+        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
 
     def _on_close(self, evt):
         try:
             self.parent_widget.open_figures.remove(self)
         except (ValueError, AttributeError):
             pass
+
+    def _setup_toolbar_widgets(self):
+        analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
+        if not analyte_names:
+            analyte_names = [self.analyte]
+        
+        self.analyte_combo = QComboBox()
+        self.analyte_combo.addItems(analyte_names)
+        idx = self.analyte_combo.findText(self.analyte, Qt.MatchExactly)
+        if idx >= 0:
+            self.analyte_combo.setCurrentIndex(idx)
+
+        self.reload_btn = QPushButton("Reload")
+
+        self.analyte_combo.currentTextChanged.connect(self._on_analyte_changed)
+        self.reload_btn.clicked.connect(self._on_reload_clicked)
+
+        combo_container = QWidget()
+        combo_layout = QHBoxLayout()
+        combo_layout.setContentsMargins(0, 0, 0, 0)
+        combo_layout.setSpacing(4)
+        combo_layout.addWidget(self.analyte_combo)
+        combo_layout.addWidget(self.reload_btn)
+        combo_container.setLayout(combo_layout)
+
+        toolbar = getattr(getattr(self._fig.canvas, "manager", None), "toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "addWidget"):
+            spacer = QWidget()
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            toolbar.addWidget(spacer)
+            toolbar.addWidget(combo_container)
+        else:
+            combo_container.setParent(self._fig.canvas)
+            combo_container.show()
+
+    def _setup_shortcuts(self):
+        self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
+        self.prev_shortcut.activated.connect(self._prev_analyte)
+        self.next_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Down"), self._fig.canvas)
+        self.next_shortcut.activated.connect(self._next_analyte)
+
+    def _prev_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx > 0:
+            self.analyte_combo.setCurrentIndex(idx - 1)
+
+    def _next_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx < self.analyte_combo.count() - 1:
+            self.analyte_combo.setCurrentIndex(idx + 1)
+
+    def _on_analyte_changed(self, text):
+        self.analyte = text
+        self._on_reload_clicked()
+
+    def _on_reload_clicked(self):
+        self.reload_btn.setText("Reloading...")
+        self.reload_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        df = self.parent_widget.query_rel_stddev_data(analyte=self.analyte)
+        if not df.empty:
+            self.df = df
+            self._build_plot()
+        
+        self.reload_btn.setText("Reload")
+        self.reload_btn.setEnabled(True)
 
     def _build_plot(self):
         if self._radio_ax is not None:
@@ -568,7 +614,6 @@ class RelStdDevFigure:
 
         self._add_x_axis_radio_buttons(self.site_legend)
 
-        self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
         self._fig.canvas.draw_idle()
         plt.show(block=False)
 
@@ -845,14 +890,14 @@ class TimeseriesWidget(QWidget):
         fig = RelStdDevFigure(self, df, analyte)
         self.open_figures.append(fig)
 
-    def query_rel_stddev_data(self):
+    def query_rel_stddev_data(self, analyte=None):
         """Query data for the relative standard deviation plot."""
         start_year = self.start_year.value()
         end_year = self.end_year.value()
         start_date = f"{start_year}-01-01"
         end_date = f"{end_year}-12-31"
 
-        analyte = self.analyte_combo.currentText()
+        analyte = analyte or self.analyte_combo.currentText()
         pnum = self.analytes.get(analyte)
         if pnum is None:
             return pd.DataFrame()
@@ -1211,14 +1256,14 @@ class TimeseriesWidget(QWidget):
         fig = RelStdDevFigure(self, df, analyte)
         self.open_figures.append(fig)
 
-    def query_rel_stddev_data(self):
+    def query_rel_stddev_data(self, analyte=None):
         """Query data for the relative standard deviation plot."""
         start_year = self.start_year.value()
         end_year = self.end_year.value()
         start_date = f"{start_year}-01-01"
         end_date = f"{end_year}-12-31"
 
-        analyte = self.analyte_combo.currentText()
+        analyte = analyte or self.analyte_combo.currentText()
         pnum = self.analytes.get(analyte)
         if pnum is None:
             return pd.DataFrame()

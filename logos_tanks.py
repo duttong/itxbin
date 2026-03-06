@@ -1337,6 +1337,21 @@ class TanksWidget(QWidget):
 
             reload_button = QPushButton("Reload")
 
+            def _prev_analyte():
+                idx = analyte_combo.currentIndex()
+                if idx > 0:
+                    analyte_combo.setCurrentIndex(idx - 1)
+
+            def _next_analyte():
+                idx = analyte_combo.currentIndex()
+                if idx < analyte_combo.count() - 1:
+                    analyte_combo.setCurrentIndex(idx + 1)
+
+            fig._prev_sc = QShortcut(QKeySequence("Ctrl+Shift+Up"), fig.canvas)
+            fig._prev_sc.activated.connect(_prev_analyte)
+            fig._next_sc = QShortcut(QKeySequence("Ctrl+Shift+Down"), fig.canvas)
+            fig._next_sc.activated.connect(_next_analyte)
+
             def _do_plot_for_analyte(name: str):
                 if not name:
                     return
