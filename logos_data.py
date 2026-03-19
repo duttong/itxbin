@@ -653,6 +653,17 @@ class MainWindow(QMainWindow):
         if self.instrument.inst_id == 'm4':
             self.current_pnum = 20
             self.set_current_analyte('HFC134a')
+        elif self.instrument.inst_id == 'ie3':
+            default_name = getattr(self.instrument, "DEFAULT_ANALYTE_NAME", None)
+            if default_name in self.analytes:
+                if '(' in default_name and ')' in default_name:
+                    self.current_channel = default_name.split('(')[1].split(')')[0].strip()
+                else:
+                    self.current_channel = None
+                self.current_pnum = int(self.analytes[default_name])
+                if self.analyte_combo is not None:
+                    self.analyte_combo.setCurrentText(default_name)
+                self.apply_dates()
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
@@ -3198,7 +3209,7 @@ class RunNotesDialog(QDialog):
     def get_notes(self):
         return self.text_edit.toPlainText()
     
-def get_instrument_for(instrument_id: str):
+def get_instrument_for(instrument_id: str, site: str | None = None):
     """
     Look up the Instrument class, instantiate.
     """
@@ -3211,7 +3222,10 @@ def get_instrument_for(instrument_id: str):
             f"Could not find class '{inst}_Instrument' in logos_instruments.py"
         )
 
-    instrument = instrument_cls()
+    if inst == "IE3" and site:
+        instrument = instrument_cls(site=site)
+    else:
+        instrument = instrument_cls()
 
     return instrument
 
@@ -3226,11 +3240,17 @@ def main():
         choices=insts,  # Use the instruments list
         help=f"Specify which instrument {insts} to use (default: m4)"
     )
+    parser.add_argument(
+        "--site",
+        type=str,
+        default=None,
+        help="IE3 site code (e.g. smo, brw, spo, mlo). Used only with instrument=ie3.",
+    )
     
     args = parser.parse_args()
     
     try:
-        instrument = get_instrument_for(args.instrument)
+        instrument = get_instrument_for(args.instrument, site=args.site)
     except ValueError as e:
         print(e)
         sys.exit(1)

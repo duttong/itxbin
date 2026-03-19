@@ -1748,6 +1748,8 @@ class IE3_Instrument(HATS_DB_Functions):
             start_date = start_date.strftime("%Y-%m-01")
 
         channel_str = f"AND m.channel = '{channel}'" if channel else ""
+        if site_num is None:
+            site_num = self.site_num
         site_str = f"AND a.site_num = {site_num}" if site_num is not None else ""
 
         if verbose:
