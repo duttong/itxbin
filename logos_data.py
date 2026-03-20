@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import sys
+import html
 from datetime import datetime, timedelta, timezone
 import numpy as np
 import math
@@ -18,9 +19,10 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QToolTip, QFileDialog, QDialog,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QStyle,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction, QPlainTextEdit,
-    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut
+    QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
+    QLineEdit, QTextEdit
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QUrl
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -34,6 +36,8 @@ from matplotlib.widgets import RectangleSelector
 
 
 import logos_instruments as li
+from logos_agent_tools import LOGOSDataAgentTools
+from logos_ai_agent import LOGOSChatAgent
 from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
 
@@ -272,6 +276,7 @@ class MainWindow(QMainWindow):
         self._fit_method_manual = False
         self._fit_method_last_context = None
         self._fit_method_updating = False
+        self.logos_ai_dialog = None
 
         self.init_ui()
 
@@ -281,6 +286,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         h_main = QHBoxLayout()
         central.setLayout(h_main)
+        self.h_main = h_main
 
         # Create a matplotlib figure and canvas
         self.figure = Figure()
@@ -616,6 +622,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.timeseries_tab, "Timeseries")
         self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
         tabs.addTab(self.tanks_tab, "Tanks")
+        self.logos_ai_tab = LOGOSAITab(instrument=self.instrument, main_window=self, parent=self)
+        tabs.addTab(self.logos_ai_tab, "LOGOS AI")
         self.tabs = tabs
         tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -674,6 +682,16 @@ class MainWindow(QMainWindow):
         current = self.tabs.currentWidget() if self.tabs else None
         if not current:
             return
+        if current is self.logos_ai_tab:
+            self.left_container.setMinimumWidth(0)
+            self.left_container.setMaximumWidth(16777215)
+            self.left_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.right_placeholder.setVisible(False)
+            self.right_spacer.setVisible(False)
+            self.h_main.setStretch(0, 1)
+            self.h_main.setStretch(1, 0)
+            self.h_main.setStretch(2, 0)
+            return
         if current is self.timeseries_tab:
             width = max(
                 self.processing_pane.sizeHint().width(),
@@ -686,9 +704,46 @@ class MainWindow(QMainWindow):
             if width <= 0:
                 width = current.minimumWidth() or current.width() or 420
         self.left_container.setFixedWidth(width)
+        self.left_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         show_plot = current is self.processing_pane
         self.right_placeholder.setVisible(show_plot)
         self.right_spacer.setVisible(not show_plot)
+        self.h_main.setStretch(0, 0)
+        self.h_main.setStretch(1, 1)
+        self.h_main.setStretch(2, 1)
+
+    def undock_logos_ai_tab(self):
+        if self.logos_ai_dialog is not None or self.tabs is None:
+            return
+        idx = self.tabs.indexOf(self.logos_ai_tab)
+        if idx >= 0:
+            self.tabs.removeTab(idx)
+        self.logos_ai_tab.setParent(None)
+        self.logos_ai_dialog = LOGOSAIDialog(self, self.logos_ai_tab)
+        self.logos_ai_tab.set_popout_state(True)
+        self.logos_ai_tab.show()
+        self.logos_ai_dialog.show()
+        self.logos_ai_dialog.raise_()
+        self.logos_ai_dialog.activateWindow()
+        if self.tabs.count():
+            self.tabs.setCurrentIndex(0)
+            self._on_tab_changed(self.tabs.currentIndex())
+
+    def redock_logos_ai_tab(self):
+        if self.tabs is None:
+            return
+        self.logos_ai_tab.setParent(None)
+        if self.tabs.indexOf(self.logos_ai_tab) < 0:
+            self.tabs.addTab(self.logos_ai_tab, "LOGOS AI")
+        self.logos_ai_tab.set_popout_state(False)
+        self.tabs.setCurrentWidget(self.logos_ai_tab)
+        self.logos_ai_tab.show()
+        dialog = self.logos_ai_dialog
+        self.logos_ai_dialog = None
+        if dialog is not None:
+            dialog.hide()
+            dialog.deleteLater()
+        self._on_tab_changed(self.tabs.currentIndex())
 
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
@@ -3208,6 +3263,266 @@ class RunNotesDialog(QDialog):
 
     def get_notes(self):
         return self.text_edit.toPlainText()
+
+
+class LOGOSAIWorker(QtCore.QObject):
+    finished = QtCore.pyqtSignal(str)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, agent: LOGOSChatAgent, prompt: str, context: dict[str, object]):
+        super().__init__()
+        self.agent = agent
+        self.prompt = prompt
+        self.context = context
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            reply = self.agent.ask(self.prompt, context=self.context)
+            self.finished.emit(reply)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class LOGOSAIDialog(QDialog):
+    def __init__(self, main_window, ai_tab):
+        super().__init__(main_window)
+        self.main_window = main_window
+        self.ai_tab = ai_tab
+        self.setWindowTitle(f"{main_window.instrument.inst_id.upper()} LOGOS AI")
+        self.resize(900, 700)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        ai_tab.setParent(self)
+        layout.addWidget(ai_tab)
+        ai_tab.show()
+
+    def closeEvent(self, event):
+        self.main_window.redock_logos_ai_tab()
+        event.accept()
+
+
+class LOGOSAITab(QWidget):
+    """Free-form chat UI backed by LOGOSChatAgent."""
+
+    def __init__(self, instrument, main_window=None, parent=None):
+        super().__init__(parent)
+        self.instrument = instrument
+        self.main_window = main_window
+        self.tools = LOGOSDataAgentTools(inst_id=instrument.inst_id)
+        self.agent = LOGOSChatAgent(self.tools)
+        self._worker_thread = None
+        self._worker = None
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.transcript = QTextEdit()
+        self.transcript.setReadOnly(True)
+        self.transcript.setAcceptRichText(True)
+        self.transcript.setStyleSheet("""
+            QTextEdit {
+                background: #fbfbf8;
+                border: 1px solid #c7c7bf;
+                border-radius: 8px;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.transcript, stretch=1)
+
+        quick_row = QHBoxLayout()
+        for label, prompt in [
+            ("Site Info", "Give me a site description for SMO."),
+            ("Recent Pairs", "Return the 10 most recent flask pairs filled at SMO."),
+            ("Pairs + Met", "What flask type and winds did the last 5 SMO pairs have?"),
+            ("Compare Year", "What is the mean CFC-11 value of 2025 at SMO and compare to the most recent flasks?"),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _checked=False, text=prompt: self._set_prompt(text))
+            quick_row.addWidget(btn)
+        quick_row.addStretch()
+        self.popout_btn = QPushButton("Pop Out")
+        self.popout_btn.clicked.connect(self.toggle_popout)
+        quick_row.addWidget(self.popout_btn)
+        layout.addLayout(quick_row)
+
+        layout.addSpacing(14)
+
+        prompt_label = QLabel("Ask LOGOS AI")
+        prompt_label.setStyleSheet("font-weight: 700; color: #222;")
+        layout.addWidget(prompt_label)
+
+        input_row = QHBoxLayout()
+        self.prompt_edit = QLineEdit()
+        self.prompt_edit.setPlaceholderText("Ask a LOGOS data question...")
+        self.prompt_edit.setStyleSheet("""
+            QLineEdit {
+                border: 2px solid #6a6a62;
+                border-radius: 8px;
+                padding: 8px 10px;
+                background: #fffef8;
+            }
+            QLineEdit:focus {
+                border: 2px solid #1f4f8a;
+            }
+        """)
+        self.prompt_edit.returnPressed.connect(self.submit_prompt)
+        input_row.addWidget(self.prompt_edit, stretch=1)
+
+        ask_btn = QPushButton("Ask")
+        ask_btn.clicked.connect(self.submit_prompt)
+        self.ask_btn = ask_btn
+        input_row.addWidget(ask_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.clicked.connect(self.clear_chat)
+        input_row.addWidget(clear_btn)
+        layout.addLayout(input_row)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #666;")
+        layout.addWidget(self.status_label)
+
+    def _set_prompt(self, text: str):
+        self.prompt_edit.setText(text)
+        self.prompt_edit.setFocus()
+
+    def _append_message(self, role: str, content: str):
+        if role == "assistant":
+            body = self._style_ai_reply(content)
+            prefix_html = '<span style="font-weight:700;color:#1f4f8a;">LOGOS AI:</span>'
+        else:
+            body = html.escape(content).replace("\n", "<br>")
+            prefix_html = '<span style="font-weight:700;color:#333;">You:</span>'
+
+        message_html = (
+            '<div style="margin: 0 0 12px 0; line-height: 1.45;">'
+            f'{prefix_html} '
+            f'<span style="color:#222;">{body}</span>'
+            '</div>'
+        )
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertHtml(message_html)
+        cursor.insertBlock()
+        self.transcript.setTextCursor(cursor)
+        self.transcript.ensureCursorVisible()
+
+    def _style_ai_reply(self, content: str) -> str:
+        image_urls: list[str] = []
+
+        def _capture_image(match):
+            raw_path = match.group(1).strip()
+            image_urls.append(QUrl.fromLocalFile(raw_path).toString())
+            return ""
+
+        content = re.sub(r"\[\[image:(.+?)\]\]", _capture_image, content)
+        text = html.escape(content).replace("\n", "<br>")
+
+        # Highlight pair IDs in dark blue.
+        text = re.sub(
+            r"(\bpair(?:\s+id|_id(?:_num)?)?\b\s*[=:]?\s*)(\d+)",
+            r'\1<b><font color="#123f73">\2</font></b>',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # Highlight sample_ids / flask IDs in blue.
+        text = re.sub(
+            r"((?:sample_ids?|sample id(?:s)?|flask ids?|flask_id|flask id(?:s)?)\s*[=:]?\s*)(\[[^\]]+\]|[\d,\s]+)",
+            lambda m: (
+                f'{m.group(1)}'
+                f'<b><font color="#2563a6">{m.group(2).strip()}</font></b>'
+            ),
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # Slight emphasis for bullet markers.
+        text = text.replace("- ", '<b><font color="#555555">- </font></b>', 1000)
+        for image_url in image_urls:
+            text += (
+                '<div style="margin-top:10px;">'
+                f'<img src="{image_url}" width="900" style="border:1px solid #c7c7bf; '
+                'border-radius:6px; background:#ffffff;" />'
+                '</div>'
+            )
+        return text
+
+    def _current_context(self) -> dict[str, object]:
+        parent = self.parent()
+        current_analyte = None
+        if hasattr(parent, "analyte_combo") and parent.analyte_combo is not None:
+            current_analyte = parent.analyte_combo.currentText()
+        return {
+            "current_analyte": current_analyte,
+            "current_run_time": getattr(parent, "current_run_time", None),
+            "current_channel": getattr(parent, "current_channel", None),
+            "current_pnum": getattr(parent, "current_pnum", None),
+        }
+
+    def _set_busy(self, busy: bool):
+        self.prompt_edit.setEnabled(not busy)
+        self.ask_btn.setEnabled(not busy)
+        self.status_label.setText("Thinking..." if busy else "")
+        if not busy:
+            QtCore.QTimer.singleShot(0, self.prompt_edit.setFocus)
+
+    def set_popout_state(self, is_detached: bool):
+        self.popout_btn.setText("Dock Back" if is_detached else "Pop Out")
+
+    def toggle_popout(self):
+        if self.main_window is None:
+            return
+        if getattr(self.main_window, "logos_ai_dialog", None) is not None:
+            self.main_window.redock_logos_ai_tab()
+        else:
+            self.main_window.undock_logos_ai_tab()
+
+    def clear_chat(self):
+        self.transcript.clear()
+        self.agent.reset_conversation()
+        self.status_label.setText("Conversation cleared.")
+        self.prompt_edit.setFocus()
+
+    def submit_prompt(self):
+        prompt = self.prompt_edit.text().strip()
+        if not prompt:
+            self.prompt_edit.setFocus()
+            return
+        if self._worker_thread is not None:
+            return
+        self._append_message("user", prompt)
+        self.prompt_edit.clear()
+        self._set_busy(True)
+
+        self._worker_thread = QtCore.QThread(self)
+        self._worker = LOGOSAIWorker(self.agent, prompt, self._current_context())
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_agent_reply)
+        self._worker.failed.connect(self._on_agent_error)
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.failed.connect(self._worker_thread.quit)
+        self._worker_thread.finished.connect(self._cleanup_worker)
+        self._worker_thread.start()
+
+    def _on_agent_reply(self, reply: str):
+        self._append_message("assistant", reply)
+        self._set_busy(False)
+
+    def _on_agent_error(self, error_text: str):
+        self._append_message("assistant", f"Error: {error_text}")
+        self._set_busy(False)
+
+    def _cleanup_worker(self):
+        if self._worker is not None:
+            self._worker.deleteLater()
+        if self._worker_thread is not None:
+            self._worker_thread.deleteLater()
+        self._worker = None
+        self._worker_thread = None
+        self.prompt_edit.setFocus()
     
 def get_instrument_for(instrument_id: str, site: str | None = None):
     """
