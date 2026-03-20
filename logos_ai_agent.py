@@ -37,7 +37,8 @@ def _load_dotenv(dotenv_path: str | Path = ".env") -> None:
         os.environ[key] = value
 
 
-_load_dotenv()
+for _dotenv_path in (".env", "/hats/gc/itxbin/.env"):
+    _load_dotenv(_dotenv_path)
 
 
 class LOGOSChatAgent:
