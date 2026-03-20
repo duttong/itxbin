@@ -721,6 +721,7 @@ class MainWindow(QMainWindow):
         self.logos_ai_tab.setParent(None)
         self.logos_ai_dialog = LOGOSAIDialog(self, self.logos_ai_tab)
         self.logos_ai_tab.set_popout_state(True)
+        self.logos_ai_tab._render_transcript()
         self.logos_ai_tab.show()
         self.logos_ai_dialog.show()
         self.logos_ai_dialog.raise_()
@@ -737,6 +738,7 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(self.logos_ai_tab, "LOGOS AI")
         self.logos_ai_tab.set_popout_state(False)
         self.tabs.setCurrentWidget(self.logos_ai_tab)
+        self.logos_ai_tab._render_transcript()
         self.logos_ai_tab.show()
         dialog = self.logos_ai_dialog
         self.logos_ai_dialog = None
@@ -3295,6 +3297,7 @@ class LOGOSAIDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         ai_tab.setParent(self)
         layout.addWidget(ai_tab)
+        ai_tab._render_transcript()
         ai_tab.show()
 
     def closeEvent(self, event):
@@ -3313,6 +3316,7 @@ class LOGOSAITab(QWidget):
         self.agent = LOGOSChatAgent(self.tools)
         self._worker_thread = None
         self._worker = None
+        self._message_history: list[tuple[str, str]] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -3388,23 +3392,28 @@ class LOGOSAITab(QWidget):
         self.prompt_edit.setFocus()
 
     def _append_message(self, role: str, content: str):
+        self._message_history.append((role, content))
+        self._render_transcript()
+
+    def _message_html(self, role: str, content: str) -> str:
         if role == "assistant":
             body = self._style_ai_reply(content)
             prefix_html = '<span style="font-weight:700;color:#1f4f8a;">LOGOS AI:</span>'
         else:
             body = html.escape(content).replace("\n", "<br>")
             prefix_html = '<span style="font-weight:700;color:#333;">You:</span>'
-
-        message_html = (
+        return (
             '<div style="margin: 0 0 12px 0; line-height: 1.45;">'
             f'{prefix_html} '
             f'<span style="color:#222;">{body}</span>'
             '</div>'
         )
+
+    def _render_transcript(self):
+        html_blocks = [self._message_html(role, content) for role, content in self._message_history]
+        self.transcript.setHtml("".join(html_blocks))
         cursor = self.transcript.textCursor()
         cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml(message_html)
-        cursor.insertBlock()
         self.transcript.setTextCursor(cursor)
         self.transcript.ensureCursorVisible()
 
@@ -3450,7 +3459,7 @@ class LOGOSAITab(QWidget):
         return text
 
     def _current_context(self) -> dict[str, object]:
-        parent = self.parent()
+        parent = self.main_window or self.parent()
         current_analyte = None
         if hasattr(parent, "analyte_combo") and parent.analyte_combo is not None:
             current_analyte = parent.analyte_combo.currentText()
@@ -3480,6 +3489,7 @@ class LOGOSAITab(QWidget):
             self.main_window.undock_logos_ai_tab()
 
     def clear_chat(self):
+        self._message_history.clear()
         self.transcript.clear()
         self.agent.reset_conversation()
         self.status_label.setText("Conversation cleared.")
