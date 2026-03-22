@@ -46,7 +46,7 @@ def get_bld1_sample_columns() -> list[str]:
                     continue
                 try:
                     with open(f) as fh:
-                        cols = pd.read_csv(fh, skiprows=1, nrows=0,
+                        cols = pd.read_csv(fh, skiprows=2, nrows=0,
                                            sep=r'\s+', skipinitialspace=True,
                                            engine='python').columns.tolist()
                     return [c for c in cols if c != 'Tsec*100']
@@ -72,9 +72,9 @@ def read_bld1_eng_file(path: Path) -> pd.DataFrame | None:
 
     try:
         with open(path) as fh:
-            df = pd.read_csv(fh, skiprows=1, header=0,
+            df = pd.read_csv(fh, skiprows=2, header=0,
                              sep=r'\s+', skipinitialspace=True,
-                             engine='python', low_memory=False)
+                             engine='python')
     except Exception as e:
         print(f'Warning: could not read {path}: {e}', file=sys.stderr)
         return None
