@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/ccg/python/miniconda3/envs/prod6/bin/python3
 """Entry point for the engineering data viewer."""
 
 import sys

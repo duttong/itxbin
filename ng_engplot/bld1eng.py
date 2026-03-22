@@ -93,7 +93,7 @@ def read_bld1_eng_file(path: Path) -> pd.DataFrame | None:
 class BLD1EngWidget(EngPlotWidget):
     instrument_name = 'BLD1'
     time_col = 'bld1_time'
-    config_path = Path.home() / '.bld1eng.json'
+    config_key = 'bld1'
 
     # ---------------------------------------------------------------- abstract impl
 

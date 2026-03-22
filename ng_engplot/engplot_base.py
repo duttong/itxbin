@@ -52,6 +52,7 @@ class EngPlotWidget(QWidget):
 
     instrument_name: str = 'Unknown'
     time_col: str = 'time'
+    config_key: str = 'default'
     config_path: Path = Path.home() / '.engplot.json'
 
     def __init__(self, parent=None):
@@ -70,13 +71,20 @@ class EngPlotWidget(QWidget):
     def _load_config(self) -> dict:
         if self.config_path.exists():
             try:
-                return json.loads(self.config_path.read_text())
+                return json.loads(self.config_path.read_text()).get(self.config_key, {})
             except Exception:
                 pass
         return {}
 
     def _save_config(self):
-        self.config_path.write_text(json.dumps(self.config, indent=2))
+        data = {}
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+            except Exception:
+                pass
+        data[self.config_key] = self.config
+        self.config_path.write_text(json.dumps(data, indent=2))
 
     # ---------------------------------------------------------------- abstract
 

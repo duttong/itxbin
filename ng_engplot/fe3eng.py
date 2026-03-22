@@ -54,7 +54,7 @@ def read_fe3_eng_file(path: Path) -> pd.DataFrame | None:
 class FE3EngWidget(EngPlotWidget):
     instrument_name = 'FE3'
     time_col = 'fe3_time'
-    config_path = Path.home() / '.fe3eng.json'
+    config_key = 'fe3'
 
     # ---------------------------------------------------------------- abstract impl
 

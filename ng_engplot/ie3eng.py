@@ -49,7 +49,7 @@ def scan_ie3_date_range(site: str) -> tuple[str, str] | None:
 class IE3EngWidget(EngPlotWidget):
     instrument_name = 'IE3'
     time_col = 'ie3_time'
-    config_path = Path.home() / '.ie3eng.json'
+    config_key = 'ie3'
 
     def __init__(self, default_site: str = 'smo', parent=None):
         self._default_site = default_site  # must be set before super().__init__()
