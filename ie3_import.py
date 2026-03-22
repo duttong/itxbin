@@ -93,6 +93,21 @@ class IE3_import(GCwerks_Import):
             logging.info('Extracting %d members from %s', len(members), tgz_path)
             tf.extractall(path=dest_incoming, members=members)
 
+    def _remove_last_itx(self, incoming: Path):
+        """Remove the most recent *.itx* file from the most recent YYYYMMDD subdir."""
+        subdirs = sorted(incoming.glob('????????'), reverse=True)
+        if not subdirs:
+            logging.info('No date subdirectories found in %s', incoming)
+            return
+        latest_dir = subdirs[0]
+        try:
+            last_file = max(latest_dir.rglob('*.itx*'), key=lambda p: p.stat().st_mtime)
+        except ValueError:
+            logging.info('No *.itx* files found in %s', latest_dir)
+            return
+        logging.info('Removing partial itx file: %s', last_file)
+        self._remove_path(last_file)
+
     def sync_incoming(self):
         if self.past_days < 1:
             raise ValueError('--past-days must be >= 1')
@@ -104,6 +119,7 @@ class IE3_import(GCwerks_Import):
         logging.info('SMO incoming sync for %d day(s): %s',
                      len(days), ', '.join(f'{d:%Y-%m-%d}' for d in days))
 
+        last_incoming = None
         for day in days:
             fname = f'{day:%Y%m%d}.tgz'
             src = self.source / fname
@@ -121,6 +137,10 @@ class IE3_import(GCwerks_Import):
             self._extract_replace(copied_tgz, incoming)
             logging.info('Removing copied tarball: %s', copied_tgz)
             copied_tgz.unlink(missing_ok=True)
+            last_incoming = incoming
+
+        if last_incoming is not None:
+            self._remove_last_itx(last_incoming)
 
     def main(self, import_method, *args, **kwargs):
         self.sync_incoming()
