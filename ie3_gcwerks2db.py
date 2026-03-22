@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pandas as pd
+from ie3_export import IE3_Process
 from pandas.tseries.offsets import DateOffset
 import typer
 
@@ -210,6 +211,7 @@ class IE3_GCwerks2DB:
             self.db.doMultiInsert(mole_sql, params, all=True)
 
     def load(self, duration_months=2, year=None):
+        IE3_Process(site=self.site).export_onefile()
         df = self.read_gcwerks()
         df = self._normalize_measurements(df)
         df = self._assign_run_time(df)
