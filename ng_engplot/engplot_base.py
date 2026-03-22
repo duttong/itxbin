@@ -258,7 +258,7 @@ class EngPlotWidget(QWidget):
         margin = (visible.max() - visible.min()) * 0.05 or abs(visible.mean()) * 0.05 or 0.1
         return (visible.min() - margin, visible.max() + margin)
 
-    def _stats_label(self, col: str, xlim: tuple | None) -> str:
+    def _stats_label(self, col: str, xlim: tuple | None, ylim: tuple | None = None) -> str:
         df = self._df
         if xlim is not None:
             x0 = mdates.num2date(xlim[0]).replace(tzinfo=None)
@@ -266,8 +266,10 @@ class EngPlotWidget(QWidget):
             s = df.loc[(df.index >= x0) & (df.index <= x1), col].dropna()
         else:
             s = df[col].dropna()
+        if ylim is not None:
+            s = s[(s >= ylim[0]) & (s <= ylim[1])]
         if s.empty:
-            return col
+            return f'{col}  nan ± nan'
         return f'{col}  {s.mean():.3f} ± {s.std():.3f}'
 
     def _on_xlim_changed(self, ax):
@@ -281,12 +283,14 @@ class EngPlotWidget(QWidget):
         if self._left_col and self._left_col in self._df.columns:
             legend = self._ax1.get_legend()
             if legend and legend.texts:
-                legend.texts[0].set_text(self._stats_label(self._left_col, xlim))
+                legend.texts[0].set_text(
+                    self._stats_label(self._left_col, xlim, self._ax1.get_ylim()))
         if self._right_col and self._right_col != 'None' and self._ax2 is not None \
                 and self._right_col in self._df.columns:
             legend = self._ax2.get_legend()
             if legend and legend.texts:
-                legend.texts[0].set_text(self._stats_label(self._right_col, xlim))
+                legend.texts[0].set_text(
+                    self._stats_label(self._right_col, xlim, self._ax2.get_ylim()))
         self.canvas.draw_idle()
 
     def _plot(self, df: pd.DataFrame, left_col: str, right_col: str, resample: str):
