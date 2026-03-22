@@ -11,8 +11,9 @@ import matplotlib.dates as mdates
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from PyQt5.QtCore import QDate
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel,
+    QApplication, QComboBox, QDateEdit, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -57,7 +58,6 @@ class EngPlotWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = self._load_config()
-        self._end_date = None
         self._df = None
         self._left_col = None
         self._right_col = None
@@ -123,9 +123,15 @@ class EngPlotWidget(QWidget):
         top = QHBoxLayout()
         self._build_extra_controls(top)
 
-        top.addWidget(QLabel('Through:'))
-        self.end_date_label = QLabel('—')
-        top.addWidget(self.end_date_label)
+        most_recent_btn = QPushButton('Most Recent')
+        most_recent_btn.clicked.connect(self._go_to_most_recent)
+        top.addWidget(most_recent_btn)
+
+        top.addWidget(QLabel('End date:'))
+        self.end_date = QDateEdit()
+        self.end_date.setCalendarPopup(True)
+        self.end_date.setDisplayFormat('yyyy-MM-dd')
+        top.addWidget(self.end_date)
 
         top.addWidget(QLabel('Last N days:'))
         self.days_spin = QSpinBox()
@@ -191,14 +197,17 @@ class EngPlotWidget(QWidget):
 
     # ---------------------------------------------------------------- slots
 
+    def _go_to_most_recent(self):
+        self.end_date.setDate(self.end_date.maximumDate())
+
     def setup_date_range(self):
-        """Scan data directories to find the latest date; pre-populate combos."""
+        """Scan data directories to set date picker bounds, defaulting to most recent."""
         dr = self.scan_date_range()
         if dr:
-            date_max = dr[1]  # YYYYMMDD string
-            from datetime import date as _date
-            self._end_date = _date(int(date_max[:4]), int(date_max[4:6]), int(date_max[6:8]))
-            self.end_date_label.setText(self._end_date.strftime('%Y-%m-%d'))
+            date_min, date_max = dr
+            self.end_date.setMinimumDate(QDate.fromString(date_min, 'yyyyMMdd'))
+            self.end_date.setMaximumDate(QDate.fromString(date_max, 'yyyyMMdd'))
+            self.end_date.setDate(QDate.fromString(date_max, 'yyyyMMdd'))
         cols = self.get_columns()
         if cols:
             self._populate_trace_combos(cols)
@@ -210,9 +219,7 @@ class EngPlotWidget(QWidget):
             self.resample_combo.setCurrentIndex(idx)
 
     def _load_and_plot(self):
-        if self._end_date is None:
-            return
-        end_date = self._end_date
+        end_date = self.end_date.date().toPyDate()
         n_days = self.days_spin.value()
         resample = self.resample_combo.currentText()
 
