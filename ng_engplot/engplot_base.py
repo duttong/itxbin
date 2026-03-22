@@ -266,6 +266,8 @@ class EngPlotWidget(QWidget):
             s = df.loc[(df.index >= x0) & (df.index <= x1), col].dropna()
         else:
             s = df[col].dropna()
+        if s.empty:
+            return col
         return f'{col}  {s.mean():.3f} ± {s.std():.3f}'
 
     def _on_xlim_changed(self, ax):
