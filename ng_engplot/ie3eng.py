@@ -145,9 +145,14 @@ class IE3EngWidget(EngPlotWidget):
         port_names = _get_port_names(site)
         ssv0 = pd.to_numeric(self._df['SSV0'], errors='coerce').round()
 
+        # Exclude first 5s after each SSV0 transition
+        is_transition = (ssv0 != ssv0.shift(1)).fillna(True)
+        last_transition = self._df.index.to_series().where(is_transition).ffill()
+        steady = (self._df.index - last_transition).dt.total_seconds() >= 5
+
         stats = []
         for port in SSV_ODD_PORTS:
-            s = self._df.loc[ssv0 == port, 'flow_samp'].dropna()
+            s = self._df.loc[(ssv0 == port) & steady, 'flow_samp'].dropna()
             description = port_names.get(port, f'Port {port}')
             if s.empty:
                 stats.append(dict(port=port, description=description,
