@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from ie3eng import IE3EngWidget
 from fe3eng import FE3EngWidget
-# from bld1eng import BLD1EngWidget  # TODO: add when bld1 loader is ready
+from bld1eng import BLD1EngWidget
 
 
 class EngPlotWindow(QMainWindow):
@@ -18,7 +18,7 @@ class EngPlotWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(IE3EngWidget(), 'IE3')
         tabs.addTab(FE3EngWidget(), 'FE3')
-        # tabs.addTab(BLD1EngWidget(), 'BLD1')
+        tabs.addTab(BLD1EngWidget(), 'BLD1')
 
         self.setCentralWidget(tabs)
         self.resize(1400, 800)
