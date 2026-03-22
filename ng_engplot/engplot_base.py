@@ -18,6 +18,15 @@ from PyQt5.QtWidgets import (
 )
 
 RESAMPLE_OPTIONS = ['1s', '10s', '1min', '5min', '10min']
+
+
+class _EngToolbar(NavigationToolbar2QT):
+    """Navigation toolbar whose Home button autoscales to all loaded data."""
+
+    def home(self, *args):
+        for ax in self.canvas.figure.axes:
+            ax.autoscale()
+        self.canvas.draw_idle()
 AUTO_RESAMPLE_DAYS = 3
 
 
@@ -149,7 +158,7 @@ class EngPlotWidget(QWidget):
 
         self.figure = Figure(figsize=(12, 6))
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        self.toolbar = _EngToolbar(self.canvas, self)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
 
