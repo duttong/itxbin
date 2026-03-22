@@ -127,7 +127,7 @@ class EngPlotWidget(QWidget):
         most_recent_btn.clicked.connect(self._go_to_most_recent)
         top.addWidget(most_recent_btn)
 
-        top.addWidget(QLabel('Start date:'))
+        top.addWidget(QLabel('End date:'))
         self.start_date = QDateEdit()
         self.start_date.setCalendarPopup(True)
         self.start_date.setDisplayFormat('yyyy-MM-dd')
