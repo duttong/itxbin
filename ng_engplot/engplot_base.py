@@ -11,7 +11,7 @@ import matplotlib.dates as mdates
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PyQt5.QtCore import QDate
+from PyQt5.QtCore import QDate, QTimer
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QDateEdit, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QVBoxLayout, QWidget,
@@ -23,10 +23,15 @@ RESAMPLE_OPTIONS = ['1s', '10s', '1min', '5min', '10min']
 class _EngToolbar(NavigationToolbar2QT):
     """Navigation toolbar whose Home button autoscales to all loaded data."""
 
+    def __init__(self, canvas, parent, widget):
+        super().__init__(canvas, parent)
+        self._widget = widget
+
     def home(self, *args):
         for ax in self.canvas.figure.axes:
             ax.autoscale()
         self.canvas.draw_idle()
+        self._widget._update_legend_stats()
 AUTO_RESAMPLE_DAYS = 3
 
 
@@ -166,7 +171,7 @@ class EngPlotWidget(QWidget):
 
         self.figure = Figure(figsize=(12, 6))
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = _EngToolbar(self.canvas, self)
+        self.toolbar = _EngToolbar(self.canvas, self, self)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
 
@@ -264,12 +269,19 @@ class EngPlotWidget(QWidget):
         return f'{col}  {s.mean():.3f} ± {s.std():.3f}'
 
     def _on_xlim_changed(self, ax):
-        xlim = ax.get_xlim()
+        # Defer until matplotlib has finished updating all limits
+        QTimer.singleShot(0, self._update_legend_stats)
+
+    def _update_legend_stats(self):
+        if self._df is None or self._ax1 is None:
+            return
+        xlim = self._ax1.get_xlim()
         if self._left_col and self._left_col in self._df.columns:
             legend = self._ax1.get_legend()
             if legend and legend.texts:
                 legend.texts[0].set_text(self._stats_label(self._left_col, xlim))
-        if self._right_col and self._right_col != 'None' and self._right_col in self._df.columns:
+        if self._right_col and self._right_col != 'None' and self._ax2 is not None \
+                and self._right_col in self._df.columns:
             legend = self._ax2.get_legend()
             if legend and legend.texts:
                 legend.texts[0].set_text(self._stats_label(self._right_col, xlim))
@@ -294,8 +306,7 @@ class EngPlotWidget(QWidget):
         has_right = right_col and right_col != 'None' and right_col in df.columns
 
         if has_left:
-            ax1.plot(df.index, df[left_col], color=color_left, linewidth=0.8,
-                     label=self._stats_label(left_col, xlim))
+            ax1.plot(df.index, df[left_col], color=color_left, linewidth=0.8, label=left_col)
             ax1.set_ylabel(left_col, color=color_left)
             ax1.tick_params(axis='y', labelcolor=color_left)
             ax1.ticklabel_format(style='plain', axis='y', useOffset=False)
@@ -304,8 +315,7 @@ class EngPlotWidget(QWidget):
         if has_right:
             ax2 = ax1.twinx()
             self._ax2 = ax2
-            ax2.plot(df.index, df[right_col], color=color_right, linewidth=0.8,
-                     label=self._stats_label(right_col, xlim))
+            ax2.plot(df.index, df[right_col], color=color_right, linewidth=0.8, label=right_col)
             ax2.set_ylabel(right_col, color=color_right)
             ax2.tick_params(axis='y', labelcolor=color_right)
             ax2.ticklabel_format(style='plain', axis='y', useOffset=False)
@@ -329,6 +339,7 @@ class EngPlotWidget(QWidget):
 
         ax1.callbacks.connect('xlim_changed', self._on_xlim_changed)
         self.canvas.draw()
+        self._update_legend_stats()
 
     # ---------------------------------------------------------------- state
 
