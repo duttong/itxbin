@@ -1,146 +1,110 @@
 #!/usr/bin/env python3
-"""IE3 Engineering Data Viewer — PyQt5/Matplotlib timeseries display."""
+"""Base widget for engineering data timeseries viewers."""
 
-import argparse
-import gzip
 import json
 import sys
-from datetime import date, timedelta
+from abc import abstractmethod
+from datetime import date
 from pathlib import Path
 
 import matplotlib.dates as mdates
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PyQt5.QtCore import QDate, Qt
+from PyQt5.QtCore import QDate
 from PyQt5.QtWidgets import (
     QApplication, QComboBox, QDateEdit, QHBoxLayout, QLabel,
-    QMainWindow, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
-SITE_ROOT = Path('/hats/gc')
-CONFIG_PATH = Path.home() / '.ie3eng.json'
-VALID_SITES = ['smo', 'mlo', 'spo', 'brw']
 RESAMPLE_OPTIONS = ['1s', '10s', '1min', '5min', '10min']
-GSV_COLS = {'GSV1', 'GSV2', 'GSV3'}
-AUTO_RESAMPLE_DAYS = 3      # >= this many days → 1min, else 1s
+AUTO_RESAMPLE_DAYS = 3
 
 
-def load_header(site: str) -> list[str] | None:
-    path = SITE_ROOT / site / 'eng_header.txt'
-    if not path.exists():
-        return None
-    text = path.read_text()
-    cols = [c.strip() for c in text.replace('\n', ',').split(',') if c.strip()]
-    return cols or None
+class EngPlotWidget(QWidget):
+    """Shared UI + plotting base for engineering data instruments.
 
+    Subclasses must define class attributes:
+        instrument_name : str   — shown in plot title
+        time_col        : str   — datetime index column name (filtered from trace combos)
+        config_path     : Path  — where to persist UI state as JSON
 
-def scan_date_range(site: str) -> tuple[str, str] | None:
-    """Return (date_min, date_max) strings YYYYMMDD by scanning directory names."""
-    dirs = sorted(
-        d.name for d in (SITE_ROOT / site).glob('??/incoming/????????')
-        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
-    )
-    return (dirs[0], dirs[-1]) if dirs else None
+    Subclasses must implement:
+        scan_date_range()  → tuple[str, str] | None   YYYYMMDD min/max
+        get_columns()      → list[str]                for initial combo population
+        load_data(end_date, n_days, resample) → pd.DataFrame | None
 
+    Optional hooks for subclasses:
+        _build_extra_controls(top)     add widgets before the date picker
+        _extra_restore_state(state)    restore instrument-specific state (before setup_date_range)
+        _extra_save_state()            return dict of extra keys to persist
+        _connect_extra_signals()       connect instrument-specific signals after restore
+    """
 
-def scan_current_year_start(site: str) -> str | None:
-    """Return the first YYYYMMDD directory in the current year's YY/incoming/."""
-    yy = date.today().strftime('%y')
-    dirs = sorted(
-        d.name for d in (SITE_ROOT / site / yy / 'incoming').glob('????????')
-        if d.is_dir() and d.name.isdigit() and len(d.name) == 8
-    )
-    return dirs[0] if dirs else None
+    instrument_name: str = 'Unknown'
+    time_col: str = 'time'
+    config_path: Path = Path.home() / '.engplot.json'
 
-
-def read_eng_file(path: Path, cols: list[str]) -> pd.DataFrame | None:
-    try:
-        opener = gzip.open(path, 'rt') if path.name.endswith('.gz') else open(path, 'r')
-        with opener as fh:
-            return pd.read_csv(fh, header=None, names=cols, low_memory=False)
-    except Exception as e:
-        print(f'Warning: could not read {path}: {e}', file=sys.stderr)
-        return None
-
-
-def load_data(site: str, end_date: date, n_days: int, resample: str) -> pd.DataFrame | None:
-    cols = load_header(site)
-    if cols is None:
-        print(f'No header file found for site {site}', file=sys.stderr)
-        return None
-
-    start_date = end_date - timedelta(days=n_days - 1)
-    frames = []
-    current = start_date
-    while current <= end_date:
-        day_dir = SITE_ROOT / site / current.strftime('%y') / 'incoming' / current.strftime('%Y%m%d')
-        if day_dir.is_dir():
-            for f in sorted(day_dir.glob('eng*.csv*')):
-                df = read_eng_file(f, cols)
-                if df is not None:
-                    frames.append(df)
-        current += timedelta(days=1)
-
-    if not frames:
-        return None
-
-    df = pd.concat(frames, ignore_index=True)
-    df['ie3_time'] = pd.to_datetime(df['ie3_time'], utc=True, errors='coerce').dt.tz_convert(None)
-    df = df.dropna(subset=['ie3_time']).drop_duplicates('ie3_time').sort_values('ie3_time').set_index('ie3_time')
-
-    # Encode GSV string columns as integer category codes
-    for col in GSV_COLS:
-        if col in df.columns:
-            df[col] = df[col].astype('category').cat.codes  # -1=NaN, 0/1/2=categories
-
-    # Coerce any remaining object columns to numeric
-    for col in df.select_dtypes(include='object').columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    if resample != '1s':
-        df = df.resample(resample).mean()
-
-    return df
-
-
-class IE3EngWindow(QMainWindow):
-
-    def __init__(self, default_site: str = 'smo'):
-        super().__init__()
-        self.setWindowTitle('IE3 Engineering Data Viewer')
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.config = self._load_config()
+        self._df = None
+        self._left_col = None
+        self._right_col = None
+        self._ax1 = None
+        self._ax2 = None
         self._build_ui()
-        self._restore_state(default_site)
+        self.restore_state()
 
-    # ------------------------------------------------------------------ config
+    # ---------------------------------------------------------------- config
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
+        if self.config_path.exists():
             try:
-                return json.loads(CONFIG_PATH.read_text())
+                return json.loads(self.config_path.read_text())
             except Exception:
                 pass
         return {}
 
     def _save_config(self):
-        CONFIG_PATH.write_text(json.dumps(self.config, indent=2))
+        self.config_path.write_text(json.dumps(self.config, indent=2))
 
-    # ------------------------------------------------------------------ UI
+    # ---------------------------------------------------------------- abstract
+
+    @abstractmethod
+    def scan_date_range(self) -> tuple[str, str] | None:
+        """Return (YYYYMMDD_min, YYYYMMDD_max) by scanning data directories."""
+
+    @abstractmethod
+    def get_columns(self) -> list[str]:
+        """Return column names for pre-populating trace combos on startup."""
+
+    @abstractmethod
+    def load_data(self, end_date: date, n_days: int, resample: str) -> pd.DataFrame | None:
+        """Load, clean, and resample; return DataFrame indexed by time."""
+
+    # ---------------------------------------------------------------- hooks
+
+    def _build_extra_controls(self, top: QHBoxLayout):
+        """Hook: add instrument-specific controls before the date picker."""
+
+    def _extra_save_state(self) -> dict:
+        """Hook: extra key/value pairs to merge into persisted state."""
+        return {}
+
+    def _extra_restore_state(self, state: dict):
+        """Hook: restore instrument-specific state (called before setup_date_range)."""
+
+    def _connect_extra_signals(self):
+        """Hook: connect instrument-specific signals after state is restored."""
+
+    # ---------------------------------------------------------------- UI
 
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        layout = QVBoxLayout(self)
 
-        # Top controls row
         top = QHBoxLayout()
-
-        top.addWidget(QLabel('Site:'))
-        self.site_combo = QComboBox()
-        self.site_combo.addItems(VALID_SITES)
-        self.site_combo.currentTextChanged.connect(self._on_site_changed)
-        top.addWidget(self.site_combo)
+        self._build_extra_controls(top)
 
         most_recent_btn = QPushButton('Most Recent Data')
         most_recent_btn.clicked.connect(self._go_to_most_recent)
@@ -170,7 +134,6 @@ class IE3EngWindow(QMainWindow):
         top.addStretch()
         layout.addLayout(top)
 
-        # Trace selector row
         trace_row = QHBoxLayout()
         trace_row.addWidget(QLabel('Left trace:'))
         self.left_combo = QComboBox()
@@ -184,20 +147,17 @@ class IE3EngWindow(QMainWindow):
         trace_row.addStretch()
         layout.addLayout(trace_row)
 
-        # Matplotlib canvas + toolbar
         self.figure = Figure(figsize=(12, 6))
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
 
-        self.resize(1300, 750)
-
     def _populate_trace_combos(self, columns: list[str]):
         left_cur = self.left_combo.currentText()
         right_cur = self.right_combo.currentText()
 
-        plottable = [c for c in columns if c != 'ie3_time']
+        plottable = [c for c in columns if c != self.time_col]
 
         self.left_combo.blockSignals(True)
         self.right_combo.blockSignals(True)
@@ -218,27 +178,20 @@ class IE3EngWindow(QMainWindow):
         self.left_combo.blockSignals(False)
         self.right_combo.blockSignals(False)
 
-    # ------------------------------------------------------------------ slots
+    # ---------------------------------------------------------------- slots
 
     def _go_to_most_recent(self):
         self.start_date.setDate(self.start_date.maximumDate())
 
-    def _on_site_changed(self, site: str):
-        dr = scan_date_range(site)
+    def setup_date_range(self):
+        """Scan data directories to set date picker bounds; pre-populate combos."""
+        dr = self.scan_date_range()
         if dr:
             date_min, date_max = dr
-            qmin = QDate.fromString(date_min, 'yyyyMMdd')
-            qmax = QDate.fromString(date_max, 'yyyyMMdd')
-            self.start_date.setMinimumDate(qmin)
-            self.start_date.setMaximumDate(qmax)
-            self.start_date.setDate(qmax)
-            if site not in self.config:
-                self.config[site] = {}
-            self.config[site]['date_min'] = date_min
-            self.config[site]['date_max'] = date_max
-            self._save_config()
-
-        cols = load_header(site)
+            self.start_date.setMinimumDate(QDate.fromString(date_min, 'yyyyMMdd'))
+            self.start_date.setMaximumDate(QDate.fromString(date_max, 'yyyyMMdd'))
+            self.start_date.setDate(QDate.fromString(date_max, 'yyyyMMdd'))
+        cols = self.get_columns()
         if cols:
             self._populate_trace_combos(cols)
 
@@ -249,19 +202,16 @@ class IE3EngWindow(QMainWindow):
             self.resample_combo.setCurrentIndex(idx)
 
     def _load_and_plot(self):
-        site = self.site_combo.currentText()
         end_date = self.start_date.date().toPyDate()
         n_days = self.days_spin.value()
         resample = self.resample_combo.currentText()
-        left_col = self.left_combo.currentText()
-        right_col = self.right_combo.currentText()
 
         self.load_btn.setText('Loading…')
         self.load_btn.setEnabled(False)
         QApplication.processEvents()
 
         try:
-            df = load_data(site, end_date, n_days, resample)
+            df = self.load_data(end_date, n_days, resample)
         finally:
             self.load_btn.setText('Load')
             self.load_btn.setEnabled(True)
@@ -270,18 +220,14 @@ class IE3EngWindow(QMainWindow):
             print('No data found for selected range.', file=sys.stderr)
             return
 
-        # Refresh combos with actual loaded columns, preserve selection
-        self._populate_trace_combos(['ie3_time'] + list(df.columns))
-        # Re-read selections after combo refresh
+        self._populate_trace_combos([self.time_col] + list(df.columns))
         left_col = self.left_combo.currentText()
         right_col = self.right_combo.currentText()
-
         self._plot(df, left_col, right_col, resample)
 
-    # ------------------------------------------------------------------ plot
+    # ---------------------------------------------------------------- plot
 
     def _y_limits_in_view(self, df: pd.DataFrame, col: str, xlim: tuple) -> tuple | None:
-        """Return (ymin, ymax) for col within the current x view, with 5% margin."""
         x0 = mdates.num2date(xlim[0]).replace(tzinfo=None)
         x1 = mdates.num2date(xlim[1]).replace(tzinfo=None)
         visible = df.loc[(df.index >= x0) & (df.index <= x1), col].dropna()
@@ -313,10 +259,8 @@ class IE3EngWindow(QMainWindow):
         self.canvas.draw_idle()
 
     def _plot(self, df: pd.DataFrame, left_col: str, right_col: str, resample: str):
-        # Preserve zoom/pan state across trace changes
         xlim = self.figure.axes[0].get_xlim() if self.figure.axes else None
 
-        # Store state for xlim_changed callback
         self._df = df
         self._left_col = left_col
         self._right_col = right_col
@@ -351,7 +295,7 @@ class IE3EngWindow(QMainWindow):
             ax2.legend(loc='upper right', fontsize=8)
 
         title_parts = [p for p in [left_col, right_col if has_right else ''] if p]
-        ax1.set_title(f"{self.site_combo.currentText().upper()} — {', '.join(title_parts)}  [{resample}]")
+        ax1.set_title(f"{self.instrument_name} — {', '.join(title_parts)}  [{resample}]")
         self.figure.autofmt_xdate()
         self.figure.tight_layout()
 
@@ -369,27 +313,23 @@ class IE3EngWindow(QMainWindow):
         ax1.callbacks.connect('xlim_changed', self._on_xlim_changed)
         self.canvas.draw()
 
-    # ------------------------------------------------------------------ state
+    # ---------------------------------------------------------------- state
 
-    def _save_ui_state(self):
+    def save_state(self):
         self.config.update({
-            'last_site': self.site_combo.currentText(),
             'last_days': self.days_spin.value(),
             'last_resample': self.resample_combo.currentText(),
             'last_left_trace': self.left_combo.currentText(),
             'last_right_trace': self.right_combo.currentText(),
+            **self._extra_save_state(),
         })
         self._save_config()
 
-    def _restore_state(self, default_site: str):
-        site = self.config.get('last_site', default_site)
-        idx = self.site_combo.findText(site)
-        self.site_combo.setCurrentIndex(idx if idx >= 0 else 0)
-        # Force site setup in case index didn't change (no signal fired)
-        self._on_site_changed(self.site_combo.currentText())
+    def restore_state(self):
+        self._extra_restore_state(self.config)
+        self.setup_date_range()
 
-        n_days = self.config.get('last_days', 5)
-        self.days_spin.setValue(n_days)
+        self.days_spin.setValue(self.config.get('last_days', 5))
 
         resample = self.config.get('last_resample', '')
         if resample:
@@ -408,25 +348,14 @@ class IE3EngWindow(QMainWindow):
             if ri >= 0:
                 self.right_combo.setCurrentIndex(ri)
 
-        # Connect on-the-fly saving after restoring to avoid premature saves
-        self.site_combo.currentTextChanged.connect(self._save_ui_state)
-        self.days_spin.valueChanged.connect(self._save_ui_state)
-        self.resample_combo.currentTextChanged.connect(self._save_ui_state)
-        self.left_combo.currentTextChanged.connect(self._save_ui_state)
-        self.right_combo.currentTextChanged.connect(self._save_ui_state)
+        # Connect save-on-change after restoring to avoid premature saves
+        self.days_spin.valueChanged.connect(lambda _: self.save_state())
+        self.resample_combo.currentTextChanged.connect(lambda _: self.save_state())
+        self.left_combo.currentTextChanged.connect(lambda _: self.save_state())
+        self.right_combo.currentTextChanged.connect(lambda _: self.save_state())
 
-        # Auto-load when trace selection changes
+        # Auto-reload when trace selection changes
         self.left_combo.currentTextChanged.connect(self._load_and_plot)
         self.right_combo.currentTextChanged.connect(self._load_and_plot)
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='IE3 Engineering Data Viewer')
-    parser.add_argument('--site', default='smo', choices=VALID_SITES,
-                        help='Station code (default: smo)')
-    args = parser.parse_args()
-
-    app = QApplication(sys.argv)
-    win = IE3EngWindow(default_site=args.site)
-    win.show()
-    sys.exit(app.exec_())
+        self._connect_extra_signals()
