@@ -41,8 +41,8 @@ class ITX:
         self.datafreq = self.samplefreq()       # Hz
         self.name = self.chromname()
         self.chroms = self.parse_chroms()
-        if saveorig is True:
-            self.org = np.copy(self.chroms)     # save original data
+        if saveorig:
+            self.org = np.copy(self.chroms)
 
     def load(self):
         """Loads the file into memory. Supports plain and gzip-compressed files."""
@@ -71,10 +71,6 @@ class ITX:
 
         z_path = file.with_suffix('.itx.Z')
 
-        # Avoid accidental overwrite
-        #if z_path.exists():
-        #    raise FileExistsError(f"Destination file already exists: {z_path}")
-
         with file.open('rb') as f_in, gzip.open(z_path, 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
 
@@ -84,15 +80,14 @@ class ITX:
         """ Dynamically find number of channels (columns) from the first data line between BEGIN and END."""
         in_data = False
         for line in self.data:
-            if line.strip() == 'BEGIN':
+            if line == 'BEGIN':
                 in_data = True
                 continue
             if in_data:
-                if line.strip() == 'END':
+                if line == 'END':
                     break
-                # Found the first data line, count columns
                 return len(line.split())
-        return 0  # If no valid data found
+        return 0
 
     def wavenote(self):
         """ returns date and time of injection and the SSV positions.
@@ -100,7 +95,7 @@ class ITX:
             example data: X note chr4_00004, " 4; 5412; 22:21:09; 12-17-2007; 8; 31.2; 2.9; 3.0; 0.7; "
         """
         line = self.data[-2]
-        if line.find('note') > -1:
+        if 'note' in line:
             ll = line.split(';')
             date = ll[2].strip()
             time = ll[3].strip()
@@ -114,7 +109,7 @@ class ITX:
             example data: X SetScale /P x, 0, 0.25, chr1_00004, chr2_00004, chr3_00004, chr4_00004
         """
         line = self.data[-1]
-        if line.find('SetScale') > -1:
+        if 'SetScale' in line:
             rate = float(line.split(',')[2])
             return int(1/rate)
         else:
@@ -181,7 +176,7 @@ class ITX:
             return []
 
         indxthresh = 3     # largest gap in points
-        indxdiff = [indx[i+1]-indx[i] for i in range(len(indx)-1)]
+        indxdiff = np.diff(indx)
 
         pt1 = indx[0]
         groups = []
@@ -207,23 +202,19 @@ class ITX:
             for c in range(self.chans):
                 self.wide_spike_filter(c, start=start)
         else:
-            # print(f'wide filter, {ch} {start}')
             y = self.chroms[ch, :]
-            ydd = abs(np.gradient(np.gradient(y)))       # abs of 2nd derivative
-            # plt.plot(ydd)
-            # plt.show()
+            ydd = abs(np.gradient(np.gradient(y)))
             startpt = int(start)*self.datafreq
-            idx = [i for i, v in enumerate(ydd[startpt:]) if v > thresh]      # index of spikes
-            groups = self.findgroups(idx)           # group of spikes
+            idx = [i for i, v in enumerate(ydd[startpt:]) if v > thresh]
+            groups = self.findgroups(idx)
             for spike in groups:
                 pt0 = startpt + (spike[0]-1)
                 pt0 = 0 if pt0 < 0 else pt0
                 pt1 = startpt + (spike[1]+10)
                 pt1 = len(self.chroms[ch])-1 if pt1 >= len(self.chroms[ch]) else pt1
-                # replace spike with a line
                 m = (self.chroms[ch, pt1] - self.chroms[ch, pt0]) / float(pt1-pt0)
                 b = self.chroms[ch, pt0] - m*pt0
-                self.chroms[ch, pt0:pt1] = [m*x+b for x in range(pt0, pt1)]
+                self.chroms[ch, pt0:pt1] = m * np.arange(pt0, pt1) + b
 
     def savitzky_golay(self, ch, winsize=21, order=4):
         """ applies the savitzky golay smoothing algo """
@@ -232,7 +223,6 @@ class ITX:
             for c in range(self.chans):
                 self.savitzky_golay(c, winsize=winsize, order=order)
         else:
-            # print(f'Savitzky Golay {ch} {winsize} {order}')
             y = self.chroms[ch, :]
             self.chroms[ch] = savgol_filter(y, winsize, order)
 
@@ -243,29 +233,10 @@ class ITX:
 
         if ch == 'all':
             for c in range(self.chans):
-                self.chroms[c] = list(convolve1d(self.chroms[c], box_kernel, mode='nearest'))
+                self.chroms[c] = convolve1d(self.chroms[c], box_kernel, mode='nearest')
         else:
-            self.chroms[ch] = list(convolve1d(self.chroms[ch], box_kernel, mode='nearest'))
+            self.chroms[ch] = convolve1d(self.chroms[ch], box_kernel, mode='nearest')
 
-    """ Need to finish this
-    def variable_window_smooth(self, ch, winsize):
-        box_kernel0 = np.ones(winsize) / winsize
-        box_kernel1 = np.ones(winsize*2) / (winsize*2)
-        box_kernel2 = np.ones(winsize*4) / (winsize*4)
-        p1 = 2000
-        p2 = 5000
-
-        self.chroms[ch][:p1] = list(convolve1d(self.chroms[ch][:p1], box_kernel0, mode='nearest'))
-        self.chroms[ch][p1:p2] = list(convolve1d(self.chroms[ch][p1:p2], box_kernel1, mode='nearest'))
-        self.chroms[ch][p2:] = list(convolve1d(self.chroms[ch][p2:], box_kernel2, mode='nearest'))
-    
-    def running_average(self, ch, winsize):
-        if ch == 'all':
-            for c in range(self.chans):
-                self.variable_window_smooth(c, winsize)
-        else:
-            self.variable_window_smooth(ch, winsize)
-    """
 
     def o2_lock(self, channels, ref_times, threshold=1000, roll_window=10):
         """
@@ -338,12 +309,6 @@ class ITX:
         ax.set_ylabel('Response (hz)')  
         ax.set_xlabel('Time (s)')
         ax.legend()
-        #ax.set_ylim([164000, 172000])
-        #ax.axvline(x=2000/20, color='gainsboro')
-        #ax.axvline(x=5000/20, color='gainsboro')
-        # bx = fig.add_subplot(212)
-        # bx.plot(np.diff(self.org[ch, :]))
-        # bx.set_xlabel('Time (s)')
         plt.show()
 
         
@@ -369,7 +334,7 @@ class ITX_smoothfile:
         # split command up at spaces and digits
         opts = re.split('\s+|(\d+)', line[pt+1:])
         # clean up the list (remove Nones and '')
-        opts = [o for o in opts if o != None and o != '']
+        opts = [o for o in opts if o]
 
         opts_dict = {}
         opts_dict['date'] = date
@@ -394,7 +359,6 @@ class ITX_smoothfile:
             if '-go' in opts:
                 sg_ord = opts[opts.index('-go')+1]
                 opts_dict['sg_ord'] = int(sg_ord)
-            #print(f'Savitzky Golay filter, {sg_win}, {sg_ord} on channel {chan} starting on {date}')
 
         # box smoothing
         if '-b' in opts:
@@ -404,7 +368,6 @@ class ITX_smoothfile:
         opts_dict['spike'] = False
         if '-s' in opts:
             opts_dict['spike'] = True
-            #print(f'spike filter on channel {chan} starting on {date}')
 
         # apply wide spike filter
         opts_dict['wide_spike'] = False
@@ -412,7 +375,6 @@ class ITX_smoothfile:
             opts_dict['wide_spike'] = True
             wide_start = opts[opts.index('-W')+1]
             opts_dict['wide_start'] = int(wide_start)
-            #print(f'wide spike filter on channel {chan} start_time = {wide_start} starting on {date}')
 
         return opts_dict
 
@@ -420,17 +382,14 @@ class ITX_smoothfile:
         """ load smoothfile parameters and return a dataframe """
 
         print(self.smoothfile)
+        df_line = []
         with open(self.smoothfile) as file:
-            df_line = []
-            n = 0
-            while (line := file.readline().lstrip().rstrip()):
-                # skip comment lines starting with #
-                if line[0] != '#':
-                    params = self.process_smoothfile(line)
-                    df_line.append(pd.DataFrame(params, index=[n]))
-                    n += 1
+            for line in file:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    df_line.append(pd.DataFrame(self.process_smoothfile(line), index=[0]))
 
-        df = pd.concat(df_line)
+        df = pd.concat(df_line, ignore_index=True)
 
         # Either 6 or 8 character dates are allowed. They have to be consistant throughout the smoothfile.
         dateformat = len(df.iloc[0]['date'])
