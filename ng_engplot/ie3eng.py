@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pandas as pd
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QHBoxLayout, QLabel, QMainWindow,
+    QApplication, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
+    QMainWindow, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from engplot_base import EngPlotWidget
@@ -36,6 +38,56 @@ def read_eng_file(path: Path, cols: list[str]) -> pd.DataFrame | None:
     except Exception as e:
         print(f'Warning: could not read {path}: {e}', file=sys.stderr)
         return None
+
+
+SSV_ODD_PORTS = [1, 3, 5, 7, 9]
+
+# site code (uppercase) → GML site_num
+_SITE_NUMS = {'SMO': 112, 'MLO': 75, 'SPO': 113, 'BRW': 15}
+
+
+def _get_port_names(site: str) -> dict[int, str]:
+    """Return {port_num: serial_number} for odd ports at the given site."""
+    site_num = _SITE_NUMS.get(site.upper())
+    if site_num is None:
+        return {}
+    try:
+        from logos_instruments import HATS_DB_Functions
+        db = HATS_DB_Functions(inst_id='ie3')
+        ports_str = ','.join(str(p) for p in SSV_ODD_PORTS)
+        rows = db.doquery(
+            f'SELECT port_num, serial_number FROM hats.ng_port_info '
+            f'WHERE site_num = {site_num} AND port_num IN ({ports_str})'
+        )
+        return {r['port_num']: r['serial_number'] or f'Port {r["port_num"]}' for r in rows}
+    except Exception as e:
+        print(f'Warning: could not query port info: {e}', file=sys.stderr)
+        return {}
+
+
+class SampleFlowReportDialog(QDialog):
+    def __init__(self, stats: list[dict], site: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f'Sample Flow Report — {site.upper()}')
+        self.resize(520, 220)
+
+        table = QTableWidget(len(stats), 6)
+        table.setHorizontalHeaderLabels(['Port', 'Description', 'Mean', 'Std', 'Min', 'Max'])
+
+        for i, row in enumerate(stats):
+            table.setItem(i, 0, QTableWidgetItem(str(row['port'])))
+            table.setItem(i, 1, QTableWidgetItem(str(row['description'])))
+            for j, key in enumerate(('mean', 'std', 'min', 'max'), start=2):
+                v = row[key]
+                text = f'{v:.1f}' if v == v else 'nan'  # nan check
+                item = QTableWidgetItem(text)
+                table.setItem(i, j, item)
+
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(table)
 
 
 def scan_ie3_date_range(site: str) -> tuple[str, str] | None:
@@ -71,9 +123,43 @@ class IE3EngWidget(EngPlotWidget):
     def _extra_save_state(self) -> dict:
         return {'last_site': self.site_combo.currentText()}
 
+    def _build_right_controls(self, top: QHBoxLayout):
+        self._report_btn = QPushButton('Sample Flow Report')
+        self._report_btn.clicked.connect(self._show_sample_flow_report)
+        top.addWidget(self._report_btn)
+
     def _connect_extra_signals(self):
         self.site_combo.currentTextChanged.connect(lambda _: self.setup_date_range())
         self.site_combo.currentTextChanged.connect(lambda _: self.save_state())
+
+    def _show_sample_flow_report(self):
+        if self._df is None:
+            QMessageBox.information(self, 'No Data', 'Load data first.')
+            return
+        if 'flow_samp' not in self._df.columns or 'SSV0' not in self._df.columns:
+            QMessageBox.warning(self, 'Missing Columns',
+                                'flow_samp or SSV0 not found in loaded data.')
+            return
+
+        site = self.site_combo.currentText()
+        port_names = _get_port_names(site)
+        ssv0 = pd.to_numeric(self._df['SSV0'], errors='coerce').round()
+
+        stats = []
+        for port in SSV_ODD_PORTS:
+            s = self._df.loc[ssv0 == port, 'flow_samp'].dropna()
+            description = port_names.get(port, f'Port {port}')
+            if s.empty:
+                stats.append(dict(port=port, description=description,
+                                  mean=float('nan'), std=float('nan'),
+                                  min=float('nan'), max=float('nan')))
+            else:
+                stats.append(dict(port=port, description=description,
+                                  mean=s.mean(), std=s.std(),
+                                  min=s.min(), max=s.max()))
+
+        dlg = SampleFlowReportDialog(stats, site, self)
+        dlg.exec_()
 
     # ---------------------------------------------------------------- abstract impl
 

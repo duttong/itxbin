@@ -110,6 +110,9 @@ class EngPlotWidget(QWidget):
     def _build_extra_controls(self, top: QHBoxLayout):
         """Hook: add instrument-specific controls before the date picker."""
 
+    def _build_right_controls(self, top: QHBoxLayout):
+        """Hook: add instrument-specific controls after the stretch (right-aligned)."""
+
     def _extra_save_state(self) -> dict:
         """Hook: extra key/value pairs to merge into persisted state."""
         return {}
@@ -154,6 +157,7 @@ class EngPlotWidget(QWidget):
         self.load_btn.clicked.connect(self._load_and_plot)
         top.addWidget(self.load_btn)
         top.addStretch()
+        self._build_right_controls(top)
         layout.addLayout(top)
 
         trace_row = QHBoxLayout()
