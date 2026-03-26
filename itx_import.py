@@ -104,6 +104,17 @@ class ITX:
         else:
             return ['01-01-2001', '00:00:00', -1]
 
+    def note_lines(self):
+        """Return all wave note lines from the file."""
+        if self.data is None:
+            return []
+        return [line for line in self.data if line.startswith('X note ')]
+
+    def has_note_flag(self, flag):
+        """Return True when any wave note line contains the given marker."""
+        needle = str(flag).upper()
+        return any(needle in line.upper() for line in self.note_lines())
+
     def samplefreq(self):
         """ reads the last line of .itx file for SetScale command
             example data: X SetScale /P x, 0, 0.25, chr1_00004, chr2_00004, chr3_00004, chr4_00004

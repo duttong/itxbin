@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import argparse
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from subprocess import run
@@ -45,6 +46,13 @@ class GCwerks_Import:
         """
         print(itx_file)
         itx = itx_import.ITX(itx_file)   # load itx file
+        if getattr(itx, 'data', None) is None or not hasattr(itx, 'chroms'):
+            logging.warning('Skipping invalid ITX file: %s', itx_file)
+            return False
+        if self.should_skip_itx(itx):
+            logging.info('Skipping flagged ITX file: %s', itx_file)
+            itx.compress_to_Z(itx_file)
+            return False
         
         # use either smoothfile or command line options (one or the other).
         if self.usesmoothfile:
@@ -89,6 +97,10 @@ class GCwerks_Import:
         run([self.chromatogram_import, '-gcdir', self.gcdir], input=itx.write(stdout=False), text=True, capture_output=True)
 
         itx.compress_to_Z(itx_file)
+        return True
+
+    def should_skip_itx(self, itx):
+        return False
 
     def import_recursive_itx(self, types=None):
         """Recursively import all .itx and .itx.gz files in self.incoming using multiprocessing."""
