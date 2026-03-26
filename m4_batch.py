@@ -50,9 +50,14 @@ def main():
     
     t0 = time.time()
 
+    CFC113_PAIR = {32, 178}  # handled together via deconvolution
+
     if args.parameter_num.lower() == "all":
-        # Process all analytes
+        # Process all analytes, skipping the CFC-113/113a pair
         for analyte_name, pnum in m4.analytes.items():
+            pnum = int(pnum)
+            if pnum in CFC113_PAIR:
+                continue
             print(f"Processing analyte: {analyte_name} (Parameter {pnum})")
             df = m4.load_data(
                 pnum=pnum,
@@ -61,18 +66,42 @@ def main():
             )
             if df.empty:
                 continue
-            
             df = m4.calc_mole_fraction(df)
-
             if args.insert:
                 m4.upsert_mole_fractions(df)
 
-        # No figures when processing all analytes
+        # CFC-113 and CFC-113a require joint deconvolution
+        print("Processing CFC-113 (32) and CFC-113a (178) pair via deconvolution")
+        df_pair = m4.load_data_cfc113a(
+            start_date=args.start_date,
+            end_date=args.end_date
+        )
+        if not df_pair.empty:
+            df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
+            if args.insert:
+                m4.upsert_cfc113a_pair(df_pair)
+
         print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
         return
     else:
-        # Process a single parameter
         pnum = int(args.parameter_num)
+
+        # CFC-113 or CFC-113a: use joint deconvolution
+        if pnum in CFC113_PAIR:
+            print(f"Processing CFC-113 (32) and CFC-113a (178) pair via deconvolution")
+            df_pair = m4.load_data_cfc113a(
+                start_date=args.start_date,
+                end_date=args.end_date
+            )
+            if df_pair.empty:
+                return
+            df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
+            if args.insert:
+                m4.upsert_cfc113a_pair(df_pair)
+            print(f"Done. Total time: {time.time() - t0:.2f} seconds")
+            return
+
+        # All other single parameters
         df = m4.load_data(
             pnum=pnum,
             start_date=args.start_date,

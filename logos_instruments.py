@@ -330,6 +330,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
             Returns a DataFrame with an additional 'mole_fraction' column.
         """
         if self.inst_id == 'm4':
+            if not df.empty and int(df['parameter_num'].iat[0]) in (32, 178):
+                return self._calc_mole_fraction_cfc113a_single(df)
             return self.calc_mole_fraction_scalevalues(df)
         elif self.inst_id == 'fe3' or self.inst_id == 'bld1':
             return self.calc_mole_fraction_response(df)
@@ -1318,6 +1320,207 @@ class M4_Instrument(HATS_DB_Functions):
         df['port_marker'] = df['run_type_num'].map(self.MARKER_MAP).fillna('o')
 
         return df            
+
+    def _calc_mole_fraction_cfc113a_single(self, df):
+        """
+        Called by calc_mole_fraction() when pnum is 32 or 178.
+        df contains freshly-normalised data for ONE of the two parameters.
+        The partner parameter is loaded from the DB so the Montzka deconvolution
+        can be solved, and only the relevant mole_fraction column is returned.
+
+        The partner uses DB-stored normalized_resp values (i.e. whatever was last
+        written by load_data / upsert). This is the correct behaviour for flagging
+        and batch recalc. For smoothing changes, the partner may momentarily be
+        slightly stale until the user re-loads that parameter — acceptable given
+        that both parameters must ultimately be saved separately anyway.
+        """
+        if df.empty:
+            out = df.copy()
+            out['mole_fraction'] = pd.Series(dtype=float)
+            return out
+
+        pnum = int(df['parameter_num'].iat[0])
+        partner_pnum = 178 if pnum == 32 else 32
+
+        # Date window covering all rows in df
+        t_min = df['run_time'].min()
+        t_max = df['run_time'].max()
+        start = (t_min - pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')
+        end   = (t_max + pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')
+
+        partner_df = self.load_data(partner_pnum, start_date=start, end_date=end, verbose=False)
+
+        if partner_df.empty:
+            out = df.copy()
+            out['mole_fraction'] = np.nan
+            return out
+
+        # Merge the caller's df (fresh normalization) with partner (from DB)
+        if pnum == 32:
+            left, right = df, partner_df
+        else:
+            left, right = partner_df, df
+
+        merged = left.merge(
+            right[['analysis_num', 'normalized_resp', 'detrend_method_num', 'channel']],
+            on='analysis_num',
+            suffixes=('_32', '_178'),
+            how='inner'
+        )
+
+        solved = self.calc_mole_fraction_cfc113a(merged)
+
+        # Pick the mole_fraction column for the requested pnum
+        mf_col = 'mole_fraction_cfc113' if pnum == 32 else 'mole_fraction_cfc113a'
+        mf = solved.set_index('analysis_num')[mf_col]
+
+        out = df.copy()
+        out['mole_fraction'] = out['analysis_num'].map(mf)
+        return out
+
+    def cfc113a_response_factors(self, run_date):
+        """
+        Return the molar response factors R1–R4 from hats.ng_cfc113a
+        for the row whose date window contains run_date.
+
+        Args:
+            run_date: datetime, date, or Timestamp of the GC run.
+        Returns:
+            dict with keys R1, R2, R3, R4, or None if no row matches.
+        """
+        if hasattr(run_date, 'date'):
+            run_date = run_date.date()
+        result = self.doquery(
+            """
+            SELECT R1, R2, R3, R4
+            FROM hats.ng_cfc113a
+            WHERE datetime_start <= %s
+              AND (datetime_stop > %s OR datetime_stop IS NULL)
+            ORDER BY num DESC
+            LIMIT 1
+            """,
+            [run_date, run_date]
+        )
+        return result[0] if result else None
+
+    def load_data_cfc113a(self, start_date=None, end_date=None):
+        """
+        Load CFC-113 (pnum=32, ion 103) and CFC-113a (pnum=178, ion 117)
+        data for the same date range, normalize each independently against
+        their respective smoothed reference-gas curves, then merge on
+        analysis_num.
+
+        Returns:
+            DataFrame with all columns from the pnum=32 load, plus
+            normalized_resp_32, normalized_resp_178 (both already
+            pressure-corrected and ref-gas-smoothed).
+            Returns an empty DataFrame if either parameter has no data.
+        """
+        df_32  = self.load_data(32,  start_date=start_date, end_date=end_date)
+        df_178 = self.load_data(178, start_date=start_date, end_date=end_date)
+
+        if df_32.empty or df_178.empty:
+            return pd.DataFrame()
+
+        df = df_32.merge(
+            df_178[['analysis_num', 'normalized_resp', 'detrend_method_num', 'channel']],
+            on='analysis_num',
+            suffixes=('_32', '_178'),
+            how='inner'
+        )
+        return df
+
+    def calc_mole_fraction_cfc113a(self, df):
+        """
+        Solve the Montzka (Jan 2026) two-compound simultaneous equations
+        to deconvolve CFC-113 and CFC-113a from their overlapping ion signals.
+
+        Ion 103 (pnum=32):  RX = MFA*R1 + MFB*R2
+        Ion 117 (pnum=178): RY = MFA*R3 + MFB*R4
+
+        Solving:
+            MFA = (RX - RY * R2/R4) / (R1 - R3 * R2/R4)     [CFC-113]
+            MFB = (RY - MFA * R3) / R4                      [CFC-113a]
+
+        R1–R4 are fetched from hats.ng_cfc113a by run_time date window.
+
+        Args:
+            df: DataFrame returned by load_data_cfc113a(), with columns
+                normalized_resp_32 (RX) and normalized_resp_178 (RY).
+        Returns:
+            df copy with added columns mole_fraction_cfc113 (MFA) and
+            mole_fraction_cfc113a (MFB).
+        """
+        if df.empty:
+            out = df.copy()
+            out['mole_fraction_cfc113']  = pd.Series(dtype=float)
+            out['mole_fraction_cfc113a'] = pd.Series(dtype=float)
+            return out
+
+        mf_a = pd.Series(index=df.index, dtype=float)
+        mf_b = pd.Series(index=df.index, dtype=float)
+
+        rf_cache = {}
+
+        for rt, grp in df.groupby('run_time'):
+            if rt not in rf_cache:
+                rf_cache[rt] = self.cfc113a_response_factors(rt)
+            rf = rf_cache[rt]
+
+            if rf is None:
+                mf_a.loc[grp.index] = np.nan
+                mf_b.loc[grp.index] = np.nan
+                continue
+
+            R1 = float(rf['R1'])
+            R2 = float(rf['R2'])
+            R3 = float(rf['R3'])
+            R4 = float(rf['R4'])
+
+            RX = grp['normalized_resp_32'].values
+            RY = grp['normalized_resp_178'].values
+
+            denom = R1 - R3 * (R2 / R4)
+            if abs(denom) < 1e-12:
+                mf_a.loc[grp.index] = np.nan
+                mf_b.loc[grp.index] = np.nan
+                continue
+
+            MFA = (RX - RY * (R2 / R4)) / denom
+            MFB = (RY - MFA * R3) / R4
+
+            mf_a.loc[grp.index] = MFA
+            mf_b.loc[grp.index] = MFB
+
+        out = df.copy()
+        out['mole_fraction_cfc113']  = mf_a
+        out['mole_fraction_cfc113a'] = mf_b
+        return out
+
+    def upsert_cfc113a_pair(self, df, response_id=None):
+        """
+        Write CFC-113 and CFC-113a mole fractions from calc_mole_fraction_cfc113a()
+        back to hats.ng_mole_fractions as two separate parameter rows per analysis.
+
+        Args:
+            df:          DataFrame returned by calc_mole_fraction_cfc113a().
+            response_id: Optional ng_response_id to tag both sets of rows.
+        """
+        # --- CFC-113 (pnum=32) ---
+        df_a = df.copy()
+        df_a['mole_fraction']      = df_a['mole_fraction_cfc113']
+        df_a['parameter_num']      = 32
+        df_a['detrend_method_num'] = df_a['detrend_method_num_32']
+        df_a['channel']            = df_a['channel_32']
+        self.upsert_mole_fractions(df_a, response_id=response_id)
+
+        # --- CFC-113a (pnum=178) ---
+        df_b = df.copy()
+        df_b['mole_fraction']      = df_b['mole_fraction_cfc113a']
+        df_b['parameter_num']      = 178
+        df_b['detrend_method_num'] = df_b['detrend_method_num_178']
+        df_b['channel']            = df_b['channel_178']
+        self.upsert_mole_fractions(df_b, response_id=response_id)
 
     def load_calcurves(self, df):
         """ Calcurves are not stored in ng_response for M4. """
