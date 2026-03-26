@@ -95,6 +95,41 @@ python3 m4_batch.py --help
 python3 fe3_batch.py --help
 ```
 
+### CFC-113 and CFC-113a joint processing (M4)
+
+CFC-113 (pnum=32, ion 103) and CFC-113a (pnum=178, ion 117) co-elute on
+M4 and contribute to both ion signals. Their mole fractions must be solved
+simultaneously using the Montzka (Jan 2026) two-equation deconvolution:
+
+```
+RX = MFA·R1 + MFB·R2    (ion 103)
+RY = MFA·R3 + MFB·R4    (ion 117)
+
+MFA = (RX - RY·R2/R4) / (R1 - R3·R2/R4)   [CFC-113]
+MFB = (RY - MFA·R3) / R4                    [CFC-113a]
+```
+
+Molar response factors R1–R4 are stored in `hats.ng_cfc113a`, windowed by
+reference tank and date. Source data and the original email are in `cfc113a/`.
+
+**Because the two compounds are coupled, always process them as a pair.**
+`m4_batch.py -p 32` and `-p 178` are equivalent — either one recalculates
+and upserts both pnum=32 and pnum=178. Running `-p all` also handles the
+pair correctly at the end of the loop.
+
+```bash
+# Recalculate both CFC-113 and CFC-113a over a date range and save to DB
+python3 m4_batch.py -p 32 -s 2501 -e 2503 -i
+
+# Full M4 record
+python3 m4_batch.py -p 32 -i
+```
+
+After making changes to CFC-113 or CFC-113a in `logos_data.py` (flagging,
+smoothing adjustments), run `m4_batch.py -p 32 -i` to propagate the correct
+deconvolved values back to the database. The normal ingest pipeline
+(`m4_ingest.py`) handles this automatically for new data.
+
 ### 5) Ingest pipelines
 
 Automated ingest/process wrappers:
