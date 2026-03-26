@@ -1394,12 +1394,13 @@ class M4_Instrument(HATS_DB_Functions):
             """
             SELECT R1, R2, R3, R4
             FROM hats.ng_cfc113a
-            WHERE datetime_start <= %s
+            WHERE inst_num = %s
+              AND datetime_start <= %s
               AND (datetime_stop > %s OR datetime_stop IS NULL)
             ORDER BY num DESC
             LIMIT 1
             """,
-            [run_date, run_date]
+            [self.inst_num, run_date, run_date]
         )
         return result[0] if result else None
 
