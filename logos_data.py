@@ -1266,9 +1266,12 @@ class MainWindow(QMainWindow):
 
                 unflagged = self.run['data_flag_int'] == 0
                 if autoscale_mode == "standard":
-                    scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar]
+                    scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar].dropna()
+                    if scale_df.empty:
+                        # Fall back to samples mode if no valid unflagged standard data
+                        scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude) & unflagged, yvar].dropna()
                 else:
-                    scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude) & unflagged, yvar]
+                    scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude) & unflagged, yvar].dropna()
                 if not scale_df.empty:
                     ymin, ymax = scale_df.min(), scale_df.max()
                     if ymin == ymax:
