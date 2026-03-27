@@ -335,6 +335,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
             return self.calc_mole_fraction_scalevalues(df)
         elif self.inst_id == 'fe3' or self.inst_id == 'bld1':
             return self.calc_mole_fraction_response(df)
+        elif self.inst_id == 'ie3':
+            return df  # IE3 mole fractions come from the DB; no recalculation from normalized_resp
         else:
             raise NotImplementedError(f"Mole fraction calculation not implemented for instrument '{self.inst_id}'.")
         
@@ -1977,7 +1979,8 @@ class IE3_Instrument(HATS_DB_Functions):
                 m.height,
                 m.area,
                 m.retention_time,
-                m.mole_fraction
+                m.mole_fraction,
+                COALESCE(m.flag, '...') AS data_flag
             FROM hats.ng_insitu_analysis AS a
             JOIN hats.ng_insitu_mole_fractions AS m
                 ON m.analysis_num = a.num
@@ -2004,8 +2007,8 @@ class IE3_Instrument(HATS_DB_Functions):
         df['area'] = df['area'].astype(float)
         df['retention_time'] = df['retention_time'].astype(float)
 
-        df['data_flag'] = '...'
-        df['data_flag_int'] = 0
+        df['data_flag'] = df['data_flag'].fillna('...')
+        df['data_flag_int'] = (df['data_flag'] != '...').astype(int)
         df['detrend_method_num'] = 2
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
@@ -2029,6 +2032,63 @@ class IE3_Instrument(HATS_DB_Functions):
         if rows:
             return rows[0]["param_num"]
         return None
+
+    def upsert_mole_fractions(self, df, response_id=None):
+        """
+        Update mole_fraction and flag in hats.ng_insitu_mole_fractions.
+        Overrides the base class which writes to ng_mole_fractions (wrong table for IE3).
+        """
+        sql = """
+            UPDATE hats.ng_insitu_mole_fractions
+            SET mole_fraction = %s, flag = %s
+            WHERE analysis_num = %s
+              AND parameter_num = %s
+              AND channel = %s;
+        """
+        df = df.copy()
+        df['mole_fraction'] = (
+            pd.to_numeric(df['mole_fraction'], errors='coerce')
+            .replace([np.inf, -np.inf], np.nan)
+            .round(5)
+        )
+        for _, row in df.iterrows():
+            mf = row['mole_fraction']
+            self.db.doquery(sql, [
+                None if pd.isna(mf) else float(mf),
+                row['data_flag'],
+                row['analysis_num'],
+                row['parameter_num'],
+                row['channel'],
+            ])
+
+    def update_flags_all_analytes(self, df):
+        """
+        Propagate flags from df to all parameter rows sharing the same analysis_num.
+        Overrides the base class which joins on ng_mole_fractions/ng_analysis (wrong tables for IE3).
+        """
+        run_time = df['run_time'].iat[0]
+
+        # 1. Clear all flags for this run_time
+        sql_clear = """
+            UPDATE hats.ng_insitu_mole_fractions m
+            JOIN hats.ng_insitu_analysis a ON m.analysis_num = a.num
+            SET m.flag = '...'
+            WHERE a.inst_num = %s
+              AND a.run_time = %s;
+        """
+        self.db.doquery(sql_clear, [self.inst_num, run_time])
+
+        # 2. Apply 'M..' to flagged analysis_nums
+        flagged = df.loc[df['data_flag'] == 'M..']
+        if not flagged.empty:
+            analysis_nums = flagged['analysis_num'].unique().tolist()
+            placeholders = ','.join(['%s'] * len(analysis_nums))
+            sql_set = f"""
+                UPDATE hats.ng_insitu_mole_fractions
+                SET flag = 'M..'
+                WHERE analysis_num IN ({placeholders});
+            """
+            self.db.doquery(sql_set, analysis_nums)
 
     def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add simple port labels and colors based on port number."""
