@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -28,7 +29,17 @@ def ingest(
         typer.secho(f"Error running ie3_import.py: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    # 2. Export from GCwerks and load into database (ie3_export runs automatically inside)
+    # 2. Copy *.log and *.csv from incoming to /hats/gc/{site}/logs
+    incoming = Path(f"/nfs/isftp/sftp/data/logos/{site}/incoming")
+    logs_dest = Path(f"/hats/gc/{site}/logs")
+    for pattern in ("*.log", "*.csv"):
+        for src in incoming.glob(pattern):
+            try:
+                shutil.copy2(src, logs_dest / src.name)
+            except Exception as e:
+                typer.secho(f"Warning: could not copy {src.name}: {e}", fg=typer.colors.YELLOW, err=True)
+
+    # 3. Export from GCwerks and load into database (ie3_export runs automatically inside)
     load_cmd = [str(bin_dir / "ie3_gcwerks2db.py"), site]
     if all_data:
         load_cmd.append("--all")
