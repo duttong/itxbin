@@ -138,10 +138,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
         #tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
         
         sql = f"""
-            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments 
-            #where serial_number like '%{tank}%'
+            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments
             where serial_number = '{tank}'
-            and inst_num = {self.inst_num} 
             and scale_num = (select idx from reftank.scales where parameter_num={pnum} and current=1);
         """
         df = pd.DataFrame(self.db.doquery(sql))
@@ -336,7 +334,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         elif self.inst_id == 'fe3' or self.inst_id == 'bld1':
             return self.calc_mole_fraction_response(df)
         elif self.inst_id == 'ie3':
-            return df  # IE3 mole fractions come from the DB; no recalculation from normalized_resp
+            return self.calc_mole_fraction_scale_simple(df)
         else:
             raise NotImplementedError(f"Mole fraction calculation not implemented for instrument '{self.inst_id}'.")
         
@@ -2094,6 +2092,47 @@ class IE3_Instrument(HATS_DB_Functions):
                 WHERE analysis_num IN ({placeholders});
             """
             self.db.doquery(sql_set, analysis_nums)
+
+    def calc_mole_fraction_scale_simple(self, df):
+        """Compute mole_fraction = normalized_resp * coef0 from hats.scale_assignments.
+
+        Uses the tank on STANDARD_PORT_NUM (port 5) from port_config and looks up
+        coef0 for each parameter_num. This is a temporary calculation path until
+        a proper IE3 response calibration is in place.
+        """
+        if df.empty:
+            df_out = df.copy()
+            df_out['mole_fraction'] = pd.Series(dtype='float64')
+            return df_out
+
+        pnum = int(df['parameter_num'].iat[0])
+
+        # Resolve the standard tank serial number from port_config
+        ref_tank = None
+        if self.port_config is not None:
+            mask = (
+                (self.port_config['site_num'] == self.site_num)
+                & (self.port_config['port_num'] == self.STANDARD_PORT_NUM)
+            )
+            rows = self.port_config.loc[mask, 'label']
+            if not rows.empty:
+                ref_tank = rows.iat[0]
+
+        if ref_tank is None:
+            out = df.copy()
+            out['mole_fraction'] = np.nan
+            return out
+
+        coefs = self.scale_assignments(ref_tank, pnum)
+        if coefs is None:
+            out = df.copy()
+            out['mole_fraction'] = np.nan
+            return out
+
+        coef0 = float(coefs['coef0'])
+        out = df.copy()
+        out['mole_fraction'] = out['normalized_resp'] * coef0
+        return out
 
     def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add simple port labels and colors based on port number."""

@@ -53,6 +53,15 @@ def ingest(
         typer.secho(f"Error running ie3_gcwerks2db.py: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
+    # 4. Recalculate and write mole fractions for all analytes
+    batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i"]
+    typer.secho(f"Running: {' '.join(batch_cmd)}", fg=typer.colors.BLUE)
+    try:
+        subprocess.run(batch_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Error running ie3_batch.py: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
     typer.secho("Ingest complete.", fg=typer.colors.GREEN, bold=True)
 
 
