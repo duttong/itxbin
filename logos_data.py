@@ -579,6 +579,11 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
+        self.hide_flagged_cb = QCheckBox("Hide Flagged Data")
+        self.hide_flagged_cb.setChecked(False)
+        self.hide_flagged_cb.stateChanged.connect(lambda: self.gc_plot(self._current_yparam))
+        options_layout.addWidget(self.hide_flagged_cb)
+
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("Plot and Options")
         combined_layout = QHBoxLayout()
@@ -971,7 +976,9 @@ class MainWindow(QMainWindow):
 
         self.figure.clear()
         ax = self.figure.add_subplot(111)
-        for port, subset in self.run.groupby('port_idx'):
+        hide_flagged = self.hide_flagged_cb.isChecked()
+        plot_df = self.run.loc[self.run['data_flag_int'] == 0] if hide_flagged else self.run
+        for port, subset in plot_df.groupby('port_idx'):
             marker = subset['port_marker'].iloc[0]
             color = subset['port_color']
             scatter = ax.scatter(
@@ -1024,10 +1031,9 @@ class MainWindow(QMainWindow):
             self._scatter_main.append(scatter)
         
         # overlay: show data_flag characters on top of flagged points
-        flags = self.run['data_flag_int'] != 0   # adjust if you use a different flag condition
-
+        flags = self.run['data_flag_int'] != 0
         flagged = self.run.loc[flags]
-        if not flagged.empty:
+        if not flagged.empty and not hide_flagged:
             ax.scatter(
                 flagged['analysis_datetime'],
                 flagged[yvar],
