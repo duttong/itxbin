@@ -1264,10 +1264,11 @@ class MainWindow(QMainWindow):
                     exclude_variable = 'port'
                     standard = self.instrument.STANDARD_PORT_NUM
 
+                unflagged = self.run['data_flag_int'] == 0
                 if autoscale_mode == "standard":
-                    scale_df = self.run.loc[self.run[exclude_variable] == standard, yvar]
+                    scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar]
                 else:
-                    scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude), yvar]
+                    scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude) & unflagged, yvar]
                 if not scale_df.empty:
                     ymin, ymax = scale_df.min(), scale_df.max()
                     if ymin == ymax:
