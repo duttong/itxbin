@@ -2038,6 +2038,8 @@ class IE3_Instrument(HATS_DB_Functions):
         Update mole_fraction and flag in hats.ng_insitu_mole_fractions.
         Overrides the base class which writes to ng_mole_fractions (wrong table for IE3).
         """
+        if df.empty or 'mole_fraction' not in df.columns:
+            return
         sql = """
             UPDATE hats.ng_insitu_mole_fractions
             SET mole_fraction = %s, flag = %s
