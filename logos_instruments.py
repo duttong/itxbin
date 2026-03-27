@@ -793,19 +793,22 @@ class Normalizing():
         df = run_df.loc[run_df['data_flag_int'] == 0].copy()
 
         # ---------- Flask pairs (run_type_num == 1) ----------
-        flask_df = (
-            df.loc[df['run_type_num'] == 1]
-            .groupby('sample_id')
-            .agg({
-                'pair_id_num': 'first',
-                'normalized_resp': 'mean',
-            })
-        )
-
-        if not flask_df.empty:
-            flask_df['resp_diff'] = flask_df.groupby('pair_id_num')['normalized_resp'].diff()
+        # In-situ instruments (e.g. IE3) have no sample_id column
+        if 'sample_id' in df.columns:
+            flask_df = (
+                df.loc[df['run_type_num'] == 1]
+                .groupby('sample_id')
+                .agg({
+                    'pair_id_num': 'first',
+                    'normalized_resp': 'mean',
+                })
+            )
+            if not flask_df.empty:
+                flask_df['resp_diff'] = flask_df.groupby('pair_id_num')['normalized_resp'].diff()
+            else:
+                flask_df['resp_diff'] = pd.Series(dtype='float64')
         else:
-            flask_df['resp_diff'] = pd.Series(dtype='float64')
+            flask_df = pd.DataFrame(columns=['resp_diff'])
 
         # ---------- Tank repeated runs (run_type_num == 7) ----------
         tank_df = (
