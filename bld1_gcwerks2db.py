@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 
+import argparse
 import sys
 import math
 import pandas as pd
@@ -29,6 +30,40 @@ attribs = {'flag': False,
             'unc': np.nan}
 
 
+class BLD1_GCwerks(Stratcore_GCwerks):
+    def __init__(self, flagged=False):
+        super().__init__()
+        self.flagged = flagged
+        suffix = '_flagged' if flagged else ''
+        self.gcwerksexport = self.basepath / 'results' / f'bld1_gcwerks_all{suffix}.csv'
+
+    def gcwerks_df(self, range='all'):
+        if self.flagged:
+            df = pd.read_csv(self.gcwerksexport, index_col=0, skipinitialspace=True, parse_dates=True, dtype=str)
+        else:
+            df = pd.read_csv(self.gcwerksexport, index_col=0, skipinitialspace=True, parse_dates=True)
+
+        cols = [c for c in df.columns if c.find('norm') == -1]
+        df = df[cols]
+
+        if self.flagged:
+            for col in df.columns:
+                if col.endswith('_ht') or col.endswith('_area') or col.endswith('_rt'):
+                    prefix = col.rsplit('_', 1)[0]
+                    flag_col = f'{prefix}_flag'
+                    if flag_col not in df.columns:
+                        df[flag_col] = False
+                    series = df[col].fillna('').astype(str).str.strip()
+                    flagged = series.str.endswith(('F', '*'))
+                    cleaned = series.str.replace(r'[F*]$', '', regex=True)
+                    df[col] = pd.to_numeric(cleaned, errors='coerce')
+                    df[flag_col] = df[flag_col] | flagged
+
+        if range == 'all':
+            return df
+        return df[range]
+
+
 def _port_id(row):
     """ assign port_id by cal SSV position where row is from a gcwerks dataframe """
     ssv = row['port']
@@ -43,12 +78,12 @@ def _port_id(row):
         pname = ''
     return pname
 
-def merge_gcwerks_and_metadata():
+def merge_gcwerks_and_metadata(flagged=False):
     """ Load two streams of data. Meta data from Stratcore and GCwerks results, then
         merges into a single file (self.dbfile) """
 
     core_runs = runs.runs_df()
-    gcwerks = gw.gcwerks_df()
+    gcwerks = BLD1_GCwerks(flagged=flagged).gcwerks_df()
     
     # merge the two streams of data
     # if runs are longer than 24 hours, this may not work.
@@ -126,8 +161,11 @@ def piviot_gcwerks_df(df):
     df_tidy['inst_num'] = 220
 
     # reorder columns as desired
+    if 'flag' not in df_tidy.columns:
+        df_tidy['flag'] = False
+    df_tidy['flag'] = df_tidy['flag'].fillna(False).astype(bool)
     df_tidy = df_tidy[['time', 'run_time', 'port', 'port_id', 'type', 'dir', 'gas', 'pnum',
-                    'ht', 'area', 'rt', 'inst_num']]
+                    'ht', 'area', 'rt', 'flag', 'inst_num']]
 
     # insert run_time after 'type'
     cols = list(df_tidy.columns)
@@ -280,13 +318,15 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
             parameter_num,
             channel,
             detrend_method_num,
+            flag,
             height,
             retention_time,
             area
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
+            flag               = IF(VALUES(flag) = 'W..', 'W..', flag),
             height             = VALUES(height),
             retention_time     = VALUES(retention_time),
             area               = VALUES(area),
@@ -310,6 +350,7 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
             int(r.pnum),                                # parameter_num
             r.channel,                                  # channel ('a'/'b')
             2,                                          # detrend_method_num (2 = lowess)
+            'W..' if bool(r.flag) else '...',           # flag
             safe(r.ht),                                 # height
             safe(r.rt),                                 # retention_time
             safe(r.area),                               # area
@@ -322,8 +363,8 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
     print(f"✅ Upserted {len(mole_params)} rows into hats.ng_mole_fractions.")
 
 
-def main(year=None):
-    df = merge_gcwerks_and_metadata()
+def main(year=None, flagged=False):
+    df = merge_gcwerks_and_metadata(flagged=flagged)
     df.reset_index(inplace=True)    
     df_tidy = piviot_gcwerks_df(df)
 
@@ -337,6 +378,15 @@ def main(year=None):
     
 
 if __name__ == '__main__':
-    current_year = pd.Timestamp.now().year
-    main(current_year)
+    opt = argparse.ArgumentParser(
+        description='Load BLD1 GCwerks results into the HATS DB.'
+    )
+    opt.add_argument('-y', '--year', action='store', type=int,
+        help='Operate on a single year of GCwerks results.')
+    opt.add_argument('--flagged', action='store_true',
+        help='Load the flagged BLD1 GCwerks export file.')
+    options = opt.parse_args()
+
+    current_year = pd.Timestamp.now().year if options.year is None else options.year
+    main(current_year, flagged=options.flagged)
     

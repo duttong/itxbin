@@ -19,8 +19,8 @@ def get_previous_yymm():
 def run_commands():
     cmds = [
         ["/hats/gc/itxbin/fe3_import.py"],
-        ["/hats/gc/itxbin/fe3_export.py"],
-        ["/hats/gc/itxbin/fe3_gcwerks2db.py"],    # default to past 30 days
+        ["/hats/gc/itxbin/fe3_export.py", "--flagged"],
+        ["/hats/gc/itxbin/fe3_gcwerks2db.py", "--flagged"],    # default to past 30 days
         ["/hats/gc/itxbin/fe3_batch.py", "-p", "all", "-i", "-s", get_previous_yymm()],
     ]
 

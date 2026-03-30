@@ -24,8 +24,9 @@ class FE3_Prepare(fe3_inst):
         from the FE3 instrument for the HATS DB, including running queries and
         inserting data into the database. """
 
-    def __init__(self):
+    def __init__(self, flagged=False):
         super().__init__()
+        self.flagged = flagged
         self.current_year = pd.Timestamp.now().year
 
     @staticmethod
@@ -233,7 +234,7 @@ class FE3_Prepare(fe3_inst):
         Set duration = 'all' for all of the fe3 data.
             Otherwise duration represents months since the most recent GCwerks data. """
             
-        gcw = FE3_GCwerks()
+        gcw = FE3_GCwerks(flagged=self.flagged)
         w_df = gcw.gcwerks_df()
         r_df = self.runs_df()
         
@@ -366,11 +367,13 @@ class FE3_Prepare(fe3_inst):
               analysis_num,
               parameter_num,
               channel,
+              flag,
               height,
               area,
               retention_time
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
+              flag           = IF(VALUES(flag) = 'W..', 'W..', flag),
               height         = VALUES(height),
               area           = VALUES(area),
               retention_time = VALUES(retention_time)
@@ -387,7 +390,9 @@ class FE3_Prepare(fe3_inst):
                     height = getattr(r, f"{key}_ht")
                     area   = getattr(r, f"{key}_area")
                     rt     = getattr(r, f"{key}_rt")
-                    mole_params.append((analysis_num, param, ch, height, area, rt))
+                    flagged = bool(getattr(r, f"{key}_flag", False))
+                    flag = 'W..' if flagged else '...'
+                    mole_params.append((analysis_num, param, ch, flag, height, area, rt))
 
         for i in range(0, len(mole_params), batch_size):
             batch = mole_params[i : i + batch_size]
@@ -445,13 +450,32 @@ class FE3_GCwerks(fe3_inst):
         Currently export GCwerks results into a single file for all years,
         may need to break into individual years for loading performance. """
 
-    def __init__(self):
+    def __init__(self, flagged=False):
         super().__init__()
-        self.gcwerksexport = self.gc_dir / 'results' / 'fe3_gcwerks_all.csv'
+        suffix = '_flagged' if flagged else ''
+        self.flagged = flagged
+        self.gcwerksexport = self.gc_dir / 'results' / f'fe3_gcwerks_all{suffix}.csv'
 
     def gcwerks_df(self):
-        df = pd.read_csv(self.gcwerksexport,
-            index_col=0, skipinitialspace=True, parse_dates=True)
+        if self.flagged:
+            df = pd.read_csv(self.gcwerksexport,
+                index_col=0, skipinitialspace=True, parse_dates=True, dtype=str)
+        else:
+            df = pd.read_csv(self.gcwerksexport,
+                index_col=0, skipinitialspace=True, parse_dates=True)
+
+        if self.flagged:
+            for col in df.columns:
+                if col.endswith('_ht') or col.endswith('_area') or col.endswith('_rt'):
+                    prefix = col.rsplit('_', 1)[0]
+                    flag_col = f'{prefix}_flag'
+                    if flag_col not in df.columns:
+                        df[flag_col] = False
+                    series = df[col].fillna('').astype(str).str.strip()
+                    flagged = series.str.endswith(('F', '*'))
+                    cleaned = series.str.replace(r'[F*]$', '', regex=True)
+                    df[col] = pd.to_numeric(cleaned, errors='coerce')
+                    df[flag_col] = df[flag_col] | flagged
 
         # every so often there is a duplicate time row returned from gcwerks        
         df = df.reset_index().drop_duplicates('time', keep='last')
@@ -471,11 +495,13 @@ if __name__ == '__main__':
                      dest="allyears", help="process all of the data (all years)")
     opt.add_argument("-y", "--year", action="store", 
                      dest="yyyy", help=f"operate on a years worth of GCwerks results.")
+    opt.add_argument("--flagged", action="store_true",
+                     help="Load the flagged FE3 GCwerks export file.")
     
     options = opt.parse_args()
     
     t0 = time.time()
-    fe3 = FE3_Prepare()
+    fe3 = FE3_Prepare(flagged=options.flagged)
     
     if options.yyyy:
         df = fe3.fe3_merged_data(duration='all')
