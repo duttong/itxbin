@@ -341,7 +341,6 @@ class M4_SampleLogs(M4_Instrument):
             These routines work on the whole df. Make sure df is trimmed to the pertinent data. """
         self.insert_ng_analysis(df)
         self.update_pfp_flask_port(df)
-        self.flag_first_reference_run(df)
         df = self.return_analysis_nums(df) 
         return df
 
@@ -490,42 +489,6 @@ class M4_SampleLogs(M4_Instrument):
         # Process any remaining rows in the final batch:
         self.db.doMultiInsert(sql_insert, params, all=True)
 
-    def flag_first_reference_run(self, df):
-        """ Flags the first reference run for each run_time group.
-            Sets mf.flag to 'X..' and mf.qc_status to 'F' only when mf.qc_status = 'P'
-            for the first analysis_time in each run_time group within the time range
-            of the provided dataframe."""
-        
-        start_time = df['dt_run'].min()
-        end_time = df['dt_run'].max()
-        start_str = start_time.strftime('%Y-%m-%d %H:%M:%S')
-        end_str = end_time.strftime('%Y-%m-%d %H:%M:%S')
-        
-        sql = f"""
-            UPDATE hats.ng_mole_fractions mf
-            JOIN hats.ng_analysis a
-            ON mf.analysis_num = a.num
-            JOIN (
-                SELECT
-                    run_time,
-                    MIN(analysis_time) AS first_analysis_time
-                FROM hats.ng_analysis
-                WHERE inst_num = {self.inst_num}
-                AND run_type_num = 8
-                AND analysis_time BETWEEN '{start_str}' AND '{end_str}'
-                GROUP BY run_time
-            ) firsts
-            ON a.run_time = firsts.run_time
-            AND a.analysis_time = firsts.first_analysis_time
-            SET mf.flag = 'X..',
-                mf.qc_status = 'F'
-            WHERE a.inst_num = {self.inst_num}
-            AND a.run_type_num = 8
-            AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}'
-            AND mf.qc_status = 'P';
-        """
-        self.db.doquery(sql)
-        
 class M4_Serial_Numbers(M4_Instrument):
 
     SX_RE  = re.compile(r"(?i)\b(?:e)?sx[\s_-]*([0-9]{3,})(?![0-9])")  # esx-3531 / sx_3531 / sx 3531

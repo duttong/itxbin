@@ -264,7 +264,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         run_time = df.run_time.iat[0]
 
-        # 1. Clear all flags for this run_time
+        # 1. Clear only manual flags for this run_time, preserving GCwerks ('W..')
+        # and first-reference ('X..') flags that may have been set earlier.
         sql_clear = f"""
             UPDATE hats.ng_mole_fractions mf
             JOIN hats.ng_analysis a ON mf.analysis_num = a.num
@@ -272,7 +273,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             WHERE a.inst_num = {self.inst_num}
             AND a.run_time = %s;
         """
-        self.db.doquery(sql_clear, [run_time])
+        self.db.doquery(sql_clear + " AND mf.flag = 'M..'", [run_time])
 
         # 2. Apply flagged values ('M..') to the appropriate analysis_nums
         flagged = df.loc[df['data_flag'] == 'M..']

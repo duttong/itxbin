@@ -107,7 +107,7 @@ def run_commands(gcd: Path):
         ["/hats/gc/itxbin/m4_samplogs.py",     "-i"],
         ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd)],
         ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
-        ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x"],
+        ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x", "--flagged"],
         ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i"],
     ]
     for cmd in cmds:

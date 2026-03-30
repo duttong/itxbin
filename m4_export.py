@@ -15,7 +15,7 @@ class M4_GCwerks_Export(M4_Instrument):
     def __init__(self):
         super().__init__()
 
-    def export_gc_data(self, start_date, molecules, progress=None):
+    def export_gc_data(self, start_date, molecules, progress=None, flagged=False):
         """
         Calls the gcexport program for each molecule via the subprocess.Popen function. gcexport
         will extract data from gcwerks and send it to a .csv file.
@@ -26,10 +26,12 @@ class M4_GCwerks_Export(M4_Instrument):
         processes = []
         for molecule in molecules:
             if molecule in self.molecules:
-                filename = f"data_{molecule}.csv"
+                suffix = "_flagged" if flagged else ""
+                filename = f"data_{molecule}{suffix}.csv"
                 params = f"time runtype tank stdtank port psamp {molecule}.area {molecule}.ht {molecule}.rt {molecule}.w"
                 # params_extra = f"{params} {molecule}.skew {molecule}.rl.a {molecule}.rl.ht {molecule}.rl.report {molecule}.c.a {molecule}.c.ht {molecule}.c.report"
-                command = f"{self.gcexport_path} {self.gc_dir} -csv -nonan -mindate {start_date} {params} > {self.export_dir}/{filename}"
+                flags_arg = " -flags" if flagged else ""
+                command = f"{self.gcexport_path} {self.gc_dir} -csv -nonan{flags_arg} -mindate {start_date} {params} > {self.export_dir}/{filename}"
 
                 # Execute the command and redirect output to /dev/null
                 process = subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -74,6 +76,8 @@ class M4_GCwerks_Export(M4_Instrument):
                             help=f'Start date in the format YYMM (default: {m4_export.start_date}). ')
         parser.add_argument('-m', '--molecules', type=str, default=default_molecules,
                             help='Comma-separated list of molecules. Add quotes around the list if spaces are used. Default all molecules.')
+        parser.add_argument('--flagged', action='store_true',
+                            help='Include flagged GCwerks data and write *_flagged.csv files.')
         parser.add_argument('--list', action='store_true', help='List all available molecule names.')
 
         args = parser.parse_args()
@@ -83,7 +87,7 @@ class M4_GCwerks_Export(M4_Instrument):
 
         molecules = m4_export.parse_molecules(args.molecules)     # returns a list of molecules
         start_date = m4_export.verify_start_date(args.start_date)
-        m4_export.export_gc_data(start_date, molecules)
+        m4_export.export_gc_data(start_date, molecules, flagged=args.flagged)
 
 
 if __name__ == '__main__':
