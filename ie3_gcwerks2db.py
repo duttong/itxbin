@@ -17,12 +17,13 @@ class IE3_GCwerks2DB:
     INST_NUM_BY_SITE = {"smo": 236}
     RUN_TIME_GAP_MIN = 15
 
-    def __init__(self, site: str):
+    def __init__(self, site: str, flagged: bool = False):
         site = site.lower()
         if site not in self.VALID_SITES:
             raise ValueError(f"Invalid site {site!r}. Valid sites: {sorted(self.VALID_SITES)}")
 
         self.site = site
+        self.flagged = flagged
         try:
             self.inst_num = self.INST_NUM_BY_SITE[site]
         except KeyError as e:
@@ -30,7 +31,8 @@ class IE3_GCwerks2DB:
                 f"Missing inst_num for site {site!r}. "
                 f"Set INST_NUM_BY_SITE for this site."
             ) from e
-        self.gcwerks_file = Path(f"/hats/gc/{site}/results/ie3_{site}_gcwerks_all.csv")
+        suffix = "_flagged" if flagged else ""
+        self.gcwerks_file = Path(f"/hats/gc/{site}/results/ie3_{site}_gcwerks_all{suffix}.csv")
 
         # database connection
         import sys
@@ -67,6 +69,36 @@ class IE3_GCwerks2DB:
         df = pd.read_csv(self.gcwerks_file, skipinitialspace=True)
         df.columns = [c.strip() for c in df.columns]
         df["time"] = pd.to_datetime(df["time"])
+
+        # de-dup by time
+        df = df.drop_duplicates("time", keep="last")
+        return df
+
+    @staticmethod
+    def _flag_column_name(mol: str, channel: str | None) -> str:
+        return f"{mol}_{channel}_flag" if channel else f"{mol}_flag"
+
+    def read_gcwerks_flagged(self) -> pd.DataFrame:
+        if not self.gcwerks_file.exists():
+            raise FileNotFoundError(self.gcwerks_file)
+
+        df = pd.read_csv(self.gcwerks_file, skipinitialspace=True, dtype=str)
+        df.columns = [c.strip() for c in df.columns]
+        df["time"] = pd.to_datetime(df["time"])
+
+        col_map = self._parse_measurement_columns(df.columns)
+        for (mol, channel), cols in col_map.items():
+            flag_col = self._flag_column_name(mol, channel)
+            df[flag_col] = False
+            for metric in ("ht", "area", "rt"):
+                col = cols.get(metric)
+                if not col:
+                    continue
+                series = df[col].fillna("").astype(str).str.strip()
+                flagged = series.str.endswith(("F", "*"))
+                cleaned = series.str.replace(r"[F*]$", "", regex=True)
+                df[col] = pd.to_numeric(cleaned, errors="coerce").replace(-999, pd.NA)
+                df[flag_col] = df[flag_col] | flagged
 
         # de-dup by time
         df = df.drop_duplicates("time", keep="last")
@@ -157,20 +189,40 @@ class IE3_GCwerks2DB:
         return analysis_map
 
     def upsert_mole_fractions(self, df: pd.DataFrame, analysis_map: dict, batch_size: int = 1000):
-        mole_sql = """
-            INSERT INTO hats.ng_insitu_mole_fractions (
-                analysis_num,
-                parameter_num,
-                channel,
-                height,
-                area,
-                retention_time
-            ) VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                height         = VALUES(height),
-                area           = VALUES(area),
-                retention_time = VALUES(retention_time)
-        """
+        if self.flagged:
+            mole_sql = """
+                INSERT INTO hats.ng_insitu_mole_fractions (
+                    analysis_num,
+                    parameter_num,
+                    channel,
+                    flag,
+                    height,
+                    area,
+                    retention_time
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    flag           = IF(VALUES(flag) = 'W..', 'W..', flag),
+                    height         = VALUES(height),
+                    area           = VALUES(area),
+                    retention_time = VALUES(retention_time)
+            """
+        else:
+            mole_sql = """
+                INSERT INTO hats.ng_insitu_mole_fractions (
+                    analysis_num,
+                    parameter_num,
+                    channel,
+                    flag,
+                    height,
+                    area,
+                    retention_time
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    flag           = VALUES(flag),
+                    height         = VALUES(height),
+                    area           = VALUES(area),
+                    retention_time = VALUES(retention_time)
+            """
 
         col_map = self._parse_measurement_columns(df.columns)
         missing = sorted({mol for (mol, _ch) in col_map if mol not in self.analytes})
@@ -187,6 +239,7 @@ class IE3_GCwerks2DB:
                 if param is None:
                     continue
                 channel = ch or "a"
+                flag_col = self._flag_column_name(mol, ch)
                 ht_col = cols.get("ht")
                 area_col = cols.get("area")
                 rt_col = cols.get("rt")
@@ -201,7 +254,9 @@ class IE3_GCwerks2DB:
                     area = None
                 if pd.isna(rt):
                     rt = None
-                params.append((analysis_num, param, channel, ht, area, rt))
+                flagged = bool(getattr(r, flag_col, False))
+                flag = "W.." if flagged else "..."
+                params.append((analysis_num, param, channel, flag, ht, area, rt))
 
             if len(params) >= batch_size:
                 self.db.doMultiInsert(mole_sql, params, all=True)
@@ -211,9 +266,12 @@ class IE3_GCwerks2DB:
             self.db.doMultiInsert(mole_sql, params, all=True)
 
     def load(self, duration_months=2, year=None):
-        IE3_Process(site=self.site).export_onefile()
-        df = self.read_gcwerks()
-        df = self._normalize_measurements(df)
+        IE3_Process(site=self.site, flagged=self.flagged).export_onefile()
+        if self.flagged:
+            df = self.read_gcwerks_flagged()
+        else:
+            df = self.read_gcwerks()
+            df = self._normalize_measurements(df)
         df = self._assign_run_time(df)
         df["analysis_time_str"] = df["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -233,9 +291,10 @@ def load(
     site: str = typer.Argument("smo", help="Site code (default: smo)"),
     all_data: bool = typer.Option(False, "--all", help="Process all data"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
+    flagged: bool = typer.Option(False, "--flagged", help="Load the flagged GCwerks export file"),
 ):
     """Load IE3 GCwerks export data into HATS ng_insitu tables."""
-    ie3 = IE3_GCwerks2DB(site)
+    ie3 = IE3_GCwerks2DB(site, flagged=flagged)
     if all_data:
         ie3.load(duration_months=None)
     else:

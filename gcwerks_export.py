@@ -48,10 +48,12 @@ class GCwerks_export:
                 return False
         return True
 
-    def gcwerks_export(self, mol, mindate=False, maxdate=False, csv=True, mk2yrfile=False, report='/hats/gc/itxbin/report.conf'):
-        """ Exports GCwerks data to a .csv file. Set mol="all" for one file
+    def gcwerks_export(self, mol, mindate=False, maxdate=False, csv=True, flagged=False, mk2yrfile=False, report='/hats/gc/itxbin/report.conf'):
+        """ Exports GCwerks data to a .csv file. Set mol="all" for one file.
             with all of the molecules listed in peaks.list
             mindate and maxdate can be of the form YYMMDD 
+            csv=True for csv output, False for tab-delimited text file
+            flagged=True to include flagged data (added 260330)
             use report for a custom output report format (added 210901)
         """
 
@@ -88,8 +90,10 @@ class GCwerks_export:
             cmd += f'-mindate {mindate} '
         if maxdate is not False:
             cmd += f'-maxdate {maxdate} '
+        if flagged:
+            cmd += '-flags '
         if csv:
-            cmd += ' -csv'
+            cmd += '-csv '
 
         with open(results_file, 'w') as f:
             gcw = Popen(shlex.split(cmd), stdout=PIPE, stderr=DEVNULL)
