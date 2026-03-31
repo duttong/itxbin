@@ -63,11 +63,15 @@ class EngPlotWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.config = self._load_config()
+        self._has_loaded = False
         self._df = None
         self._left_col = None
         self._right_col = None
         self._ax1 = None
         self._ax2 = None
+        self._filter_dir: Path | None = None
+        self._scanned_dirs: list[Path] = []
+        self._plot_lines: list = []
         self._build_ui()
         self.restore_state()
 
@@ -102,8 +106,16 @@ class EngPlotWidget(QWidget):
         """Return column names for pre-populating trace combos on startup."""
 
     @abstractmethod
-    def load_data(self, end_date: date, n_days: int, resample: str) -> pd.DataFrame | None:
-        """Load, clean, and resample; return DataFrame indexed by time."""
+    def load_data(self, end_date: date, n_days: int, resample: str,
+                  filter_dir: Path | None = None) -> pd.DataFrame | None:
+        """Load, clean, and resample; return DataFrame indexed by time.
+
+        If filter_dir is given, only load data from that single directory.
+        """
+
+    @abstractmethod
+    def list_dirs_in_range(self, end_date: date, n_days: int) -> list[Path]:
+        """Return sorted list of data directories that fall within the date window."""
 
     # ---------------------------------------------------------------- hooks
 
@@ -148,6 +160,12 @@ class EngPlotWidget(QWidget):
         self.days_spin.valueChanged.connect(self._on_days_changed)
         top.addWidget(self.days_spin)
 
+        top.addWidget(QLabel('Directory:'))
+        self.dir_combo = QComboBox()
+        self.dir_combo.setMinimumWidth(180)
+        self.dir_combo.addItem('All Data')
+        top.addWidget(self.dir_combo)
+
         top.addWidget(QLabel('Resample:'))
         self.resample_combo = QComboBox()
         self.resample_combo.addItems(RESAMPLE_OPTIONS)
@@ -170,6 +188,13 @@ class EngPlotWidget(QWidget):
         self.right_combo = QComboBox()
         self.right_combo.setMinimumWidth(160)
         trace_row.addWidget(self.right_combo)
+
+        self.marker_btn = QPushButton('Markers')
+        self.marker_btn.setCheckable(True)
+        self.marker_btn.setChecked(False)
+        self.marker_btn.clicked.connect(self._toggle_markers)
+        trace_row.addWidget(self.marker_btn)
+
         trace_row.addStretch()
         layout.addLayout(trace_row)
 
@@ -221,6 +246,19 @@ class EngPlotWidget(QWidget):
         if cols:
             self._populate_trace_combos(cols)
 
+    def _populate_dir_combo(self, end_date: date, n_days: int):
+        dirs = self.list_dirs_in_range(end_date, n_days)
+        self._scanned_dirs = dirs
+        current = self.dir_combo.currentText()
+        self.dir_combo.blockSignals(True)
+        self.dir_combo.clear()
+        self.dir_combo.addItem('All Data')
+        for d in dirs:
+            self.dir_combo.addItem(d.name)
+        idx = self.dir_combo.findText(current)
+        self.dir_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.dir_combo.blockSignals(False)
+
     def _on_days_changed(self, value: int):
         auto = '1min' if value >= AUTO_RESAMPLE_DAYS else '1s'
         idx = self.resample_combo.findText(auto)
@@ -232,16 +270,23 @@ class EngPlotWidget(QWidget):
         n_days = self.days_spin.value()
         resample = self.resample_combo.currentText()
 
+        self._populate_dir_combo(end_date, n_days)
+        selected = self.dir_combo.currentText()
+        self._filter_dir = None if selected == 'All Data' else next(
+            (d for d in self._scanned_dirs if d.name == selected), None
+        )
+
         self.load_btn.setText('Loading…')
         self.load_btn.setEnabled(False)
         QApplication.processEvents()
 
         try:
-            df = self.load_data(end_date, n_days, resample)
+            df = self.load_data(end_date, n_days, resample, filter_dir=self._filter_dir)
         finally:
             self.load_btn.setText('Load')
             self.load_btn.setEnabled(True)
 
+        self._has_loaded = True
         if df is None or df.empty:
             print('No data found for selected range.', file=sys.stderr)
             return
@@ -304,6 +349,7 @@ class EngPlotWidget(QWidget):
         self._left_col = left_col
         self._right_col = right_col
         self._ax2 = None
+        self._plot_lines = []
 
         self.figure.clear()
         ax1 = self.figure.add_subplot(111)
@@ -314,25 +360,43 @@ class EngPlotWidget(QWidget):
         color_right = 'tab:red'
         has_left = left_col and left_col in df.columns
         has_right = right_col and right_col != 'None' and right_col in df.columns
+        marker = 'o' if self.marker_btn.isChecked() else 'None'
 
         if has_left:
-            ax1.plot(df.index, df[left_col], color=color_left, linewidth=0.8, label=left_col)
+            line, = ax1.plot(df.index, df[left_col], color=color_left, linewidth=0.8,
+                             marker=marker, markersize=3, label=left_col)
+            self._plot_lines.append(line)
             ax1.set_ylabel(left_col, color=color_left)
             ax1.tick_params(axis='y', labelcolor=color_left)
             ax1.ticklabel_format(style='plain', axis='y', useOffset=False)
-            ax1.legend(loc='upper left', fontsize=8)
+            ax1.grid(True, axis='x')
+            ax1.legend(loc='upper left', fontsize=9)
 
         if has_right:
             ax2 = ax1.twinx()
             self._ax2 = ax2
-            ax2.plot(df.index, df[right_col], color=color_right, linewidth=0.8, label=right_col)
+            line, = ax2.plot(df.index, df[right_col], color=color_right, linewidth=0.8,
+                             marker=marker, markersize=3, label=right_col)
+            self._plot_lines.append(line)
             ax2.set_ylabel(right_col, color=color_right)
             ax2.tick_params(axis='y', labelcolor=color_right)
             ax2.ticklabel_format(style='plain', axis='y', useOffset=False)
-            ax2.legend(loc='upper right', fontsize=8)
+            ax2.legend(loc='upper right', fontsize=9)
 
         title_parts = [p for p in [left_col, right_col if has_right else ''] if p]
         ax1.set_title(f"{self.instrument_name} — {', '.join(title_parts)}  [{resample}]")
+        locator = mdates.AutoDateLocator()
+        formatter = mdates.AutoDateFormatter(locator)
+        formatter.scaled = {
+            365:        '%Y',
+            30:         '%Y-%m',
+            1:          '%m-%d',
+            1/24:       '%m-%d %H:%M',
+            1/1440:     '%m-%d %H:%M:%S',
+            1/86400:    '%H:%M:%S',
+        }
+        ax1.xaxis.set_major_locator(locator)
+        ax1.xaxis.set_major_formatter(formatter)
         self.figure.autofmt_xdate()
         self.figure.tight_layout()
 
@@ -351,6 +415,17 @@ class EngPlotWidget(QWidget):
         self.canvas.draw()
         self._update_legend_stats()
 
+    def _toggle_markers(self):
+        marker = 'o' if self.marker_btn.isChecked() else 'None'
+        for line in self._plot_lines:
+            line.set_marker(marker)
+        self.canvas.draw_idle()
+
+    def _load_and_plot_home(self):
+        """Load data then reset the view to full extent (like pressing Home)."""
+        self._load_and_plot()
+        self.toolbar.home()
+
     # ---------------------------------------------------------------- state
 
     def save_state(self):
@@ -359,6 +434,7 @@ class EngPlotWidget(QWidget):
             'last_resample': self.resample_combo.currentText(),
             'last_left_trace': self.left_combo.currentText(),
             'last_right_trace': self.right_combo.currentText(),
+            'last_dir': self.dir_combo.currentText(),
             **self._extra_save_state(),
         })
         self._save_config()
@@ -391,9 +467,11 @@ class EngPlotWidget(QWidget):
         self.resample_combo.currentTextChanged.connect(lambda _: self.save_state())
         self.left_combo.currentTextChanged.connect(lambda _: self.save_state())
         self.right_combo.currentTextChanged.connect(lambda _: self.save_state())
+        self.dir_combo.currentTextChanged.connect(lambda _: self.save_state())
 
-        # Auto-reload when trace selection changes
+        # Auto-reload when trace or directory selection changes
         self.left_combo.currentTextChanged.connect(self._load_and_plot)
         self.right_combo.currentTextChanged.connect(self._load_and_plot)
+        self.dir_combo.currentTextChanged.connect(self._load_and_plot_home)
 
         self._connect_extra_signals()

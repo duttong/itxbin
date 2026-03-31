@@ -174,30 +174,50 @@ class IE3EngWidget(EngPlotWidget):
     def get_columns(self) -> list[str]:
         return load_header(self.site_combo.currentText()) or []
 
-    def load_data(self, end_date: date, n_days: int, resample: str) -> pd.DataFrame | None:
+    def list_dirs_in_range(self, end_date: date, n_days: int) -> list[Path]:
+        site = self.site_combo.currentText()
+        start_date = end_date - timedelta(days=n_days - 1)
+        dirs = []
+        current = start_date
+        while current <= end_date:
+            d = SITE_ROOT / site / current.strftime('%y') / 'incoming' / current.strftime('%Y%m%d')
+            if d.is_dir():
+                dirs.append(d)
+            current += timedelta(days=1)
+        return dirs
+
+    def load_data(self, end_date: date, n_days: int, resample: str,
+                  filter_dir: Path | None = None) -> pd.DataFrame | None:
         site = self.site_combo.currentText()
         cols = load_header(site)
         if cols is None:
             print(f'No header file found for site {site}', file=sys.stderr)
             return None
 
-        start_date = end_date - timedelta(days=n_days - 1)
+        if filter_dir is not None:
+            dirs_to_load = [filter_dir] if filter_dir.is_dir() else []
+        else:
+            start_date = end_date - timedelta(days=n_days - 1)
+            dirs_to_load = []
+            current = start_date
+            while current <= end_date:
+                d = SITE_ROOT / site / current.strftime('%y') / 'incoming' / current.strftime('%Y%m%d')
+                if d.is_dir():
+                    dirs_to_load.append(d)
+                current += timedelta(days=1)
+
         frames = []
-        current = start_date
-        while current <= end_date:
-            day_dir = SITE_ROOT / site / current.strftime('%y') / 'incoming' / current.strftime('%Y%m%d')
-            if day_dir.is_dir():
-                for f in sorted(day_dir.glob('eng*.csv*')):
-                    df = read_eng_file(f, cols)
-                    if df is not None:
-                        frames.append(df)
-            current += timedelta(days=1)
+        for day_dir in dirs_to_load:
+            for f in sorted(day_dir.glob('eng*.csv*')):
+                df = read_eng_file(f, cols)
+                if df is not None:
+                    frames.append(df)
 
         if not frames:
             return None
 
         df = pd.concat(frames, ignore_index=True)
-        df['ie3_time'] = pd.to_datetime(df['ie3_time'], utc=True, errors='coerce').dt.tz_convert(None)
+        df['ie3_time'] = pd.to_datetime(df['ie3_time'], format='mixed', utc=True, errors='coerce').dt.tz_convert(None)
         df = df.dropna(subset=['ie3_time']).drop_duplicates('ie3_time').sort_values('ie3_time').set_index('ie3_time')
 
         for col in GSV_COLS:

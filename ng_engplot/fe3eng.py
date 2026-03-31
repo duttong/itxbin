@@ -64,13 +64,10 @@ class FE3EngWidget(EngPlotWidget):
     def get_columns(self) -> list[str]:
         return get_fe3_sample_columns()
 
-    def load_data(self, end_date: date, n_days: int, resample: str) -> pd.DataFrame | None:
+    def list_dirs_in_range(self, end_date: date, n_days: int) -> list[Path]:
         start_date = end_date - timedelta(days=n_days - 1)
-        frames = []
-
+        dirs = []
         for yy_dir in sorted(FE3_ROOT.glob('??')):
-            if not yy_dir.is_dir():
-                continue
             incoming = yy_dir / 'incoming'
             if not incoming.is_dir():
                 continue
@@ -83,10 +80,40 @@ class FE3EngWidget(EngPlotWidget):
                 except ValueError:
                     continue
                 if start_date <= dir_date <= end_date:
-                    for f in sorted(ts_dir.glob('eng_[0-9]*.csv*')):
-                        df = read_fe3_eng_file(f)
-                        if df is not None:
-                            frames.append(df)
+                    dirs.append(ts_dir)
+        return dirs
+
+    def load_data(self, end_date: date, n_days: int, resample: str,
+                  filter_dir: Path | None = None) -> pd.DataFrame | None:
+        start_date = end_date - timedelta(days=n_days - 1)
+        frames = []
+
+        if filter_dir is not None:
+            dirs_to_load = [filter_dir] if filter_dir.is_dir() else []
+        else:
+            dirs_to_load = []
+            for yy_dir in sorted(FE3_ROOT.glob('??')):
+                if not yy_dir.is_dir():
+                    continue
+                incoming = yy_dir / 'incoming'
+                if not incoming.is_dir():
+                    continue
+                for ts_dir in sorted(incoming.glob('????????-??????')):
+                    if not ts_dir.is_dir() or not ts_dir.name[:8].isdigit():
+                        continue
+                    try:
+                        ds = ts_dir.name[:8]
+                        dir_date = date(int(ds[:4]), int(ds[4:6]), int(ds[6:8]))
+                    except ValueError:
+                        continue
+                    if start_date <= dir_date <= end_date:
+                        dirs_to_load.append(ts_dir)
+
+        for ts_dir in dirs_to_load:
+            for f in sorted(ts_dir.glob('eng_[0-9]*.csv*')):
+                df = read_fe3_eng_file(f)
+                if df is not None:
+                    frames.append(df)
 
         if not frames:
             return None
