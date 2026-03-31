@@ -12,9 +12,12 @@ interactive timeseries plots. One tabbed window covers all three instruments.
 ## Launch
 
 ```bash
-cd ng_engplot
-python3 engplot_main.py
+engplot
 ```
+
+The `engplot` script at `/hats/gc/itxbin/engplot` is the preferred entry point.
+It uses the `prod6` conda interpreter directly and adds `ng_engplot/` to the
+path automatically. No `cd` or manual `python3` invocation needed.
 
 ## Instruments / tabs
 
