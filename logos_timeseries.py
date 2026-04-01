@@ -46,16 +46,17 @@ def adjust_brightness(color, factor=1.0):
 class TimeseriesFigure:
     """Manages a single interactive matplotlib figure for timeseries data."""
 
-    def __init__(self, parent_widget, df, analyte):
+    def __init__(self, parent_widget, df, analyte, insitu_df=None):
         self.parent_widget = parent_widget
         self.df = df
         self.analyte = analyte
+        self.insitu_df = insitu_df if insitu_df is not None else pd.DataFrame()
         self.channel = parent_widget.current_channel
 
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False}
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True}
 
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
@@ -127,9 +128,16 @@ class TimeseriesFigure:
         datasets = self.parent_widget.build_datasets(self.df)
         sites_by_lat = self.parent_widget.sites_by_lat
 
+        site_colors = build_site_colors(sites_by_lat)
+
         # --- Draw datasets ---
         self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
-        
+
+        if not self.insitu_df.empty:
+            insitu_handles = self._draw_insitu_artists(self._ax, site_colors)
+            for lbl, artists in insitu_handles.items():
+                self.dataset_handles.setdefault(lbl, []).extend(artists)
+
         self._rebuild_data_artists()
 
         # Tag each artist with its site (safety)
@@ -148,10 +156,21 @@ class TimeseriesFigure:
         panel_top = axpos.y0 + axpos.height
 
         # ─── Dataset Legend ───
+        # Use a representative site color for Air1/Air2 dummies so they match the plot
+        _active = self.parent_widget.get_active_sites()
+        _air_base = site_colors.get(_active[0], "gray") if _active else "gray"
+        _legend_markers = {"All samples": "o", "Flask mean": "^", "Pair mean": "s", "Air1": "o", "Air2": "o"}
+        _legend_colors  = {"All samples": "black", "Flask mean": "black", "Pair mean": "black",
+                           "Air1": adjust_brightness(_air_base, 1.0),
+                           "Air2": adjust_brightness(_air_base, 0.65)}
+
+        flask_entries  = ["All samples", "Flask mean", "Pair mean"] if not self.df.empty else []
+        insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
+
         legend_handles = []
-        for label in ["All samples", "Flask mean", "Pair mean"]:
-            dummy = mlines.Line2D([], [], color="black",
-                                marker={"All samples": "o", "Flask mean": "^", "Pair mean": "s"}[label],
+        for label in flask_entries + insitu_entries:
+            dummy = mlines.Line2D([], [], color=_legend_colors[label],
+                                marker=_legend_markers[label],
                                 linestyle="", markersize=6, label=label)
             dummy._is_dataset_legend = True
             if not self.dataset_visibility.get(label, True):
@@ -244,6 +263,38 @@ class TimeseriesFigure:
                     a.set_picker(5 if vis else False)   # False disables picking
         self._fig.canvas.draw_idle()
 
+    def _draw_insitu_artists(self, ax, site_colors):
+        """Draw IE3 in-situ air ports grouped by port then site; return dataset_handles dict."""
+        PORT_LABELS = {3: "Air1", 7: "Air2"}
+        PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+        dataset_handles = {}
+        sites = self.parent_widget.get_active_sites()
+        filtered = self.insitu_df[self.insitu_df["site"].isin(sites)]
+
+        for (port, site), grp in filtered.groupby(["port", "site"]):
+            label = PORT_LABELS.get(port, f"Air(port {port})")
+            color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE[label])
+            visible = self.dataset_visibility.get(label, True)
+            line, = ax.plot(
+                grp["analysis_time"], grp["mole_fraction"],
+                marker="o", linestyle="", color=color,
+                markersize=4, alpha=0.6, label=label, picker=5
+            )
+            line._site = site
+            line._dataset_label = label
+            line._meta = {
+                "run_time":        grp["run_time"].tolist(),
+                "sample_datetime": grp["analysis_time"].tolist(),
+                "site":            grp["site"].tolist(),
+                "port":            grp["port"].tolist(),
+                "analyte":         self.analyte,
+                "channel":         self.channel,
+            }
+            line.set_visible(visible)
+            dataset_handles.setdefault(label, []).append(line)
+
+        return dataset_handles
+
     def _on_analyte_changed(self, text):
         self.analyte = text
         if "(" in text and ")" in text:
@@ -260,15 +311,16 @@ class TimeseriesFigure:
         self.reload_btn.setEnabled(False)
         QApplication.processEvents()
 
-        # Query using the analyte/channel that this figure was created with
-        df = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
-        if df.empty:
+        df        = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
+        insitu_df = self.parent_widget.query_insitu_data(analyte=self.analyte, force=True)
+        if df.empty and insitu_df.empty:
             print("No data to reload")
             self.reload_btn.setText("Reload")
             self.reload_btn.setEnabled(True)
             return
 
         self.df = df
+        self.insitu_df = insitu_df
         self._ax.clear()
         self._build_plot()
 
@@ -670,6 +722,8 @@ class TimeseriesWidget(QWidget):
         self.open_figures = []
         self._cached_df = None
         self._last_query_params = None
+        self._cached_insitu_df = None
+        self._last_insitu_params = None
         self._dataset_visibility = {}
 
         self.analytes = self.instrument.analytes if self.instrument else {}
@@ -721,12 +775,11 @@ class TimeseriesWidget(QWidget):
 
         cols = 4
         row = 0
+        default_site = getattr(self.instrument, "site", None)
+        default_sites = {default_site.upper()} if default_site else {"BRW", "MLO", "SMO", "SPO"}
         for i, site in enumerate(self.sites_by_lat):
             cb = QCheckBox(site)
-            if site in ['BRW', 'MLO', 'SMO', 'SPO']:
-                cb.setChecked(True)
-            else:
-                cb.setChecked(False)
+            cb.setChecked(site in default_sites)
             self.site_checks.append(cb)
             row, col = divmod(i, cols)
             site_layout.addWidget(cb, row, col)
@@ -873,358 +926,12 @@ class TimeseriesWidget(QWidget):
 
     def timeseries_plot(self):
         df = self.query_flask_data(force=False)
-        if df.empty:
+        insitu_df = self.query_insitu_data()
+        if df.empty and insitu_df.empty:
             print("No data to plot")
             return
         analyte = self.analyte_combo.currentText()
-        fig = TimeseriesFigure(self, df, analyte)
-        self.open_figures.append(fig)
-
-    def rel_stddev_plot(self):
-        """Handle the 'Relative Stddev Plot' button click."""
-        df = self.query_rel_stddev_data()
-        if df.empty:
-            print("No data available for the relative standard deviation plot.")
-            return
-        analyte = self.analyte_combo.currentText()
-        fig = RelStdDevFigure(self, df, analyte)
-        self.open_figures.append(fig)
-
-    def query_rel_stddev_data(self, analyte=None):
-        """Query data for the relative standard deviation plot."""
-        start_year = self.start_year.value()
-        end_year = self.end_year.value()
-        start_date = f"{start_year}-01-01"
-        end_date = f"{end_year}-12-31"
-
-        analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
-        if pnum is None:
-            return pd.DataFrame()
-
-        inst_num = self.instrument.inst_num
-        sites = self.get_active_sites()
-        if not sites:
-            return pd.DataFrame()
-
-        query = f"""
-        SELECT
-            run_time, sample_id, pair_id_num, site,
-            MIN(sample_datetime) AS sample_datetime,
-            AVG(mole_fraction) AS mixratio,
-            STDDEV_SAMP(mole_fraction) AS stddev,
-            100 * STDDEV_SAMP(mole_fraction) / NULLIF(AVG(mole_fraction), 0) AS relstd,
-            COUNT(*) AS n
-        FROM hats.ng_data_processing_view
-        WHERE inst_num = %s
-          AND parameter_num = %s
-          AND run_type_num = 1 AND data_flag = '...'
-          AND sample_datetime BETWEEN %s AND %s
-          AND site IN ({",".join(["%s"]*len(sites))})
-        GROUP BY run_time, sample_id, pair_id_num, site
-        ORDER BY run_time;
-        """
-        params = [inst_num, pnum, start_date, end_date] + sites
-        df = pd.DataFrame(self.instrument.doquery(query, params))
-        if not df.empty:
-            df["run_time"] = pd.to_datetime(df["run_time"])
-            df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
-            df = df.sort_values(["site", "run_time"])
-        return df
-
-    # ---------- Data plumbing ----------
-    def get_active_sites(self):
-        return [cb.text() for cb in self.site_checks if cb.isChecked()]
-
-    def query_flask_data(self, force: bool = False, analyte: str | None = None, channel: str | None = None) -> pd.DataFrame:
-        start = self.start_year.value()
-        end   = self.end_year.value()
-
-        analyte = analyte or self.analyte_combo.currentText()
-        pnum    = self.analytes.get(analyte)
-        self.set_current_analyte(analyte)
-        channel = channel or self.current_channel
-
-        if pnum is None:
-            return pd.DataFrame()
-
-        ch_str = '' if channel is None else f'AND channel = "{channel}"'
-        query_params = (start, end, analyte)
-
-        if force or query_params != self._last_query_params:
-            sql = f"""
-            SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
-                   data_flag, site, sample_id, pair_id_num, run_type_num
-            FROM hats.ng_data_processing_view
-            WHERE inst_num = {self.instrument.inst_num}
-              AND parameter_num = {pnum}
-              {ch_str}
-              AND YEAR(sample_datetime) BETWEEN {start} AND {end}
-            ORDER BY sample_datetime;
-            """
-            df = pd.DataFrame(self.instrument.doquery(sql))
-            if df.empty:
-                self._cached_df = pd.DataFrame()
-            else:
-                df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
-                self._cached_df = df
-            self._last_query_params = query_params
-
-        return self._cached_df.copy() if self._cached_df is not None else pd.DataFrame()
-
-    def build_datasets(self, df: pd.DataFrame) -> dict:
-        datasets = {}
-        if self.hide_flagged.isChecked():
-            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
-        else:
-            datasets["All samples"] = df.copy()
-
-        clean = df[df["data_flag"] == "..."].copy()
-        flask_runs = clean[(clean["run_type_num"] == 1) & (clean["pair_id_num"] > 0)].copy()
-        pfp_runs = clean[clean["run_type_num"] == 5].copy()
-
-        fm_cols = ["site", "sample_id", "sample_datetime", "mean", "std"]
-        if flask_runs.empty:
-            fm = pd.DataFrame(columns=fm_cols)
-        else:
-            fm = (flask_runs.groupby(["site", "sample_id", "sample_datetime"])
-                            .agg({"mole_fraction": ["mean", "std"]})
-                            .reset_index())
-            fm.columns = fm_cols
-
-        pm_frames = []
-        if not flask_runs.empty:
-            pm_flask = (flask_runs.groupby(["site", "pair_id_num"])
-                                 .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
-                                 .reset_index())
-            pm_flask.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
-            pm_frames.append(pm_flask)
-
-        if not pfp_runs.empty:
-            pm_pfp = (pfp_runs.groupby(["site", "sample_datetime"])
-                               .agg({"sample_id": "first", "mole_fraction": ["mean", "std"]})
-                               .reset_index())
-            pm_pfp.columns = ["site", "sample_datetime", "pair_id_num", "mean", "std"]
-            pm_pfp = pm_pfp[["site", "pair_id_num", "sample_datetime", "mean", "std"]]
-            pm_frames.append(pm_pfp)
-
-        if pm_frames:
-            pm = pd.concat(pm_frames, ignore_index=True)
-        else:
-            pm = pd.DataFrame(columns=["site", "pair_id_num", "sample_datetime", "mean", "std"])
-
-        datasets["Flask mean"] = fm
-        datasets["Pair mean"]  = pm
-        return datasets
-                
-    def on_point_pick(self, event, artist=None, idx=None):
-        artist = artist or event.artist
-
-        # ignore hidden artists
-        if hasattr(artist, "get_visible") and not artist.get_visible():
-            return
-
-        if not hasattr(artist, "_meta"):
-            return
-
-        # idx is now the authoritative point index
-        if idx is None:
-            if not hasattr(event, "ind") or len(event.ind) == 0:
-                return
-            # fallback: keep your old behavior
-            idx = int(event.ind[0])
-
-        nearest_idx = idx
-
-        # These values come straight from your DataFrame (no conversion)
-        sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
-        pair_id_num = artist._meta.get("pair_id_num", [None])[nearest_idx]
-        run_time    = artist._meta.get("run_time", [None])[nearest_idx]
-        sample_time = artist._meta.get("sample_datetime", [None])[nearest_idx]
-        site        = artist._meta.get("site", [None])[nearest_idx]
-        analyte     = artist._meta.get("analyte", "Unknown")
-        channel     = artist._meta.get("channel", None)
-
-        # Always show tooltip
-        text = (
-            f"<b>Site:</b> {site}<br>"
-            f"<b>Sample ID:</b> {sample_id}<br>"
-            f"<b>Pair ID:</b> {pair_id_num}<br>"
-            f"<b>Sample time:</b> {sample_time}<br>"
-            f"<b>Run time:</b> {run_time}"
-        )
-        QToolTip.showText(QCursor.pos(), text)
-
-        # Right click adds extra action -- loads the run in main window
-        if event.mouseevent.button == 3:  # right click
-            self.main_window.current_run_time = str(run_time)
-            self.main_window.current_pnum = int(self.analytes.get(analyte))
-            self.main_window.current_channel = channel
-
-            # --- Update the analyte selection UI ---
-            if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
-                # Handle radio buttons
-                for rb in self.main_window.radio_group.buttons():
-                    if rb.text() == analyte:
-                        rb.setChecked(True)
-                        break
-
-            elif hasattr(self.main_window, "analyte_combo"):
-                # Handle combo box
-                idx = self.main_window.analyte_combo.findText(analyte, Qt.MatchExactly)
-                if idx >= 0:
-                    self.main_window.analyte_combo.setCurrentIndex(idx)
-
-            if hasattr(self.main_window, "tabs"):
-                self.main_window.tabs.setCurrentIndex(0)  # switch to first tab ("Processing")
-
-            # --- Update date range UI ---
-            # Ensure run_time is a datetime (not string)
-            if not isinstance(run_time, pd.Timestamp):
-                run_time = pd.to_datetime(run_time)
-
-            end_year = run_time.year
-            end_month = run_time.month
-
-            # One month prior
-            start_dt = (run_time - pd.DateOffset(months=1))
-            start_year = start_dt.year
-            start_month = start_dt.month
-
-            # Update combo boxes
-            self.main_window.end_year_cb.setCurrentText(str(end_year))
-            self.main_window.end_month_cb.setCurrentIndex(end_month - 1)
-            self.main_window.start_year_cb.setCurrentText(str(start_year))
-            self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
-            
-            # --- Ensure run type is "All" so PFPs show up too ---
-            self.main_window.runTypeCombo.blockSignals(True)
-            self.main_window.runTypeCombo.setCurrentText("All")
-            self.main_window.runTypeCombo.blockSignals(False)
-    
-            # --- Continue with loading the run ---
-            self.main_window.set_runlist(initial_date=run_time)
-            self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            self.main_window.current_run_time = str(run_time)
-            # no need for the apply button highlight
-            self.main_window.apply_date_btn.setStyleSheet("")
-
-    # --- Helpers ---
-    def set_current_analyte(self, analyte_name: str | None):
-        if not analyte_name:  # handles None or ""
-            self.current_analyte = None
-            self.current_channel = None
-            return
-
-        idx = self.analyte_combo.findText(analyte_name, Qt.MatchExactly)
-        if idx >= 0:
-            self.analyte_combo.setCurrentIndex(idx)
-
-        self.current_channel = None
-        if "(" in analyte_name and ")" in analyte_name:
-            analyte, channel = analyte_name.split("(", 1)
-            self.current_channel = channel.strip(") ")
-
-        self.current_analyte = analyte_name
-        
-    def get_site_info(self):
-        sql = f""" SELECT 
-            code, lat, lon, elev from gmd.site
-            WHERE code in {tuple(LOGOS_sites)}
-            ORDER BY code;
-            """
-        df = pd.DataFrame(self.instrument.doquery(sql))
-        return df        
-        
-    def select_all_sites(self):
-        for cb in self.site_checks:
-            cb.setChecked(True)
-
-    def select_none_sites(self):
-        for cb in self.site_checks:
-            cb.setChecked(False)
-
-    def _draw_dataset_artists(self, ax, datasets, analyte):
-        """Draw datasets on a specific Axes, return dataset_handles dict."""
-        dataset_handles = {}
-
-        sites = self.get_active_sites()
-        site_colors = build_site_colors(self.sites_by_lat)
-        styles = {
-            "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 3, "alpha": 0.4},
-            "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
-            "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
-        }
-
-        for label, dset in datasets.items():
-            for site, grp in dset.groupby("site"):
-                if site not in sites:
-                    continue
-
-                base = site_colors[site]
-                style = styles[label]
-                color = adjust_brightness(base, style["shade"])
-
-                # determine visibility for this dataset
-                visible = self._dataset_visibility.get(label, True)
-
-                if label == "All samples":
-                    line, = ax.plot(
-                        grp["sample_datetime"], grp["mole_fraction"],
-                        marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], alpha=style["alpha"],
-                        label=label, mfc=color, mec='gray', picker=5
-                    )
-                    line._site = site
-                    line._dataset_label = label
-                    line._meta = {
-                        "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
-                        "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
-                        "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
-                        "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
-                        "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
-                        "analyte": analyte,
-                        "channel": self.current_channel,
-                    }
-                    line.set_visible(visible)
-                    dataset_handles.setdefault(label, []).append(line)
-
-                else:
-                    # draw errorbar and tag all its parts
-                    container = ax.errorbar(
-                        grp["sample_datetime"], grp["mean"], yerr=grp["std"],
-                        marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
-                        mfc='none', mec=color, label=label
-                    )
-
-                    # Flatten all visible artist components
-                    parts = []
-                    for child in container:
-                        if isinstance(child, (list, tuple)):
-                            parts.extend(child)
-                        else:
-                            parts.append(child)
-
-                    # Apply site label + visibility to every piece
-                    for p in parts:
-                        if hasattr(p, "set_visible"):
-                            p._site = site
-                            p._dataset_label = label
-                            p.set_visible(visible)
-
-                    dataset_handles.setdefault(label, []).extend(parts)
-
-        ax.figure.canvas.draw_idle()
-        return dataset_handles
-
-    def timeseries_plot(self):
-        df = self.query_flask_data(force=False)
-        if df.empty:
-            print("No data to plot")
-            return
-        analyte = self.analyte_combo.currentText()
-        fig = TimeseriesFigure(self, df, analyte)
+        fig = TimeseriesFigure(self, df, analyte, insitu_df=insitu_df)
         self.open_figures.append(fig)
 
     def rel_stddev_plot(self):
@@ -1319,7 +1026,60 @@ class TimeseriesWidget(QWidget):
 
         return self._cached_df.copy() if self._cached_df is not None else pd.DataFrame()
 
+
+    def query_insitu_data(self, analyte: str | None = None, force: bool = False) -> pd.DataFrame:
+        """Query unflagged IE3 in-situ air port data for the selected analyte and date range."""
+        if self.instrument.inst_num != 236:
+            return pd.DataFrame()
+
+        start = self.start_year.value()
+        end = self.end_year.value()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        # Extract channel from analyte name, e.g. "CFC12 (b)" -> "b"
+        channel = None
+        if "(" in analyte and ")" in analyte:
+            channel = analyte.split("(", 1)[1].strip(") ")
+
+        query_params = (start, end, analyte)
+        if not force and query_params == self._last_insitu_params and self._cached_insitu_df is not None:
+            return self._cached_insitu_df.copy()
+
+        ch_filter = f"AND mf.channel = '{channel}'" if channel else ""
+        sql = f"""
+        SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel
+        FROM hats.ng_insitu_analysis a
+        JOIN hats.ng_insitu_mole_fractions mf ON a.num = mf.analysis_num
+        JOIN gmd.site s ON a.site_num = s.num
+        WHERE a.inst_num = 236
+          AND a.port IN (3, 7)
+          AND mf.flag = '...'
+          AND mf.parameter_num = {pnum}
+          {ch_filter}
+          AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
+        ORDER BY a.analysis_time;
+        """
+        df = pd.DataFrame(self.instrument.doquery(sql))
+        if not df.empty:
+            df["run_time"]      = pd.to_datetime(df["run_time"])
+            df["analysis_time"] = pd.to_datetime(df["analysis_time"])
+        self._cached_insitu_df = df
+        self._last_insitu_params = query_params
+        return df.copy() if not df.empty else df
+
     def build_datasets(self, df: pd.DataFrame) -> dict:
+        if df.empty:
+            all_s = pd.DataFrame(columns=["sample_datetime", "run_time", "analysis_datetime",
+                                          "mole_fraction", "channel", "data_flag", "site",
+                                          "sample_id", "pair_id_num", "run_type_num"])
+            fm = pd.DataFrame(columns=["site", "sample_id", "sample_datetime", "mean", "std"])
+            pm = pd.DataFrame(columns=["site", "pair_id_num", "sample_datetime", "mean", "std"])
+            return {"All samples": all_s, "Flask mean": fm, "Pair mean": pm}
+
         datasets = {}
         if self.hide_flagged.isChecked():
             datasets["All samples"] = df[df["data_flag"] == "..."].copy()
@@ -1383,28 +1143,38 @@ class TimeseriesWidget(QWidget):
 
         nearest_idx = idx
 
-        # These values come straight from your DataFrame (no conversion)
-        sample_id   = artist._meta.get("sample_id", [None])[nearest_idx]
-        pair_id_num = artist._meta.get("pair_id_num", [None])[nearest_idx]
-        run_time    = artist._meta.get("run_time", [None])[nearest_idx]
-        sample_time = artist._meta.get("sample_datetime", [None])[nearest_idx]
-        site        = artist._meta.get("site", [None])[nearest_idx]
+        def _mval(key):
+            vals = artist._meta.get(key)
+            if not vals or nearest_idx >= len(vals):
+                return None
+            return vals[nearest_idx]
+
+        sample_id   = _mval("sample_id")
+        pair_id_num = _mval("pair_id_num")
+        run_time    = _mval("run_time")
+        sample_time = _mval("sample_datetime")
+        site        = _mval("site")
+        port        = _mval("port")
+        air_label   = getattr(artist, "_dataset_label", None)
         analyte     = artist._meta.get("analyte", "Unknown")
         channel     = artist._meta.get("channel", None)
 
-        # Always show tooltip
-        text = (
-            f"<b>Site:</b> {site}<br>"
-            f"<b>Sample ID:</b> {sample_id}<br>"
-            f"<b>Pair ID:</b> {pair_id_num}<br>"
-            f"<b>Sample time:</b> {sample_time}<br>"
-            f"<b>Run time:</b> {run_time}"
-        )
-        QToolTip.showText(QCursor.pos(), text)
+        # For in-situ points run_time is absent; fall back to analysis_time
+        effective_run_time = run_time if run_time is not None else sample_time
+
+        # Build tooltip, skipping fields with no data
+        lines = [f"<b>Site:</b> {site}"]
+        if air_label  is not None and port is not None:
+            lines.append(f"<b>Port:</b> {air_label} (port {port})")
+        if sample_id   is not None: lines.append(f"<b>Sample ID:</b> {sample_id}")
+        if pair_id_num is not None: lines.append(f"<b>Pair ID:</b> {pair_id_num}")
+        if sample_time is not None: lines.append(f"<b>Time:</b> {sample_time}")
+        if run_time    is not None: lines.append(f"<b>Run time:</b> {run_time}")
+        QToolTip.showText(QCursor.pos(), "<br>".join(lines))
 
         # Right click adds extra action -- loads the run in main window
         if event.mouseevent.button == 3:  # right click
-            self.main_window.current_run_time = str(run_time)
+            self.main_window.current_run_time = str(effective_run_time)
             self.main_window.current_pnum = int(self.analytes.get(analyte))
             self.main_window.current_channel = channel
 
@@ -1426,15 +1196,13 @@ class TimeseriesWidget(QWidget):
                 self.main_window.tabs.setCurrentIndex(0)  # switch to first tab ("Processing")
 
             # --- Update date range UI ---
-            # Ensure run_time is a datetime (not string)
-            if not isinstance(run_time, pd.Timestamp):
-                run_time = pd.to_datetime(run_time)
+            t = effective_run_time
+            if not isinstance(t, pd.Timestamp):
+                t = pd.to_datetime(t)
 
-            end_year = run_time.year
-            end_month = run_time.month
-
-            # One month prior
-            start_dt = (run_time - pd.DateOffset(months=1))
+            end_year   = t.year
+            end_month  = t.month
+            start_dt   = t - pd.DateOffset(months=1)
             start_year = start_dt.year
             start_month = start_dt.month
 
@@ -1443,15 +1211,15 @@ class TimeseriesWidget(QWidget):
             self.main_window.end_month_cb.setCurrentIndex(end_month - 1)
             self.main_window.start_year_cb.setCurrentText(str(start_year))
             self.main_window.start_month_cb.setCurrentIndex(start_month - 1)
-            
+
             # --- Ensure run type is "All" so PFPs show up too ---
             self.main_window.runTypeCombo.blockSignals(True)
             self.main_window.runTypeCombo.setCurrentText("All")
             self.main_window.runTypeCombo.blockSignals(False)
-    
+
             # --- Continue with loading the run ---
-            self.main_window.set_runlist(initial_date=run_time)
+            self.main_window.set_runlist(initial_date=t)
             self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            self.main_window.current_run_time = str(run_time)
+            self.main_window.current_run_time = str(t)
             # no need for the apply button highlight
             self.main_window.apply_date_btn.setStyleSheet("")

@@ -1613,13 +1613,15 @@ class FE3_Instrument(HATS_DB_Functions):
             for mol in mols
         }
 
-    def return_preferred_channel(self, gas: str) -> str | None:
-        gas_l = gas.lower()
-        # override for CFC11/113
-        if gas_l in ('cfc11','cfc113'):
-            return 'c'
-        # otherwise lookup in the precomputed map
-        return self.molecule_channel_map.get(gas_l)
+    def return_preferred_channel(self) -> pd.DataFrame:
+        """Return preferred channel assignments from hats.ng_preferred_channel for this instrument."""
+        sql = """
+        SELECT inst_num, parameter_num, start_date, channel
+        FROM hats.ng_preferred_channel
+        WHERE inst_num = %s
+        ORDER BY parameter_num, start_date
+        """
+        return pd.DataFrame(self.db.doquery(sql, (self.inst_num,)))
     
     def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
         """Load data from the database with date filtering.
@@ -2034,6 +2036,16 @@ class IE3_Instrument(HATS_DB_Functions):
         if rows:
             return rows[0]["param_num"]
         return None
+
+    def return_preferred_channel(self) -> pd.DataFrame:
+        """Return preferred channel assignments from hats.ng_preferred_channel for this instrument."""
+        sql = """
+        SELECT inst_num, parameter_num, start_date, channel
+        FROM hats.ng_preferred_channel
+        WHERE inst_num = %s
+        ORDER BY parameter_num, start_date
+        """
+        return pd.DataFrame(self.db.doquery(sql, (self.inst_num,)))
 
     def upsert_mole_fractions(self, df, response_id=None):
         """

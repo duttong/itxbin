@@ -35,6 +35,14 @@
   deconvolution, windowed by reference tank and date
 - `hats.scale_assignments` — calibration scale coefficients (coef0, coef1)
   used by `calc_mole_fraction_scalevalues` for most M4 analytes
+- `hats.ng_insitu_analysis` — IE3 GC run metadata (`num, run_time,
+  analysis_time, site_num, inst_num, port`); `run_time` groups all port
+  injections for one GC run, `analysis_time` is per-injection
+- `hats.ng_insitu_mole_fractions` — IE3 computed mole fractions joined to
+  `ng_insitu_analysis` via `analysis_num`; air ports are 3 and 7
+- `hats.ng_preferred_channel` — preferred channel per `(inst_num,
+  parameter_num, start_date)`; used by `return_preferred_channel()` on FE3
+  and IE3 instruments (e.g. IE3 CFC12→`b`, CFC11→`c`)
 
 ## CFC-113 / CFC-113a coupling (M4)
 
@@ -59,6 +67,20 @@ LOGOS_Instruments
         ├── IE3_Instrument     # inst_num=236
         └── BLD1_Instrument    # inst_num=220
 ```
+
+## IE3 in-situ timeseries (logos_timeseries.py)
+
+- `TimeseriesWidget.query_insitu_data()` queries `ng_insitu_analysis` ⋈
+  `ng_insitu_mole_fractions` ⋈ `gmd.site` for unflagged air-port data
+  (ports 3 & 7); only runs when `instrument.inst_num == 236`
+- Channel is extracted from the analyte display name (e.g. `"CFC12 (b)"` →
+  `channel='b'`) and applied as a SQL filter — avoids mixing channels that
+  share a `parameter_num`
+- Air ports are split into **Air1** (port 3) and **Air2** (port 7) on the
+  plot, both as filled circles at different brightness levels of the site color
+- `TimeseriesWidget` defaults to the site passed via `--site` (stored as
+  `instrument.site`); other instruments default to BRW/MLO/SMO/SPO
+- Right-click a point → navigates main window to that GC `run_time`
 
 ## logos_data.py (GUI)
 
