@@ -5,18 +5,10 @@ import argparse
 import pandas as pd
 from pandas.tseries.offsets import DateOffset
 from pathlib import Path
-import warnings
+import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from logos_instruments import FE3_Instrument as fe3_inst
-
-
-def _custom_formatwarning(message, category, filename, lineno, line=None):
-    """A custom warning formatter that omits the source code line."""
-    return f'{filename}:{lineno}: {category.__name__}: {message}\n'
-
-
-warnings.formatwarning = _custom_formatwarning
 
 
 class FE3_Prepare(fe3_inst):
@@ -92,7 +84,7 @@ class FE3_Prepare(fe3_inst):
             try:
                 data = json.loads(path.read_text())
             except Exception as e:
-                warnings.warn(f"Failed to parse {path!r}: {e}")
+                logging.warning("Failed to parse %r: %s", path, e)
                 return None
             return {
                 'time':    self.return_datetime(path),
@@ -171,7 +163,7 @@ class FE3_Prepare(fe3_inst):
         seq_len = len(seq)
 
         if seq_len != n:
-            warnings.warn(f"Seq/Data length mismatch for run {run_id}: {seq_len} seq chars vs {n} GC rows. Most likely an aborted run.")
+            logging.debug("Seq/Data length mismatch for run %s: %d seq chars vs %d GC rows. Most likely an aborted run.", run_id, seq_len, n)
             # keep at most n entries so we never overrun the GC data slice
             seq = seq[:n]
 
@@ -209,7 +201,7 @@ class FE3_Prepare(fe3_inst):
                 des = des[:n]
                 idx = idx[:n]
 
-            warnings.warn(f"Adjusted seq lists for run {run_id}: gc rows={n}, port entries={len(des)}, flask entries={len(idx)}")
+            logging.debug("Adjusted seq lists for run %s: gc rows=%d, port entries=%d, flask entries=%d", run_id, n, len(des), len(idx))
 
         return des, idx
 
@@ -499,7 +491,8 @@ if __name__ == '__main__':
                      help="Load the flagged FE3 GCwerks export file.")
     
     options = opt.parse_args()
-    
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+
     t0 = time.time()
     fe3 = FE3_Prepare(flagged=options.flagged)
     
@@ -512,5 +505,5 @@ if __name__ == '__main__':
         df = fe3.fe3_merged_data(duration=2)
     
     fe3.gcwerks_2_hatsdb(df)
-    print(f'Execution time {time.time()-t0:3.3f} seconds on {df.shape[0]} records.')
+    logging.info('Execution time %.3f seconds on %d records.', time.time()-t0, df.shape[0])
     
