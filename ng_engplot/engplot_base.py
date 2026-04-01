@@ -256,7 +256,14 @@ class EngPlotWidget(QWidget):
         for d in dirs:
             self.dir_combo.addItem(d.name)
         idx = self.dir_combo.findText(current)
-        self.dir_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        if idx > 0:
+            # A specific directory was selected; keep it if still in list
+            self.dir_combo.setCurrentIndex(idx)
+        elif not self._has_loaded and dirs:
+            # First load: default to most recent directory
+            self.dir_combo.setCurrentIndex(self.dir_combo.count() - 1)
+        else:
+            self.dir_combo.setCurrentIndex(max(idx, 0))
         self.dir_combo.blockSignals(False)
 
     def _on_days_changed(self, value: int):
