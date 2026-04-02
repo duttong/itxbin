@@ -106,6 +106,24 @@ class IE3_import(GCwerks_Import):
         logging.info('Removing partial itx file: %s', last_file)
         self._remove_path(last_file)
 
+    def _update_recent_symlink(self, incoming: Path):
+        yyyymmdd_dirs = sorted(
+            path for path in incoming.iterdir()
+            if path.is_dir() and not path.is_symlink() and len(path.name) == 8 and path.name.isdigit()
+        )
+        if not yyyymmdd_dirs:
+            logging.info('No YYYYMMDD directories found in %s; not updating recent symlink', incoming)
+            return
+
+        latest = yyyymmdd_dirs[-1]
+        recent = incoming / 'recent'
+        if recent.exists() or recent.is_symlink():
+            logging.info('Removing existing recent symlink target: %s', recent)
+            self._remove_path(recent)
+
+        recent.symlink_to(latest.name, target_is_directory=True)
+        logging.info('Updated %s -> %s', recent, latest.name)
+
     def sync_incoming(self):
         if self.past_days < 1:
             raise ValueError('--past-days must be >= 1')
@@ -135,6 +153,7 @@ class IE3_import(GCwerks_Import):
             logging.info('Removing copied tarball: %s', copied_tgz)
             copied_tgz.unlink(missing_ok=True)
             self._remove_last_itx(incoming / f'{day:%Y%m%d}')
+            self._update_recent_symlink(incoming)
 
     def main(self, import_method, *args, **kwargs):
         self.sync_incoming()
