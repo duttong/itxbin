@@ -8,6 +8,12 @@ read-only tools to call in order to answer user questions.
 
 from __future__ import annotations
 
+import sys as _sys, os as _os
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+del _here, _sys, _os
+
 import json
 import os
 from datetime import datetime

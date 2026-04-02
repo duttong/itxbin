@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
+import sys as _sys, os as _os
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+del _here, _sys, _os
 import sys
+import os
 import html
 from datetime import datetime, timedelta, timezone
 import numpy as np
@@ -40,6 +46,25 @@ from logos_agent_tools import LOGOSDataAgentTools
 from logos_ai_agent import LOGOSChatAgent
 from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
+
+import configparser as _configparser
+
+
+def _load_app_config() -> _configparser.ConfigParser:
+    """Load the author-managed logos_data.conf from the same directory as this file."""
+    cfg = _configparser.ConfigParser()
+    conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logos_data.conf')
+    cfg.read(conf_path)
+    return cfg
+
+
+_APP_CONFIG = _load_app_config()
+
+
+def _inst_cfg(inst_id: str) -> _configparser.SectionProxy | dict:
+    """Return the config section for an instrument, or empty dict if absent."""
+    section = f'instrument.{inst_id}'
+    return _APP_CONFIG[section] if _APP_CONFIG.has_section(section) else {}
 
 
 def _is_blank(value):
@@ -231,6 +256,7 @@ class MainWindow(QMainWindow):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
         super().__init__()
         self.instrument = instrument   # e.g. an M4_Instrument("m4") instance
+        self._inst_cfg = _inst_cfg(self.instrument.inst_id)
 
         self.setWindowTitle(f"{self.instrument.inst_id.upper()} Data Processing Application")
 
@@ -387,9 +413,7 @@ class MainWindow(QMainWindow):
 
         # Combo box (exclude 'All')
         # Enable only for certain instruments to change the set run_type_num on the loaded run
-        self.change_runtype_enabled = False
-        if self.instrument.inst_id in {'fe3', 'bld1'}:
-            self.change_runtype_enabled = True
+        self.change_runtype_enabled = self._inst_cfg.getboolean('change_run_type', fallback=self.instrument.inst_id in {'fe3', 'bld1'})
         self.change_runtype_cb = QComboBox()
         runtype_items = [k for k in self.instrument.RUN_TYPE_MAP.keys() if k != "All"]
         self.change_runtype_cb.addItems(runtype_items)
@@ -596,7 +620,7 @@ class MainWindow(QMainWindow):
         processing_layout.addWidget(combined_gb)
 
         # --- Save Run Button ---
-        if self.instrument.inst_id in {'bld1'}:
+        if self._inst_cfg.getboolean('csv_export', fallback=self.instrument.inst_id in {'bld1'}):
             self.save_csv_btn = QPushButton("Save run to .csv file")
             self.save_csv_btn.setToolTip("Export the selected run to a CSV file")
             self.save_csv_btn.clicked.connect(lambda: self.export_csv(self.save_csv_btn))
@@ -620,15 +644,33 @@ class MainWindow(QMainWindow):
         processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # ── TABS ──
+        _visible_tabs_raw = self._inst_cfg.get(
+            'tabs',
+            fallback='processing, timeseries, tanks, ai'
+        )
+        _visible_tabs = {t.strip().lower() for t in _visible_tabs_raw.split(',')}
+
         tabs = QTabWidget()
         tabs.addTab(processing_pane, "Processing")
 
-        self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
-        tabs.addTab(self.timeseries_tab, "Timeseries")
-        self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
-        tabs.addTab(self.tanks_tab, "Tanks")
-        self.logos_ai_tab = LOGOSAITab(instrument=self.instrument, main_window=self, parent=self)
-        tabs.addTab(self.logos_ai_tab, "LOGOS AI")
+        if 'timeseries' in _visible_tabs:
+            self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
+            tabs.addTab(self.timeseries_tab, "Timeseries")
+        else:
+            self.timeseries_tab = None
+
+        if 'tanks' in _visible_tabs:
+            self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
+            tabs.addTab(self.tanks_tab, "Tanks")
+        else:
+            self.tanks_tab = None
+
+        if 'ai' in _visible_tabs:
+            self.logos_ai_tab = LOGOSAITab(instrument=self.instrument, main_window=self, parent=self)
+            tabs.addTab(self.logos_ai_tab, "LOGOS AI")
+        else:
+            self.logos_ai_tab = None
+
         self.tabs = tabs
         tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -662,21 +704,27 @@ class MainWindow(QMainWindow):
 
         self.populate_analyte_controls()
         
-        # Kick off by selecting the first analyte by default
-        if self.instrument.inst_id == 'm4':
+        # Kick off by selecting the default analyte from config
+        _default_analyte = self._inst_cfg.get('default_analyte', fallback=None)
+        if not _default_analyte:
+            # Instrument-class override (e.g. IE3 sets DEFAULT_ANALYTE_NAME)
+            _default_analyte = getattr(self.instrument, 'DEFAULT_ANALYTE_NAME', None)
+
+        if _default_analyte and _default_analyte in self.analytes:
+            if '(' in _default_analyte and ')' in _default_analyte:
+                self.current_channel = _default_analyte.split('(')[1].split(')')[0].strip()
+            else:
+                self.current_channel = None
+            self.current_pnum = int(self.analytes[_default_analyte])
+            if self.analyte_combo is not None:
+                self.analyte_combo.setCurrentText(_default_analyte)
+            elif hasattr(self, 'set_current_analyte'):
+                self.set_current_analyte(_default_analyte)
+            self.apply_dates()
+        elif self.instrument.inst_id == 'm4':
+            # Fallback for m4 if conf is missing
             self.current_pnum = 20
             self.set_current_analyte('HFC134a')
-        elif self.instrument.inst_id == 'ie3':
-            default_name = getattr(self.instrument, "DEFAULT_ANALYTE_NAME", None)
-            if default_name in self.analytes:
-                if '(' in default_name and ')' in default_name:
-                    self.current_channel = default_name.split('(')[1].split(')')[0].strip()
-                else:
-                    self.current_channel = None
-                self.current_pnum = int(self.analytes[default_name])
-                if self.analyte_combo is not None:
-                    self.analyte_combo.setCurrentText(default_name)
-                self.apply_dates()
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
@@ -718,7 +766,7 @@ class MainWindow(QMainWindow):
         self.h_main.setStretch(2, 1)
 
     def undock_logos_ai_tab(self):
-        if self.logos_ai_dialog is not None or self.tabs is None:
+        if self.logos_ai_tab is None or self.logos_ai_dialog is not None or self.tabs is None:
             return
         idx = self.tabs.indexOf(self.logos_ai_tab)
         if idx >= 0:
@@ -736,7 +784,7 @@ class MainWindow(QMainWindow):
             self._on_tab_changed(self.tabs.currentIndex())
 
     def redock_logos_ai_tab(self):
-        if self.tabs is None:
+        if self.logos_ai_tab is None or self.tabs is None:
             return
         self.logos_ai_tab.setParent(None)
         if self.tabs.indexOf(self.logos_ai_tab) < 0:
@@ -3598,8 +3646,3 @@ def main():
     
 if __name__ == "__main__":
     main()
-    
-    
-if __name__ == "__main__":
-    main()
-    

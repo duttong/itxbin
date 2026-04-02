@@ -8,6 +8,12 @@ small, curated functions that are safer for agent use than raw SQL.
 
 from __future__ import annotations
 
+import sys as _sys, os as _os
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+del _here, _sys, _os
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path

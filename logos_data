@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Launcher for the logos_data GUI.
+
+Resolves the instrument from the command line or, if omitted,
+from the user config at ~/.logos_data_user.conf.
+
+Usage:
+    logos_data [instrument] [--site SITE]
+
+    instrument  One of: m4, fe3, bld1, ie3  (optional if set in user config)
+    --site      IE3 site code: smo, brw, spo, mlo
+
+Examples:
+    logos_data m4
+    logos_data fe3
+    logos_data ie3 --site smo
+    logos_data          # uses preferred_instrument from ~/.logos_data_user.conf
+"""
+
+import argparse
+import configparser
+import os
+import sys
+from pathlib import Path
+
+# Ensure logosdata/ is importable
+_here = os.path.dirname(os.path.abspath(__file__))
+_logosdata = os.path.join(_here, 'logosdata')
+if _logosdata not in sys.path:
+    sys.path.insert(0, _logosdata)
+
+import logos_instruments as _li
+
+_VALID_INSTS = list(_li.LOGOS_Instruments.INSTRUMENTS.keys())
+
+
+_USER_CONF = Path.home() / '.logos_data_user.conf'
+
+
+def _instrument_from_user_conf() -> str | None:
+    if not _USER_CONF.exists():
+        return None
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    return cfg.get('user', 'preferred_instrument', fallback=None)
+
+
+def _prompt_and_save_instrument() -> str:
+    """Interactively ask the user for their preferred instrument and persist it."""
+    opts = ', '.join(_VALID_INSTS)
+    while True:
+        try:
+            choice = input(
+                f'No preferred instrument set.\n'
+                f'Choose one [{opts}]: '
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(1)
+        if choice in _VALID_INSTS:
+            break
+        print(f'  Invalid choice "{choice}". Pick from: {opts}')
+
+    cfg = configparser.ConfigParser()
+    cfg['user'] = {'preferred_instrument': choice}
+    with open(_USER_CONF, 'w') as fh:
+        cfg.write(fh)
+    print(f'Saved preferred_instrument = {choice} to {_USER_CONF}')
+    return choice
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description='LOGOS Data Processing GUI',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'instrument',
+        nargs='?',
+        choices=_VALID_INSTS,
+        metavar='instrument',
+        help=f'Instrument to open: {_VALID_INSTS}. '
+             f'Defaults to preferred_instrument in ~/.logos_data_user.conf.',
+    )
+    parser.add_argument(
+        '--site',
+        type=str,
+        default=None,
+        help='IE3 site code (smo, brw, spo, mlo). Only used with ie3.',
+    )
+    args = parser.parse_args()
+
+    instrument = args.instrument
+    if instrument is None:
+        instrument = _instrument_from_user_conf()
+    if instrument is None:
+        instrument = _prompt_and_save_instrument()
+
+    # Rewrite sys.argv so logos_data.py main() parses correctly
+    new_argv = [os.path.join(_logosdata, 'logos_data.py'), instrument]
+    if args.site:
+        new_argv += ['--site', args.site]
+    sys.argv = new_argv
+
+    # Import and run
+    from logos_data import main as _logos_main
+    _logos_main()
+
+
+if __name__ == '__main__':
+    main()
