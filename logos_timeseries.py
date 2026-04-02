@@ -56,7 +56,7 @@ class TimeseriesFigure:
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True}
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False}
 
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
@@ -138,6 +138,14 @@ class TimeseriesFigure:
             for lbl, artists in insitu_handles.items():
                 self.dataset_handles.setdefault(lbl, []).extend(artists)
 
+        tenday_handles = self._draw_10day_mean_artists(self._ax, site_colors)
+        for lbl, artists in tenday_handles.items():
+            self.dataset_handles.setdefault(lbl, []).extend(artists)
+
+        monthly_handles = self._draw_monthly_mean_artists(self._ax, site_colors)
+        for lbl, artists in monthly_handles.items():
+            self.dataset_handles.setdefault(lbl, []).extend(artists)
+
         self._rebuild_data_artists()
 
         # Tag each artist with its site (safety)
@@ -159,16 +167,20 @@ class TimeseriesFigure:
         # Use a representative site color for Air1/Air2 dummies so they match the plot
         _active = self.parent_widget.get_active_sites()
         _air_base = site_colors.get(_active[0], "gray") if _active else "gray"
-        _legend_markers = {"All samples": "o", "Flask mean": "^", "Pair mean": "s", "Air1": "o", "Air2": "o"}
+        _legend_markers = {"All samples": "o", "Flask mean": "^", "Pair mean": "s", "Air1": "o", "Air2": "o", "10-day mean": "v", "Monthly mean": "D"}
         _legend_colors  = {"All samples": "black", "Flask mean": "black", "Pair mean": "black",
                            "Air1": adjust_brightness(_air_base, 1.0),
-                           "Air2": adjust_brightness(_air_base, 0.65)}
+                           "Air2": adjust_brightness(_air_base, 0.65),
+                           "10-day mean": "black", "Monthly mean": "black"}
 
+        has_data = not self.df.empty or not self.insitu_df.empty
         flask_entries  = ["All samples", "Flask mean", "Pair mean"] if not self.df.empty else []
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
+        tenday_entries  = ["10-day mean"] if has_data else []
+        monthly_entries = ["Monthly mean"] if has_data else []
 
         legend_handles = []
-        for label in flask_entries + insitu_entries:
+        for label in flask_entries + insitu_entries + tenday_entries + monthly_entries:
             dummy = mlines.Line2D([], [], color=_legend_colors[label],
                                 marker=_legend_markers[label],
                                 linestyle="", markersize=6, label=label)
@@ -294,6 +306,159 @@ class TimeseriesFigure:
             dataset_handles.setdefault(label, []).append(line)
 
         return dataset_handles
+
+    def _draw_10day_mean_artists(self, ax, site_colors):
+        """Draw 10-day mean ± std for flask and insitu data; return dataset_handles entries.
+        Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month."""
+        handles = {}
+        visible = self.dataset_visibility.get("10-day mean", False)
+
+        # ── Flask 10-day means (via ng_pair_avg_view, DB-aggregated) ───
+        tenday_df = self.parent_widget.query_10day_mean_data(self.analyte)
+        if not tenday_df.empty:
+            for _, row in tenday_df.iterrows():
+                site = row["site"]
+                mean = row["period_avg"]
+                std  = row["period_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                mid = row["period_start"]
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.9)
+                container = ax.errorbar(
+                    [mid], [mean], yerr=[std],
+                    marker="v", linestyle="",
+                    color=color, markersize=6, capsize=3, alpha=0.9,
+                    mfc="none", mec=color, label="10-day mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "10-day mean"
+                        p.set_visible(visible)
+                handles.setdefault("10-day mean", []).extend(parts)
+
+        # ── Insitu 10-day means ─────────────────────────────────────
+        if not self.insitu_df.empty:
+            PORT_LABELS = {3: "Air1", 7: "Air2"}
+            PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+            sites = self.parent_widget.get_active_sites()
+            insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
+            month_start = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
+            day = insitu["analysis_time"].dt.day
+            offset = pd.to_timedelta(
+                np.where(day <= 10, 0, np.where(day <= 20, 10, 20)), unit="D"
+            )
+            insitu["_period"] = month_start + offset
+            for (port, site, period), grp in insitu.groupby(["port", "site", "_period"]):
+                vals = grp["mole_fraction"].dropna()
+                if len(vals) < 2:
+                    continue
+                port_label = PORT_LABELS.get(port, f"Air(port {port})")
+                color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE.get(port_label, 1.0))
+                mean = vals.mean()
+                std  = vals.std()
+                if not np.isfinite(std):
+                    continue
+                container = ax.errorbar(
+                    [period], [mean], yerr=[std],
+                    marker="v", linestyle="",
+                    color=color, markersize=6, capsize=3, alpha=0.9,
+                    mfc="none", mec=color, label="10-day mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "10-day mean"
+                        p.set_visible(visible)
+                handles.setdefault("10-day mean", []).extend(parts)
+
+        return handles
+
+    def _draw_monthly_mean_artists(self, ax, site_colors):
+        """Draw monthly mean ± std for flask and insitu data; return dataset_handles entries."""
+        handles = {}
+        visible = self.dataset_visibility.get("Monthly mean", False)
+
+        # ── Flask monthly means (via ng_pair_avg_view, DB-aggregated) ───
+        pair_df = self.parent_widget.query_monthly_mean_data(self.analyte)
+        if not pair_df.empty:
+            for _, row in pair_df.iterrows():
+                site = row["site"]
+                mean = row["monthly_avg"]
+                std  = row["monthly_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                mid = row["month_start"]
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.9)
+                container = ax.errorbar(
+                    [mid], [mean], yerr=[std],
+                    marker="D", linestyle="",
+                    color=color, markersize=7, capsize=4, alpha=0.9,
+                    mfc="none", mec=color, label="Monthly mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Monthly mean"
+                        p.set_visible(visible)
+                handles.setdefault("Monthly mean", []).extend(parts)
+
+        # ── Insitu monthly means ─────────────────────────────────
+        if not self.insitu_df.empty:
+            PORT_LABELS = {3: "Air1", 7: "Air2"}
+            PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+            sites = self.parent_widget.get_active_sites()
+            insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
+            insitu["_month"] = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
+            for (port, site, month), grp in insitu.groupby(["port", "site", "_month"]):
+                vals = grp["mole_fraction"].dropna()
+                if len(vals) < 2:
+                    continue
+                port_label = PORT_LABELS.get(port, f"Air(port {port})")
+                color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE.get(port_label, 1.0))
+                mid  = month
+                mean = vals.mean()
+                std  = vals.std()
+                if not np.isfinite(std):
+                    continue
+                container = ax.errorbar(
+                    [mid], [mean], yerr=[std],
+                    marker="D", linestyle="",
+                    color=color, markersize=7, capsize=4, alpha=0.9,
+                    mfc="none", mec=color, label="Monthly mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Monthly mean"
+                        p.set_visible(visible)
+                handles.setdefault("Monthly mean", []).extend(parts)
+
+        return handles
 
     def _on_analyte_changed(self, text):
         self.analyte = text
@@ -1070,6 +1235,95 @@ class TimeseriesWidget(QWidget):
         self._cached_insitu_df = df
         self._last_insitu_params = query_params
         return df.copy() if not df.empty else df
+
+    def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
+        Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month."""
+        if self.instrument.inst_num == 236:
+            return pd.DataFrame()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        channel = None
+        if "(" in analyte and ")" in analyte:
+            channel = analyte.split("(", 1)[1].strip(") ")
+        ch_filter = f"AND channel = '{channel}'" if channel else ""
+
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+
+        sql = f"""
+        SELECT
+            site,
+            CASE
+                WHEN DAY(sample_datetime) <= 10 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-01')
+                WHEN DAY(sample_datetime) <= 20 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-11')
+                ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
+            END AS period_start,
+            AVG(pair_avg)    AS period_avg,
+            STDDEV(pair_avg) AS period_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_num = %s
+          AND parameter_num = %s
+          {ch_filter}
+          AND site IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, period_start
+        ORDER BY site, period_start;
+        """
+        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["period_start"] = pd.to_datetime(df["period_start"])
+        return df
+
+    def query_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3 handled via insitu)."""
+        if self.instrument.inst_num == 236:
+            return pd.DataFrame()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        channel = None
+        if "(" in analyte and ")" in analyte:
+            channel = analyte.split("(", 1)[1].strip(") ")
+        ch_filter = f"AND channel = '{channel}'" if channel else ""
+
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+
+        sql = f"""
+        SELECT
+            site,
+            DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+            AVG(pair_avg)    AS monthly_avg,
+            STDDEV(pair_avg) AS monthly_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_num = %s
+          AND parameter_num = %s
+          {ch_filter}
+          AND site IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start
+        ORDER BY site, month_start;
+        """
+        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
 
     def build_datasets(self, df: pd.DataFrame) -> dict:
         if df.empty:
