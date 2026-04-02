@@ -18,11 +18,14 @@ The codebase includes utilities for:
 - `bld1` (Boulder instrument workflow),
 - `ie3` (import workflow support).
 
-Main shared modules:
-- `logos_instruments.py`: common instrument/database classes and methods.
-- `logos_data.py`: interactive PyQt data processing/inspection UI.
-- `logos_tanks.py`: tank analysis UI helpers.
-- `logos_timeseries.py`: interactive timeseries plotting helpers.
+Main shared modules (in `logosdata/`):
+- `logosdata/logos_instruments.py`: common instrument/database classes and methods.
+- `logosdata/logos_data.py`: interactive PyQt data processing/inspection UI.
+- `logosdata/logos_tanks.py`: tank analysis UI helpers.
+- `logosdata/logos_timeseries.py`: interactive timeseries plotting helpers.
+
+Root shims `logos_instruments.py` and `logos_agent_tools.py` forward imports
+to `logosdata/` for backward compatibility with batch scripts.
 
 ## Environment assumptions
 
@@ -141,6 +144,17 @@ python3 fe3_ingest.py
 
 ### 6) GUIs
 
+Main data review GUI (requires display; connect with `ssh -Y`):
+
+```bash
+logos_data m4
+logos_data fe3
+logos_data ie3 --site smo
+logos_data          # prompts for instrument on first run, then uses ~/.logos_data_user.conf
+```
+
+See `logosdata/README.md` for full usage, keyboard shortcuts, and configuration.
+
 GCwerks launcher UI:
 
 ```bash
@@ -205,7 +219,7 @@ python3 fe3_batch.py -p all -i
 6. Spot-check results in GUI tools
 - Open data review UI:
 ```bash
-python3 logos_data.py m4
+logos_data m4
 ```
 - Optional: launch GCwerks directly for manual inspection:
 ```bash
@@ -227,7 +241,8 @@ python3 gcwerks.py fe3
 - `m4_ingest.py`: end-to-end M4 ingest and processing chain.
 - `*_gcwerks2db.py`: instrument-specific DB upsert/load flows.
 - `*_batch.py`: per-analyte mole fraction recalculation and optional DB insert.
-- `logos_data.py`: main PyQt analysis/review application.
+- `logos_data`: launcher for the `logosdata/` GUI package (instrument optional; reads `~/.logos_data_user.conf`).
+- `logosdata/`: PyQt analysis/review GUI — see `logosdata/README.md`.
 - `tank_hist_editor.py`: edit `hats.ng_tank_use_history`.
 
 ## Notes for contributors
