@@ -35,7 +35,9 @@ Optional hooks for instrument-specific controls and state:
 | FE3 | `/hats/gc/fe3/` | `<yy>/incoming/<YYYYMMDD-HHMMSS>/eng_<N>.csv[.gz]` | `fe3_time` (UTC string) |
 | BLD1 | `/hats/gc/bld1/` | `<yy>/incoming/<YYYYMMDD-HHMMSS>/<YYYYbldDDDHHMM>.<N>.eng` | derived from `Tsec*100` (local Denver time → UTC) |
 
-IE3 column names come from a per-site `eng_header.txt` (not a CSV header row).
+IE3 column names: files from 2026-04-01 onward have an embedded CSV header row
+(first field `ie3_time`); earlier files fall back to the legacy
+`eng_header_smo_early.txt` in the site root.
 
 ## IE3 specifics
 

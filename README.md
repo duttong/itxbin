@@ -140,7 +140,14 @@ Automated ingest/process wrappers:
 ```bash
 python3 m4_ingest.py --help
 python3 fe3_ingest.py
+python3 ie3_ingest.py --site smo
 ```
+
+IE3 ingest sequence (run by `ie3_ingest.py`):
+1. `ie3_import.py` — pull tarballs and import ITX chromatograms into GCwerks
+2. `ie3_gcwerks2db.py` — export GCwerks results and upsert `ng_insitu_analysis` / `ng_insitu_mole_fractions`
+3. `ie3_eng2db.py` — extract sample loop temp/pressure/flow from engineering data and upsert into `ng_insitu_mole_fractions`
+4. `ie3_batch.py` — recalculate mole fractions for all analytes
 
 ### 6) GUIs
 
@@ -240,6 +247,7 @@ python3 gcwerks.py fe3
 - `m4_samplogs.py`: ingest and sync M4 sample log / analysis metadata.
 - `m4_ingest.py`: end-to-end M4 ingest and processing chain.
 - `*_gcwerks2db.py`: instrument-specific DB upsert/load flows.
+- `ie3_eng2db.py`: upsert IE3 sample loop temp/pressure/flow from engineering data into `ng_insitu_mole_fractions`; default last 3 days, `--year YYYY` or `--all`.
 - `*_batch.py`: per-analyte mole fraction recalculation and optional DB insert.
 - `logos_data`: launcher for the `logosdata/` GUI package (instrument optional; reads `~/.logos_data_user.conf`).
 - `logosdata/`: PyQt analysis/review GUI — see `logosdata/README.md`.

@@ -53,7 +53,20 @@ def ingest(
         typer.secho(f"Error running ie3_gcwerks2db.py: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    # 4. Recalculate and write mole fractions for all analytes
+    # 4. Upsert sample loop temp/pressure/flow from engineering data
+    eng_cmd = [str(bin_dir / "ie3_eng2db.py"), "--site", site]
+    if all_data:
+        eng_cmd.append("--all")
+    else:
+        eng_cmd.extend(["--year", str(year)])
+    typer.secho(f"Running: {' '.join(eng_cmd)}", fg=typer.colors.BLUE)
+    try:
+        subprocess.run(eng_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Error running ie3_eng2db.py: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    # 5. Recalculate and write mole fractions for all analytes
     batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i"]
     typer.secho(f"Running: {' '.join(batch_cmd)}", fg=typer.colors.BLUE)
     try:

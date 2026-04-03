@@ -3,6 +3,7 @@
 
 import argparse
 import gzip
+import io
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -19,22 +20,37 @@ from engplot_base import EngPlotWidget
 SITE_ROOT = Path('/hats/gc')
 VALID_SITES = ['smo', 'mlo', 'spo', 'brw']
 GSV_COLS = {'GSV1', 'GSV2', 'GSV3'}
+LEGACY_HEADER_NAME = 'eng_header_smo_early.txt'
 
 
-def load_header(site: str) -> list[str] | None:
-    path = SITE_ROOT / site / 'eng_header.txt'
+def load_legacy_header(site: str) -> list[str] | None:
+    path = SITE_ROOT / site / LEGACY_HEADER_NAME
     if not path.exists():
         return None
-    text = path.read_text()
-    cols = [c.strip() for c in text.replace('\n', ',').split(',') if c.strip()]
+    cols = [c.strip() for c in path.read_text().replace('\n', ',').split(',') if c.strip()]
     return cols or None
 
 
-def read_eng_file(path: Path, cols: list[str]) -> pd.DataFrame | None:
+# Keep old name as alias so any external callers still work
+def load_header(site: str) -> list[str] | None:
+    return load_legacy_header(site)
+
+
+def read_eng_file(path: Path, fallback_cols: list[str] | None) -> pd.DataFrame | None:
     try:
         opener = gzip.open(path, 'rt') if path.name.endswith('.gz') else open(path, 'r')
         with opener as fh:
-            return pd.read_csv(fh, header=None, names=cols, low_memory=False)
+            raw = fh.read()
+        first_line = raw[:raw.index('\n')] if '\n' in raw else raw
+        if first_line.startswith('ie3_time'):
+            return pd.read_csv(io.StringIO(raw), header=0, low_memory=False)
+        elif fallback_cols:
+            return pd.read_csv(io.StringIO(raw), header=None, names=fallback_cols,
+                               low_memory=False)
+        else:
+            print(f'Warning: no header in {path} and no fallback cols available',
+                  file=sys.stderr)
+            return None
     except Exception as e:
         print(f'Warning: could not read {path}: {e}', file=sys.stderr)
         return None
@@ -172,7 +188,7 @@ class IE3EngWidget(EngPlotWidget):
         return scan_ie3_date_range(self.site_combo.currentText())
 
     def get_columns(self) -> list[str]:
-        return load_header(self.site_combo.currentText()) or []
+        return load_legacy_header(self.site_combo.currentText()) or []
 
     def list_dirs_in_range(self, end_date: date, n_days: int) -> list[Path]:
         site = self.site_combo.currentText()
@@ -189,10 +205,7 @@ class IE3EngWidget(EngPlotWidget):
     def load_data(self, end_date: date, n_days: int, resample: str,
                   filter_dir: Path | None = None) -> pd.DataFrame | None:
         site = self.site_combo.currentText()
-        cols = load_header(site)
-        if cols is None:
-            print(f'No header file found for site {site}', file=sys.stderr)
-            return None
+        fallback_cols = load_legacy_header(site)
 
         if filter_dir is not None:
             dirs_to_load = [filter_dir] if filter_dir.is_dir() else []
@@ -209,7 +222,7 @@ class IE3EngWidget(EngPlotWidget):
         frames = []
         for day_dir in dirs_to_load:
             for f in sorted(day_dir.glob('eng*.csv*')):
-                df = read_eng_file(f, cols)
+                df = read_eng_file(f, fallback_cols)
                 if df is not None:
                     frames.append(df)
 

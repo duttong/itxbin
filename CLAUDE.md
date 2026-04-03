@@ -39,7 +39,8 @@
   analysis_time, site_num, inst_num, port`); `run_time` groups all port
   injections for one GC run, `analysis_time` is per-injection
 - `hats.ng_insitu_mole_fractions` — IE3 computed mole fractions joined to
-  `ng_insitu_analysis` via `analysis_num`; air ports are 3 and 7
+  `ng_insitu_analysis` via `analysis_num`; air ports are 3 and 7;
+  `sample_loop_temp/pressure/flow` upserted by `ie3_eng2db.py`
 - `hats.ng_preferred_channel` — preferred channel per `(inst_num,
   parameter_num, start_date)`; used by `return_preferred_channel()` on FE3
   and IE3 instruments (e.g. IE3 CFC12→`b`, CFC11→`c`)
