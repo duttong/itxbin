@@ -1984,7 +1984,10 @@ class IE3_Instrument(HATS_DB_Functions):
                 m.area,
                 m.retention_time,
                 m.mole_fraction,
-                COALESCE(m.flag, '...') AS data_flag
+                COALESCE(m.flag, '...') AS data_flag,
+                m.sample_loop_temp,
+                m.sample_loop_pressure,
+                m.sample_loop_flow
             FROM hats.ng_insitu_analysis AS a
             JOIN hats.ng_insitu_mole_fractions AS m
                 ON m.analysis_num = a.num

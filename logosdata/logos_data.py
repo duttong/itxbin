@@ -1074,6 +1074,21 @@ class MainWindow(QMainWindow):
                 "response": subset[f"{self.instrument.response_type}"].round(5).astype(str).tolist() if f"{self.instrument.response_type}" in subset else [""] * len(subset),
                 "ratio": subset["normalized_resp"].round(5).astype(str).tolist() if "normalized_resp" in subset else [""] * len(subset),
                 "status_comments": subset["status_comments"].astype(str).tolist() if "status_comments" in subset else [""] * len(subset),
+                "sample_loop_temp": (
+                    subset["sample_loop_temp"].map(lambda x: f"{x:.2f}" if pd.notnull(x) else "").tolist()
+                    if "sample_loop_temp" in subset
+                    else [""] * len(subset)
+                ),
+                "sample_loop_pressure": (
+                    subset["sample_loop_pressure"].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "").tolist()
+                    if "sample_loop_pressure" in subset
+                    else [""] * len(subset)
+                ),
+                "sample_loop_flow": (
+                    subset["sample_loop_flow"].map(lambda x: f"{x:.1f}" if pd.notnull(x) else "").tolist()
+                    if "sample_loop_flow" in subset
+                    else [""] * len(subset)
+                ),
 
             }
             self._scatter_main.append(scatter)
@@ -1572,6 +1587,9 @@ class MainWindow(QMainWindow):
             port_info = meta.get("port_info", [''])[nearest_idx]
             tank_serial = meta.get("tank_serial", [''])[nearest_idx]
             comments = meta.get("status_comments", [''])[nearest_idx]
+            loop_temp = meta.get("sample_loop_temp", [''])[nearest_idx]
+            loop_pressure = meta.get("sample_loop_pressure", [''])[nearest_idx]
+            loop_flow = meta.get("sample_loop_flow", [''])[nearest_idx]
 
             parts = []
 
@@ -1621,7 +1639,14 @@ class MainWindow(QMainWindow):
             
             if not _is_blank(comments):
                 parts.append(f"<b>Comments:</b> {comments}")
-            
+
+            if not _is_blank(loop_temp):
+                parts.append(f"<b>Loop Temp:</b> {loop_temp} °C")
+            if not _is_blank(loop_pressure):
+                parts.append(f"<b>Loop Pressure:</b> {loop_pressure} mbar")
+            if not _is_blank(loop_flow):
+                parts.append(f"<b>Loop Flow:</b> {loop_flow} cc/min")
+
             # Combine for tooltip
             text = "<br>".join(parts)
             QToolTip.showText(QCursor.pos(), text)
