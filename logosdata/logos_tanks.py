@@ -368,9 +368,24 @@ class TanksWidget(QWidget):
 
     def _on_reload(self):
         """Reload tanks and clear the pending visual cue."""
-        self.refresh_tanks(force_reload=True)
-        self._reload_dirty = False
-        self.reload_btn.setStyleSheet("")
+        btn = getattr(self, "reload_btn", None)
+        default_text = "Reload Tanks"
+        if btn:
+            btn.setText("Loading...")
+            btn.setStyleSheet(
+                "background-color: #f6e7a1; "
+                "border: 1px solid #524b2f; "
+                "padding: 3px 6px; "
+                "color: #524b2f;")
+            btn.setEnabled(False)
+        try:
+            self.refresh_tanks(force_reload=True)
+            self._reload_dirty = False
+        finally:
+            if btn:
+                btn.setText(default_text)
+                btn.setStyleSheet("")
+                btn.setEnabled(True)
 
     def _on_analyte_toggled(self, cb: QCheckBox, checked: bool):
         """Keep analyte selection single-choice and refresh tanks when changed."""
@@ -1214,7 +1229,11 @@ class TanksWidget(QWidget):
         btn = getattr(self, "plot_tanks_btn", None)
         if btn:
             btn.setText("Loading...")
-            btn.setStyleSheet("background-color: gold;")
+            btn.setStyleSheet(
+                "background-color: #f6e7a1; "
+                "border: 1px solid #524b2f; "
+                "padding: 3px 6px; "
+                "color: #524b2f;")
             btn.setEnabled(False)
         # Force a repaint so the user sees the busy state before the DB call.
         try:
@@ -1372,10 +1391,15 @@ class TanksWidget(QWidget):
                     self._toast("Invalid parameter number for selection.")
                     return
                 channel = self._analyte_channel(name)
-                analyte_combo.setStyleSheet("background-color: gold;")
                 analyte_combo.setEnabled(False)
-                reload_button.setText("...")
+                reload_button.setText("Loading...")
+                reload_button.setStyleSheet(
+                    "background-color: #f6e7a1; "
+                    "border: 1px solid #524b2f; "
+                    "padding: 3px 6px; "
+                    "color: #524b2f;")
                 reload_button.setEnabled(False)
+
                 try:
                     QApplication.processEvents()
                 except Exception:
@@ -1384,9 +1408,9 @@ class TanksWidget(QWidget):
                     if not _plot_for(name, pnum, channel):
                         self._toast("No calibration data found for the selected tanks/parameter.")
                 finally:
-                    analyte_combo.setStyleSheet("")
                     analyte_combo.setEnabled(True)
                     reload_button.setText("Reload")
+                    reload_button.setStyleSheet("")
                     reload_button.setEnabled(True)
 
             def _on_combo_changed(name: str):
