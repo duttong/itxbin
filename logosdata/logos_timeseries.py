@@ -18,6 +18,33 @@ import time
 
 from data_export import MstarDataExporter
 
+import configparser
+from pathlib import Path
+
+_USER_CONF = Path.home() / '.logos_data_user.conf'
+
+
+def _load_timeseries_years() -> tuple[int, int]:
+    """Return (start_year, end_year) from user config, or sensible defaults."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    current_year = pd.Timestamp.now().year
+    start = cfg.getint('timeseries', 'start_year', fallback=2020)
+    end   = cfg.getint('timeseries', 'end_year',   fallback=current_year)
+    return start, end
+
+
+def _save_timeseries_years(start_year: int, end_year: int) -> None:
+    """Persist start/end year to the user config file."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    if not cfg.has_section('timeseries'):
+        cfg.add_section('timeseries')
+    cfg.set('timeseries', 'start_year', str(start_year))
+    cfg.set('timeseries', 'end_year',   str(end_year))
+    with open(_USER_CONF, 'w') as fh:
+        cfg.write(fh)
+
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
@@ -1032,10 +1059,13 @@ class TimeseriesWidget(QWidget):
         date_layout = QHBoxLayout()
         self.start_year = QSpinBox()
         self.start_year.setRange(1990, 2030)
-        self.start_year.setValue(2020)
         self.end_year = QSpinBox()
         self.end_year.setRange(1990, 2030)
-        self.end_year.setValue(pd.Timestamp.now().year)
+        _saved_start, _saved_end = _load_timeseries_years()
+        self.start_year.setValue(_saved_start)
+        self.end_year.setValue(_saved_end)
+        self.start_year.valueChanged.connect(self._save_year_range)
+        self.end_year.valueChanged.connect(self._save_year_range)
         date_layout.addWidget(QLabel("Start:"))
         date_layout.addWidget(self.start_year)
         date_layout.addWidget(QLabel("End:"))
@@ -1114,6 +1144,9 @@ class TimeseriesWidget(QWidget):
         self.setLayout(controls)
 
     # --- Helpers ---
+    def _save_year_range(self):
+        _save_timeseries_years(self.start_year.value(), self.end_year.value())
+
     def _set_button_loading_state(self, button, loading: bool, default_text: str):
         if loading:
             button.setText("Loading data...")
