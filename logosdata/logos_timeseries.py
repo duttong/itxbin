@@ -47,7 +47,7 @@ def _save_timeseries_years(start_year: int, end_year: int) -> None:
         cfg.write(fh)
 
 
-LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
+LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MLO_PFP', 'MKO_PFP']
 
@@ -55,6 +55,11 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
 # These do not exist in gmd.site; they are handled by filtering run_type_num=5
 # (ng_data_processing_view) or sample_type='PFP' (ng_pair_avg_view).
 PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
+
+# Sites excluded from the "Export M* Data -- All Sites" action.
+# MKO_PFP: only PFP samples exist at MKO, no standard flask M* record.
+# BLD: M4-only site, no M1/M3 data.
+MSTAR_EXPORT_EXCLUDE = {'MKO_PFP', 'BLD'}
 
 
 def build_site_colors(sites):
@@ -1235,9 +1240,14 @@ class TimeseriesWidget(QWidget):
         
     def get_site_info(self):
         real_sites = [s for s in LOGOS_sites if s not in PFP_SITES]
+        # Also fetch base sites for PFP pseudo-sites even if they are not in
+        # LOGOS_sites (e.g. MKO was removed as a standalone site but MKO_PFP
+        # still needs MKO's lat/lon to place itself in the sorted list).
+        pfp_base_sites = [s for s in PFP_SITES.values() if s not in real_sites]
+        all_query_sites = real_sites + pfp_base_sites
         sql = f""" SELECT
             code, lat, lon, elev from gmd.site
-            WHERE code in {tuple(real_sites)}
+            WHERE code in {tuple(all_query_sites)}
             ORDER BY code;
             """
         df = pd.DataFrame(self.instrument.doquery(sql))
@@ -1251,6 +1261,8 @@ class TimeseriesWidget(QWidget):
                 pfp_rows.append(row)
         if pfp_rows:
             df = pd.concat([df, pd.DataFrame(pfp_rows)], ignore_index=True)
+        # Drop any base sites that were only fetched for lat/lon lookup purposes
+        df = df[df['code'].isin(real_sites + list(PFP_SITES.keys()))].copy()
         return df
         
     def select_all_sites(self):
@@ -1362,8 +1374,9 @@ class TimeseriesWidget(QWidget):
         self.open_figures.append(fig)
 
     def _export_mstar_data_all_sites(self):
-        """Export M* data for all known sites."""
-        self._run_mstar_export(sites=self.sites_by_lat)
+        """Export M* data for all sites, minus those in MSTAR_EXPORT_EXCLUDE."""
+        sites = [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
+        self._run_mstar_export(sites=sites)
 
     def _export_mstar_data_selected_sites(self):
         """Export M* data for the currently checked sites."""
