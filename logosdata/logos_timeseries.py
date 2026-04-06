@@ -3,8 +3,8 @@ from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
     QToolTip, QSizePolicy, QApplication, QShortcut, QFileDialog, QMessageBox
 )
-from PyQt5.QtGui import QCursor, QKeySequence
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor, QKeySequence, QIcon, QPixmap
+from PyQt5.QtCore import Qt, QTimer
 
 from matplotlib.widgets import Button, RadioButtons
 import matplotlib.dates as mdates
@@ -16,10 +16,11 @@ import numpy as np
 import colorsys
 import time
 
+from pathlib import Path
+
 from data_export import MstarDataExporter
 
 import configparser
-from pathlib import Path
 
 _USER_CONF = Path.home() / '.logos_data_user.conf'
 
@@ -1131,12 +1132,27 @@ class TimeseriesWidget(QWidget):
         if self.instrument and self.instrument.inst_num == 192:
             save_group = QGroupBox("SAVE")
             save_layout = QVBoxLayout()
+
+            _tip_all = (
+                "<b>Export M* Data — All Sites</b><br><br>"
+                "Writes a GML-format text file of M-system (M1/M3/M4) flask pair "
+                "means and 1-σ standard deviations for <b>all LOGOS network sites</b>.<br><br>"
+                "<b>Year range:</b> set by the Start / End spinboxes above."
+            )
+            _tip_sel = (
+                "<b>Export M* Data — Selected Sites</b><br><br>"
+                "Writes a GML-format text file of M-system (M1/M3/M4) flask pair "
+                "means and 1-σ standard deviations for the <b>sites checked above</b>.<br><br>"
+                "<b>Year range:</b> set by the Start / End spinboxes above."
+            )
+
             self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
             self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites")
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
-            save_layout.addWidget(self.export_mstar_all_btn)
-            save_layout.addWidget(self.export_mstar_sel_btn)
+
+            save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
+            save_layout.addLayout(self._export_row(self.export_mstar_sel_btn, _tip_sel))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -1144,6 +1160,35 @@ class TimeseriesWidget(QWidget):
         self.setLayout(controls)
 
     # --- Helpers ---
+    def _export_row(self, btn: QPushButton, tooltip_html: str):
+        """Return a QHBoxLayout with *btn* and a press-and-hold info icon."""
+        icon_path = Path(__file__).parent / 'assets' / 'icons8-info-30.png'
+        info_btn = QPushButton()
+        info_btn.setFixedSize(22, 22)
+        info_btn.setFlat(True)
+        info_btn.setCursor(QCursor(Qt.WhatsThisCursor))
+        if icon_path.exists():
+            pix = QPixmap(str(icon_path)).scaled(18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            info_btn.setIcon(QIcon(pix))
+        else:
+            info_btn.setText("?")
+
+        # Press-and-hold: show tooltip after 400 ms, hide on release
+        _timer = QTimer(info_btn)
+        _timer.setSingleShot(True)
+        _timer.setInterval(400)
+        _timer.timeout.connect(lambda: QToolTip.showText(
+            info_btn.mapToGlobal(info_btn.rect().bottomLeft()), tooltip_html, info_btn
+        ))
+        info_btn.pressed.connect(_timer.start)
+        info_btn.released.connect(lambda: (_timer.stop(), QToolTip.hideText()))
+
+        row = QHBoxLayout()
+        row.setSpacing(4)
+        row.addWidget(btn, stretch=1)
+        row.addWidget(info_btn, stretch=0)
+        return row
+
     def _save_year_range(self):
         _save_timeseries_years(self.start_year.value(), self.end_year.value())
 
