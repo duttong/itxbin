@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip, QSizePolicy, QApplication, QShortcut
+    QToolTip, QSizePolicy, QApplication, QShortcut, QFileDialog, QMessageBox
 )
 from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
@@ -15,6 +15,8 @@ import pandas as pd
 import numpy as np
 import colorsys
 import time
+
+from data_export import MstarDataExporter
 
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
@@ -1095,6 +1097,19 @@ class TimeseriesWidget(QWidget):
         self.rel_plot_button.clicked.connect(self.rel_stddev_plot)
         controls.addWidget(self.rel_plot_button)
 
+        # Save group — instrument-specific export buttons
+        if self.instrument and self.instrument.inst_num == 192:
+            save_group = QGroupBox("Save")
+            save_layout = QVBoxLayout()
+            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites")
+            self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
+            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites")
+            self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
+            save_layout.addWidget(self.export_mstar_all_btn)
+            save_layout.addWidget(self.export_mstar_sel_btn)
+            save_group.setLayout(save_layout)
+            controls.addWidget(save_group)
+
         controls.addStretch()
         self.setLayout(controls)
 
@@ -1249,6 +1264,29 @@ class TimeseriesWidget(QWidget):
         analyte = self.analyte_combo.currentText()
         fig = RelStdDevFigure(self, df, analyte)
         self.open_figures.append(fig)
+
+    def _export_mstar_data_all_sites(self):
+        """Export M* data for all known sites."""
+        self._run_mstar_export(sites=self.sites_by_lat)
+
+    def _export_mstar_data_selected_sites(self):
+        """Export M* data for the currently checked sites."""
+        self._run_mstar_export(sites=self.get_active_sites())
+
+    def _run_mstar_export(self, sites: list[str]):
+        """Shared logic: build exporter, prompt for path, write file."""
+        exporter = MstarDataExporter.from_timeseries_widget(self, sites=sites)
+        default_name = exporter.default_filename()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export M* Data", default_name, "Text files (*.txt);;All files (*)"
+        )
+        if not path:
+            return
+        n = exporter.export(path)
+        if n == 0:
+            QMessageBox.warning(self, "Export M* Data", "No data found for the current selection.")
+        else:
+            QMessageBox.information(self, "Export M* Data", f"Wrote {n} records to {path}")
 
     def query_rel_stddev_data(self, analyte=None):
         """Query data for the relative standard deviation plot."""
