@@ -3,5 +3,6 @@ __py*
 .env
 
 *.png
+!logosdata/assets/*.png
 
 cfc113a/
