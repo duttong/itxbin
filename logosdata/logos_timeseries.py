@@ -49,7 +49,12 @@ def _save_timeseries_years(start_year: int, end_year: int) -> None:
 
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
-            'BLD', 'MKO']
+            'BLD', 'MLO_PFP', 'MKO_PFP']
+
+# Pseudo-site names that represent PFP-only subsets of the named base site.
+# These do not exist in gmd.site; they are handled by filtering run_type_num=5
+# (ng_data_processing_view) or sample_type='PFP' (ng_pair_avg_view).
+PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 
 
 def build_site_colors(sites):
@@ -196,7 +201,7 @@ class TimeseriesFigure:
 
         # Layout adjustments
         self._fig.tight_layout(rect=[0, 0, 0.85, 1])
-        self._fig.subplots_adjust(top=0.90, bottom=0.12, left=0.05, right=0.85)
+        self._fig.subplots_adjust(top=0.90, bottom=0.15, left=0.05, right=0.85)
         self._fig.canvas.draw()
 
         # Positioning helpers
@@ -1229,13 +1234,24 @@ class TimeseriesWidget(QWidget):
         self.current_analyte = analyte_name
         
     def get_site_info(self):
-        sql = f""" SELECT 
+        real_sites = [s for s in LOGOS_sites if s not in PFP_SITES]
+        sql = f""" SELECT
             code, lat, lon, elev from gmd.site
-            WHERE code in {tuple(LOGOS_sites)}
+            WHERE code in {tuple(real_sites)}
             ORDER BY code;
             """
         df = pd.DataFrame(self.instrument.doquery(sql))
-        return df        
+        # Add virtual rows for PFP pseudo-sites using the base site's lat/lon
+        pfp_rows = []
+        for pfp_site, base_site in PFP_SITES.items():
+            base_row = df[df['code'] == base_site]
+            if not base_row.empty:
+                row = base_row.iloc[0].copy()
+                row['code'] = pfp_site
+                pfp_rows.append(row)
+        if pfp_rows:
+            df = pd.concat([df, pd.DataFrame(pfp_rows)], ignore_index=True)
+        return df
         
     def select_all_sites(self):
         for cb in self.site_checks:
@@ -1283,6 +1299,7 @@ class TimeseriesWidget(QWidget):
                         "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
                         "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
                         "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
+                        "run_type_num": grp.get("run_type_num", pd.Series([None]*len(grp))).tolist(),
                         "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
                         "analyte": analyte,
                         "channel": self.current_channel,
@@ -1444,6 +1461,20 @@ class TimeseriesWidget(QWidget):
                 self._cached_df = pd.DataFrame()
             else:
                 df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+                # Split PFP runs out of base sites → separate MLO_PFP / MKO_PFP series.
+                # Base site (MLO, MKO) keeps only non-PFP runs; PFP pseudo-site gets
+                # run_type_num=5 rows relabelled with the pseudo-site name.
+                pfp_frames = []
+                for pfp_site, base_site in PFP_SITES.items():
+                    pfp_rows = df[(df['site'] == base_site) & (df['run_type_num'] == 5)].copy()
+                    if not pfp_rows.empty:
+                        pfp_rows['site'] = pfp_site
+                        pfp_frames.append(pfp_rows)
+                # Remove PFP rows from base sites so they appear only under the pseudo-site
+                pfp_base_sites = set(PFP_SITES.values())
+                df = df[~((df['site'].isin(pfp_base_sites)) & (df['run_type_num'] == 5))].copy()
+                if pfp_frames:
+                    df = pd.concat([df] + pfp_frames, ignore_index=True).sort_values('sample_datetime')
                 self._cached_df = df
             self._last_query_params = query_params
 
@@ -1496,7 +1527,8 @@ class TimeseriesWidget(QWidget):
 
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
-        Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month."""
+        Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
+        PFP pseudo-sites (MLO_PFP, MKO_PFP) use sample_type='PFP' filter."""
         if self.instrument.inst_num == 236:
             return pd.DataFrame()
 
@@ -1516,33 +1548,58 @@ class TimeseriesWidget(QWidget):
         if not sites:
             return pd.DataFrame()
 
-        sql = f"""
-        SELECT
-            site,
-            CASE
+        _period_expr = """CASE
                 WHEN DAY(sample_datetime) <= 10 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-01')
                 WHEN DAY(sample_datetime) <= 20 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-11')
                 ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
-            END AS period_start,
-            AVG(pair_avg)    AS period_avg,
-            STDDEV(pair_avg) AS period_std
-        FROM hats.ng_pair_avg_view
-        WHERE inst_num = %s
-          AND parameter_num = %s
-          {ch_filter}
-          AND site IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, period_start
-        ORDER BY site, period_start;
-        """
-        params = [self.instrument.inst_num, pnum] + sites + [start, end]
-        df = pd.DataFrame(self.instrument.doquery(sql, params))
+            END"""
+
+        frames = []
+        regular_sites = [s for s in sites if s not in PFP_SITES]
+        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
+
+        # For sites that have a PFP pseudo-site counterpart, exclude PFP rows so
+        # the means here cover flask-only data (PFP data belongs to the pseudo-site).
+        pfp_base_sites = set(PFP_SITES.values())
+        has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
+        pfp_exclusion = "AND sample_type IN ('S', 'G')" if has_pfp_base else ""
+
+        if regular_sites:
+            sql = f"""
+            SELECT site, {_period_expr} AS period_start,
+                AVG(pair_avg) AS period_avg, STDDEV(pair_avg) AS period_std
+            FROM hats.ng_pair_avg_view
+            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
+              AND site IN ({",".join(["%s"] * len(regular_sites))})
+              {pfp_exclusion}
+              AND YEAR(sample_datetime) BETWEEN %s AND %s
+            GROUP BY site, period_start ORDER BY site, period_start;
+            """
+            params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        for pfp_site in pfp_pseudo_sites:
+            base_site = PFP_SITES[pfp_site]
+            sql = f"""
+            SELECT %s AS site, {_period_expr} AS period_start,
+                AVG(pair_avg) AS period_avg, STDDEV(pair_avg) AS period_std
+            FROM hats.ng_pair_avg_view
+            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
+              AND sample_type = 'PFP' AND site = %s
+              AND YEAR(sample_datetime) BETWEEN %s AND %s
+            GROUP BY period_start ORDER BY period_start;
+            """
+            params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame()
         if not df.empty:
             df["period_start"] = pd.to_datetime(df["period_start"])
         return df
 
     def query_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3 handled via insitu)."""
+        """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3 handled via insitu).
+        PFP pseudo-sites (MLO_PFP, MKO_PFP) use sample_type='PFP' filter."""
         if self.instrument.inst_num == 236:
             return pd.DataFrame()
 
@@ -1562,23 +1619,44 @@ class TimeseriesWidget(QWidget):
         if not sites:
             return pd.DataFrame()
 
-        sql = f"""
-        SELECT
-            site,
-            DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
-            AVG(pair_avg)    AS monthly_avg,
-            STDDEV(pair_avg) AS monthly_std
-        FROM hats.ng_pair_avg_view
-        WHERE inst_num = %s
-          AND parameter_num = %s
-          {ch_filter}
-          AND site IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, month_start
-        ORDER BY site, month_start;
-        """
-        params = [self.instrument.inst_num, pnum] + sites + [start, end]
-        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        frames = []
+        regular_sites = [s for s in sites if s not in PFP_SITES]
+        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
+
+        # Exclude PFP rows from base sites that have a PFP pseudo-site counterpart
+        pfp_base_sites = set(PFP_SITES.values())
+        has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
+        pfp_exclusion = "AND sample_type IN ('S', 'G')" if has_pfp_base else ""
+
+        if regular_sites:
+            sql = f"""
+            SELECT site, DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(pair_avg) AS monthly_avg, STDDEV(pair_avg) AS monthly_std
+            FROM hats.ng_pair_avg_view
+            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
+              AND site IN ({",".join(["%s"] * len(regular_sites))})
+              {pfp_exclusion}
+              AND YEAR(sample_datetime) BETWEEN %s AND %s
+            GROUP BY site, month_start ORDER BY site, month_start;
+            """
+            params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        for pfp_site in pfp_pseudo_sites:
+            base_site = PFP_SITES[pfp_site]
+            sql = f"""
+            SELECT %s AS site, DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(pair_avg) AS monthly_avg, STDDEV(pair_avg) AS monthly_std
+            FROM hats.ng_pair_avg_view
+            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
+              AND sample_type = 'PFP' AND site = %s
+              AND YEAR(sample_datetime) BETWEEN %s AND %s
+            GROUP BY month_start ORDER BY month_start;
+            """
+            params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame()
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
@@ -1593,7 +1671,8 @@ class TimeseriesWidget(QWidget):
             return pd.DataFrame()
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = self.get_active_sites()
+        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
         sql = f"""
@@ -1622,7 +1701,8 @@ class TimeseriesWidget(QWidget):
             return pd.DataFrame()
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = self.get_active_sites()
+        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
         sql = f"""
@@ -1660,7 +1740,8 @@ class TimeseriesWidget(QWidget):
             return pd.DataFrame()
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = self.get_active_sites()
+        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
         sql = f"""
@@ -1764,6 +1845,7 @@ class TimeseriesWidget(QWidget):
 
         sample_id   = _mval("sample_id")
         pair_id_num = _mval("pair_id_num")
+        run_type_num = _mval("run_type_num")
         run_time    = _mval("run_time")
         sample_time = _mval("sample_datetime")
         site        = _mval("site")
@@ -1781,6 +1863,8 @@ class TimeseriesWidget(QWidget):
             lines.append(f"<b>Port:</b> {air_label} (port {port})")
         if sample_id   is not None: lines.append(f"<b>Sample ID:</b> {sample_id}")
         if pair_id_num is not None: lines.append(f"<b>Pair ID:</b> {pair_id_num}")
+        if run_type_num is not None:
+            lines.append(f"<b>Flask Type:</b> {'PFP' if int(run_type_num) == 5 else 'Flask'}")
         if sample_time is not None: lines.append(f"<b>Time:</b> {sample_time}")
         if run_time    is not None: lines.append(f"<b>Run time:</b> {run_time}")
         QToolTip.showText(QCursor.pos(), "<br>".join(lines))

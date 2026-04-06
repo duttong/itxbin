@@ -1087,6 +1087,7 @@ class MainWindow(QMainWindow):
                 ),
                 "sample_id": subset["sample_id"].astype(str).tolist() if "sample_id" in subset else [""] * len(subset),
                 "pair_id": subset["pair_id_num"].astype(str).tolist() if "pair_id_num" in subset else [""] * len(subset),
+                "run_type_num": subset["run_type_num"].tolist() if "run_type_num" in subset else [None] * len(subset),
                 "port_info": subset["port_info"].astype(str).tolist() if "port_info" in subset else [""] * len(subset),
                 "tank_serial": subset["tank_serial_num"].astype(str).tolist() if "tank_serial_num" in subset else [""] * len(subset),
                 "net_pressure": (
@@ -1607,6 +1608,7 @@ class MainWindow(QMainWindow):
             mf = meta.get("mole_fraction", [None])[nearest_idx]
             sample_id = meta.get("sample_id", [None])[nearest_idx]
             pair_id = meta.get("pair_id", [None])[nearest_idx]
+            run_type_num = meta.get("run_type_num", [None])[nearest_idx]
             net_pressure = meta.get("net_pressure", [None])[nearest_idx]
             port_info = meta.get("port_info", [''])[nearest_idx]
             tank_serial = meta.get("tank_serial", [''])[nearest_idx]
@@ -1641,6 +1643,11 @@ class MainWindow(QMainWindow):
                 pid = pair_id.strip()
                 if pid and pid not in {"0", "000", "None", "nan"}:
                     parts.append(f"<b>Pair ID:</b> {pid}")
+
+            # Flask Type
+            if run_type_num is not None:
+                flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
+                parts.append(f"<b>Flask Type:</b> {flask_type}")
 
             if not _is_blank(port_info):
                 parts.append(f"<b>Port Info:</b> {port_info}")
