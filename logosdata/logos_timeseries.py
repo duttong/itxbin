@@ -56,7 +56,13 @@ class TimeseriesFigure:
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False}
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": False, "Mstar 10-day mean": False, "Mstar monthly mean": False}
+        self.legend_label_map = {
+            "Mstar pair mean": "M* pair mean",
+            "Mstar 10-day mean": "M* 10-day mean",
+            "Mstar monthly mean": "M* monthly mean",
+        }
+        self.legend_label_lookup = {v: k for k, v in self.legend_label_map.items()}
 
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
@@ -146,6 +152,11 @@ class TimeseriesFigure:
         for lbl, artists in monthly_handles.items():
             self.dataset_handles.setdefault(lbl, []).extend(artists)
 
+        if self.parent_widget.instrument.inst_num == 192:
+            mstar_handles = self._draw_mstar_artists(self._ax, site_colors)
+            for lbl, artists in mstar_handles.items():
+                self.dataset_handles.setdefault(lbl, []).extend(artists)
+
         self._rebuild_data_artists()
 
         # Tag each artist with its site (safety)
@@ -173,21 +184,44 @@ class TimeseriesFigure:
                            "Air2": adjust_brightness(_air_base, 0.65),
                            "10-day mean": "black", "Monthly mean": "black"}
 
+        is_m4 = self.parent_widget.instrument.inst_num == 192
         has_data = not self.df.empty or not self.insitu_df.empty
         flask_entries  = ["All samples", "Flask mean", "Pair mean"] if not self.df.empty else []
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
         tenday_entries  = ["10-day mean"] if has_data else []
         monthly_entries = ["Monthly mean"] if has_data else []
+        mstar_entries   = ["Mstar pair mean", "Mstar 10-day mean", "Mstar monthly mean"] if (is_m4 and has_data) else []
+
+        _mstar_markers = {"Mstar pair mean": "P", "Mstar 10-day mean": "<", "Mstar monthly mean": "h"}
+        _mstar_color = "dimgray"
 
         legend_handles = []
         for label in flask_entries + insitu_entries + tenday_entries + monthly_entries:
             dummy = mlines.Line2D([], [], color=_legend_colors[label],
                                 marker=_legend_markers[label],
-                                linestyle="", markersize=6, label=label)
+                                linestyle="", markersize=6,
+                                label=self.legend_label_map.get(label, label))
             dummy._is_dataset_legend = True
+            dummy._dataset_key = label
             if not self.dataset_visibility.get(label, True):
                 dummy.set_alpha(0.4)
             legend_handles.append(dummy)
+
+        if mstar_entries:
+            divider = mlines.Line2D([], [], color="lightgray", linestyle="-",
+                                    linewidth=1.5, markersize=0, label="──────────")
+            divider._is_dataset_legend = True
+            legend_handles.append(divider)
+            for label in mstar_entries:
+                dummy = mlines.Line2D([], [], color=_mstar_color,
+                                      marker=_mstar_markers[label],
+                                      linestyle="", markersize=6,
+                                      label=self.legend_label_map.get(label, label))
+                dummy._is_dataset_legend = True
+                dummy._dataset_key = label
+                if not self.dataset_visibility.get(label, True):
+                    dummy.set_alpha(0.4)
+                legend_handles.append(dummy)
 
         dataset_legend = self._ax.legend(
             handles=legend_handles,
@@ -195,7 +229,9 @@ class TimeseriesFigure:
             bbox_to_anchor=(panel_left, axpos.y0),
             bbox_transform=self._fig.transFigure,
             loc="lower left",
-            borderaxespad=0.0
+            borderaxespad=0.0,
+            fontsize=9,
+            title_fontsize=10
         )
         self._ax.add_artist(dataset_legend)
         self._dataset_legend = dataset_legend
@@ -223,7 +259,9 @@ class TimeseriesFigure:
             ncol=2,
             columnspacing=1.0,
             handletextpad=0.2,
-            borderaxespad=0.0
+            borderaxespad=0.0,
+            fontsize=9,
+            title_fontsize=10
         )
         self._ax.add_artist(site_legend)
         self._site_legend = site_legend
@@ -460,6 +498,89 @@ class TimeseriesFigure:
 
         return handles
 
+    def _draw_mstar_artists(self, ax, site_colors):
+        """Draw M1+M3 pair, 10-day, and monthly means (M4 only); return dataset_handles entries."""
+        handles = {}
+
+        # ── Mstar pair mean ─────────────────────────────────────────
+        pair_df = self.parent_widget.query_mstar_pair_data(self.analyte)
+        visible_pair = self.dataset_visibility.get("Mstar pair mean", False)
+        if not pair_df.empty:
+            for site, grp in pair_df.groupby("site"):
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                line, = ax.plot(
+                    grp["sample_datetime"], grp["pair_avg"],
+                    marker="P", linestyle="",
+                    color=color, markersize=5, alpha=0.6,
+                    mfc=color, mec=color, label="Mstar pair mean"
+                )
+                line._site = site
+                line._dataset_label = "Mstar pair mean"
+                line.set_visible(visible_pair)
+                handles.setdefault("Mstar pair mean", []).append(line)
+
+        # ── Mstar 10-day mean ───────────────────────────────────────
+        tenday_df = self.parent_widget.query_mstar_10day_mean_data(self.analyte)
+        visible_10d = self.dataset_visibility.get("Mstar 10-day mean", False)
+        if not tenday_df.empty:
+            for _, row in tenday_df.iterrows():
+                site = row["site"]
+                mean = row["period_avg"]
+                std  = row["period_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                container = ax.errorbar(
+                    [row["period_start"]], [mean], yerr=[std],
+                    marker="<", linestyle="",
+                    color=color, markersize=6, capsize=3, alpha=0.9,
+                    mfc="none", mec=color, label="Mstar 10-day mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Mstar 10-day mean"
+                        p.set_visible(visible_10d)
+                handles.setdefault("Mstar 10-day mean", []).extend(parts)
+
+        # ── Mstar monthly mean ──────────────────────────────────────
+        monthly_df = self.parent_widget.query_mstar_monthly_mean_data(self.analyte)
+        visible_mo = self.dataset_visibility.get("Mstar monthly mean", False)
+        if not monthly_df.empty:
+            for _, row in monthly_df.iterrows():
+                site = row["site"]
+                mean = row["monthly_avg"]
+                std  = row["monthly_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                container = ax.errorbar(
+                    [row["month_start"]], [mean], yerr=[std],
+                    marker="h", linestyle="",
+                    color=color, markersize=7, capsize=4, alpha=0.9,
+                    mfc="none", mec=color, label="Mstar monthly mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Mstar monthly mean"
+                        p.set_visible(visible_mo)
+                handles.setdefault("Mstar monthly mean", []).extend(parts)
+
+        return handles
+
     def _on_analyte_changed(self, text):
         self.analyte = text
         if "(" in text and ")" in text:
@@ -472,25 +593,21 @@ class TimeseriesFigure:
     # ────────────────────────────────────────────────────────────
     def _on_reload_clicked(self):
         """Reload data from parent instrument and preserve per-dataset visibility."""
-        self.reload_btn.setText("Reloading...")
-        self.reload_btn.setEnabled(False)
-        QApplication.processEvents()
+        default_text = "Reload"
+        self.parent_widget._set_button_loading_state(self.reload_btn, True, default_text)
+        try:
+            df        = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
+            insitu_df = self.parent_widget.query_insitu_data(analyte=self.analyte, force=True)
+            if df.empty and insitu_df.empty:
+                print("No data to reload")
+                return
 
-        df        = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
-        insitu_df = self.parent_widget.query_insitu_data(analyte=self.analyte, force=True)
-        if df.empty and insitu_df.empty:
-            print("No data to reload")
-            self.reload_btn.setText("Reload")
-            self.reload_btn.setEnabled(True)
-            return
-
-        self.df = df
-        self.insitu_df = insitu_df
-        self._ax.clear()
-        self._build_plot()
-
-        self.reload_btn.setText("Reload")
-        self.reload_btn.setEnabled(True)
+            self.df = df
+            self.insitu_df = insitu_df
+            self._ax.clear()
+            self._build_plot()
+        finally:
+            self.parent_widget._set_button_loading_state(self.reload_btn, False, default_text)
 
     def _rebuild_data_artists(self):
         """Cache only artists that represent data points we can tooltip (have _meta)."""
@@ -573,7 +690,8 @@ class TimeseriesFigure:
 
         # ─── Dataset Legend ───
         if isinstance(artist, mlines.Line2D) and getattr(artist, "_is_dataset_legend", False):
-            label = artist.get_label()
+            label = getattr(artist, "_dataset_key", artist.get_label())
+            label = self.legend_label_lookup.get(label, label)
             if label not in self.dataset_visibility:
                 return
 
@@ -981,6 +1099,24 @@ class TimeseriesWidget(QWidget):
         self.setLayout(controls)
 
     # --- Helpers ---
+    def _set_button_loading_state(self, button, loading: bool, default_text: str):
+        if loading:
+            button.setText("Loading data...")
+            button.setStyleSheet(
+                "QPushButton {"
+                "background-color: #f6e7a1;"
+                "border: 1px solid #c5ae45;"
+                "color: #3f3200;"
+                "}"
+            )
+            button.setEnabled(False)
+        else:
+            button.setText(default_text)
+            button.setStyleSheet("")
+            button.setEnabled(True)
+
+        QApplication.processEvents()
+
     def set_current_analyte(self, analyte_name: str | None):
         if not analyte_name:  # handles None or ""
             self.current_analyte = None
@@ -1090,14 +1226,19 @@ class TimeseriesWidget(QWidget):
         return dataset_handles
 
     def timeseries_plot(self):
-        df = self.query_flask_data(force=False)
-        insitu_df = self.query_insitu_data()
-        if df.empty and insitu_df.empty:
-            print("No data to plot")
-            return
-        analyte = self.analyte_combo.currentText()
-        fig = TimeseriesFigure(self, df, analyte, insitu_df=insitu_df)
-        self.open_figures.append(fig)
+        default_text = "Mole Fractions Figure"
+        self._set_button_loading_state(self.plot_button, True, default_text)
+        try:
+            df = self.query_flask_data(force=False)
+            insitu_df = self.query_insitu_data()
+            if df.empty and insitu_df.empty:
+                print("No data to plot")
+                return
+            analyte = self.analyte_combo.currentText()
+            fig = TimeseriesFigure(self, df, analyte, insitu_df=insitu_df)
+            self.open_figures.append(fig)
+        finally:
+            self._set_button_loading_state(self.plot_button, False, default_text)
 
     def rel_stddev_plot(self):
         """Handle the 'Relative Stddev Plot' button click."""
@@ -1320,6 +1461,107 @@ class TimeseriesWidget(QWidget):
         ORDER BY site, month_start;
         """
         params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
+    def query_mstar_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query M1+M3 individual pair rows from ng_pair_avg_view (M4 only)."""
+        if self.instrument.inst_num != 192:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT UPPER(site) AS site, sample_datetime, pair_avg, pair_stdv
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id IN ('M1', 'M3')
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        ORDER BY site, sample_datetime
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+        return df
+
+    def query_mstar_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query M1+M3 10-day binned means from ng_pair_avg_view (M4 only)."""
+        if self.instrument.inst_num != 192:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT
+            UPPER(site) AS site,
+            CASE
+                WHEN DAY(sample_datetime) <= 10 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-01')
+                WHEN DAY(sample_datetime) <= 20 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-11')
+                ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
+            END AS period_start,
+            AVG(pair_avg)    AS period_avg,
+            STDDEV(pair_avg) AS period_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id IN ('M1', 'M3')
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, period_start
+        ORDER BY site, period_start
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["period_start"] = pd.to_datetime(df["period_start"])
+        return df
+
+    def query_mstar_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query M1+M3 monthly means from ng_pair_avg_view (M4 only)."""
+        if self.instrument.inst_num != 192:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT
+            UPPER(site) AS site,
+            DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+            AVG(pair_avg)    AS monthly_avg,
+            STDDEV(pair_avg) AS monthly_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id IN ('M1', 'M3')
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start
+        ORDER BY site, month_start
+        """
+        params = [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
