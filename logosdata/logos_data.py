@@ -17,8 +17,8 @@ import pandas as pd
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import (QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem, 
-    QKeySequence, QTextCursor
+from PyQt5.QtGui import (QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem,
+    QKeySequence, QTextCursor, QFont
 )
 
 from PyQt5.QtWidgets import (
@@ -321,8 +321,6 @@ class MainWindow(QMainWindow):
 
         # ── PROCESSING PANE ──
         processing_pane = QWidget()
-        processing_pane.setMinimumWidth(420)
-        processing_pane.setMaximumWidth(420)
         self.processing_pane = processing_pane
         processing_layout = QVBoxLayout()
         processing_layout.setContentsMargins(4, 4, 4, 4)
@@ -330,7 +328,7 @@ class MainWindow(QMainWindow):
         processing_pane.setLayout(processing_layout)
 
         # ── DATE RANGE SELECTION ──
-        date_gb = QGroupBox("Date Range (by Month)")
+        date_gb = QGroupBox("DATE RANGE (BY MONTH)")
         date_layout = QHBoxLayout()
         date_layout.setContentsMargins(2, 2, 2, 2)
         date_layout.setSpacing(4)
@@ -397,14 +395,14 @@ class MainWindow(QMainWindow):
         runtype_row.addWidget(self.runTypeCombo)
         
         # Run Selection GroupBox
-        run_gb = QGroupBox("Run Selection")
+        run_gb = QGroupBox("RUN SELECTION")
         run_layout = QVBoxLayout()
         run_layout.setSpacing(6)
         run_gb.setLayout(run_layout)
         run_layout.addWidget(date_gb)
         
         # Change Run Type
-        change_runtype = QGroupBox("Change Run Type")
+        change_runtype = QGroupBox("CHANGE RUN TYPE")
         change_runtype_layout = QHBoxLayout()  # horizontal so all on one line
         change_runtype.setLayout(change_runtype_layout)
 
@@ -463,7 +461,7 @@ class MainWindow(QMainWindow):
         processing_layout.addWidget(run_gb)
 
         # Molecule/Analyte Selection GroupBox
-        analyte_gb = QGroupBox("Analyte Selection")
+        analyte_gb = QGroupBox("ANALYTE SELECTION")
         analyte_layout = QVBoxLayout()
         analyte_layout.setSpacing(6)
         analyte_gb.setLayout(analyte_layout)
@@ -477,7 +475,7 @@ class MainWindow(QMainWindow):
         processing_layout.addWidget(analyte_gb)
 
         # Plot Type Selection GroupBox
-        plot_gb = QGroupBox("Plot Type Selection")
+        plot_gb = QGroupBox("PLOT TYPE SELECTION")
         self.plot_layout = QVBoxLayout()
         self.plot_layout.setSpacing(6)
         plot_gb.setLayout(self.plot_layout)
@@ -548,7 +546,7 @@ class MainWindow(QMainWindow):
         self._setup_plot_shortcuts()
 
         # Options GroupBox
-        options_gb = QGroupBox("Options")
+        options_gb = QGroupBox("OPTIONS")
         options_layout = QVBoxLayout()
         options_layout.setSpacing(6)
         options_gb.setLayout(options_layout)
@@ -609,7 +607,7 @@ class MainWindow(QMainWindow):
         options_layout.addWidget(self.hide_flagged_cb)
 
         # Combine plot_gb and options_gb into a single group box
-        combined_gb = QGroupBox("Plot and Options")
+        combined_gb = QGroupBox("PLOT AND OPTIONS")
         combined_layout = QHBoxLayout()
         combined_layout.setSpacing(12)
         combined_gb.setLayout(combined_layout)
@@ -651,17 +649,41 @@ class MainWindow(QMainWindow):
         _visible_tabs = {t.strip().lower() for t in _visible_tabs_raw.split(',')}
 
         tabs = QTabWidget()
-        tabs.addTab(processing_pane, "Processing")
+        tab_font = QFont()
+        tab_font.setPointSize(11)
+        tab_font.setWeight(QFont.Normal)
+        tabs.tabBar().setFont(tab_font)
+        tabs.tabBar().setStyleSheet("""
+            QTabBar::tab {
+                color: darkblue;
+                padding: 8px 16px;
+                border: 1px solid darkblue;
+                border-bottom: none;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                font-weight: bold;
+                background: white;
+            }
+            QTabBar::tab:!selected {
+                color: #7090b0;
+                border-color: #7090b0;
+                margin-top: 2px;
+            }
+        """)
+        tabs.addTab(processing_pane, "PROCESSING")
 
         if 'timeseries' in _visible_tabs:
             self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
-            tabs.addTab(self.timeseries_tab, "Timeseries")
+            tabs.addTab(self.timeseries_tab, "TIMESERIES")
         else:
             self.timeseries_tab = None
 
         if 'tanks' in _visible_tabs:
             self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
-            tabs.addTab(self.tanks_tab, "Tanks")
+            tabs.addTab(self.tanks_tab, "TANKS")
         else:
             self.tanks_tab = None
 
@@ -675,6 +697,8 @@ class MainWindow(QMainWindow):
         tabs.currentChanged.connect(self._on_tab_changed)
 
         left_container = QWidget()
+        left_container.setMinimumWidth(420)
+        left_container.setMaximumWidth(520)
         left_layout = QVBoxLayout()
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(tabs)
@@ -682,7 +706,7 @@ class MainWindow(QMainWindow):
         self.left_container = left_container
 
         # Right pane: matplotlib figure for plotting
-        right_placeholder = QGroupBox("Plot Area")
+        right_placeholder = QGroupBox("PLOT AREA")
         right_layout = QVBoxLayout()
         right_placeholder.setLayout(right_layout)
         right_layout.addWidget(self.canvas)
@@ -3191,7 +3215,7 @@ class MainWindow(QMainWindow):
         has_note = result and result[0]['notes'] and result[0]['notes'].strip()
 
         self.edit_notes_btn.setText("Edit/View Run Notes (n)" if has_note else "Add Run Notes (n)")
-        color = "lightgreen" if has_note else "#d3d3d3" # lightgrey
+        color = "#c3fada" if has_note else "#d3d3d3" # lightgrey
         self.edit_notes_btn.setStyleSheet(f"background-color: {color};")
 
     def _update_calibration_button_state(self):
@@ -3664,6 +3688,24 @@ def main():
         sys.exit(1)
 
     app = QApplication(sys.argv)
+    app.setStyleSheet("""
+        QGroupBox {
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            margin-top: 14px;
+            padding: 10px 12px 12px 12px;
+            font-weight: 600;
+            font-size: 12px;
+            color: #2255aa;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 12px;
+            padding: 0 4px;
+        }
+        QToolTip { background-color: #fff59d; }
+    """)
     w = MainWindow(instrument)
     w.resize(1400, 800)
     w.show()

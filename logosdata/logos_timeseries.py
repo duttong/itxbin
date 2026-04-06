@@ -1018,7 +1018,7 @@ class TimeseriesWidget(QWidget):
         controls = QVBoxLayout()
 
         # Analyte selection
-        analyte_group = QGroupBox("Analyte")
+        analyte_group = QGroupBox("ANALYTE")
         analyte_layout = QHBoxLayout()
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(list(self.analytes.keys()))
@@ -1028,7 +1028,7 @@ class TimeseriesWidget(QWidget):
         controls.addWidget(analyte_group)
 
         # Date range
-        date_group = QGroupBox("Year Range")
+        date_group = QGroupBox("YEAR RANGE")
         date_layout = QHBoxLayout()
         self.start_year = QSpinBox()
         self.start_year.setRange(1990, 2030)
@@ -1044,7 +1044,7 @@ class TimeseriesWidget(QWidget):
         controls.addWidget(date_group)
 
         # Site selection
-        site_group = QGroupBox("Sites")
+        site_group = QGroupBox("SITES")
         site_layout = QGridLayout()
         self.site_checks = []
         
@@ -1099,7 +1099,7 @@ class TimeseriesWidget(QWidget):
 
         # Save group — instrument-specific export buttons
         if self.instrument and self.instrument.inst_num == 192:
-            save_group = QGroupBox("Save")
+            save_group = QGroupBox("SAVE")
             save_layout = QVBoxLayout()
             self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
@@ -1122,6 +1122,7 @@ class TimeseriesWidget(QWidget):
                 "background-color: #f6e7a1;"
                 "border: 1px solid #c5ae45;"
                 "color: #3f3200;"
+                "padding: 3px 6px;"
                 "}"
             )
             button.setEnabled(False)

@@ -219,7 +219,7 @@ class TanksWidget(QWidget):
         # Year range selection
         i_start = int(self.instrument.start_date[0:4]) if self.instrument else 2020
         i_end = pd.Timestamp.now().year
-        year_group = QGroupBox("Year Range")
+        year_group = QGroupBox("YEAR RANGE")
         year_layout = QHBoxLayout()
         self.start_year = QSpinBox()
         self.start_year.setRange(i_start, i_end)
@@ -238,7 +238,7 @@ class TanksWidget(QWidget):
         controls.addWidget(year_group)
 
         # Analyte selector
-        analyte_group = QGroupBox("Gas / Parameter")
+        analyte_group = QGroupBox("GAS / PARAMETER")
         analyte_layout = QVBoxLayout()
         alpha_row = QHBoxLayout()
         self.alpha_sort_cb = QCheckBox("List Alphabetically")
@@ -1641,9 +1641,6 @@ class TanksWidget(QWidget):
                 if event.button == 1:
                     QToolTip.hideText()
 
-            app = QApplication.instance()
-            if app is not None:
-                app.setStyleSheet("QToolTip { background-color: #fff59d; }")
             fig.canvas.mpl_connect("button_press_event", _on_press)
             fig.canvas.mpl_connect("button_release_event", _on_release)
             fig.show()
