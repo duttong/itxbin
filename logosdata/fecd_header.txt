@@ -1,52 +1,37 @@
-#  file: {filename}
+# Atmospheric trace gas measurements of samples collected in flasks.
+#  (https://gml.noaa.gov/hats/flask/flasks.html)
 #
-#  Atmospheric measurements of {parameter_name}
+#  File: {filename}
 #
-#  Measurements are from the NOAA/GML/HATS flask program.
-#  Instrument: fECD (Flask Electron Capture Detector)
-#    Includes data from OTTO (predecessor instrument, ~1994–2019)
-#    and FE3 (current instrument, 2019–present).
+#  Date: {date}
 #
-#  Location: {site_code} -- {site_name} -- {lat_str}, {elev:.0f} m Elev.
+#  Method: electron capture gas chromatography (GC-ECD)
 #
-#  The data reported are from samples collected approximately once per week in
-#  matching, concurrent, flask pairs and later analyzed on a gas chromatograph
-#  with electron capture detection (GC-ECD) located in Boulder, Colorado, USA.
+#  Trace gas: {parameter_name}
 #
-#  These data represent mean estimates from pairs of concurrently-collected
-#  flask samples.  Mean estimates are derived for each individual flask, then
-#  the flask estimates are combined into a single estimate for the pair.
-#  Only unflagged (accepted) pair averages are included in this file.
+#  Units: mixing ratios reported in ppt
 #
-#  PIs: Dr. Bradley D. Hall, Dr. James W. Elkins
+#  Calibration scale: NOAA-2016
+#  (https://gml.noaa.gov/ccl/scales.html)
 #
-#  National Oceanic and Atmospheric Administration (NOAA)
-#  Global Monitoring Laboratory (GML)
-#  325 Broadway, R/GML1
-#  Boulder, CO 80305-3328
+#  Sampling site: {site_code} ({site_name} -- {lat_str}, {elev} m Elev.)
+#  (https://gml.noaa.gov/dv/site)
 #
-#  Email:  Bradley.Hall@noaa.gov
+#  PIs: Dr. Bradley D. Hall, Dr. Isaac Vimont, David Nance, Kyle Petersen
+#       Geoff Dutton
 #
-#  Data use policy:
-#  If you use this data in a publication or report, we would appreciate that
-#  you contact the principal investigators (PIs) first and discuss your
-#  interests.  Please cite as: {parameter_name} data from the NOAA/GML
-#  halocarbons flask (fECD) program.
+#       National Oceanic and Atmospheric Administration (NOAA)
+#       Global Monitoring Laboratory (GML)
+#       325 Broadway, R/GML1
+#       Boulder, CO 80305-3328
 #
-#  Units: ppt
+#       Email: Isaac.Vimont@noaa.gov      Kyle.Petersen@noaa.gov
+#       Phone:  720-295-0758                  720-263-6292
 #
-#  Missing value: nan
+#       Email:  David.Nance@noaa.gov       Geoff.Dutton@noaa.gov
+#       Phone:     720-712-8742                720-466-3264
 #
-#  Generated: {date}
+#  Data use policy: https://gml.noaa.gov/hats/hats_datause.html
 #
-#  Data Columns:
-#      yr      Year
-#      mon     Month
-#      day     Day of the Month
-#      hour    Hour of the Day (UTC)
-#      min     Minute of the Hour
-#      m       Mean flask-pair mole fraction in ppt
-#      sd      Standard deviation of the pair
-#      pid     Flask-pair ID
-#      ftype   Flask type (S: stainless steel, G: glass)
+#  Missing value: "nan"
 #

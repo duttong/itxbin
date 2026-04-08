@@ -242,6 +242,20 @@ _FECD_CHEM_NAMES = {
     'TCE':     'C2HCl3 (Trichloroethylene)',
 }
 
+# Short codes used in filenames and column headers (e.g. "F11" for CFC11).
+_FECD_SHORT_CODES = {
+    'CFC11':   'F11',
+    'CFC12':   'F12',
+    'CFC113':  'F113',
+    'CCl4':    'CCl4',
+    'CH3CCl3': 'MC',
+    'CHCl3':   'CHCl3',
+    'H1211':   'H1211',
+    'n2o':     'N2O',
+    'sf6':     'SF6',
+    'TCE':     'TCE',
+}
+
 
 class FecdDataExporter:
     """Export fECD (OTTO + FE3) flask pair-average data to GML-format text files.
@@ -435,14 +449,17 @@ class FecdDataExporter:
                 .replace('{elev}', f'{elev:.0f}')
                 .replace('{date}', datetime.now().strftime('%Y-%m-%d')))
 
+    def _short_code(self) -> str:
+        return _FECD_SHORT_CODES.get(self.parameter_name, self.parameter_name)
+
     # ── format ───────────────────────────────────────────────────────────────
 
-    def format_lines(self, df: pd.DataFrame) -> list[str]:
+    def format_lines(self, df: pd.DataFrame, site: str) -> list[str]:
         """Return fixed-width data lines plus a column-name header line."""
-        col_tag = f'{self.parameter_name}{self.sites[0] if len(self.sites) == 1 else ""}'
+        tag = f'{self._short_code()}fecd{site.upper()}'
         col_header = (
-            f'{"yr":>4}  {"mon":>2}  {"day":>2}  {"hour":>4}  {"min":>3}  '
-            f'{"m":>12}  {"sd":>10}  {"pid":>7}  {"ftype":>5}'
+            f'{tag}yr {tag}mon {tag}day {tag}hour {tag}min '
+            f'{tag}m {tag}sd {tag}pid {tag}ftype {tag}inst'
         )
         lines = [col_header]
         for _, row in df.iterrows():
@@ -451,20 +468,21 @@ class FecdDataExporter:
                 dt = pd.Timestamp(dt).to_pydatetime()
             mf = row['pair_avg']
             sd = row['pair_stdv']
-            mf_str = f'{mf:12.3f}' if mf is not None and mf == mf else f'{"nan":>12}'
-            sd_str = f'{sd:10.3f}' if sd is not None and sd == sd else f'{"nan":>10}'
+            mf_str = f'{mf:9.3f}' if mf is not None and mf == mf else '      nan'
+            sd_str = f'{sd:8.3f}' if sd is not None and sd == sd else '     nan'
             pid = row.get('pair_id_num', '')
             ftype = str(row.get('sample_type', '')).strip()
+            inst = str(row.get('instrument', '')).strip()
             lines.append(
                 f'{dt.year:>4}  {dt.month:>2}  {dt.day:>2}  {dt.hour:>4}  {dt.minute:>3}  '
-                f'{mf_str}  {sd_str}  {int(pid):>7}  {ftype:>5}'
+                f'{mf_str}  {sd_str}  {int(pid):>6}  {ftype}  {inst}'
             )
         return lines
 
     # ── export ────────────────────────────────────────────────────────────────
 
     def default_filename(self, site: str) -> str:
-        return f'{site.lower()}_{self.parameter_name}_All.txt'
+        return f'{self._short_code()}_{site.upper()}_NOAAflaskECD_All.txt'
 
     def export_site(self, site: str, output_path: str | Path) -> int:
         """Export data for one site to output_path. Returns records written."""
@@ -473,7 +491,7 @@ class FecdDataExporter:
             return 0
         filename = Path(output_path).name
         header = self.build_header(filename, site)
-        lines = self.format_lines(df)
+        lines = self.format_lines(df, site)
         Path(output_path).write_text(header + '\n'.join(lines) + '\n')
         return len(lines) - 1  # exclude column header line
 
