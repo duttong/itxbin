@@ -15,7 +15,6 @@ class M4_SampleLogs(M4_Instrument):
         super().__init__()
         # rglob will read all .xl files
         self.incoming_dir = self.gc_dir / 'MassHunter/GCMS/M4 GSPC Files'
-        #self.incoming_dir = self.gc_dir / 'chemstation'
         self.xlfiles = sorted(self.incoming_dir.rglob('*.xl'))
         self.merge_delta = '8 minutes'
                         
@@ -126,7 +125,6 @@ class M4_SampleLogs(M4_Instrument):
         df['dt_sync'] = df['dt_xl'] + pd.Timedelta(minutes=-self.TIME_OFFSET)
         df = df.drop_duplicates(subset='dt_xl', keep='first')
         df = df.set_index('dt_xl')
-        df.index = pd.to_datetime(df.index)
         df = df.sort_index()
 
         return df
@@ -196,7 +194,6 @@ class M4_SampleLogs(M4_Instrument):
         mask_valid = mm['info'].str.lower().str[:3].isin(valid_sites)
         extracted = mm.loc[mask_valid, 'info'].str.extract(pattern)
         mm.loc[mask_valid, ['site', 'sample_time', 'tank']] = extracted[['site', 'sample_time', 'tank']]
-        #print(mm.loc[mm['site'] == 'mlo'][['info', 'sample_time', 'tank']])
         
         # Title-case and normalize everything to dashes:
         mm['norm'] = mm['sample_time'].str.title().str.replace('_', '-', regex=False)
@@ -232,17 +229,12 @@ class M4_SampleLogs(M4_Instrument):
             flask_id = extracted[0].fillna('0').astype(int)
             pair_id = extracted[1].fillna('0').astype(int)
 
-            # If the pattern didn't match, both should be zero. extracted gives NaN for both when it fails.
-            invalid = extracted.isna().any(axis=1)
-            flask_id.loc[invalid] = 0
-            pair_id.loc[invalid] = 0
-
             mm.loc[flask_mask, 'flask_id'] = flask_id
             mm.loc[flask_mask, 'pair_id'] = pair_id
     
         # Map run type and compute ccgg event number.
         mm['run_type_num'] = mm['samptype'].str.lower().map(self.run_type_num())
-        mm['ccgg_event_num'] = mm.apply(lambda row: self.fetch_ccgg_event_num(row), axis=1)
+        mm['ccgg_event_num'] = mm.apply(self.fetch_ccgg_event_num, axis=1)
         
         # Estimate and create a run_time column. This is the time the GSPC sequence started.
         mm['time_diff'] = mm['dt_run'].diff()
@@ -276,8 +268,6 @@ class M4_SampleLogs(M4_Instrument):
                 id_filter = f"%-{flask_id}"
             else:
                 id_filter = f"{pfp}-{flask_id}"
-
-            #print(flask, pfp, flask_id, site_id, id_filter, row['sample_time'])
 
             sql = f"""
                 SELECT num FROM ccgg.flask_event 
@@ -380,15 +370,15 @@ class M4_SampleLogs(M4_Instrument):
             # Skip rows where run_time is NaT (this is the first run in the loaded dataframe and maybe a partial run)
             if row.run_time is not pd.NaT:
                 p = (
-                    row.dt_run,        # analysis_time
-                    row.run_time,      # run_time
-                    self.inst_num,     # inst_num (M4)
-                    row.run_type_num,  # run_type_num
-                    row.ssvpos,        # port (mapped from df['ssvpos'])
-                    row.tank,          # tank (port_info)
-                    row.pair_id,       # pair_id
-                    row.flask_id,      # flask_id
-                    row.ccgg_event_num # ccgg_event_num
+                    row.dt_run,
+                    row.run_time,
+                    self.inst_num,
+                    row.run_type_num,
+                    row.ssvpos,
+                    row.tank,
+                    row.pair_id,
+                    row.flask_id,
+                    row.ccgg_event_num,
                 )
                 params.append(p)
     
@@ -441,7 +431,6 @@ class M4_SampleLogs(M4_Instrument):
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
-                analysis_num = VALUES(analysis_num),
                 init_p       = VALUES(init_p),
                 final_p      = VALUES(final_p),
                 net_pressure = VALUES(net_pressure),
@@ -464,22 +453,22 @@ class M4_SampleLogs(M4_Instrument):
 
         for idx, row in df.iterrows():
             p = (
-                row.analysis_num,    # analysis_num
-                row.init_p,          # init_p
-                row.final_p,         # final_p
-                row.net_pressure,    # net_pressure
-                row.initp_rsd,       # initp_rsd
-                row.finalp_rsd,      # finalp_rsd
-                row.low_flow,        # low_flow
-                row.cryocount,       # cryocount
-                row.loflocount,      # loflocount
-                row.last_flow,       # last_flow
-                row.last_vflow,      # last_vflow
-                row.pfpopen,         # pfpopen
-                row.pfpclose,        # pfpclose
-                row.pfp_press1,      # pfp_press1
-                row.pfp_press2,      # pfp_press2
-                row.pfp_press3       # pfp_press3
+                row.analysis_num,
+                row.init_p,
+                row.final_p,
+                row.net_pressure,
+                row.initp_rsd,
+                row.finalp_rsd,
+                row.low_flow,
+                row.cryocount,
+                row.loflocount,
+                row.last_flow,
+                row.last_vflow,
+                row.pfpopen,
+                row.pfpclose,
+                row.pfp_press1,
+                row.pfp_press2,
+                row.pfp_press3,
             )           
             params.append(p)
 
@@ -500,16 +489,15 @@ class M4_Serial_Numbers(M4_Instrument):
     def find_missing_serials(self):
         """ Finds missing serial numbers in the M4 instrument. """
         sql = f"""
-            SELECT * FROM hats.ng_analysis 
-            where inst_num = 192
+            SELECT * FROM hats.ng_analysis
+            where inst_num = {self.inst_num}
             and tank_serial_num is NULL
             and pair_id_num = 0
-            and port NOT in (1, 2, 12, 14)   # exclues Zero Air, PFP, and Reference ports
+            and port NOT in (1, 2, 12, 14)
             and port_info not like "%zero%"
             and port_info not like "%junk%"
             and port_info != ''
-            and tank_serial_num is NULL
-            and run_time > '2023-12-01'
+            and run_time > '{pd.to_datetime(self.start_date, format="%Y%m%d").date()}'
             order by analysis_time;
         """
         df = pd.DataFrame(self.db.doquery(sql))
