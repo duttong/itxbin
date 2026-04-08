@@ -1273,9 +1273,9 @@ class TimeseriesWidget(QWidget):
                 "<b>Year range:</b> set by the Start / End spinboxes above."
             )
 
-            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites & Time")
+            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites and Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
-            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites & Time")
+            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites and Time")
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
 
             save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
