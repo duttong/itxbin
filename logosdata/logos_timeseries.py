@@ -18,7 +18,7 @@ import time
 
 from pathlib import Path
 
-from data_export import MstarDataExporter
+from data_export import MstarDataExporter, FecdDataExporter
 
 import configparser
 
@@ -1283,6 +1283,36 @@ class TimeseriesWidget(QWidget):
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
+        if self.instrument and self.instrument.inst_num == 193:
+            save_group = QGroupBox("SAVE")
+            save_layout = QVBoxLayout()
+
+            _tip_fecd_all = (
+                "<b>Export fECD Data — All Sites and Time</b><br><br>"
+                "Writes one GML-format text file per site ({site}_{analyte}_All.txt) "
+                "containing OTTO and FE3 flask pair averages for <b>all LOGOS network "
+                "sites</b> across <b>all available years</b>.<br><br>"
+                "You will be prompted to choose an output directory."
+            )
+            _tip_fecd_sel = (
+                "<b>Export fECD Data — Selected Sites and Time</b><br><br>"
+                "Writes one GML-format text file per site ({site}_{analyte}_All.txt) "
+                "containing OTTO and FE3 flask pair averages for the "
+                "<b>sites checked above</b>.<br><br>"
+                "<b>Year range:</b> set by the Start / End spinboxes above.<br><br>"
+                "You will be prompted to choose an output directory."
+            )
+
+            self.export_fecd_all_btn = QPushButton("Export fECD Data -- All Sites and Time")
+            self.export_fecd_all_btn.clicked.connect(self._export_fecd_data_all_sites)
+            self.export_fecd_sel_btn = QPushButton("Export fECD Data -- Selected Sites and Time")
+            self.export_fecd_sel_btn.clicked.connect(self._export_fecd_data_selected_sites)
+
+            save_layout.addLayout(self._export_row(self.export_fecd_all_btn, _tip_fecd_all))
+            save_layout.addLayout(self._export_row(self.export_fecd_sel_btn, _tip_fecd_sel))
+            save_group.setLayout(save_layout)
+            controls.addWidget(save_group)
+
         controls.addStretch()
         self.setLayout(controls)
 
@@ -1516,6 +1546,36 @@ class TimeseriesWidget(QWidget):
             QMessageBox.warning(self, "Export M* Data", "No data found for the current selection.")
         else:
             QMessageBox.information(self, "Export M* Data", f"Wrote {n} records to {path}")
+
+    def _export_fecd_data_all_sites(self):
+        """Export fECD data for all sites and all time to a user-chosen directory."""
+        sites = [s for s in self.sites_by_lat if s not in PFP_SITES]
+        self._run_fecd_export(sites=sites, all_time=True)
+
+    def _export_fecd_data_selected_sites(self):
+        """Export fECD data for the currently checked sites and the selected year range."""
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        self._run_fecd_export(sites=sites, all_time=False)
+
+    def _run_fecd_export(self, sites: list[str], all_time: bool = False):
+        """Shared logic: build fECD exporter, prompt for output dir, write per-site files."""
+        exporter = FecdDataExporter.from_timeseries_widget(self, sites=sites, all_time=all_time)
+        output_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory for fECD Data"
+        )
+        if not output_dir:
+            return
+        results = exporter.export_all(output_dir)
+        if not results:
+            QMessageBox.warning(self, "Export fECD Data",
+                                "No data found for the current selection.")
+        else:
+            total = sum(results.values())
+            files = len(results)
+            QMessageBox.information(
+                self, "Export fECD Data",
+                f"Wrote {total} records across {files} file(s) in:\n{output_dir}"
+            )
 
     def query_rel_stddev_data(self, analyte=None):
         """Query data for the relative standard deviation plot."""
