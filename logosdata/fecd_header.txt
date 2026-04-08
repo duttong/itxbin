@@ -17,8 +17,7 @@
 #  Sampling site: {site_code} ({site_name} -- {lat_str}, {elev} m Elev.)
 #  (https://gml.noaa.gov/dv/site)
 #
-#  PIs: Dr. Bradley D. Hall, Dr. Isaac Vimont, David Nance, Kyle Petersen
-#       Geoff Dutton
+#  PIs: Dr. Isaac Vimont, David Nance, Kyle Petersen, Geoff Dutton
 #
 #       National Oceanic and Atmospheric Administration (NOAA)
 #       Global Monitoring Laboratory (GML)
