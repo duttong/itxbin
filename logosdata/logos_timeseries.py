@@ -56,6 +56,9 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
 # (ng_data_processing_view) or sample_type='PFP' (ng_pair_avg_view).
 PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 
+# Sites only shown when FE3 is active (OTTO predecessor data only).
+FE3_EXTRA_SITES = ['ITN', 'USH']
+
 # Sites excluded from the "Export M* Data -- All Sites" action.
 # MKO_PFP: only PFP samples exist at MKO, no standard flask M* record.
 # BLD: M4-only site, no M1/M3 data.
@@ -96,11 +99,16 @@ class TimeseriesFigure:
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": False, "Mstar 10-day mean": False, "Mstar monthly mean": False}
+        # When FE3 has no data (e.g. OTTO-only sites like ITN/USH), show OTTO pair by default.
+        fe3_empty = df.empty and parent_widget.instrument.inst_num == 193
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": False, "Mstar 10-day mean": False, "Mstar monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
         self.legend_label_map = {
-            "Mstar pair mean": "M* pair mean",
-            "Mstar 10-day mean": "M* 10-day mean",
-            "Mstar monthly mean": "M* monthly mean",
+            "Mstar pair mean": "M* pair",
+            "Mstar 10-day mean": "M* 10-day",
+            "Mstar monthly mean": "M* monthly",
+            "Otto pair mean": "OTTO pair",
+            "Otto 10-day mean": "OTTO 10-day",
+            "Otto monthly mean": "OTTO monthly",
         }
         self.legend_label_lookup = {v: k for k, v in self.legend_label_map.items()}
 
@@ -197,6 +205,11 @@ class TimeseriesFigure:
             for lbl, artists in mstar_handles.items():
                 self.dataset_handles.setdefault(lbl, []).extend(artists)
 
+        if self.parent_widget.instrument.inst_num == 193:
+            otto_handles = self._draw_otto_artists(self._ax, site_colors)
+            for lbl, artists in otto_handles.items():
+                self.dataset_handles.setdefault(lbl, []).extend(artists)
+
         self._rebuild_data_artists()
 
         # Tag each artist with its site (safety)
@@ -224,16 +237,20 @@ class TimeseriesFigure:
                            "Air2": adjust_brightness(_air_base, 0.65),
                            "10-day mean": "black", "Monthly mean": "black"}
 
-        is_m4 = self.parent_widget.instrument.inst_num == 192
+        is_m4  = self.parent_widget.instrument.inst_num == 192
+        is_fe3 = self.parent_widget.instrument.inst_num == 193
         has_data = not self.df.empty or not self.insitu_df.empty
         flask_entries  = ["All samples", "Flask mean", "Pair mean"] if not self.df.empty else []
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
         tenday_entries  = ["10-day mean"] if has_data else []
         monthly_entries = ["Monthly mean"] if has_data else []
         mstar_entries   = ["Mstar pair mean", "Mstar 10-day mean", "Mstar monthly mean"] if (is_m4 and has_data) else []
+        otto_entries    = ["Otto pair mean", "Otto 10-day mean", "Otto monthly mean"] if is_fe3 else []
 
         _mstar_markers = {"Mstar pair mean": "P", "Mstar 10-day mean": "<", "Mstar monthly mean": "h"}
         _mstar_color = "dimgray"
+        _otto_markers = {"Otto pair mean": "P", "Otto 10-day mean": "<", "Otto monthly mean": "h"}
+        _otto_color = "dimgray"
 
         legend_handles = []
         for label in flask_entries + insitu_entries + tenday_entries + monthly_entries:
@@ -255,6 +272,22 @@ class TimeseriesFigure:
             for label in mstar_entries:
                 dummy = mlines.Line2D([], [], color=_mstar_color,
                                       marker=_mstar_markers[label],
+                                      linestyle="", markersize=6,
+                                      label=self.legend_label_map.get(label, label))
+                dummy._is_dataset_legend = True
+                dummy._dataset_key = label
+                if not self.dataset_visibility.get(label, True):
+                    dummy.set_alpha(0.4)
+                legend_handles.append(dummy)
+
+        if otto_entries:
+            divider = mlines.Line2D([], [], color="lightgray", linestyle="-",
+                                    linewidth=1.5, markersize=0, label="──────────")
+            divider._is_dataset_legend = True
+            legend_handles.append(divider)
+            for label in otto_entries:
+                dummy = mlines.Line2D([], [], color=_otto_color,
+                                      marker=_otto_markers[label],
                                       linestyle="", markersize=6,
                                       label=self.legend_label_map.get(label, label))
                 dummy._is_dataset_legend = True
@@ -621,6 +654,89 @@ class TimeseriesFigure:
 
         return handles
 
+    def _draw_otto_artists(self, ax, site_colors):
+        """Draw OTTO pair, 10-day, and monthly means (FE3 only); return dataset_handles entries."""
+        handles = {}
+
+        # ── Otto pair mean ──────────────────────────────────────────
+        pair_df = self.parent_widget.query_otto_pair_data(self.analyte)
+        visible_pair = self.dataset_visibility.get("Otto pair mean", False)
+        if not pair_df.empty:
+            for site, grp in pair_df.groupby("site"):
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                line, = ax.plot(
+                    grp["sample_datetime"], grp["pair_avg"],
+                    marker="P", linestyle="",
+                    color=color, markersize=5, alpha=0.6,
+                    mfc=color, mec=color, label="Otto pair mean"
+                )
+                line._site = site
+                line._dataset_label = "Otto pair mean"
+                line.set_visible(visible_pair)
+                handles.setdefault("Otto pair mean", []).append(line)
+
+        # ── Otto 10-day mean ────────────────────────────────────────
+        tenday_df = self.parent_widget.query_otto_10day_mean_data(self.analyte)
+        visible_10d = self.dataset_visibility.get("Otto 10-day mean", False)
+        if not tenday_df.empty:
+            for _, row in tenday_df.iterrows():
+                site = row["site"]
+                mean = row["period_avg"]
+                std  = row["period_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                container = ax.errorbar(
+                    [row["period_start"]], [mean], yerr=[std],
+                    marker="<", linestyle="",
+                    color=color, markersize=6, capsize=3, alpha=0.9,
+                    mfc="none", mec=color, label="Otto 10-day mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Otto 10-day mean"
+                        p.set_visible(visible_10d)
+                handles.setdefault("Otto 10-day mean", []).extend(parts)
+
+        # ── Otto monthly mean ───────────────────────────────────────
+        monthly_df = self.parent_widget.query_otto_monthly_mean_data(self.analyte)
+        visible_mo = self.dataset_visibility.get("Otto monthly mean", False)
+        if not monthly_df.empty:
+            for _, row in monthly_df.iterrows():
+                site = row["site"]
+                mean = row["monthly_avg"]
+                std  = row["monthly_std"]
+                if not np.isfinite(mean) or not np.isfinite(std):
+                    continue
+                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
+                container = ax.errorbar(
+                    [row["month_start"]], [mean], yerr=[std],
+                    marker="h", linestyle="",
+                    color=color, markersize=7, capsize=4, alpha=0.9,
+                    mfc="none", mec=color, label="Otto monthly mean"
+                )
+                parts = []
+                for child in container:
+                    if isinstance(child, (list, tuple)):
+                        parts.extend(child)
+                    else:
+                        parts.append(child)
+                for p in parts:
+                    if hasattr(p, "set_visible"):
+                        p._site = site
+                        p._dataset_label = "Otto monthly mean"
+                        p.set_visible(visible_mo)
+                handles.setdefault("Otto monthly mean", []).extend(parts)
+
+        return handles
+
     def _on_analyte_changed(self, text):
         self.analyte = text
         if "(" in text and ")" in text:
@@ -638,7 +754,8 @@ class TimeseriesFigure:
         try:
             df        = self.parent_widget.query_flask_data(force=True, analyte=self.analyte, channel=self.channel)
             insitu_df = self.parent_widget.query_insitu_data(analyte=self.analyte, force=True)
-            if df.empty and insitu_df.empty:
+            # For FE3, allow rebuild even when flask data is empty — OTTO data may exist.
+            if df.empty and insitu_df.empty and self.parent_widget.instrument.inst_num != 193:
                 print("No data to reload")
                 return
 
@@ -1239,7 +1356,8 @@ class TimeseriesWidget(QWidget):
         self.current_analyte = analyte_name
         
     def get_site_info(self):
-        real_sites = [s for s in LOGOS_sites if s not in PFP_SITES]
+        extra = FE3_EXTRA_SITES if getattr(self.instrument, 'inst_num', None) == 193 else []
+        real_sites = [s for s in LOGOS_sites if s not in PFP_SITES] + extra
         # Also fetch base sites for PFP pseudo-sites even if they are not in
         # LOGOS_sites (e.g. MKO was removed as a standalone site but MKO_PFP
         # still needs MKO's lat/lon to place itself in the sorted list).
@@ -1354,7 +1472,9 @@ class TimeseriesWidget(QWidget):
         try:
             df = self.query_flask_data(force=False)
             insitu_df = self.query_insitu_data()
-            if df.empty and insitu_df.empty:
+            # For FE3, allow plotting even when flask data is empty — OTTO predecessor
+            # data may still be available for legacy-only sites like ITN and USH.
+            if df.empty and insitu_df.empty and self.instrument.inst_num != 193:
                 print("No data to plot")
                 return
             analyte = self.analyte_combo.currentText()
@@ -1605,7 +1725,8 @@ class TimeseriesWidget(QWidget):
             params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
             frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
 
-        df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame()
+        non_empty = [f for f in frames if not f.empty]
+        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
         if not df.empty:
             df["period_start"] = pd.to_datetime(df["period_start"])
         return df
@@ -1669,7 +1790,8 @@ class TimeseriesWidget(QWidget):
             params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
             frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
 
-        df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame()
+        non_empty = [f for f in frames if not f.empty]
+        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
@@ -1765,6 +1887,107 @@ class TimeseriesWidget(QWidget):
             STDDEV(pair_avg) AS monthly_std
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start
+        ORDER BY site, month_start
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
+    def query_otto_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query OTTO individual pair rows from ng_pair_avg_view (FE3 only)."""
+        if self.instrument.inst_num != 193:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT UPPER(site) AS site, sample_datetime, pair_avg, pair_stdv
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id = 'OTTO'
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        ORDER BY site, sample_datetime
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+        return df
+
+    def query_otto_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query OTTO 10-day binned means from ng_pair_avg_view (FE3 only)."""
+        if self.instrument.inst_num != 193:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT
+            UPPER(site) AS site,
+            CASE
+                WHEN DAY(sample_datetime) <= 10 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-01')
+                WHEN DAY(sample_datetime) <= 20 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-11')
+                ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
+            END AS period_start,
+            AVG(pair_avg)    AS period_avg,
+            STDDEV(pair_avg) AS period_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id = 'OTTO'
+          AND parameter_num = %s
+          AND sample_type IN ('S', 'G')
+          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, period_start
+        ORDER BY site, period_start
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if not df.empty:
+            df["period_start"] = pd.to_datetime(df["period_start"])
+        return df
+
+    def query_otto_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query OTTO monthly means from ng_pair_avg_view (FE3 only)."""
+        if self.instrument.inst_num != 193:
+            return pd.DataFrame()
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+        start = self.start_year.value()
+        end   = self.end_year.value()
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT
+            UPPER(site) AS site,
+            DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+            AVG(pair_avg)    AS monthly_avg,
+            STDDEV(pair_avg) AS monthly_std
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id = 'OTTO'
           AND parameter_num = %s
           AND sample_type IN ('S', 'G')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
