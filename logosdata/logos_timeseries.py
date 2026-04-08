@@ -1261,21 +1261,21 @@ class TimeseriesWidget(QWidget):
             save_layout = QVBoxLayout()
 
             _tip_all = (
-                "<b>Export M* Data — All Sites</b><br><br>"
+                "<b>Export M* Data — All Sites &amp; Time</b><br><br>"
                 "Writes a GML-format text file of M-system (M1/M3/M4) flask pair "
-                "means and 1-σ standard deviations for <b>all LOGOS network sites</b>.<br><br>"
-                "<b>Year range:</b> set by the Start / End spinboxes above."
+                "means and 1-σ standard deviations for <b>all LOGOS network sites</b> "
+                "across <b>all available years</b> (ignores the year range spinboxes)."
             )
             _tip_sel = (
-                "<b>Export M* Data — Selected Sites</b><br><br>"
+                "<b>Export M* Data — Selected Sites &amp; Time</b><br><br>"
                 "Writes a GML-format text file of M-system (M1/M3/M4) flask pair "
                 "means and 1-σ standard deviations for the <b>sites checked above</b>.<br><br>"
                 "<b>Year range:</b> set by the Start / End spinboxes above."
             )
 
-            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites")
+            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites & Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
-            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites")
+            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites & Time")
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
 
             save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
@@ -1494,17 +1494,17 @@ class TimeseriesWidget(QWidget):
         self.open_figures.append(fig)
 
     def _export_mstar_data_all_sites(self):
-        """Export M* data for all sites, minus those in MSTAR_EXPORT_EXCLUDE."""
+        """Export M* data for all sites and all time, minus those in MSTAR_EXPORT_EXCLUDE."""
         sites = [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
-        self._run_mstar_export(sites=sites)
+        self._run_mstar_export(sites=sites, all_time=True)
 
     def _export_mstar_data_selected_sites(self):
-        """Export M* data for the currently checked sites."""
-        self._run_mstar_export(sites=self.get_active_sites())
+        """Export M* data for the currently checked sites and the selected year range."""
+        self._run_mstar_export(sites=self.get_active_sites(), all_time=False)
 
-    def _run_mstar_export(self, sites: list[str]):
+    def _run_mstar_export(self, sites: list[str], all_time: bool = False):
         """Shared logic: build exporter, prompt for path, write file."""
-        exporter = MstarDataExporter.from_timeseries_widget(self, sites=sites)
+        exporter = MstarDataExporter.from_timeseries_widget(self, sites=sites, all_time=all_time)
         default_name = exporter.default_filename()
         path, _ = QFileDialog.getSaveFileName(
             self, "Export M* Data", default_name, "Text files (*.txt);;All files (*)"

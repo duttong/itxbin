@@ -201,12 +201,14 @@ class MstarDataExporter:
 
     @classmethod
     def from_timeseries_widget(
-        cls, widget, sites: list[str] | None = None
+        cls, widget, sites: list[str] | None = None, all_time: bool = False
     ) -> 'MstarDataExporter':
         """Construct from a ``TimeseriesWidget`` using its current UI state.
 
         Pass *sites* explicitly to override the widget's active-site selection
         (e.g. to export all sites regardless of which checkboxes are checked).
+        Pass *all_time=True* to export all available years regardless of the
+        year-range spinboxes.
         """
         analyte = widget.analyte_combo.currentText()
         pnum = widget.analytes.get(analyte)
@@ -215,6 +217,6 @@ class MstarDataExporter:
             parameter=analyte,
             parameter_num=pnum,
             sites=sites if sites is not None else widget.get_active_sites(),
-            start_year=widget.start_year.value(),
-            end_year=widget.end_year.value(),
+            start_year=1990 if all_time else widget.start_year.value(),
+            end_year=datetime.now().year if all_time else widget.end_year.value(),
         )
