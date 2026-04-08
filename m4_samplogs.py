@@ -1,4 +1,61 @@
 #! /usr/bin/env python
+"""
+m4_samplogs.py — M4 sample log builder and HATS database ingest
+
+This module handles two related jobs that run together as part of the daily
+m4_ingest.py pipeline:
+
+1. Sample log files (M4_SampleLogs)
+   The M4 GSPC system produces two file types after each GC sequence:
+     - .xl files   pressure/flow measurements logged by the GSPC controller
+     - .run-index  chromatogram names written by GCwerks (one entry per injection)
+
+   M4_SampleLogs reads all .xl files from the MassHunter GSPC directory and
+   merges them with the GCwerks .run-index using a nearest-time join (±8 min).
+   The merged result is written to tab-delimited sample.log files under
+   /hats/gc/m4/logs/sample.log/, one file per calendar year (e.g. "2601" for
+   2026).  These log files are the human-readable record of every M4 injection:
+   site, sample date, tank ID, SSV port, and GSPC pressures.
+
+2. HATS database insertions (M4_SampleLogs + M4_Serial_Numbers)
+   When run with -i / --insert, the merged DataFrame is also written to two
+   HATS next-generation database tables:
+
+   hats.ng_analysis  (one row per injection, upserted on analysis_time + inst_num)
+     - analysis_time   datetime of the injection (from GCwerks .run-index)
+     - run_time        datetime the GC sequence started (first injection in the run)
+     - inst_num        192 (M4)
+     - run_type_num    integer code for sample type (flask, std, pfp, zero, …)
+     - port            SSV valve position (from .xl ssvpos)
+     - port_info       tank identifier string as written in the run-index
+                       (e.g. "aal-070045_Arch_A", "SX-3531", "12-1234" for PFP)
+     - pair_id_num     flask pair ID for HATS flask network runs, else 0
+     - flask_id        flask number within a pair, else 0
+     - ccgg_event_num  CCGG event number for PFP flasks at MLO/MKO, else NULL
+     - flask_port      for PFP runs: the individual flask valve number extracted
+                       from port_info (updated separately via update_pfp_flask_port)
+
+   hats.ng_ancillary_data  (one row per injection, upserted on analysis_num)
+     - analysis_num    FK → hats.ng_analysis.num
+     - init_p / final_p / net_pressure  GSPC pressures (psi)
+     - initp_rsd / finalp_rsd           pressure repeatability (%)
+     - low_flow        1 if a low-flow condition was flagged, else 0
+     - cryocount / loflocount           diagnostic counters from the GSPC
+     - last_flow / last_vflow           final flow readings
+     - pfpopen / pfpclose               PFP valve numbers opened/closed this run
+     - pfp_press1/2/3                   PFP internal pressure readings
+
+   After the ng_analysis upsert, M4_Serial_Numbers queries for any rows whose
+   tank_serial_num is still NULL, extracts a key from port_info using regex
+   (sx/esx pattern or first 4+-digit run), looks it up in reftank.fill, and
+   writes the canonical serial number back to ng_analysis.tank_serial_num.
+
+Usage:
+    m4_samplogs.py            # merge and write sample.log files only
+    m4_samplogs.py -i         # also insert/update hats DB tables
+    m4_samplogs.py -i -d 1Y   # same, covering the past year
+    m4_samplogs.py -i --all   # same, covering all data since start_date
+"""
 
 import argparse
 import pandas as pd
