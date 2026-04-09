@@ -49,6 +49,8 @@ m4_ingest.py pipeline:
    tank_serial_num is still NULL, extracts a key from port_info using regex
    (sx/esx pattern or first 4+-digit run), looks it up in reftank.fill, and
    writes the canonical serial number back to ng_analysis.tank_serial_num.
+   This means tanks listed in tank_serial_num can be reliably linked to the
+   reftank.fill metadata.
 
 Usage:
     m4_samplogs.py            # merge and write sample.log files only
