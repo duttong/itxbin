@@ -271,7 +271,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             JOIN hats.ng_analysis a ON mf.analysis_num = a.num
             SET mf.flag = '...'
             WHERE a.inst_num = {self.inst_num}
-            AND a.run_time = %s;
+            AND a.run_time = %s
         """
         self.db.doquery(sql_clear + " AND mf.flag = 'M..'", [run_time])
 
