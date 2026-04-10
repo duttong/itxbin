@@ -216,7 +216,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         Filtering applied before aggregation:
           - data_flag == '...'  (unflagged injections only)
           - run_type_num in self.CAL_RUN_TYPES  (instrument-specific;
-            M4=tank(7), FE3/BLD1=calibration(2))
+            M4=tank(7), FE3=calibration+other(2,4), BLD1=calibration(2))
           - excludes the normalizing/reference tank (identified via self.norm)
           - for FE3/IE3: restricts to the preferred channel per ng_preferred_channel,
             regardless of which channel was passed to load_data by the caller
@@ -1705,7 +1705,7 @@ class FE3_Instrument(HATS_DB_Functions):
         "Test": 10
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
-    CAL_RUN_TYPES = {2}         # run_type_num values written to hats.calibrations
+    CAL_RUN_TYPES = {2, 4}      # run_type_num values written to hats.calibrations
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     EXCLUDE = [9]               # push port - exclude from autoscaling
 
