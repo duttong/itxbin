@@ -259,6 +259,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
             run_number =('analysis_num',  'min'),
         ).reset_index()
         agg = agg[agg['num'] > 0]
+        agg = agg.replace([float('inf'), float('-inf')], float('nan'))
+        agg = agg.dropna(subset=['mixratio'])
 
         inst_str = self.inst_id.upper()
 
