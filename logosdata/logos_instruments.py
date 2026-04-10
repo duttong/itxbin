@@ -69,11 +69,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
         return results
     
     def qurey_return_scale_num(self, parameter_num):
-        sql = f""" SELECT idx FROM reftank.scales where parameter_num = {parameter_num}; """
-        r = self.db.doquery(sql)
-        if not r:
-            raise ValueError(f"No scale number found for parameter number {parameter_num}.")
-        return r[0]['idx']  
+        if not hasattr(self, '_scale_num_cache'):
+            self._scale_num_cache = {}
+        if parameter_num not in self._scale_num_cache:
+            sql = f""" SELECT idx FROM reftank.scales where parameter_num = {parameter_num}; """
+            r = self.db.doquery(sql)
+            if not r:
+                raise ValueError(f"No scale number found for parameter number {parameter_num}.")
+            self._scale_num_cache[parameter_num] = r[0]['idx']
+        return self._scale_num_cache[parameter_num]
 
     def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
         """ Returns a list of run_times for a run_type_num and start/end range
@@ -198,6 +202,100 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         out.drop(columns=['analysis_time'], inplace=True)
         return out
+
+    def upsert_calibrations(self, df, parameter_num):
+        """
+        Aggregates unflagged tank measurements from df and upserts them into
+        hats.calibrations. Accepts the full dataframe (same shape as
+        upsert_mole_fractions) so the caller does not need to loop per run_time.
+
+        The unique key on calibrations is (serial_number, date, time, species,
+        inst, parameter_num).  On conflict, mixratio/stddev/num/run_number are
+        updated in place.
+
+        Called after upsert_mole_fractions().
+        """
+        # Species lookup — cached on the instance since gmd.parameter never changes
+        if not hasattr(self, '_species_cache'):
+            self._species_cache = {}
+        if parameter_num not in self._species_cache:
+            rows = self.db.doquery(
+                "SELECT formula FROM gmd.parameter WHERE num = %s LIMIT 1",
+                (parameter_num,)
+            )
+            if not rows:
+                raise ValueError(
+                    f"No gmd.parameter entry found for parameter_num={parameter_num}"
+                )
+            self._species_cache[parameter_num] = rows[0]['formula']
+        species = self._species_cache[parameter_num]
+
+        # Scale num lookup — cached via qurey_return_scale_num; None if not found
+        try:
+            scale_num = self.qurey_return_scale_num(parameter_num)
+        except ValueError:
+            scale_num = None
+
+        # Filter to unflagged tank injections; channel already filtered by load_data
+        tank_df = df[
+            (df['data_flag'] == '...') &
+            df['tank_serial_num'].notna() &
+            (df['tank_serial_num'] != '')
+        ]
+        if tank_df.empty:
+            return
+
+        # Aggregate per (run_time, tank); ddof=0 matches MySQL STDDEV (population)
+        agg = tank_df.groupby(['run_time', 'tank_serial_num']).agg(
+            mixratio   =('mole_fraction', lambda x: x.mean()),
+            stddev     =('mole_fraction', lambda x: x.std(ddof=0)),
+            num        =('mole_fraction', 'count'),
+            run_number =('analysis_num',  'min'),
+        ).reset_index()
+
+        inst_str = self.inst_id.upper()
+
+        sql_upsert = """
+            INSERT INTO hats.calibrations (
+                serial_number, date, time, species,
+                mixratio, stddev, num,
+                inst, system, location, flag,
+                parameter_num, run_number, scale_num
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, 'bld', '.',
+                %s, %s, %s
+            )
+            ON DUPLICATE KEY UPDATE
+                mixratio   = VALUES(mixratio),
+                stddev     = VALUES(stddev),
+                num        = VALUES(num),
+                run_number = VALUES(run_number),
+                scale_num  = VALUES(scale_num)
+        """
+        params = []
+        for _, row in agg.iterrows():
+            rt = pd.Timestamp(row['run_time'])
+            params.append((
+                row['tank_serial_num'],
+                rt.date(),
+                rt.time(),
+                species,
+                None if pd.isna(row['mixratio']) else round(float(row['mixratio']), 3),
+                None if pd.isna(row['stddev'])   else round(float(row['stddev']),   3),
+                int(row['num']),
+                inst_str,
+                inst_str,
+                parameter_num,
+                int(row['run_number']),
+                scale_num,
+            ))
+            if self.db.doMultiInsert(sql_upsert, params):
+                params = []
+
+        if params:
+            self.db.doMultiInsert(sql_upsert, params, all=True)
 
     def upsert_mole_fractions(self, df, response_id=None):
         """

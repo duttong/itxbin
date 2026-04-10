@@ -2354,7 +2354,8 @@ class MainWindow(QMainWindow):
                     df_sub = df[df['ng_response_id'].fillna(-1).astype(int) == int(response_id)]
                     if not df_sub.empty:
                         self.instrument.upsert_mole_fractions(df_sub, response_id=response_id)
-                
+                        self.instrument.upsert_calibrations(df_sub, self.current_pnum)
+
                 if current_rt_ts is not None and rt_ts == current_rt_ts:
                     current_run_updated = True
 
@@ -2466,7 +2467,8 @@ class MainWindow(QMainWindow):
                 )
                 run = self.instrument.calc_mole_fraction(run)
                 self.instrument.upsert_mole_fractions(run)
-            
+                self.instrument.upsert_calibrations(run, int(param_num))
+
             # reload current gas to refresh display
             self.run = self.instrument.load_data(
                     pnum=pnum,
@@ -2885,6 +2887,8 @@ class MainWindow(QMainWindow):
         else:
             print("Warning: No calibration ID found. Saving with NULL.")
             self.instrument.upsert_mole_fractions(self.run, response_id=None)
+
+        self.instrument.upsert_calibrations(self.run, self.current_pnum)
 
         self.madechanges = False
         self.smoothing_changed = False

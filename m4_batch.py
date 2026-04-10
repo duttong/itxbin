@@ -69,6 +69,7 @@ def main():
             df = m4.calc_mole_fraction(df)
             if args.insert:
                 m4.upsert_mole_fractions(df)
+                m4.upsert_calibrations(df, pnum)
 
         # CFC-113 and CFC-113a require joint deconvolution
         print("Processing CFC-113 (32) and CFC-113a (178) pair via deconvolution")
@@ -80,6 +81,8 @@ def main():
             df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
             if args.insert:
                 m4.upsert_cfc113a_pair(df_pair)
+                for pnum_pair in CFC113_PAIR:
+                    m4.upsert_calibrations(df_pair, pnum_pair)
 
         print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
         return
@@ -98,6 +101,8 @@ def main():
             df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
             if args.insert:
                 m4.upsert_cfc113a_pair(df_pair)
+                for pnum_pair in CFC113_PAIR:
+                    m4.upsert_calibrations(df_pair, pnum_pair)
             print(f"Done. Total time: {time.time() - t0:.2f} seconds")
             return
 
@@ -135,6 +140,7 @@ def main():
 
         if args.insert:
             m4.upsert_mole_fractions(df)
+            m4.upsert_calibrations(df, pnum)
             print(f"Inserted mole fractions for parameter {pnum} into the database. Total time: {time.time() - t0:.2f} seconds")
 
         if args.figures:
