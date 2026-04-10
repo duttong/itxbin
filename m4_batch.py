@@ -27,12 +27,12 @@ def main():
     parser.add_argument(
         '-s', '--start-date',
         type=str,
-        help="Start date in YYMM format (e.g. '2503')"
+        help="Start date in YYMM format (e.g. '2503'), or 'start' to use the instrument start date"
     )
     parser.add_argument(
         '-e', '--end-date',
         type=str,
-        help="End date in YYMM format (e.g. '2505')"
+        help="End date in YYMM format (e.g. '2505'), or 'end' for today"
     )
     parser.add_argument(
         '-f', '--figures',
@@ -47,7 +47,16 @@ def main():
     args = parser.parse_args()
 
     m4 = M4_Instrument()
-    
+
+    # Resolve special date keywords
+    if args.start_date and args.start_date.lower() == 'start':
+        sd = datetime.strptime(m4.start_date, '%Y%m%d')
+        args.start_date = sd.strftime('%Y-%m-%d')
+        print(f"Using instrument start date: {args.start_date}")
+    if args.end_date and args.end_date.lower() == 'end':
+        args.end_date = None   # load_data defaults to today when None
+        print(f"Using end date: today")
+
     t0 = time.time()
 
     CFC113_PAIR = {32, 178}  # handled together via deconvolution
