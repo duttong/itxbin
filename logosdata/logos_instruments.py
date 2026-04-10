@@ -236,11 +236,17 @@ class HATS_DB_Functions(LOGOS_Instruments):
         except ValueError:
             scale_num = None
 
-        # Filter to unflagged tank injections; channel already filtered by load_data
+        # Filter to unflagged tank injections; channel already filtered by load_data.
+        # Only include run types designated for calibrations (excludes flasks, warmup, etc.).
+        # Also exclude the normalizing/reference tank (standard run type or port).
+        std_col = self.norm.run_type_column
+        std_val = self.norm.standard_run_type
         tank_df = df[
             (df['data_flag'] == '...') &
             df['tank_serial_num'].notna() &
-            (df['tank_serial_num'] != '')
+            (df['tank_serial_num'] != '') &
+            (df['run_type_num'].isin(self.CAL_RUN_TYPES)) &
+            (df[std_col] != std_val)
         ]
         if tank_df.empty:
             return
@@ -252,6 +258,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             num        =('mole_fraction', 'count'),
             run_number =('analysis_num',  'min'),
         ).reset_index()
+        agg = agg[agg['num'] > 0]
 
         inst_str = self.inst_id.upper()
 
@@ -1261,6 +1268,7 @@ class M4_Instrument(HATS_DB_Functions):
         "PFPs": 5,
     }
     STANDARD_RUN_TYPE = 8
+    CAL_RUN_TYPES = {7}  # run_type_num values written to hats.calibrations
     EXCLUDE = [6, 7]     # run_type_num to exclude from autoscaling (zero air and tank runs)
     
     MARKER_MAP = {
@@ -1642,6 +1650,7 @@ class FE3_Instrument(HATS_DB_Functions):
         "Test": 10
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
+    CAL_RUN_TYPES = {2}         # run_type_num values written to hats.calibrations
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     EXCLUDE = [9]               # push port - exclude from autoscaling
 
@@ -2293,6 +2302,7 @@ class BLD1_Instrument(HATS_DB_Functions):
         "Aircore": 9,
     }
     STANDARD_PORT_NUM = 11       # port number the standard is run on.
+    CAL_RUN_TYPES = {2}         # run_type_num values written to hats.calibrations
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     EXCLUDE = []               # exclude from autoscaling
     BASE_MARKER_SIZE = 15
