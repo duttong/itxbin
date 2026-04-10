@@ -218,6 +218,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
           - run_type_num in self.CAL_RUN_TYPES  (instrument-specific;
             M4=tank(7), FE3/BLD1=calibration(2))
           - excludes the normalizing/reference tank (identified via self.norm)
+          - for FE3/IE3: restricts to the preferred channel per ng_preferred_channel,
+            regardless of which channel was passed to load_data by the caller
 
         Aggregation is per (run_time, tank_serial_num):
           - mixratio  = mean(mole_fraction)
@@ -257,7 +259,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         except ValueError:
             scale_num = None
 
-        # Filter to unflagged tank injections; channel already filtered by load_data.
+        # Filter to unflagged tank injections.
         # Only include run types designated for calibrations (excludes flasks, warmup, etc.).
         # Also exclude the normalizing/reference tank (standard run type or port).
         std_col = self.norm.run_type_column
@@ -271,6 +273,36 @@ class HATS_DB_Functions(LOGOS_Instruments):
         ]
         if tank_df.empty:
             return
+
+        # For instruments with preferred channel assignments (FE3, IE3), restrict
+        # calibration rows to the preferred channel regardless of what channel the
+        # caller loaded. Uses a backwards merge_asof to apply the windowed assignment.
+        if hasattr(self, 'return_preferred_channel') and 'channel' in tank_df.columns:
+            pc_df = self.return_preferred_channel()
+            if not pc_df.empty:
+                pc = (
+                    pc_df[pc_df['parameter_num'] == parameter_num]
+                    .sort_values('start_date')
+                    .copy()
+                )
+                if not pc.empty:
+                    pc['start_date'] = pd.to_datetime(pc['start_date'])
+                    tank_df = tank_df.copy()
+                    tank_df['run_time'] = pd.to_datetime(tank_df['run_time'])
+                    tank_df_sorted = tank_df.sort_values('run_time')
+                    merged = pd.merge_asof(
+                        tank_df_sorted,
+                        pc[['start_date', 'channel']].rename(
+                            columns={'start_date': 'run_time', 'channel': 'preferred_channel'}
+                        ),
+                        on='run_time',
+                        direction='backward',
+                    )
+                    tank_df = merged[merged['channel'] == merged['preferred_channel']].drop(
+                        columns=['preferred_channel']
+                    )
+                    if tank_df.empty:
+                        return
 
         # Aggregate per (run_time, tank); ddof=0 matches MySQL STDDEV (population)
         agg = tank_df.groupby(['run_time', 'tank_serial_num']).agg(

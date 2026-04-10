@@ -25,7 +25,10 @@ class FE3_batch(FE3_Instrument):
         
         gas = self.analytes_inv[pnum]
         if channel is None:
-            channel = self.return_preferred_channel(gas)
+            rows = self.doquery(
+                f"SELECT channel FROM hats.analyte_list WHERE inst_num = {self.inst_num} AND param_num = {pnum} LIMIT 1"
+            )
+            channel = rows[0]['channel'] if rows else None
                 
         df = self.load_data(
             pnum=pnum,
@@ -111,8 +114,6 @@ class FE3_batch(FE3_Instrument):
             pnum = int(args.parameter_num)
             gas = self.analytes_inv[pnum]
             ch = args.channel
-            if ch is None:
-                ch = self.return_preferred_channel(gas)
             
             df = self.update_runs(pnum, channel=ch, start_date=args.start_date, end_date=args.end_date)
             #sub = df[['analysis_num', 'run_time', 'analysis_datetime', 'port_info', 'mole_fraction', 'coef0', 'coef1', 'coef2']]
