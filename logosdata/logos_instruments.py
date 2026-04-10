@@ -288,7 +288,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 if not pc.empty:
                     pc['start_date'] = pd.to_datetime(pc['start_date'])
                     tank_df = tank_df.copy()
-                    tank_df['run_time'] = pd.to_datetime(tank_df['run_time'])
+                    tank_df['run_time'] = pd.to_datetime(tank_df['run_time']).dt.tz_localize(None)
                     tank_df_sorted = tank_df.sort_values('run_time')
                     merged = pd.merge_asof(
                         tank_df_sorted,
