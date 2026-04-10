@@ -31,6 +31,10 @@
   responses, mole fractions, run metadata)
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
+- `hats.calibrations` — per-run aggregated tank calibration values (avg
+  mole fraction, stddev, n, run_number, scale_num) keyed on
+  `(serial_number, date, time, species, inst, parameter_num)`; kept current
+  by `upsert_calibrations()` (see below); read by the Tanks tab in logos_data
 - `hats.ng_cfc113a` — M4 molar response factors (R1–R4) for CFC-113/113a
   deconvolution, windowed by reference tank and date
 - `hats.scale_assignments` — calibration scale coefficients (coef0, coef1)

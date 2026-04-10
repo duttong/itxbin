@@ -205,15 +205,36 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
     def upsert_calibrations(self, df, parameter_num):
         """
-        Aggregates unflagged tank measurements from df and upserts them into
-        hats.calibrations. Accepts the full dataframe (same shape as
-        upsert_mole_fractions) so the caller does not need to loop per run_time.
+        Aggregate unflagged tank measurements from df and upsert into
+        hats.calibrations.
 
-        The unique key on calibrations is (serial_number, date, time, species,
-        inst, parameter_num).  On conflict, mixratio/stddev/num/run_number are
-        updated in place.
+        Accepts the full run DataFrame (same shape returned by load_data /
+        calc_mole_fraction) so the caller does not need to loop per run_time.
+        Should always be called after upsert_mole_fractions() so that any
+        mole-fraction edits are reflected in the aggregated calibration values.
 
-        Called after upsert_mole_fractions().
+        Filtering applied before aggregation:
+          - data_flag == '...'  (unflagged injections only)
+          - run_type_num in self.CAL_RUN_TYPES  (instrument-specific;
+            M4=tank(7), FE3/BLD1=calibration(2))
+          - excludes the normalizing/reference tank (identified via self.norm)
+
+        Aggregation is per (run_time, tank_serial_num):
+          - mixratio  = mean(mole_fraction)
+          - stddev    = population stddev (ddof=0, matches MySQL STDDEV())
+          - num       = count of injections
+          - run_number = min(analysis_num)
+
+        Rows where mixratio is NaN or inf are dropped before insert.
+
+        Unique key on hats.calibrations:
+          (serial_number, date, time, species, inst, parameter_num)
+        On conflict: mixratio, stddev, num, run_number, scale_num are updated.
+
+        species  — looked up from gmd.parameter.formula, cached on instance
+        scale_num — looked up via qurey_return_scale_num(), cached on instance
+        inst/system — self.inst_id.upper() (e.g. 'M4', 'FE3')
+        location — fixed 'bld'; flag — fixed '.'
         """
         # Species lookup — cached on the instance since gmd.parameter never changes
         if not hasattr(self, '_species_cache'):
