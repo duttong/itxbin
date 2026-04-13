@@ -2905,7 +2905,8 @@ class MainWindow(QMainWindow):
             print(f"Saving with response_id: {response_id}")
             self.instrument.upsert_mole_fractions(self.run, response_id=response_id)
         else:
-            print("Warning: No calibration ID found. Saving with NULL.")
+            if self.instrument.inst_id != 'ie3':
+                print("Warning: No calibration ID found. Saving with NULL.")
             self.instrument.upsert_mole_fractions(self.run, response_id=None)
 
         self.instrument.upsert_calibrations(self.run, self.current_pnum)
