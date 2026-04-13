@@ -740,14 +740,13 @@ class MainWindow(QMainWindow):
             else:
                 self.current_channel = None
             self.current_pnum = int(self.analytes[_default_analyte])
-            if self.analyte_combo is not None:
-                self.analyte_combo.setCurrentText(_default_analyte)
-            elif hasattr(self, 'set_current_analyte'):
-                self.set_current_analyte(_default_analyte)
+            self._select_analyte_control(_default_analyte)
+            self.set_current_analyte(_default_analyte)
             self.apply_dates()
         elif self.instrument.inst_id == 'm4':
             # Fallback for m4 if conf is missing
             self.current_pnum = 20
+            self._select_analyte_control('HFC134a')
             self.set_current_analyte('HFC134a')
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
@@ -2723,6 +2722,27 @@ class MainWindow(QMainWindow):
             pnum = self.analytes[name]
             self.current_pnum = int(pnum)
             self.set_current_analyte(name)
+
+    def _select_analyte_control(self, name):
+        """Select the UI control that matches the current analyte without reloading data."""
+        if getattr(self, 'analyte_combo', None) is not None:
+            previous = self.analyte_combo.blockSignals(True)
+            try:
+                self.analyte_combo.setCurrentText(name)
+            finally:
+                self.analyte_combo.blockSignals(previous)
+
+        if getattr(self, 'radio_group', None) is not None:
+            buttons = self.radio_group.buttons()
+            previous_states = [(button, button.blockSignals(True)) for button in buttons]
+            try:
+                for button in buttons:
+                    if button.text() == name:
+                        button.setChecked(True)
+                        break
+            finally:
+                for button, previous in previous_states:
+                    button.blockSignals(previous)
 
     def on_analyte_combo_changed(self, name):
         """
