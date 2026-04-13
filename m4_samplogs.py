@@ -65,6 +65,30 @@ import re
 
 from logos_instruments import M4_Instrument
 
+FLASK_PAIR_LABEL_RE = re.compile(r'^(?P<flask>\d+)_?-(?P<pair>\d+)$')
+
+
+def normalize_flask_pair_label(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return value
+
+    text = str(value)
+    m = FLASK_PAIR_LABEL_RE.fullmatch(text)
+    if not m:
+        return value
+
+    normalized = f"{m.group('flask')}-{m.group('pair')}"
+    if normalized != text:
+        print(f"Warning: normalized malformed flask pair tank label {text} -> {normalized}")
+    return normalized
+
+
+def is_flask_pair_label(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return False
+    return FLASK_PAIR_LABEL_RE.fullmatch(str(value)) is not None
+
+
 class M4_SampleLogs(M4_Instrument):
     
     TIME_OFFSET = 15.5   # minutes after the run starts and the press data is logged.
@@ -263,6 +287,7 @@ class M4_SampleLogs(M4_Instrument):
         
         # For rows that don't have a valid site, set 'tank' to the original 'info'
         mm.loc[~mask_valid, 'tank'] = mm.loc[~mask_valid, 'info']
+        mm['tank'] = mm['tank'].apply(normalize_flask_pair_label)
         
         # Label tanks that contain 'zero' in the 'info' column.
         zero_mask = mm['info'].str.contains('zero', case=False, na=False)
@@ -626,6 +651,8 @@ class M4_Serial_Numbers(M4_Instrument):
         df = df.copy()
         if 'port_key' not in df.columns:
             df['port_key'] = df['port_info'].apply(self.port_key)
+        flask_pair_mask = df['port_info'].apply(is_flask_pair_label)
+        df.loc[flask_pair_mask, 'port_key'] = None
         df['fill_serial_match'] = df['port_key'].apply(self.lookup_fill_serial)
         return df
 

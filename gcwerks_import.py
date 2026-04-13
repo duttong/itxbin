@@ -47,7 +47,7 @@ class GCwerks_Import:
         print(itx_file)
         itx = itx_import.ITX(itx_file)   # load itx file
         if getattr(itx, 'data', None) is None or not hasattr(itx, 'chroms'):
-            logging.warning('Skipping invalid ITX file: %s', itx_file)
+            logging.info('Skipping invalid ITX file: %s', itx_file)
             return False
         if self.should_skip_itx(itx):
             logging.info('Skipping flagged ITX file: %s', itx_file)
