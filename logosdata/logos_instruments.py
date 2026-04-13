@@ -2212,6 +2212,10 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         return pd.DataFrame(self.db.doquery(sql, (self.inst_num,)))
 
+    def upsert_calibrations(self, df, parameter_num):
+        """IE3 does not write to hats.calibrations."""
+        return
+
     def upsert_mole_fractions(self, df, response_id=None):
         """
         Update mole_fraction and flag in hats.ng_insitu_mole_fractions.
