@@ -187,6 +187,19 @@ class FastNavigationToolbar(NavigationToolbar):
                 font-weight: 600;
             }
         """)
+
+    def home(self, *args, **kwargs):
+        """Override home to always look at the data's ranges."""
+        if hasattr(self, "main_window") and self.main_window:
+            self.main_window._pending_xlim = None
+            self.main_window._pending_ylim = None
+            self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
+            self._nav_stack.clear()
+            if hasattr(self, 'push_current'):
+                self.push_current()
+            self.set_history_buttons()
+        else:
+            super().home(*args, **kwargs)
                 
     def zoom(self, *args, **kwargs):
         super().zoom(*args, **kwargs)
@@ -603,7 +616,7 @@ class MainWindow(QMainWindow):
 
         self.hide_flagged_cb = QCheckBox("Hide Flagged Data")
         self.hide_flagged_cb.setChecked(False)
-        self.hide_flagged_cb.stateChanged.connect(lambda: self.gc_plot(self._current_yparam))
+        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
         options_layout.addWidget(self.hide_flagged_cb)
 
         # Combine plot_gb and options_gb into a single group box
@@ -1962,9 +1975,15 @@ class MainWindow(QMainWindow):
 
         # Mask for valid points
         mask_main = self.run[['cal_mf', yvar]].notna().all(axis=1)
+        hide_flagged = self.hide_flagged_cb.isChecked()
+        
+        if hide_flagged:
+            plot_df = self.run.loc[mask_main & (self.run['data_flag_int'].fillna(0).astype(int) == 0)]
+        else:
+            plot_df = self.run.loc[mask_main]
 
         # Main scatter (all unflagged + flagged, same colors)
-        for port, subset in self.run.groupby('port_idx'):
+        for port, subset in plot_df.groupby('port_idx'):
             marker = subset['port_marker'].iloc[0]
             color = subset['port_color']
 
@@ -1982,17 +2001,18 @@ class MainWindow(QMainWindow):
             self.run['data_flag_int'].fillna(0).astype(int) != 0
         ) & mask_main
         
-        # Overlay flagged points
-        ax.scatter(
-            self.run.loc[flags, 'cal_mf'],
-            self.run.loc[flags, yvar],
-            marker='o',
-            c='white',
-            edgecolors=self.run.loc[flags, 'port_color'],
-            s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
-            linewidths=2,
-            zorder=4
-        )
+        if not hide_flagged:
+            # Overlay flagged points
+            ax.scatter(
+                self.run.loc[flags, 'cal_mf'],
+                self.run.loc[flags, yvar],
+                marker='o',
+                c='white',
+                edgecolors=self.run.loc[flags, 'port_color'],
+                s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
+                linewidths=2,
+                zorder=4
+            )
         # One-to-one line
         ax.plot(x_one2one, y_one2one, c='grey', ls='--', label='one-to-one')
 
@@ -2042,22 +2062,24 @@ class MainWindow(QMainWindow):
             alpha=0.8
         )
 
-        # Flagged residuals (white or light-gray face, colored edge)
-        ax_resid.scatter(
-            self.run.loc[mask_main & flags, 'cal_mf'],
-            self.run.loc[mask_main & flags, 'diff_y'],
-            facecolors='whitesmoke',  # or '#f0f0f0' for slightly darker
-            edgecolors=self.run.loc[mask_main & flags, 'port_color'],
-            s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
-            linewidths=1.2,
-            zorder=4,
-        )
+        if not hide_flagged:
+            # Flagged residuals (white or light-gray face, colored edge)
+            ax_resid.scatter(
+                self.run.loc[mask_main & flags, 'cal_mf'],
+                self.run.loc[mask_main & flags, 'diff_y'],
+                facecolors='whitesmoke',  # or '#f0f0f0' for slightly darker
+                edgecolors=self.run.loc[mask_main & flags, 'port_color'],
+                s=self.instrument.BASE_MARKER_SIZE * 1.1,  # a bit larger than unflagged for visibility
+                linewidths=1.2,
+                zorder=4,
+            )
         # Horizontal zero line
         ax_resid.axhline(0.0, lw=1, ls='--', color='0.4')
 
         # set symmetric y-limits for residuals
-        if np.isfinite(diff_y).any():
-            maxabs = np.nanmax(np.abs(diff_y))
+        diff_y_vis = self.run.loc[plot_df.index, 'diff_y'].dropna() if not plot_df.empty else pd.Series(dtype=float)
+        if not diff_y_vis.empty and np.isfinite(diff_y_vis).any():
+            maxabs = np.nanmax(np.abs(diff_y_vis))
             if np.isfinite(maxabs) and maxabs > 0:
                 ax_resid.set_ylim(-1.1 * maxabs, 1.1 * maxabs)
 
@@ -2195,22 +2217,30 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
     
-        # Optional y-axis locking for the main axis only
-        if self.lock_y_axis_cb.isChecked():
-            if self.y_axis_limits is None:
-                self.y_axis_limits = ax.get_ylim()
-            else:
-                ax.set_ylim(self.y_axis_limits)
-        else:
-            try:
+        # Ensure plot limits respect visible data only
+        try:
+            if not plot_df.empty:
+                vis_x_min, vis_x_max = plot_df['cal_mf'].min(), plot_df['cal_mf'].max()
+                vis_y_min, vis_y_max = plot_df[yvar].min(), plot_df[yvar].max()
+                
+                # Autoscale X-axis (always)
                 if self.draw2zero_cb.isChecked():
-                    ax.set_ylim(-.2, 1.2)
-                    ax.set_xlim(-ref_mf_mean*0.2, x_all.max() * 1.05)
+                    ax.set_xlim(-ref_mf_mean * 0.2 if np.isfinite(ref_mf_mean) else -0.2, vis_x_max * 1.05)
                 else:
-                    ax.set_ylim(y_all.min() * 0.95, y_all.max() * 1.05)
-                    ax.set_xlim(x_all.min() * 0.95, x_all.max() * 1.05)
-            except ValueError:
-                pass
+                    ax.set_xlim(vis_x_min * 0.95, vis_x_max * 1.05)
+
+                # Determine ideal Y-axis limits
+                ideal_y_lim = (-0.2, 1.2) if self.draw2zero_cb.isChecked() else (vis_y_min * 0.95, vis_y_max * 1.05)
+
+                # Apply Y-axis limits
+                if self.lock_y_axis_cb.isChecked():
+                    if self.y_axis_limits is None:
+                        self.y_axis_limits = ideal_y_lim
+                    ax.set_ylim(self.y_axis_limits)
+                else:
+                    ax.set_ylim(ideal_y_lim)
+        except ValueError:
+            pass
         ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
         
         self.canvas.draw()
