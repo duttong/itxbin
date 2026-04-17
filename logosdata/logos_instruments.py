@@ -2149,7 +2149,8 @@ class IE3_Instrument(HATS_DB_Functions):
                 COALESCE(m.flag, '...') AS data_flag,
                 m.sample_loop_temp,
                 m.sample_loop_pressure,
-                m.sample_loop_flow
+                m.sample_loop_flow,
+                m.detrend_method_num
             FROM hats.ng_insitu_analysis AS a
             JOIN hats.ng_insitu_mole_fractions AS m
                 ON m.analysis_num = a.num
@@ -2178,7 +2179,7 @@ class IE3_Instrument(HATS_DB_Functions):
 
         df['data_flag'] = df['data_flag'].fillna('...')
         df['data_flag_int'] = (df['data_flag'] != '...').astype(int)
-        df['detrend_method_num'] = 2
+        df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
 
@@ -2225,7 +2226,7 @@ class IE3_Instrument(HATS_DB_Functions):
             return
         sql = """
             UPDATE hats.ng_insitu_mole_fractions
-            SET mole_fraction = %s, flag = %s
+            SET mole_fraction = %s, flag = %s, detrend_method_num = %s
             WHERE analysis_num = %s
               AND parameter_num = %s
               AND channel = %s;
@@ -2241,6 +2242,7 @@ class IE3_Instrument(HATS_DB_Functions):
             self.db.doquery(sql, [
                 None if pd.isna(mf) else float(mf),
                 row['data_flag'],
+                int(row['detrend_method_num']),
                 row['analysis_num'],
                 row['parameter_num'],
                 row['channel'],
