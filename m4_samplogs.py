@@ -188,19 +188,35 @@ class M4_SampleLogs(M4_Instrument):
         df.rename(columns={'pfpclose': 'pfpclose_org', 'test': 'pfpclose'}, inplace=True)        
 
         return df
+
+    def parse_xl_datetime(self, df):
+        """Parse GSPC date/time rows, including Excel fractional-day time cells."""
+        dates = pd.to_datetime(df['xl_date'].astype(str), format='mixed', errors='coerce')
+        times = df['xl_time'].astype(str).str.strip()
+
+        parsed = pd.to_datetime(
+            df['xl_date'].astype(str) + ' ' + times,
+            format='mixed',
+            errors='coerce'
+        )
+
+        numeric_times = pd.to_numeric(times, errors='coerce')
+        excel_time_mask = parsed.isna() & numeric_times.notna()
+        parsed.loc[excel_time_mask] = (
+            dates.loc[excel_time_mask]
+            + pd.to_timedelta(numeric_times.loc[excel_time_mask], unit='D')
+        )
+
+        return parsed
     
     def load_all_xl_files(self):
         """ Load all .xl pressure files into a single dataframe. Drop duplicate rows. """
         dfs = []
         for file in self.xlfiles:
             df = self.read_custom_xl_file(file)
-            # xl files can contain mixed date formats (e.g. MM/DD/YYYY and YYYY-MM-DD).
-            # Parse per-row to avoid hard failures when formats differ across files/rows.
-            df['dt_xl'] = pd.to_datetime(
-                df['xl_date'].astype(str) + ' ' + df['xl_time'].astype(str),
-                format='mixed',
-                errors='coerce'
-            )
+            # xl files can contain mixed date formats and Excel fractional-day
+            # times from cells formatted as numeric values.
+            df['dt_xl'] = self.parse_xl_datetime(df)
             dfs.append(df)
             
         df = pd.concat(dfs, axis=0)
