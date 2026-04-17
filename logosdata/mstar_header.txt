@@ -1,0 +1,128 @@
+# File: {filename}
+# Date: {date}
+#
+# -------------------------------------------------------------------------
+# NOAA Global Monitoring Laboratory (GML), Boulder, Colorado, USA
+# Long-lived Greenhouse Gases and Ozone-Depleting Substances (LOGOS) group
+# Formerly known as the Halocarbons and other Atmospheric Trace Species
+# (HATS) group.  https://gml.noaa.gov/hats/
+#
+# Measurements of halocarbons and other trace gases from paired flask samples
+# by gas chromatography with mass spectrometry (GC-MS) detection.
+# Instruments: M1, M3, and M4 (mass selective detectors).
+#
+# Principal Investigator:
+#   Stephen A. Montzka  NOAA/GML  (720) 295-9701  stephen.a.montzka@noaa.gov
+#
+# Co-Investigators:
+#   Scott Clingan       NOAA/GML  (720) 213-8818  scott.clingan@noaa.gov
+#   Geoff Dutton        NOAA/GML  (720) 466-3264  geoff.dutton@noaa.gov
+#
+# -------------------------------------------------------------------------
+# USE OF DATA
+#
+# For the NOAA/GML/LOGOS data use policy see:
+#   https://gml.noaa.gov/hats/hats_datause.html
+#
+# Please contact the principal investigator before using these data in a
+# presentation, publication, or report.  Any use must cite the appropriate
+# references listed below and credit NOAA/GML, Boulder, CO as the source.
+#
+# -------------------------------------------------------------------------
+# SAMPLING SITES
+#
+# The site codes and coordinates listed below are a subset of the NOAA/GML
+# global flask network.  For comprehensive and up-to-date site information,
+# including inlet heights, station contacts, and sampling history, consult
+# the GML site registry at https://gml.noaa.gov/dv/site/
+#
+# SPO  South Pole, Antarctica                  90.0°S, 24.8°W,   2837 m asl
+# PSA  Palmer Station, Antarctica              64.6°S, 64.0°W,     10 m asl
+# CGO  Cape Grim, Australia                   40.7°S, 144.7°E,    164 m asl
+# SMO  American Samoa                         14.2°S, 170.6°W,     77 m asl
+# MLO  Mauna Loa, Hawaii, USA                 19.5°N, 155.6°W,   3397 m asl
+# KUM  Cape Kumukahi, Hawaii, USA             19.5°N, 154.8°W,      3 m asl
+# NWR  Niwot Ridge, Colorado, USA             40.1°N, 105.5°W,   3475 m asl
+# THD  Trinidad Head, California, USA         41.0°N, 124.1°W,    120 m asl
+# LEF  Park Falls, Wisconsin, USA             45.6°N,  90.3°W,    868 m asl
+# HFM  Harvard Forest, Massachusetts, USA     42.5°N,  72.2°W,    340 m asl
+# MHD  Mace Head, Ireland                     53.3°N,   9.9°W,     42 m asl
+# BRW  Barrow (Utqiagvik), Alaska, USA        71.3°N, 156.6°W,      8 m asl
+# ALT  Alert, Nunavut, Canada                 82.5°N,  62.3°W,    210 m asl
+# SUM  Summit, Greenland                      72.6°N,  38.4°W,   3200 m asl
+#
+# -------------------------------------------------------------------------
+# COLUMN DESCRIPTIONS
+#
+# site         Station code (see above)
+# dec_date     Sample date and time as decimal year (UTC)
+# yyyymmdd     Sample date and time as yyyymmdd hhmmss (UTC)
+#   hhmmss     Note: time is exact only for samples collected after Nov 1994;
+#              earlier records use 0000 UTC for the time component.
+# wind_dir     Wind direction (degrees) at time of sampling; -99 = missing
+# wind_spd     Wind speed (m/s) at time of sampling; -99 = missing
+# {param}     Dry-air mole fraction (pmol/mol, ppt) — mean of flask pair
+# {param}_sd  1 standard deviation of the flask pair mean
+#
+# Flask pairs with a statistically discernible difference at the 90–95%
+# confidence level are excluded.  Additional culling is applied based on
+# relative within-pair differences.  Results are from simultaneously filled
+# stainless steel or glass flask pairs.
+#
+# -------------------------------------------------------------------------
+# REFERENCES
+#
+# Montzka, S.A., J.H. Butler, R.C. Myers, T.M. Thompson, T.H. Swanson,
+#   A.D. Clarke, L.T. Lock, and J.W. Elkins, Decline in the tropospheric
+#   abundance of halogen from halocarbons: Implications for stratospheric
+#   ozone depletion, Science, 272, 1318–1322, 1996.
+#
+# Montzka, S.A., J.H. Butler, J.W. Elkins, T.M. Thompson, A.D. Clarke,
+#   and L.T. Lock, Present and future trends in the atmospheric burden of
+#   ozone-depleting halogens, Nature, 398, 690–694, 1999.
+#
+# Montzka, S.A., B.D. Hall, J.W. Elkins, Accelerated increases observed for
+#   hydrochlorofluorocarbons since 2004 in the global atmosphere,
+#   Geophys. Res. Lett., 36, L03804, doi:10.1029/2008GL036475, 2009.
+#
+# Montzka, S.A., R.C. Myers, J.H. Butler, J.W. Elkins, and S.O. Cummings,
+#   Global tropospheric distribution and calibration scale of HCFC-22,
+#   Geophys. Res. Lett., 20, 703–706, 1993.
+#
+# Montzka, S.A., R.C. Myers, J.H. Butler, J.W. Elkins, L. Lock, A. Clarke,
+#   and A.H. Goldstein, Observations of HFC-134a in the remote troposphere,
+#   Geophys. Res. Lett., 23, 169–172, 1996.
+#
+# Montzka, S.A., M. McFarland, S.O. Andersen, B.R. Miller, D.W. Fahey,
+#   B.D. Hall, L. Hu, C. Siso, J.W. Elkins, Recent trends in global
+#   emissions of hydrochlorofluorocarbons and hydrofluorocarbons—Reflecting
+#   on the 2007 Adjustments to the Montreal Protocol, J. Phys. Chem. A, 119,
+#   4439–4449, doi:10.1021/jp5097376, 2015.
+#
+# Montzka, S.A., P. Calvert, B. Hall, J.W. Elkins, P. Tans, and C. Sweeney,
+#   On the global distribution, seasonality, and budget of atmospheric
+#   carbonyl sulfide (COS) and some similarities to CO2, J. Geophys. Res.,
+#   112, D09302, doi:10.1029/2006JD007665, 2007.
+#
+# Montzka, S.A., M. Aydin, M. Battle, J.H. Butler, E.S. Saltzman, B.D. Hall,
+#   A.D. Clarke, D. Mondeel, J.W. Elkins, A 350-year atmospheric history for
+#   carbonyl sulfide inferred from Antarctic firn air and air trapped in ice,
+#   J. Geophys. Res., 109, D22302, doi:10.1029/2004JD004686, 2004.
+#
+# Montzka, S.A., J.H. Butler, B.D. Hall, J.W. Elkins, D.J. Mondeel,
+#   A decline in tropospheric organic bromine,
+#   Geophys. Res. Lett., 30(15), 1826, doi:10.1029/2003GL017745, 2003.
+#
+# Butler, J.H., S.A. Montzka, A.D. Clarke, J.M. Lobert, J.W. Elkins,
+#   Growth and distribution of halons in the atmosphere,
+#   J. Geophys. Res., 103, 1503–1511, 1998.
+#
+# Montzka, S.A., M. Krol, E. Dlugokencky, B. Hall, P. Jockel, J. Lelieveld,
+#   Small interannual variability of global atmospheric hydroxyl,
+#   Science, 331, 67–69, 2011.
+#
+# Montzka, S.A., C.M. Spivakovsky, J.H. Butler, J.W. Elkins, L.T. Lock,
+#   and D.J. Mondeel, New observational constraints for atmospheric hydroxyl
+#   on global and hemispheric scales, Science, 288, 500–503, 2000.
+#
+# -------------------------------------------------------------------------
