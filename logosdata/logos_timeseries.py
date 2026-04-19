@@ -1623,6 +1623,46 @@ class TimeseriesWidget(QWidget):
     def get_active_sites(self):
         return [cb.text() for cb in self.site_checks if cb.isChecked()]
 
+    def _uses_forced_preferred_channel(self) -> bool:
+        """True when a caller wants ng_preferred_channel to choose duplicate channels."""
+        return bool(getattr(self, "force_preferred_channel", False)) and hasattr(
+            self.instrument, "return_preferred_channel"
+        )
+
+    def _preferred_channel_filter_sql(
+        self,
+        channel_expr: str,
+        parameter_expr: str,
+        date_expr: str,
+    ) -> str:
+        """Return a SQL filter matching the preferred channel for each row date."""
+        if not self._uses_forced_preferred_channel():
+            return ""
+
+        inst_num = int(self.instrument.inst_num)
+        return f"""
+              AND {channel_expr} = COALESCE(
+                  (
+                      SELECT pc.channel
+                      FROM hats.ng_preferred_channel pc
+                      WHERE pc.inst_num = {inst_num}
+                        AND pc.parameter_num = {parameter_expr}
+                        AND pc.start_date <= {date_expr}
+                      ORDER BY pc.start_date DESC
+                      LIMIT 1
+                  ),
+                  (
+                      SELECT pc.channel
+                      FROM hats.ng_preferred_channel pc
+                      WHERE pc.inst_num = {inst_num}
+                        AND pc.parameter_num = {parameter_expr}
+                      ORDER BY pc.start_date ASC
+                      LIMIT 1
+                  ),
+                  {channel_expr}
+              )
+        """
+
     def query_flask_data(self, force: bool = False, analyte: str | None = None, channel: str | None = None) -> pd.DataFrame:
         start = self.start_year.value()
         end   = self.end_year.value()
@@ -1630,13 +1670,18 @@ class TimeseriesWidget(QWidget):
         analyte = analyte or self.analyte_combo.currentText()
         pnum    = self.analytes.get(analyte)
         self.set_current_analyte(analyte)
-        channel = channel or self.current_channel
+        use_preferred_channel = self._uses_forced_preferred_channel()
+        channel = None if use_preferred_channel else channel or self.current_channel
 
         if pnum is None:
             return pd.DataFrame()
 
-        ch_str = '' if channel is None else f'AND channel = "{channel}"'
-        query_params = (start, end, analyte)
+        ch_str = (
+            self._preferred_channel_filter_sql("channel", "parameter_num", "sample_datetime")
+            if use_preferred_channel
+            else ('' if channel is None else f'AND channel = "{channel}"')
+        )
+        query_params = (start, end, analyte, channel, use_preferred_channel)
 
         if force or query_params != self._last_query_params:
             sql = f"""
@@ -1691,12 +1736,19 @@ class TimeseriesWidget(QWidget):
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
+        use_preferred_channel = self._uses_forced_preferred_channel()
+        if use_preferred_channel:
+            channel = None
 
-        query_params = (start, end, analyte)
+        query_params = (start, end, analyte, use_preferred_channel)
         if not force and query_params == self._last_insitu_params and self._cached_insitu_df is not None:
             return self._cached_insitu_df.copy()
 
-        ch_filter = f"AND mf.channel = '{channel}'" if channel else ""
+        ch_filter = (
+            self._preferred_channel_filter_sql("mf.channel", "mf.parameter_num", "a.analysis_time")
+            if use_preferred_channel
+            else (f"AND mf.channel = '{channel}'" if channel else "")
+        )
         sql = f"""
         SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel
         FROM hats.ng_insitu_analysis a
@@ -1733,7 +1785,14 @@ class TimeseriesWidget(QWidget):
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
-        ch_filter = f"AND channel = '{channel}'" if channel else ""
+        use_preferred_channel = self._uses_forced_preferred_channel()
+        if use_preferred_channel:
+            channel = None
+        ch_filter = (
+            self._preferred_channel_filter_sql("v.channel", "v.parameter_num", "v.sample_datetime")
+            if use_preferred_channel
+            else (f"AND v.channel = '{channel}'" if channel else "")
+        )
 
         start = self.start_year.value()
         end   = self.end_year.value()
@@ -1755,18 +1814,18 @@ class TimeseriesWidget(QWidget):
         # the means here cover flask-only data (PFP data belongs to the pseudo-site).
         pfp_base_sites = set(PFP_SITES.values())
         has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND sample_type IN ('S', 'G')" if has_pfp_base else ""
+        pfp_exclusion = "AND v.sample_type IN ('S', 'G')" if has_pfp_base else ""
 
         if regular_sites:
             sql = f"""
-            SELECT site, {_period_expr} AS period_start,
-                AVG(pair_avg) AS period_avg, STDDEV(pair_avg) AS period_std
-            FROM hats.ng_pair_avg_view
-            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
-              AND site IN ({",".join(["%s"] * len(regular_sites))})
+            SELECT v.site, {_period_expr} AS period_start,
+                AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+              AND v.site IN ({",".join(["%s"] * len(regular_sites))})
               {pfp_exclusion}
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
-            GROUP BY site, period_start ORDER BY site, period_start;
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+            GROUP BY v.site, period_start ORDER BY v.site, period_start;
             """
             params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
             frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
@@ -1775,11 +1834,11 @@ class TimeseriesWidget(QWidget):
             base_site = PFP_SITES[pfp_site]
             sql = f"""
             SELECT %s AS site, {_period_expr} AS period_start,
-                AVG(pair_avg) AS period_avg, STDDEV(pair_avg) AS period_std
-            FROM hats.ng_pair_avg_view
-            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
-              AND sample_type = 'PFP' AND site = %s
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
+                AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+              AND v.sample_type = 'PFP' AND v.site = %s
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
             GROUP BY period_start ORDER BY period_start;
             """
             params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
@@ -1805,7 +1864,14 @@ class TimeseriesWidget(QWidget):
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
-        ch_filter = f"AND channel = '{channel}'" if channel else ""
+        use_preferred_channel = self._uses_forced_preferred_channel()
+        if use_preferred_channel:
+            channel = None
+        ch_filter = (
+            self._preferred_channel_filter_sql("v.channel", "v.parameter_num", "v.sample_datetime")
+            if use_preferred_channel
+            else (f"AND v.channel = '{channel}'" if channel else "")
+        )
 
         start = self.start_year.value()
         end   = self.end_year.value()
@@ -1820,18 +1886,18 @@ class TimeseriesWidget(QWidget):
         # Exclude PFP rows from base sites that have a PFP pseudo-site counterpart
         pfp_base_sites = set(PFP_SITES.values())
         has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND sample_type IN ('S', 'G')" if has_pfp_base else ""
+        pfp_exclusion = "AND v.sample_type IN ('S', 'G')" if has_pfp_base else ""
 
         if regular_sites:
             sql = f"""
-            SELECT site, DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(pair_avg) AS monthly_avg, STDDEV(pair_avg) AS monthly_std
-            FROM hats.ng_pair_avg_view
-            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
-              AND site IN ({",".join(["%s"] * len(regular_sites))})
+            SELECT v.site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+              AND v.site IN ({",".join(["%s"] * len(regular_sites))})
               {pfp_exclusion}
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
-            GROUP BY site, month_start ORDER BY site, month_start;
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+            GROUP BY v.site, month_start ORDER BY v.site, month_start;
             """
             params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
             frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
@@ -1839,15 +1905,138 @@ class TimeseriesWidget(QWidget):
         for pfp_site in pfp_pseudo_sites:
             base_site = PFP_SITES[pfp_site]
             sql = f"""
-            SELECT %s AS site, DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(pair_avg) AS monthly_avg, STDDEV(pair_avg) AS monthly_std
-            FROM hats.ng_pair_avg_view
-            WHERE inst_num = %s AND parameter_num = %s {ch_filter}
-              AND sample_type = 'PFP' AND site = %s
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
+            SELECT %s AS site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+              AND v.sample_type = 'PFP' AND v.site = %s
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
             GROUP BY month_start ORDER BY month_start;
             """
             params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        non_empty = [f for f in frames if not f.empty]
+        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
+    def query_pr1_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query PR1 monthly means from legacy HATS tables.
+
+        Regular LOGOS sites use PR1 sample_type='HATS'.  PFP pseudo-sites
+        (MLO_PFP, MKO_PFP) use sample_type='PFP' on the matching base site.
+        For HATS rows, analysis.event_num stores hats.Status_MetData.PairID;
+        the sample datetime comes from Status_MetData.sample_datetime_utc.
+        For PFP rows, analysis.event_num stores ccgg.flask_event.num.
+        """
+        if self.instrument.inst_num != 58:
+            return pd.DataFrame()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        start = self.start_year.value()
+        end = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+
+        frames = []
+        regular_sites = [s for s in sites if s not in PFP_SITES]
+        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
+
+        if regular_sites:
+            sql = f"""
+            SELECT
+                event_data.site,
+                DATE_FORMAT(event_data.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(event_data.event_avg) AS monthly_avg,
+                STDDEV(event_data.event_avg) AS monthly_std,
+                COUNT(*) AS n
+            FROM (
+                SELECT
+                    UPPER(sm.Station) AS site,
+                    sm.sample_datetime_utc AS sample_datetime,
+                    a.event_num,
+                    AVG(mf.C_reported) AS event_avg
+                FROM hats.analysis a
+                JOIN hats.mole_fractions mf
+                  ON mf.analysis_num = a.num
+                JOIN hats.Status_MetData sm
+                  ON sm.PairID = a.event_num
+                WHERE a.inst_num = 58
+                  AND mf.parameter_num = %s
+                  AND a.event_num > 0
+                  AND a.site_num > 0
+                  AND a.sample_type = 'HATS'
+                  AND sm.sample_datetime_utc IS NOT NULL
+                  AND mf.C_reported IS NOT NULL
+                  AND mf.C_reported > -900
+                  AND UPPER(sm.Station) IN ({",".join(["%s"] * len(regular_sites))})
+                  AND YEAR(sm.sample_datetime_utc) BETWEEN %s AND %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM hats.flags_internal f
+                      WHERE f.analysis_num = a.num
+                        AND f.parameter_num = mf.parameter_num
+                        AND COALESCE(f.iflag, '') <> ''
+                  )
+                GROUP BY site, sample_datetime, a.event_num
+            ) AS event_data
+            GROUP BY event_data.site, month_start
+            ORDER BY site, month_start;
+            """
+            params = [pnum] + regular_sites + [start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        for pfp_site in pfp_pseudo_sites:
+            base_site = PFP_SITES[pfp_site]
+            sql = """
+            SELECT
+                event_data.site,
+                DATE_FORMAT(event_data.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(event_data.event_avg) AS monthly_avg,
+                STDDEV(event_data.event_avg) AS monthly_std,
+                COUNT(*) AS n
+            FROM (
+                SELECT
+                    %s AS site,
+                    TIMESTAMP(fe.date, fe.time) AS sample_datetime,
+                    a.event_num,
+                    AVG(mf.C_reported) AS event_avg
+                FROM hats.analysis a
+                JOIN hats.mole_fractions mf
+                  ON mf.analysis_num = a.num
+                JOIN ccgg.flask_event fe
+                  ON fe.num = a.event_num
+                JOIN gmd.site s
+                  ON s.num = a.site_num
+                WHERE a.inst_num = 58
+                  AND mf.parameter_num = %s
+                  AND a.event_num > 0
+                  AND a.site_num > 0
+                  AND a.sample_type = 'PFP'
+                  AND mf.C_reported IS NOT NULL
+                  AND mf.C_reported > -900
+                  AND UPPER(s.code) = %s
+                  AND YEAR(fe.date) BETWEEN %s AND %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM hats.flags_internal f
+                      WHERE f.analysis_num = a.num
+                        AND f.parameter_num = mf.parameter_num
+                        AND COALESCE(f.iflag, '') <> ''
+                  )
+                GROUP BY site, sample_datetime, a.event_num
+            ) AS event_data
+            GROUP BY event_data.site, month_start
+            ORDER BY month_start;
+            """
+            params = [pfp_site, pnum, base_site, start, end]
             frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
 
         non_empty = [f for f in frames if not f.empty]
