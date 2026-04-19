@@ -430,6 +430,11 @@ class LogosCompareWindow(QMainWindow):
         self.connect_lines_check.setChecked(False)
         self.connect_lines_check.stateChanged.connect(self._redraw_current_plot)
         figure_layout.addWidget(self.connect_lines_check, 1, 0, 1, 2)
+
+        self.show_site_legend_check = QCheckBox("Show site legend")
+        self.show_site_legend_check.setChecked(True)
+        self.show_site_legend_check.stateChanged.connect(self._redraw_current_plot)
+        figure_layout.addWidget(self.show_site_legend_check, 2, 0, 1, 2)
         controls_layout.addWidget(figure_group)
         controls_layout.addStretch()
 
@@ -996,11 +1001,15 @@ class LogosCompareWindow(QMainWindow):
         for selection in selections:
             if selection.key == ref_program:
                 continue
-            values = diff_df.loc[diff_df["program"] == selection.key, "diff"].dropna()
-            if values.empty:
+            stats_df = diff_df.loc[diff_df["program"] == selection.key, ["diff", "diff_std"]].copy()
+            stats_df["diff"] = pd.to_numeric(stats_df["diff"], errors="coerce")
+            stats_df["diff_std"] = pd.to_numeric(stats_df["diff_std"], errors="coerce")
+            stats_df = stats_df.dropna(subset=["diff"])
+            if stats_df.empty:
                 stats = "mean nan, std nan"
             else:
-                stats = f"mean {values.mean():.3f}, std {values.std():.3f}"
+                mean = self._weighted_mean_from_std(stats_df["diff"], stats_df["diff_std"])
+                stats = f"weighted mean {mean:.3f}, std {stats_df['diff'].std():.3f}"
             label = (
                 f"{PROGRAMS[ref_program]['label']} - {PROGRAMS[selection.key]['label']} "
                 f"({stats})"
@@ -1017,6 +1026,15 @@ class LogosCompareWindow(QMainWindow):
             )
         if handles:
             ax.legend(handles=handles, title="Difference", loc="best")
+
+    def _weighted_mean_from_std(self, values: pd.Series, stds: pd.Series) -> float:
+        values = pd.to_numeric(values, errors="coerce")
+        stds = pd.to_numeric(stds, errors="coerce")
+        valid = values.notna() & stds.notna() & np.isfinite(stds) & (stds > 0)
+        if not valid.any():
+            return float(values.mean())
+        weights = 1.0 / np.square(stds[valid])
+        return float(np.average(values[valid], weights=weights))
 
     def _add_legends(
         self,
@@ -1047,6 +1065,7 @@ class LogosCompareWindow(QMainWindow):
             title="Sites",
             loc="upper left",
         )
+        site_legend.set_visible(self.show_site_legend_check.isChecked())
         ax.add_artist(site_legend)
         self.site_legend = site_legend
         for handle in self._legend_handles(site_legend):
