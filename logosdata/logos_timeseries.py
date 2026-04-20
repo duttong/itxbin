@@ -1923,13 +1923,12 @@ class TimeseriesWidget(QWidget):
         return df
 
     def query_pr1_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query PR1 monthly means from legacy HATS tables.
+        """Query PR1 monthly means via hats.prs_data_view.
 
-        Regular LOGOS sites use PR1 sample_type='HATS'.  PFP pseudo-sites
-        (MLO_PFP, MKO_PFP) use sample_type='PFP' on the matching base site.
-        For HATS rows, analysis.event_num stores hats.Status_MetData.PairID;
-        the sample datetime comes from Status_MetData.sample_datetime_utc.
-        For PFP rows, analysis.event_num stores ccgg.flask_event.num.
+        The view resolves sample_datetime from Status_MetData (HATS) or
+        flask_event_view (PFP/CCGG), and computes rejected from both HATS
+        flags_internal tags and ccgg flask_event/flask_data reject tags.
+        Aggregation is per-event on sample_datetime, then per calendar month.
         """
         if self.instrument.inst_num != 58:
             return pd.DataFrame()
@@ -1959,33 +1958,23 @@ class TimeseriesWidget(QWidget):
                 COUNT(*) AS n
             FROM (
                 SELECT
-                    UPPER(sm.Station) AS site,
-                    sm.sample_datetime_utc AS sample_datetime,
-                    a.event_num,
-                    AVG(mf.C_reported) AS event_avg
-                FROM hats.analysis a
-                JOIN hats.mole_fractions mf
-                  ON mf.analysis_num = a.num
-                JOIN hats.Status_MetData sm
-                  ON sm.PairID = a.event_num
-                WHERE a.inst_num = 58
-                  AND mf.parameter_num = %s
-                  AND a.event_num > 0
-                  AND a.site_num > 0
-                  AND a.sample_type = 'HATS'
-                  AND sm.sample_datetime_utc IS NOT NULL
-                  AND mf.C_reported IS NOT NULL
-                  AND mf.C_reported > -900
-                  AND UPPER(sm.Station) IN ({",".join(["%s"] * len(regular_sites))})
-                  AND YEAR(sm.sample_datetime_utc) BETWEEN %s AND %s
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM hats.flags_internal f
-                      WHERE f.analysis_num = a.num
-                        AND f.parameter_num = mf.parameter_num
-                        AND COALESCE(f.iflag, '') <> ''
-                  )
-                GROUP BY site, sample_datetime, a.event_num
+                    UPPER(v.site) AS site,
+                    v.sample_datetime,
+                    v.event_num,
+                    AVG(v.value) AS event_avg
+                FROM hats.prs_data_view v
+                WHERE v.inst_num = 58
+                  AND v.parameter_num = %s
+                  AND v.sample_type = 'HATS'
+                  AND v.event_num > 0
+                  AND v.site_num > 0
+                  AND v.sample_datetime IS NOT NULL
+                  AND v.value IS NOT NULL
+                  AND v.value > -900
+                  AND v.rejected = 0
+                  AND UPPER(v.site) IN ({",".join(["%s"] * len(regular_sites))})
+                  AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+                GROUP BY site, v.sample_datetime, v.event_num
             ) AS event_data
             GROUP BY event_data.site, month_start
             ORDER BY site, month_start;
@@ -2005,33 +1994,22 @@ class TimeseriesWidget(QWidget):
             FROM (
                 SELECT
                     %s AS site,
-                    TIMESTAMP(fe.date, fe.time) AS sample_datetime,
-                    a.event_num,
-                    AVG(mf.C_reported) AS event_avg
-                FROM hats.analysis a
-                JOIN hats.mole_fractions mf
-                  ON mf.analysis_num = a.num
-                JOIN ccgg.flask_event fe
-                  ON fe.num = a.event_num
-                JOIN gmd.site s
-                  ON s.num = a.site_num
-                WHERE a.inst_num = 58
-                  AND mf.parameter_num = %s
-                  AND a.event_num > 0
-                  AND a.site_num > 0
-                  AND a.sample_type = 'PFP'
-                  AND mf.C_reported IS NOT NULL
-                  AND mf.C_reported > -900
-                  AND UPPER(s.code) = %s
-                  AND YEAR(fe.date) BETWEEN %s AND %s
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM hats.flags_internal f
-                      WHERE f.analysis_num = a.num
-                        AND f.parameter_num = mf.parameter_num
-                        AND COALESCE(f.iflag, '') <> ''
-                  )
-                GROUP BY site, sample_datetime, a.event_num
+                    v.sample_datetime,
+                    v.event_num,
+                    AVG(v.value) AS event_avg
+                FROM hats.prs_data_view v
+                WHERE v.inst_num = 58
+                  AND v.parameter_num = %s
+                  AND v.sample_type = 'PFP'
+                  AND v.event_num > 0
+                  AND v.site_num > 0
+                  AND v.sample_datetime IS NOT NULL
+                  AND v.value IS NOT NULL
+                  AND v.value > -900
+                  AND v.rejected = 0
+                  AND UPPER(v.site) = %s
+                  AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+                GROUP BY v.sample_datetime, v.event_num
             ) AS event_data
             GROUP BY event_data.site, month_start
             ORDER BY month_start;
