@@ -135,15 +135,8 @@ class LOGOSDataAgentTools:
     }
 
     M4_ANALYTE_ALIASES = {
-        "CFC11": "CFC11B",
-        "CFC11B": "CFC11B",
-        "CH3CCL3": "CH3CCL3",
+        "CFC11B": "CFC11",
         "CH3CCL3B": "CH3CCL3",
-    }
-
-    M4_DISPLAY_NAME_OVERRIDES = {
-        29: "CFC11_B",
-        36: "CH3CCl3_B",
     }
 
     PLOT_OUTPUT_DIR = Path(tempfile.gettempdir()) / "logos_ai_plots"
@@ -344,8 +337,6 @@ class LOGOSDataAgentTools:
 
         row = matches.iloc[0]
         display_name = str(row["display_name"])
-        if self.inst_num == 192:
-            display_name = self.M4_DISPLAY_NAME_OVERRIDES.get(int(row["param_num"]), display_name)
         match = AnalyteMatch(
             display_name=display_name,
             parameter_num=int(row["param_num"]),

@@ -12,11 +12,23 @@ FecdDataExporter
 """
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+
+def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    non_empty = [f for f in frames if not f.empty]
+    if not non_empty:
+        return pd.DataFrame()
+    if len(non_empty) == 1:
+        return non_empty[0].reset_index(drop=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', FutureWarning)
+        return pd.concat(non_empty, ignore_index=True)
 
 # Pseudo-site names that select PFP-only data from the named base site.
 # Must stay consistent with the definition in logos_timeseries.py.
@@ -139,7 +151,7 @@ class MstarDataExporter:
                 df_pfp['site'] = pfp_site
             frames.append(df_pfp)
 
-        df = pd.concat([f for f in frames if not f.empty], ignore_index=True) if frames else pd.DataFrame()
+        df = _concat_frames(frames)
         if not df.empty:
             df['sample_datetime'] = pd.to_datetime(df['sample_datetime'])
             df = df.sort_values(['site', 'sample_datetime'])
@@ -420,10 +432,9 @@ class FecdDataExporter:
             ])
             frames.append(pd.DataFrame(rows) if rows else pd.DataFrame())
 
-        non_empty = [f for f in frames if not f.empty]
-        if not non_empty:
-            return pd.DataFrame()
-        df = pd.concat(non_empty, ignore_index=True)
+        df = _concat_frames(frames)
+        if df.empty:
+            return df
         df['sample_datetime'] = pd.to_datetime(df['sample_datetime'])
         df = df.sort_values('sample_datetime').reset_index(drop=True)
         return df
