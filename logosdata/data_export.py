@@ -36,7 +36,7 @@ _PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 
 
 HEADER_FILE = Path(__file__).parent / 'mstar_header.txt'
-MISSING = -99
+MISSING = 'nd'
 MF_DECIMALS = 2
 SD_DECIMALS = 2
 
@@ -108,7 +108,7 @@ class MstarDataExporter:
     def query_data(self) -> pd.DataFrame:
         """Query ng_pair_avg_view for all M* instruments, returning a DataFrame.
 
-        Regular sites use sample_type IN ('S', 'G').  PFP pseudo-sites
+        Regular sites use sample_type IN ('S', 'G', 'S85', 'SA').  PFP pseudo-sites
         (e.g. MLO_PFP) query the base site with sample_type='PFP' and
         relabel the site column so the output carries the pseudo-site name.
         """
@@ -125,7 +125,7 @@ class MstarDataExporter:
             FROM hats.ng_pair_avg_view
             WHERE inst_id IN ({insts})
               AND parameter_num = %s
-              AND sample_type IN ('S', 'G')
+              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) IN ({site_list})
               AND YEAR(sample_datetime) BETWEEN %s AND %s
             ORDER BY site, sample_datetime
@@ -359,7 +359,7 @@ class FecdDataExporter:
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) = %s
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY sample_datetime
@@ -381,7 +381,7 @@ class FecdDataExporter:
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
               AND parameter_num = %s
-              AND sample_type IN ('S', 'G')
+              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
               AND sample_datetime < %s
@@ -401,7 +401,7 @@ class FecdDataExporter:
             WHERE inst_num = %s
               AND parameter_num = %s
               AND channel = %s
-              AND sample_type IN ('S', 'G')
+              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
               AND sample_datetime >= %s
@@ -421,7 +421,7 @@ class FecdDataExporter:
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
               AND parameter_num = %s
-              AND sample_type IN ('S', 'G')
+              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
             ORDER BY sample_datetime

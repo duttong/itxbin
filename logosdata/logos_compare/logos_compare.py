@@ -764,7 +764,7 @@ class LogosCompareWindow(QMainWindow):
 
         pfp_base_sites = set(PFP_SITES.values())
         has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G')" if has_pfp_base else ""
+        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
 
         if regular_sites:
             sql = f"""

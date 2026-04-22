@@ -1814,7 +1814,7 @@ class TimeseriesWidget(QWidget):
         # the means here cover flask-only data (PFP data belongs to the pseudo-site).
         pfp_base_sites = set(PFP_SITES.values())
         has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G')" if has_pfp_base else ""
+        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
 
         if regular_sites:
             sql = f"""
@@ -1886,7 +1886,7 @@ class TimeseriesWidget(QWidget):
         # Exclude PFP rows from base sites that have a PFP pseudo-site counterpart
         pfp_base_sites = set(PFP_SITES.values())
         has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G')" if has_pfp_base else ""
+        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
 
         if regular_sites:
             sql = f"""
@@ -2042,7 +2042,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY site, sample_datetime
@@ -2080,7 +2080,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, period_start
@@ -2115,7 +2115,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, month_start
@@ -2145,7 +2145,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY site, sample_datetime
@@ -2182,7 +2182,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, period_start
@@ -2216,7 +2216,7 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G')
+          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, month_start
