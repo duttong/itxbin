@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -85,13 +86,46 @@ def process_once(
     return split_outputs, pass_through
 
 
-def run_checkin(checkin_cmd: Path, pages: list[Path], work_dir: Path, dry_run: bool) -> None:
+def run_checkin(
+    checkin_cmd: Path,
+    pages: list[Path],
+    work_dir: Path,
+    dry_run: bool,
+    log_path: Path,
+) -> None:
     names = [p.name for p in pages]
     cmd = [str(checkin_cmd), "process", *names]
     if dry_run:
         print(f"[dry-run] Would run: {' '.join(cmd)} (cwd={work_dir})")
+        print(f"[dry-run] Would append output to: {log_path}")
         return
-    subprocess.run(cmd, check=True, cwd=work_dir)
+
+    start = datetime.now().isoformat(timespec="seconds")
+    result = subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True)
+    end = datetime.now().isoformat(timespec="seconds")
+
+    with log_path.open("a") as f:
+        f.write(f"\n=== {start} checkin process ({len(names)} file(s)) cwd={work_dir} ===\n")
+        f.write(f"cmd: {' '.join(cmd)}\n")
+        if result.stdout:
+            f.write(result.stdout)
+            if not result.stdout.endswith("\n"):
+                f.write("\n")
+        if result.stderr:
+            f.write("[stderr]\n")
+            f.write(result.stderr)
+            if not result.stderr.endswith("\n"):
+                f.write("\n")
+        f.write(f"--- {end} exit={result.returncode} ---\n")
+
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=result.stderr,
+        )
 
 
 def main() -> int:
@@ -113,6 +147,8 @@ def main() -> int:
                         help="print actions without modifying files")
     parser.add_argument("--lock-file", type=Path, default=None,
                         help="lock file path (default: <dir>/.split_multipage_pdfs.lock)")
+    parser.add_argument("--log-file", type=Path, default=None,
+                        help="checkin output log (default: <dir>/checkin.log)")
     args = parser.parse_args()
 
     work_dir: Path = args.dir.resolve()
@@ -120,6 +156,7 @@ def main() -> int:
         parser.error(f"not a directory: {work_dir}")
     converted_dir: Path = (args.converted_dir or work_dir / "converted").resolve()
     lock_path: Path = (args.lock_file or work_dir / ".split_multipage_pdfs.lock").resolve()
+    log_path: Path = (args.log_file or work_dir / "checkin.log").resolve()
 
     if not args.dry_run:
         converted_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +190,7 @@ def main() -> int:
             processed_any = True
             print(f"Checkin: {len(batch)} PDF(s) "
                   f"({len(split_outputs)} split, {len(pass_through)} as-is).")
-            run_checkin(args.checkin_cmd, batch, work_dir, args.dry_run)
+            run_checkin(args.checkin_cmd, batch, work_dir, args.dry_run, log_path)
             submitted.update(p.resolve() for p in batch)
         else:
             if split_outputs:
