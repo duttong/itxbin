@@ -12,6 +12,11 @@ from logos_instruments import M4_Instrument
 
 class M4_GCwerks_Export(M4_Instrument):
 
+    # Map display name -> actual peak name in GCwerks when they differ.
+    # Renaming the peak in GCwerks would require rebuilding the entire
+    # integration results, so we alias at export time instead.
+    GCWERKS_PEAK_ALIAS = {'CFC-11': 'CFC-11b'}
+
     def __init__(self):
         super().__init__()
 
@@ -22,27 +27,48 @@ class M4_GCwerks_Export(M4_Instrument):
 
         start_date should be in the form YYMM
         """
-        
+
         processes = []
         for molecule in molecules:
             if molecule in self.molecules:
+                peak = self.GCWERKS_PEAK_ALIAS.get(molecule, molecule)
                 suffix = "_flagged" if flagged else ""
                 filename = f"data_{molecule}{suffix}.csv"
-                params = f"time runtype tank stdtank port psamp {molecule}.area {molecule}.ht {molecule}.rt {molecule}.w"
-                # params_extra = f"{params} {molecule}.skew {molecule}.rl.a {molecule}.rl.ht {molecule}.rl.report {molecule}.c.a {molecule}.c.ht {molecule}.c.report"
+                params = f"time runtype tank stdtank port psamp {peak}.area {peak}.ht {peak}.rt {peak}.w"
+                # params_extra = f"{params} {peak}.skew {peak}.rl.a {peak}.rl.ht {peak}.rl.report {peak}.c.a {peak}.c.ht {peak}.c.report"
                 flags_arg = " -flags" if flagged else ""
                 command = f"{self.gcexport_path} {self.gc_dir} -csv -nonan{flags_arg} -mindate {start_date} {params} > {self.export_dir}/{filename}"
 
                 # Execute the command and redirect output to /dev/null
                 process = subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-                processes.append((process, molecule))
+                processes.append((process, molecule, peak))
             else:
                 print(f'Wrong molecule name: {molecule}')
 
-        for process, molecule in tqdm(processes):
+        for process, molecule, peak in tqdm(processes):
             if progress:
                 progress(10)
             process.wait()
+            if peak != molecule:
+                self._rewrite_header(molecule, peak, flagged=flagged)
+
+    def _rewrite_header(self, molecule, peak, flagged=False):
+        """Rewrite the CSV header so `{peak}_*` columns match the display name.
+
+        m4_gcwerks2db.load_gcwerks strips the `{molecule}_` prefix from columns
+        using the display name, so an aliased peak name must be renamed on disk.
+        """
+        suffix = "_flagged" if flagged else ""
+        path = self.export_dir / f"data_{molecule}{suffix}.csv"
+        if not path.exists():
+            return
+        with open(path, 'r') as f:
+            header = f.readline()
+            rest = f.read()
+        header = header.replace(f"{peak}_", f"{molecule}_")
+        with open(path, 'w') as f:
+            f.write(header)
+            f.write(rest)
 
     @staticmethod
     def verify_start_date(date_str):
