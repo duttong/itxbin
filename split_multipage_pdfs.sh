@@ -60,8 +60,8 @@ while true; do
   fi
 
   processed_total=true
-  echo "Processing ${#split_files[@]} split PDF page(s)."
-  "$checkin_cmd" process "${split_files[@]}"
+  echo "Split ${#split_files[@]} PDF page(s); skipping checkin (disabled during archive backfill)."
+  # "$checkin_cmd" process "${split_files[@]}"
 done
 
 if [[ "$processed_total" == false ]]; then
