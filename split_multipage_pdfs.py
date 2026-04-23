@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 SPLIT_SUFFIX_RE = re.compile(r"_\d{3}\.pdf$", re.IGNORECASE)
+CHECKIN_SENTINEL = "CHECKIN_ENABLED"
 
 
 def pdf_page_count(pdf: Path) -> int | None:
@@ -46,28 +47,42 @@ def split_pdf(pdf: Path, dry_run: bool) -> list[Path]:
     return [Path(f"{stem}_{i:03d}.pdf") for i in range(1, pages + 1)]
 
 
-def process_once(work_dir: Path, converted_dir: Path, dry_run: bool) -> list[Path]:
-    """One sweep: split all multi-page PDFs in work_dir. Returns produced pages."""
-    produced: list[Path] = []
+def process_once(
+    work_dir: Path,
+    converted_dir: Path,
+    dry_run: bool,
+    exclude: set[Path],
+) -> tuple[list[Path], list[Path]]:
+    """One sweep. Returns (newly_split_pages, pass_through_pdfs).
+
+    pass_through_pdfs are files ready for checkin as-is: single-page PDFs
+    and any pre-existing `_NNN.pdf` outputs. `exclude` holds resolved paths
+    already handed to checkin in a prior sweep so we don't resubmit them.
+    """
+    split_outputs: list[Path] = []
+    pass_through: list[Path] = []
     for pdf in sorted(work_dir.glob("*.pdf")) + sorted(work_dir.glob("*.PDF")):
+        if pdf.resolve() in exclude:
+            continue
         if SPLIT_SUFFIX_RE.search(pdf.name):
+            pass_through.append(pdf)
             continue
         pages = pdf_page_count(pdf)
         if pages is None:
             print(f"Skipping unreadable PDF: {pdf}", file=sys.stderr)
             continue
-        if pages <= 1:
-            print(f"Skipping single-page PDF: {pdf}")
+        if pages == 1:
+            pass_through.append(pdf)
             continue
         print(f"Splitting: {pdf} ({pages} pages)")
-        produced.extend(split_pdf(pdf, dry_run))
+        split_outputs.extend(split_pdf(pdf, dry_run))
         dest = converted_dir / pdf.name
         if dry_run:
             print(f"[dry-run] Would move original to: {dest}")
         else:
             shutil.move(str(pdf), dest)
             print(f"Moved original to: {dest}")
-    return produced
+    return split_outputs, pass_through
 
 
 def run_checkin(checkin_cmd: Path, pages: list[Path], work_dir: Path, dry_run: bool) -> None:
@@ -89,11 +104,11 @@ def main() -> int:
     parser.add_argument("--checkin-cmd", type=Path, default=script_dir / "checkin",
                         help="path to the checkin command")
     grp = parser.add_mutually_exclusive_group()
-    grp.add_argument("--checkin", dest="checkin", action="store_true",
-                     help="call `checkin process` on split pages")
-    grp.add_argument("--no-checkin", dest="checkin", action="store_false",
-                     help="skip checkin invocation (default)")
-    parser.set_defaults(checkin=False)
+    grp.add_argument("--checkin", dest="checkin", action="store_const", const=True,
+                     help="force checkin on (overrides sentinel)")
+    grp.add_argument("--no-checkin", dest="checkin", action="store_const", const=False,
+                     help="force checkin off (overrides sentinel)")
+    parser.set_defaults(checkin=None)
     parser.add_argument("--dry-run", action="store_true",
                         help="print actions without modifying files")
     parser.add_argument("--lock-file", type=Path, default=None,
@@ -109,6 +124,15 @@ def main() -> int:
     if not args.dry_run:
         converted_dir.mkdir(parents=True, exist_ok=True)
 
+    sentinel_path = work_dir / CHECKIN_SENTINEL
+    if args.checkin is None:
+        checkin_on = sentinel_path.exists()
+        source = f"sentinel {'present' if checkin_on else 'absent'} ({sentinel_path.name})"
+    else:
+        checkin_on = args.checkin
+        source = "CLI flag"
+    print(f"Checkin mode: {'ON' if checkin_on else 'OFF'} (from {source})")
+
     lock_fh = open(lock_path, "w")
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -116,17 +140,25 @@ def main() -> int:
         print("split_multipage_pdfs is already running; exiting.")
         return 0
 
+    submitted: set[Path] = set()
     processed_any = False
     while True:
-        pages = process_once(work_dir, converted_dir, args.dry_run)
-        if not pages:
-            break
-        processed_any = True
-        if args.checkin:
-            print(f"Processing {len(pages)} split PDF page(s).")
-            run_checkin(args.checkin_cmd, pages, work_dir, args.dry_run)
+        split_outputs, pass_through = process_once(
+            work_dir, converted_dir, args.dry_run, submitted,
+        )
+        if checkin_on:
+            batch = split_outputs + pass_through
+            if not batch:
+                break
+            processed_any = True
+            print(f"Checkin: {len(batch)} PDF(s) "
+                  f"({len(split_outputs)} split, {len(pass_through)} as-is).")
+            run_checkin(args.checkin_cmd, batch, work_dir, args.dry_run)
+            submitted.update(p.resolve() for p in batch)
         else:
-            print(f"Split {len(pages)} PDF page(s); skipping checkin.")
+            if split_outputs:
+                processed_any = True
+                print(f"Split {len(split_outputs)} PDF page(s); skipping checkin.")
             break
 
     if not processed_any:
