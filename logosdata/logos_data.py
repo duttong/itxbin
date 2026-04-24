@@ -754,13 +754,14 @@ class MainWindow(QMainWindow):
                 self.current_channel = None
             self.current_pnum = int(self.analytes[_default_analyte])
             self._select_analyte_control(_default_analyte)
-            self.set_current_analyte(_default_analyte)
+            if hasattr(self, "timeseries_tab") and self.timeseries_tab:
+                self.timeseries_tab.set_current_analyte(_default_analyte)
             self.apply_dates()
         elif self.instrument.inst_id == 'm4':
             # Fallback for m4 if conf is missing
             self.current_pnum = 20
             self._select_analyte_control('HFC134a')
-            self.set_current_analyte('HFC134a')
+            self.apply_dates()
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
@@ -2700,14 +2701,6 @@ class MainWindow(QMainWindow):
 
             # Ensure the layout stretches properly to accommodate options_gb
             self.analyte_layout.addWidget(QWidget(), len(left), 0, 1, 2)
-
-            # Select the first radio button by default
-            buttons = self.radio_group.buttons()
-            if buttons:
-                if self.instrument.inst_id == 'fe3':
-                    buttons[10].setChecked(True)
-                elif self.instrument.inst_id == 'bld1':
-                    buttons[0].setChecked(True)
 
         else:
             # Use a QComboBox
