@@ -7,4 +7,10 @@ __py*
 
 cfc113a/
 
+hats_receptors/*
+
 pr1/
+
+unused/
+hatsdb.py
+hats_db.py
