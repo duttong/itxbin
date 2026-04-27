@@ -918,8 +918,11 @@ class RelStdDevFigure:
         self.site_visibility = {}
         
         self.x_var = "run_time"
+        self.bottom_metric = "replicate"  # 'replicate' or 'pair_mean'
         self._radio_ax = None
         self._radio = None
+        self._metric_radio_ax = None
+        self._metric_radio = None
 
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
@@ -1005,6 +1008,10 @@ class RelStdDevFigure:
             self._fig.delaxes(self._radio_ax)
             self._radio_ax = None
             self._radio = None
+        if self._metric_radio_ax is not None:
+            self._fig.delaxes(self._metric_radio_ax)
+            self._metric_radio_ax = None
+            self._metric_radio = None
 
         self._ax_top.clear()
         self._ax_bottom.clear()
@@ -1036,11 +1043,36 @@ class RelStdDevFigure:
             )
             top_artists = [top_artist_container[0]] + list(top_artist_container[1]) + list(top_artist_container[2])
 
-            # Bottom plot: relstd vs run_time
+            # Bottom plot: per-pair quality metric vs run_time / sample_datetime.
+            # 'replicate' = mean of within-aliquot relstds across the pair's
+            #   sample_ids (within-aliquot reproducibility, averaged).
+            # 'pair_mean' = relstd of the per-aliquot mixratio means within
+            #   each pair (between-aliquot agreement).
+            if self.bottom_metric == 'pair_mean':
+                bottom_group = (
+                    group.groupby(['run_time', 'pair_id_num'], as_index=False)
+                    .agg(
+                        sample_datetime=('sample_datetime', 'min'),
+                        pair_mean=('mixratio', 'mean'),
+                        pair_std=('mixratio', 'std'),  # ddof=1 sample stddev
+                    )
+                )
+                bottom_group['relstd'] = (
+                    100 * bottom_group['pair_std'] / bottom_group['pair_mean']
+                )
+                bottom_group = bottom_group.dropna(subset=['relstd'])
+            else:
+                bottom_group = (
+                    group.groupby(['run_time', 'pair_id_num'], as_index=False)
+                    .agg(
+                        sample_datetime=('sample_datetime', 'min'),
+                        relstd=('relstd', 'mean'),
+                    )
+                )
             bottom_artist_container = self._ax_bottom.vlines(
-                group[self.x_var],
+                bottom_group[self.x_var],
                 ymin=0,
-                ymax=group["relstd"],
+                ymax=bottom_group["relstd"],
                 colors=color,
                 linewidth=2.2,
                 alpha=0.8,
@@ -1060,10 +1092,16 @@ class RelStdDevFigure:
         # --- Figure cosmetics ---
         inst_num = self.parent_widget.instrument.inst_num
         pnum = self.parent_widget.analytes.get(self.analyte)
-        self._ax_top.set_title(f"Flask mean mixing ratio and relative stddev vs run time\nAnalyte {self.analyte} (Param {pnum})")
+        x_label = "run time" if self.x_var == "run_time" else "sample time"
+        metric_label = (
+            "pair-mean differences" if self.bottom_metric == 'pair_mean'
+            else "replicate differences"
+        )
+        self._ax_top.set_title(f"Flask mean mixing ratio  —  Analyte {self.analyte} (Param {pnum})")
         self._ax_top.set_ylabel("mixratio")
         self._ax_top.grid(alpha=0.3)
 
+        self._ax_bottom.set_title(f"Flask {metric_label} vs {x_label}")
         self._ax_bottom.set_ylabel("relstd (%)")
         self._ax_bottom.set_xlabel("Run Time (UTC)" if self.x_var == "run_time" else "Sample datetime (UTC)")
         self._ax_bottom.grid(alpha=0.3)
@@ -1105,6 +1143,7 @@ class RelStdDevFigure:
             text.set_picker(5)
 
         self._add_x_axis_radio_buttons(self.site_legend)
+        self._add_metric_radio_buttons()
 
         self._fig.canvas.draw_idle()
         plt.show(block=False)
@@ -1133,6 +1172,34 @@ class RelStdDevFigure:
         new_var = 'run_time' if label == 'Run Time' else 'sample_datetime'
         if new_var != self.x_var:
             self.x_var = new_var
+            self._build_plot()
+
+    def _add_metric_radio_buttons(self):
+        """Place a 'Replicate' / 'Pair Mean' toggle just below the x-axis radio."""
+        if self._radio_ax is None:
+            return
+        xpos = self._radio_ax.get_position()
+        pad_h = 0.005
+        radio_h = xpos.height
+        radio_w = xpos.width
+        radio_x = xpos.x0
+        radio_y = max(0.02, xpos.y0 - pad_h - radio_h)
+
+        self._metric_radio_ax = self._fig.add_axes([radio_x, radio_y, radio_w, radio_h])
+        self._metric_radio_ax.set_frame_on(False)
+        active_idx = 0 if self.bottom_metric == 'replicate' else 1
+        self._metric_radio = RadioButtons(
+            self._metric_radio_ax, ('Replicate', 'Pair Mean'), active=active_idx
+        )
+        self._metric_radio.on_clicked(self._on_metric_change)
+
+        for label in self._metric_radio.labels:
+            label.set_fontsize(9)
+
+    def _on_metric_change(self, label):
+        new_metric = 'replicate' if label == 'Replicate' else 'pair_mean'
+        if new_metric != self.bottom_metric:
+            self.bottom_metric = new_metric
             self._build_plot()
 
     def _on_pick_event(self, event):
