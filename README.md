@@ -78,7 +78,7 @@ Instrument export scripts:
 ```bash
 python3 m4_export.py --help
 python3 fe3_export.py --help
-python3 pr1_export.py --help
+python3 pr1/pr1_export.py --help
 python3 bld1_export.py --help
 ```
 
@@ -87,7 +87,7 @@ python3 bld1_export.py --help
 ```bash
 python3 m4_gcwerks2db.py --help
 python3 fe3_gcwerks2db.py --help
-python3 pr1_gcwerks2db.py --help
+python3 pr1/pr1_gcwerks2db.py --help
 python3 bld1_gcwerks2db.py --help
 ```
 
@@ -172,7 +172,7 @@ Database processing UIs:
 
 ```bash
 python3 m4db-gui.py --gui
-python3 pr1db-gui.py --gui
+python3 pr1/pr1db-gui.py --gui
 ```
 
 Tank history editor:
