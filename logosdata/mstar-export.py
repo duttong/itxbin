@@ -29,6 +29,9 @@ from hats_db import HATSdb
 app = typer.Typer(add_completion=False)
 
 INSTRUMENTS = ('M1', 'M3', 'M4')
+# inst_num per ccgg.inst_description (same numbers used by hats.data_exclusions
+# and ng_pair_avg_view).
+EXCLUSION_INST_NUM = {'M1': 46, 'M3': 54, 'M4': 192}
 LOGOS_SITES = (
     'alt', 'brw', 'cgo', 'hfm', 'kum', 'lef', 'mhd',
     'mlo', 'nwr', 'psa', 'rpb', 'smo', 'spo', 'sum', 'thd',
@@ -63,6 +66,30 @@ def build_header(filename: str) -> str:
     return (template
             .replace('{filename}', filename)
             .replace('{date}', datetime.now().strftime('%Y-%m-%d')))
+
+
+def query_exclusions(db: HATSdb, parameter_num: int) -> dict[str, list[tuple[date, date]]]:
+    """Return {inst_id: [(a_start_date, a_end_date), ...]} from hats.data_exclusions.
+    Half-open ranges: a row is excluded when a_start_date <= analysis_datetime < a_end_date.
+    sample_type is ignored — exclusions apply to all flask data."""
+    inst_nums = ', '.join(str(n) for n in EXCLUSION_INST_NUM.values())
+    rows = db.doquery(
+        'SELECT inst_num, a_start_date, a_end_date FROM hats.data_exclusions '
+        f'WHERE parameter_num = {parameter_num} AND inst_num IN ({inst_nums})'
+    )
+    inv = {v: k for k, v in EXCLUSION_INST_NUM.items()}
+    out: dict[str, list[tuple[date, date]]] = {}
+    for r in rows or ():
+        out.setdefault(inv[r['inst_num']], []).append((r['a_start_date'], r['a_end_date']))
+    return out
+
+
+def is_excluded(inst_id: str, dt: datetime, exclusions: dict[str, list[tuple[date, date]]]) -> bool:
+    d = dt.date() if isinstance(dt, datetime) else pd.Timestamp(dt).date()
+    for start, end in exclusions.get(inst_id, ()):
+        if start <= d < end:
+            return True
+    return False
 
 
 def lookup_display_name(db: HATSdb, parameter_num: int) -> str | None:
@@ -125,6 +152,20 @@ def main(
     # ── resolve display name and output filename ─────────────────────────────
     param_num = int(df['parameter_num'].iloc[0])
     display_name = lookup_display_name(db, param_num) or parameter
+
+    # ── apply hats.data_exclusions (drops rows in excluded inst/date ranges) ─
+    exclusions = query_exclusions(db, param_num)
+    if exclusions:
+        n_before = len(rows)
+        rows = [r for r in rows
+                if not is_excluded(r['inst_id'], r['analysis_datetime'], exclusions)]
+        n_excluded = n_before - len(rows)
+        if n_excluded:
+            typer.echo(f'Excluded {n_excluded} rows via hats.data_exclusions', err=True)
+        if not rows:
+            typer.echo('No data remain after applying exclusions', err=True)
+            raise typer.Exit(1)
+
     if output:
         out_path = output
     elif site:
