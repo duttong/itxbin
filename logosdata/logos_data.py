@@ -1066,6 +1066,15 @@ class MainWindow(QMainWindow):
         finally:
             if _full_run is not None:
                 self.run = _full_run
+                # _x_num was set from the zoomed subset inside _gc_plot_impl;
+                # recompute against the full DataFrame so that _on_box_select's
+                # mask broadcasts (off-screen rows naturally fall outside the
+                # zoomed axes' x-bounds, so box selection still scopes correctly).
+                x_dt_full = (
+                    pd.to_datetime(self.run['analysis_datetime'], utc=True, errors='coerce')
+                    .dt.tz_localize(None)
+                )
+                self._x_num = mdates.date2num(x_dt_full.to_numpy())
 
     def _gc_plot_impl(self, yparam='resp', sub_info=''):
         current_curve_date = ''
@@ -3220,9 +3229,9 @@ class MainWindow(QMainWindow):
             end_date=end
         )
 
-        # Reload invalidates any prior run_time zoom (the target may not even
-        # be in the new dataset).
-        self._zoom_run_time = None
+        # Keep any active run_time zoom if the target run is still present in
+        # the freshly loaded data (true for analyte switches within the same
+        # chunk). gc_plot clears the zoom defensively if the target is gone.
 
         self.update_smoothing_combobox()
         self.set_runtype_combo()
