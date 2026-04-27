@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QStyle,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction, QPlainTextEdit,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
-    QLineEdit, QTextEdit
+    QLineEdit, QTextEdit, QListWidget, QListWidgetItem
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
@@ -89,7 +89,76 @@ def _to_int_or_none(value):
         return i
     except Exception:
         return None
-    
+
+
+def _ie3_chunk_period(inst_cfg) -> str:
+    """Return 'month' or 'halfmonth' for IE3 processing-tab chunking."""
+    val = inst_cfg.get('chunk_period', 'month') if inst_cfg else 'month'
+    val = (val or 'month').strip().lower()
+    return val if val in {'month', 'halfmonth'} else 'month'
+
+
+def _ie3_iter_chunks(t0, t1, period: str):
+    """Yield (label, start_ts, end_exclusive_ts) covering [t0, t1].
+    Calendar-aligned so labels stay stable across queries."""
+    t0 = pd.Timestamp(t0)
+    t1 = pd.Timestamp(t1)
+    cur = pd.Timestamp(year=t0.year, month=t0.month, day=1)
+    while cur <= t1:
+        next_month = cur + pd.offsets.MonthBegin(1)
+        if period == 'halfmonth':
+            mid = cur + pd.Timedelta(days=15)  # the 16th, 00:00
+            yield (f"{cur:%Y-%m} a", cur, mid)
+            yield (f"{cur:%Y-%m} b", mid, next_month)
+        else:
+            yield (f"{cur:%Y-%m}", cur, next_month)
+        cur = next_month
+
+
+def _ie3_chunk_for_timestamp(ts, period: str):
+    """Return (label, start, end_exclusive) of the chunk containing ts."""
+    ts = pd.Timestamp(ts)
+    if getattr(ts, 'tzinfo', None) is not None:
+        ts = ts.tz_localize(None) if ts.tz is None else ts.tz_convert(None).tz_localize(None)
+    month_start = pd.Timestamp(year=ts.year, month=ts.month, day=1)
+    next_month = month_start + pd.offsets.MonthBegin(1)
+    if period == 'halfmonth':
+        mid = month_start + pd.Timedelta(days=15)
+        if ts < mid:
+            return (f"{month_start:%Y-%m} a", month_start, mid)
+        return (f"{month_start:%Y-%m} b", mid, next_month)
+    return (f"{month_start:%Y-%m}", month_start, next_month)
+
+
+def _ie3_parse_chunk_label(label: str):
+    """Return (start_ts, end_exclusive_ts) for a label like '2026-04' or '2026-04 a'."""
+    base = (label or '').strip()
+    if not base:
+        return (None, None)
+    suffix = None
+    if ' ' in base:
+        base, suffix = base.split(' ', 1)
+        suffix = suffix.strip().lower()
+    month_start = pd.Timestamp(base + '-01')
+    next_month = month_start + pd.offsets.MonthBegin(1)
+    mid = month_start + pd.Timedelta(days=15)
+    if suffix == 'a':
+        return (month_start, mid)
+    if suffix == 'b':
+        return (mid, next_month)
+    return (month_start, next_month)
+
+
+def _ie3_chunk_sql_range(label: str):
+    """Return (start_str, end_str) suitable for IE3 load_data; end is inclusive."""
+    start, end_excl = _ie3_parse_chunk_label(label)
+    if start is None:
+        return (None, None)
+    end_inclusive = end_excl - pd.Timedelta(seconds=1)
+    return (start.strftime('%Y-%m-%d %H:%M:%S'),
+            end_inclusive.strftime('%Y-%m-%d %H:%M:%S'))
+
+
 class RubberBandOverlay(QWidget):
     def __init__(self, parent, pen):
         super().__init__(parent)
@@ -300,6 +369,7 @@ class MainWindow(QMainWindow):
         self.tagging_enabled = False
         self._rect_selector = None
         self._pick_cid = None
+        self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
         self._scatter_main = []
         self._current_yparam = None
         self._current_yvar = None
@@ -915,17 +985,26 @@ class MainWindow(QMainWindow):
     def on_smoothing_changed(self, idx: int):
         #print(f"Smoothing changed to index: {idx} get_selected_detrend_method = {self.get_selected_detrend_method()}", )
         selected_method = self.get_selected_detrend_method()
-        dm_override = None
         if selected_method is not None:
-            self.run['detrend_method_num'] = selected_method
-            dm_override = selected_method
+            if self._zoom_run_time is not None and 'run_time' in self.run.columns:
+                # Zoom mode: only update detrend method for the zoomed run_time.
+                rt_col = pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+                zr = pd.Timestamp(self._zoom_run_time)
+                if zr.tzinfo is None:
+                    zr = zr.tz_localize('UTC')
+                mask = rt_col == zr
+                self.run.loc[mask, 'detrend_method_num'] = selected_method
+            else:
+                self.run['detrend_method_num'] = selected_method
 
-        self.run = self.instrument.norm.merge_smoothed_data(self.run, detrend_method_num=dm_override)
+        # Re-smooth: merge_smoothed_data groups by run_time and reads each
+        # group's detrend_method_num, so per-run choices are preserved.
+        self.run = self.instrument.norm.merge_smoothed_data(self.run)
         self.run = self.instrument.calc_mole_fraction(self.run)
         self.madechanges = True
         self.smoothing_changed = True
         self._style_gc_buttons()
-        
+
         # Redraw
         self.gc_plot(self._current_yparam, sub_info="Smoothing changed")
         
@@ -960,10 +1039,35 @@ class MainWindow(QMainWindow):
     def gc_plot(self, yparam='resp', sub_info=''):
         """
         Plot data with the legend sorted by analysis_datetime.
+        While `_zoom_run_time` is set, render only the rows belonging to that
+        GC run; `self.run` keeps the full chunk so the rest of the program
+        (smoothing scope aside) keeps operating on the full DataFrame.
         """
         if self.run.empty:
             return
 
+        # Filter to the zoomed run_time, if any. Done as a temporary swap so
+        # the existing body uses self.run normally; restored in `finally`.
+        _full_run = None
+        if self._zoom_run_time is not None and 'run_time' in self.run.columns:
+            rt_col = pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+            zr = pd.Timestamp(self._zoom_run_time)
+            if zr.tzinfo is None:
+                zr = zr.tz_localize('UTC')
+            zoom_mask = rt_col == zr
+            if zoom_mask.any():
+                _full_run = self.run
+                self.run = self.run.loc[zoom_mask].copy()
+            else:
+                # Zoom target no longer present (e.g. after reload); clear it.
+                self._zoom_run_time = None
+        try:
+            self._gc_plot_impl(yparam, sub_info)
+        finally:
+            if _full_run is not None:
+                self.run = _full_run
+
+    def _gc_plot_impl(self, yparam='resp', sub_info=''):
         current_curve_date = ''
         if yparam == 'resp':
             yvar = self.instrument.response_type
@@ -1150,8 +1254,13 @@ class MainWindow(QMainWindow):
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
             
+        if self._zoom_run_time is not None:
+            zr_str = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
+            top_line = f"{zr_str}  (zoom in {self.current_run_time})"
+        else:
+            top_line = f"{self.current_run_time}"
         main_title = "\n".join([
-            f"{self.current_run_time}",
+            top_line,
             f"{tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})",
         ])
         ax.set_title(main_title, pad=16)
@@ -1170,7 +1279,39 @@ class MainWindow(QMainWindow):
         ax.set_xlabel("Analysis Datetime")
         ax.xaxis.set_tick_params(rotation=30)
         ax.set_ylabel(tlabel + " " + units)
-        ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+
+        # Vertical lines at run_time transitions (visible when the loaded period
+        # spans multiple GC runs, e.g. IE3 monthly chunks). When shown, suppress
+        # the vertical grid so the two don't compete.
+        unique_rts = []
+        if 'run_time' in self.run.columns:
+            unique_rts = (
+                pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+                .dropna()
+                .dt.tz_convert(None)
+                .sort_values()
+                .unique()
+            )
+
+        self._run_time_lines = []
+        if len(unique_rts) > 1:
+            ax.yaxis.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+            ax.xaxis.grid(False)
+            for rt in unique_rts:
+                line = ax.axvline(
+                    x=rt,
+                    color='lightblue',
+                    linewidth=0.8,
+                    linestyle='-',
+                    alpha=0.85,
+                    zorder=0,
+                    picker=True,
+                )
+                line.set_pickradius(5)
+                line._rt = pd.Timestamp(rt)  # tz-naive (already converted above)
+                self._run_time_lines.append(line)
+        else:
+            ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
 
         # add cal curve date selector
         if ((self.instrument.inst_id == 'fe3') or (self.instrument.inst_id == 'bld1')) and (yparam == 'mole_fraction'):
@@ -1567,6 +1708,15 @@ class MainWindow(QMainWindow):
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
             return
+
+        # run_time transition line clicked: zoom toggle (only when tagging is off,
+        # so flag-tagging picks always win when tagging mode is active).
+        if (not self.tagging_enabled
+                and isinstance(event.artist, Line2D)
+                and hasattr(event.artist, '_rt')):
+            self._toggle_run_time_zoom(event.artist._rt)
+            return
+
         if not self.tagging_enabled or event.artist not in self._scatter_main:
             return
 
@@ -1592,6 +1742,22 @@ class MainWindow(QMainWindow):
         df_index = getattr(scatter, "_df_index", None)
         row_idx = df_index[i] if df_index is not None else self.run.index[i]
         self._toggle_flags([row_idx])
+
+    def _toggle_run_time_zoom(self, rt):
+        """Click-to-zoom on a run_time transition line. Clicking the active line
+        again clears the zoom (Esc has the same effect)."""
+        rt = pd.Timestamp(rt)
+        if rt.tzinfo is not None:
+            rt = rt.tz_convert(None) if rt.tz is not None else rt.tz_localize(None)
+        if (self._zoom_run_time is not None
+                and pd.Timestamp(self._zoom_run_time) == rt):
+            self._zoom_run_time = None
+            sub = 'unzoomed'
+        else:
+            self._zoom_run_time = rt
+            sub = f"zoomed to run_time {rt:%Y-%m-%d %H:%M:%S}"
+        self.update_smoothing_combobox()
+        self.gc_plot(self._current_yparam or 'resp', sub_info=sub)
 
     def _on_click_tooltip(self, event):
         """Show tooltip on left-click when tagging and navigation are off."""
@@ -2477,6 +2643,8 @@ class MainWindow(QMainWindow):
             ch = self.current_channel
             self.instrument.update_flags_all_analytes(self.run)
 
+            start, end = self._current_load_dates()
+
             # reload all gases for this run_time which will recalculate mole fractions
             for key, param_num in self.analytes.items():
                 if "(" in key and ")" in key:
@@ -2486,13 +2654,13 @@ class MainWindow(QMainWindow):
                 else:
                     analyte = key.strip()
                     channel = None
-                    
+
                 run = self.instrument.load_data(
                     pnum=int(param_num),
                     channel=channel,
                     #run_type_num=self.run_type_num,
-                    start_date=self.current_run_time,
-                    end_date=self.current_run_time,
+                    start_date=start,
+                    end_date=end,
                     verbose=False
                 )
                 run = self.instrument.calc_mole_fraction(run)
@@ -2503,8 +2671,8 @@ class MainWindow(QMainWindow):
             self.run = self.instrument.load_data(
                     pnum=pnum,
                     channel=ch,
-                    start_date=self.current_run_time,
-                    end_date=self.current_run_time,
+                    start_date=start,
+                    end_date=end,
                     verbose=False
             )
             self.update_smoothing_combobox()
@@ -2580,25 +2748,31 @@ class MainWindow(QMainWindow):
         run_type = self.runTypeCombo.currentText()
         self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
         self._update_calibration_button_state()
-        
-        # make run_time lists
-        cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
-        pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
 
-        runlist = self.instrument.query_return_run_list(runtype=self.run_type_num, start_date=t0, end_date=t1)
-        runlist_cals = []
-        if cal_idx is not None:
-            runlist_cals = self.instrument.query_return_run_list(runtype=cal_idx, start_date=t0, end_date=t1)
-        runlist_pfps = []
-        if pfp_idx is not None:
-            runlist_pfps = self.instrument.query_return_run_list(runtype=pfp_idx, start_date=t0, end_date=t1)
-            
-        self.current_run_times = [
-            r + " (Cal)" if r in runlist_cals
-            else r + " (PFP)" if r in runlist_pfps
-            else r
-            for r in runlist
-        ]
+        if self.instrument.inst_id == 'ie3':
+            period = _ie3_chunk_period(self._inst_cfg)
+            self.current_run_times = [
+                label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
+            ]
+        else:
+            # make run_time lists
+            cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
+            pfp_idx = self.instrument.RUN_TYPE_MAP.get('PFPs')  # may be None if this instrument has no PFPs
+
+            runlist = self.instrument.query_return_run_list(runtype=self.run_type_num, start_date=t0, end_date=t1)
+            runlist_cals = []
+            if cal_idx is not None:
+                runlist_cals = self.instrument.query_return_run_list(runtype=cal_idx, start_date=t0, end_date=t1)
+            runlist_pfps = []
+            if pfp_idx is not None:
+                runlist_pfps = self.instrument.query_return_run_list(runtype=pfp_idx, start_date=t0, end_date=t1)
+
+            self.current_run_times = [
+                r + " (Cal)" if r in runlist_cals
+                else r + " (PFP)" if r in runlist_pfps
+                else r
+                for r in runlist
+            ]
 
         def normalize_timestamp(value):
             """Return pandas.Timestamp without tz info for reliable comparisons."""
@@ -2617,6 +2791,21 @@ class MainWindow(QMainWindow):
             if target is None:
                 return None
             target_str = str(target)
+            if self.instrument.inst_id == 'ie3':
+                # Direct label match first; otherwise treat target as a timestamp
+                # and find the chunk containing it.
+                for idx, label in enumerate(self.current_run_times):
+                    if label == target_str:
+                        return idx
+                target_ts = normalize_timestamp(target_str)
+                if target_ts is None:
+                    return None
+                period = _ie3_chunk_period(self._inst_cfg)
+                chunk_label, _s, _e = _ie3_chunk_for_timestamp(target_ts, period)
+                for idx, label in enumerate(self.current_run_times):
+                    if label == chunk_label:
+                        return idx
+                return None
             target_ts = normalize_timestamp(target_str)
             for idx, label in enumerate(self.current_run_times):
                 base = label.split(" (")[0]
@@ -2900,14 +3089,30 @@ class MainWindow(QMainWindow):
         self.autoscale_shortcuts.append(sc)
 
     def _save_current_gas_action(self) -> None:
-        """Save the current gas only when the legend button is active."""
+        """Save the current gas only when the legend button is active.
+        Flashes the legend button yellow during the upsert so the user has
+        visible feedback when the chunk is large and the save takes a moment.
+        """
         if not self.madechanges:
             return
         if getattr(self, "_save2db_text", None) is None:
             return
-        
+
+        # Flash the legend button yellow immediately, then defer the actual
+        # work to the next event-loop tick so the repaint lands first.
+        bbox = self._save2db_text.get_bbox_patch()
+        if bbox:
+            bbox.update(dict(facecolor="yellow", edgecolor="none", alpha=0.95))
+        self._save2db_text.set_color("black")
+        self.canvas.draw_idle()
+        self.canvas.flush_events()
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._perform_save_current_gas)
+
+    def _perform_save_current_gas(self) -> None:
+        """Actual save work; called via QTimer so the yellow flash is visible."""
         response_id = None
-        
+
         # 1. Try from selected_calc_curve (if set via combo box)
         if self.selected_calc_curve is not None and isinstance(self.calcurves, pd.DataFrame) and not self.calcurves.empty:
             match = self.calcurves.loc[self.calcurves['run_date'] == self.selected_calc_curve]
@@ -2936,6 +3141,8 @@ class MainWindow(QMainWindow):
 
         self.madechanges = False
         self.smoothing_changed = False
+        # gc_plot rebuilds the legend, so the yellow styling is replaced with
+        # the standard idle/changed colors as a side effect.
         self.gc_plot(self._current_yparam, sub_info='SAVED')
 
     def _setup_save_shortcuts(self):
@@ -2947,6 +3154,19 @@ class MainWindow(QMainWindow):
         sc = QShortcut(QKeySequence("S"), self)
         sc.activated.connect(self._save_current_gas_action)
         self.save_shortcuts.append(sc)
+
+        # Esc clears any active run_time zoom
+        esc = QShortcut(QKeySequence("Esc"), self)
+        esc.activated.connect(self._clear_run_time_zoom)
+        self.save_shortcuts.append(esc)
+
+    def _clear_run_time_zoom(self):
+        if self._zoom_run_time is None:
+            return
+        self._zoom_run_time = None
+        if not self.run.empty:
+            self.update_smoothing_combobox()
+            self.gc_plot(self._current_yparam or 'resp', sub_info='unzoomed')
 
     def _setup_analyte_shortcuts(self):
         """
@@ -2991,18 +3211,34 @@ class MainWindow(QMainWindow):
     def load_selected_run(self):
         # call sql load function from instrument class
         # all of the input parameters are set with UI controls.
+        start, end = self._current_load_dates()
         self.run = self.instrument.load_data(
             pnum=self.current_pnum,
             channel=self.current_channel,
             run_type_num=self.run_type_num,
-            start_date=self.current_run_time,
-            end_date=self.current_run_time
+            start_date=start,
+            end_date=end
         )
+
+        # Reload invalidates any prior run_time zoom (the target may not even
+        # be in the new dataset).
+        self._zoom_run_time = None
 
         self.update_smoothing_combobox()
         self.set_runtype_combo()
 
         self.madechanges = False
+
+    def _current_load_dates(self):
+        """Return (start_date, end_date) to pass to instrument.load_data().
+        For IE3 the current_run_time is a chunk label spanning a date range;
+        for other instruments it's a single GC run timestamp used for both ends.
+        """
+        if self.instrument.inst_id == 'ie3' and self.current_run_time:
+            start, end = _ie3_chunk_sql_range(self.current_run_time)
+            if start is not None:
+                return (start, end)
+        return (self.current_run_time, self.current_run_time)
 
     def update_smoothing_combobox(self):
         """
@@ -3021,7 +3257,15 @@ class MainWindow(QMainWindow):
 
         self.smoothing_cb.blockSignals(True)
         try:
-            dm = int(self.run["detrend_method_num"].iat[0])
+            if self._zoom_run_time is not None and 'run_time' in self.run.columns:
+                rt_col = pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+                zr = pd.Timestamp(self._zoom_run_time)
+                if zr.tzinfo is None:
+                    zr = zr.tz_localize('UTC')
+                vals = self.run.loc[rt_col == zr, 'detrend_method_num']
+                dm = int(vals.iat[0]) if len(vals) else int(self.run["detrend_method_num"].iat[0])
+            else:
+                dm = int(self.run["detrend_method_num"].iat[0])
             idx = detrend_to_index.get(dm, 2) # default to Lowess ~5 points
             self.smoothing_cb.setCurrentIndex(idx)
         except Exception as e:
@@ -3106,8 +3350,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Run Selected", "Please select a run first.")
             return
 
-        # Clean up run_time string (e.g., remove ' (Cal)')
-        run_time_str = self.current_run_time.split(" (")[0]
+        # IE3 chunk mode: pick a specific GC run_time inside the loaded chunk first
+        if self.instrument.inst_id == 'ie3':
+            run_time_str = self._pick_ie3_run_time_for_notes()
+            if not run_time_str:
+                return
+        else:
+            # Clean up run_time string (e.g., remove ' (Cal)')
+            run_time_str = self.current_run_time.split(" (")[0]
 
         # 1. Fetch existing notes
         query = (
@@ -3119,7 +3369,7 @@ class MainWindow(QMainWindow):
         current_notes = result[0]['notes'] if result and result[0]['notes'] else ""
 
         dialog = RunNotesDialog(run_time_str, current_notes, self)
-  
+
         if dialog.exec_() == QDialog.Accepted:
             new_notes = dialog.get_notes()
         else:
@@ -3143,6 +3393,48 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to save notes: {e}")
             print(f"Error saving run notes: {e}")
+
+    def _pick_ie3_run_time_for_notes(self):
+        """Show a sub-picker of GC run_times in the loaded chunk; return the chosen
+        timestamp string (YYYY-MM-DD HH:MM:SS) or None if cancelled."""
+        if self.run is None or self.run.empty:
+            QMessageBox.information(
+                self, "No Runs Loaded",
+                "No GC runs are loaded for this period. Adjust the date range and try again."
+            )
+            return None
+
+        run_times = (
+            pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+            .dropna()
+            .dt.tz_convert(None)
+            .sort_values()
+            .unique()
+        )
+        if len(run_times) == 0:
+            QMessageBox.information(self, "No Runs", "No run_times in the current chunk.")
+            return None
+
+        run_time_strs = [pd.Timestamp(rt).strftime('%Y-%m-%d %H:%M:%S') for rt in run_times]
+
+        placeholders = ','.join(['%s'] * len(run_time_strs))
+        notes_sql = f"""
+            SELECT run_time, notes FROM hats.ng_run_notes
+            WHERE inst_num = %s AND run_time IN ({placeholders});
+        """
+        notes_rows = self.instrument.db.doquery(
+            notes_sql, [self.instrument.inst_num, *run_time_strs]
+        ) or []
+        notes_map = {
+            pd.Timestamp(r['run_time']).strftime('%Y-%m-%d %H:%M:%S'):
+                (r['notes'] or '').strip()
+            for r in notes_rows
+        }
+
+        dialog = IE3RunPickerDialog(run_time_strs, notes_map, self)
+        if dialog.exec_() == QDialog.Accepted:
+            return dialog.selected_run_time()
+        return None
 
     def set_runtype_combo(self):
         """Set the combo box to the current run's run type."""
@@ -3259,6 +3551,38 @@ class MainWindow(QMainWindow):
         if not self.current_run_time:
             self.edit_notes_btn.setText("Add Run Notes")
             self.edit_notes_btn.setStyleSheet("background-color: #d3d3d3;") # lightgrey
+            return
+
+        if self.instrument.inst_id == 'ie3':
+            # Chunk mode: green if any GC run in the chunk has notes
+            if self.run is None or self.run.empty:
+                has_note = False
+            else:
+                rts = (
+                    pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+                    .dropna()
+                    .dt.tz_convert(None)
+                    .unique()
+                )
+                if len(rts) == 0:
+                    has_note = False
+                else:
+                    rt_strs = [pd.Timestamp(rt).strftime('%Y-%m-%d %H:%M:%S') for rt in rts]
+                    placeholders = ','.join(['%s'] * len(rt_strs))
+                    sql = (
+                        "SELECT 1 FROM hats.ng_run_notes "
+                        f"WHERE inst_num = %s AND run_time IN ({placeholders}) "
+                        "AND notes IS NOT NULL AND TRIM(notes) <> '' LIMIT 1;"
+                    )
+                    rows = self.instrument.db.doquery(
+                        sql, [self.instrument.inst_num, *rt_strs]
+                    ) or []
+                    has_note = bool(rows)
+            self.edit_notes_btn.setText(
+                "View/Edit Run Notes (n)" if has_note else "Add Run Notes (n)"
+            )
+            color = "#c3fada" if has_note else "#d3d3d3"
+            self.edit_notes_btn.setStyleSheet(f"background-color: {color};")
             return
 
         run_time_str = self.current_run_time.split(" (")[0]
@@ -3427,6 +3751,50 @@ class RunNotesDialog(QDialog):
 
     def get_notes(self):
         return self.text_edit.toPlainText()
+
+
+class IE3RunPickerDialog(QDialog):
+    """Pick a single GC run_time from the loaded chunk to view/edit its notes.
+    Run_times that already have notes are marked with a pencil glyph."""
+
+    def __init__(self, run_time_strs, notes_map, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select GC Run for Notes")
+        self.resize(380, 420)
+
+        self._run_time_strs = list(run_time_strs)
+        self._selected = None
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select a GC run to view/edit notes (✎ = has notes):"))
+
+        self.list_widget = QListWidget()
+        for rt in self._run_time_strs:
+            has_note = bool(notes_map.get(rt, "").strip())
+            label = f"{rt}    {'✎' if has_note else ''}".rstrip()
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, rt)
+            self.list_widget.addItem(item)
+        if self.list_widget.count():
+            self.list_widget.setCurrentRow(self.list_widget.count() - 1)
+        self.list_widget.itemDoubleClicked.connect(lambda _i: self.accept())
+        layout.addWidget(self.list_widget)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        ok_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogOkButton))
+        cancel_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogCancelButton))
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+    def selected_run_time(self):
+        item = self.list_widget.currentItem()
+        return item.data(Qt.UserRole) if item is not None else None
 
 
 class LOGOSAIWorker(QtCore.QObject):

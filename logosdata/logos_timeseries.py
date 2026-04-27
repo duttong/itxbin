@@ -2378,8 +2378,12 @@ class TimeseriesWidget(QWidget):
             self.main_window.runTypeCombo.blockSignals(False)
 
             # --- Continue with loading the run ---
+            # For IE3, set_runlist resolves the timestamp to a chunk label and
+            # leaves current_run_time correctly set; for other instruments the
+            # raw timestamp string is what other code expects.
             self.main_window.set_runlist(initial_date=t)
             self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            self.main_window.current_run_time = str(t)
+            if self.main_window.instrument.inst_id != 'ie3':
+                self.main_window.current_run_time = str(t)
             # no need for the apply button highlight
             self.main_window.apply_date_btn.setStyleSheet("")

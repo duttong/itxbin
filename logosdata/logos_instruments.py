@@ -2252,18 +2252,26 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         Propagate flags from df to all parameter rows sharing the same analysis_num.
         Overrides the base class which joins on ng_mole_fractions/ng_analysis (wrong tables for IE3).
+        Operates over every run_time present in df, so it is safe in monthly/half-monthly
+        chunk mode where df spans many GC runs.
         """
-        run_time = df['run_time'].iat[0]
+        if df.empty:
+            return
 
-        # 1. Clear all flags for this run_time
-        sql_clear = """
+        run_times = pd.Series(df['run_time'].unique()).dropna().tolist()
+        if not run_times:
+            return
+
+        # 1. Clear all flags for every run_time in the loaded chunk
+        rt_placeholders = ','.join(['%s'] * len(run_times))
+        sql_clear = f"""
             UPDATE hats.ng_insitu_mole_fractions m
             JOIN hats.ng_insitu_analysis a ON m.analysis_num = a.num
             SET m.flag = '...'
             WHERE a.inst_num = %s
-              AND a.run_time = %s;
+              AND a.run_time IN ({rt_placeholders});
         """
-        self.db.doquery(sql_clear, [self.inst_num, run_time])
+        self.db.doquery(sql_clear, [self.inst_num, *run_times])
 
         # 2. Apply 'M..' to flagged analysis_nums
         flagged = df.loc[df['data_flag'] == 'M..']
