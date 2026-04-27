@@ -15,6 +15,7 @@
 #   Stephen A. Montzka  NOAA/GML  (720) 295-9701  stephen.a.montzka@noaa.gov
 #
 # Co-Investigators:
+#   Isaac Vimont        NOAA/GML  (720) 295-0758  isaac.vimont@noaa.gov
 #   Scott Clingan       NOAA/GML  (720) 213-8818  scott.clingan@noaa.gov
 #   Geoff Dutton        NOAA/GML  (720) 466-3264  geoff.dutton@noaa.gov
 #
