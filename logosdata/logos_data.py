@@ -370,6 +370,7 @@ class MainWindow(QMainWindow):
         self._rect_selector = None
         self._pick_cid = None
         self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
+        self._ie3_exact_run_time = None  # pd.Timestamp for full IE3 carry-in run loads
         self._scatter_main = []
         self._current_yparam = None
         self._current_yvar = None
@@ -1266,6 +1267,9 @@ class MainWindow(QMainWindow):
         if self._zoom_run_time is not None:
             zr_str = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
             top_line = f"{zr_str}  (zoom in {self.current_run_time})"
+        elif self._ie3_exact_run_time is not None:
+            rt_str = pd.Timestamp(self._ie3_exact_run_time).strftime('%Y-%m-%d %H:%M:%S')
+            top_line = f"{rt_str}  (full run from {self.current_run_time})"
         else:
             top_line = f"{self.current_run_time}"
         main_title = "\n".join([
@@ -1302,11 +1306,41 @@ class MainWindow(QMainWindow):
                 .unique()
             )
 
+        chunk_start = None
+        carry_in_rt = None
+        if (self.instrument.inst_id == 'ie3'
+                and self._ie3_exact_run_time is None
+                and self.current_run_time):
+            try:
+                chunk_start, _chunk_end = _ie3_parse_chunk_label(self.current_run_time)
+            except Exception:
+                chunk_start = None
+            if chunk_start is not None and len(unique_rts) > 0:
+                prior_rts = [pd.Timestamp(rt) for rt in unique_rts if pd.Timestamp(rt) < chunk_start]
+                if prior_rts:
+                    carry_in_rt = max(prior_rts)
+
         self._run_time_lines = []
-        if len(unique_rts) > 1:
+        if len(unique_rts) > 1 or carry_in_rt is not None:
             ax.yaxis.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
             ax.xaxis.grid(False)
+            if carry_in_rt is not None:
+                line = ax.axvline(
+                    x=chunk_start,
+                    color='lightblue',
+                    linewidth=1.2,
+                    linestyle=(0, (8, 4)),
+                    alpha=0.95,
+                    zorder=0,
+                    picker=True,
+                )
+                line.set_pickradius(7)
+                line._rt = carry_in_rt
+                line._ie3_exact_load = True
+                self._run_time_lines.append(line)
             for rt in unique_rts:
+                if carry_in_rt is not None and pd.Timestamp(rt) == carry_in_rt:
+                    continue
                 line = ax.axvline(
                     x=rt,
                     color='lightblue',
@@ -1723,6 +1757,9 @@ class MainWindow(QMainWindow):
         if (not self.tagging_enabled
                 and isinstance(event.artist, Line2D)
                 and hasattr(event.artist, '_rt')):
+            if getattr(event.artist, '_ie3_exact_load', False):
+                self._load_ie3_exact_run_time(event.artist._rt)
+                return
             self._toggle_run_time_zoom(event.artist._rt)
             return
 
@@ -1767,6 +1804,19 @@ class MainWindow(QMainWindow):
             sub = f"zoomed to run_time {rt:%Y-%m-%d %H:%M:%S}"
         self.update_smoothing_combobox()
         self.gc_plot(self._current_yparam or 'resp', sub_info=sub)
+
+    def _load_ie3_exact_run_time(self, rt):
+        """Load a complete IE3 run_time group that crosses into the visible chunk."""
+        rt = pd.Timestamp(rt)
+        if rt.tzinfo is not None:
+            rt = rt.tz_convert(None) if rt.tz is not None else rt.tz_localize(None)
+        self._ie3_exact_run_time = rt
+        self._zoom_run_time = None
+        self.load_selected_run()
+        self.gc_plot(
+            self._current_yparam or 'resp',
+            sub_info=f"loaded full run_time {rt:%Y-%m-%d %H:%M:%S}",
+        )
 
     def _on_click_tooltip(self, event):
         """Show tooltip on left-click when tagging and navigation are off."""
@@ -2751,6 +2801,7 @@ class MainWindow(QMainWindow):
         return start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")
     
     def set_runlist(self, initial_date=None):
+        self._ie3_exact_run_time = None
         t0, t1 = self.get_load_range()
 
         # If runTypeCombo is set, filter the data by run_type_num
@@ -3164,18 +3215,24 @@ class MainWindow(QMainWindow):
         sc.activated.connect(self._save_current_gas_action)
         self.save_shortcuts.append(sc)
 
-        # Esc clears any active run_time zoom
+        # Esc returns from narrowed IE3 views to the selected chunk.
         esc = QShortcut(QKeySequence("Esc"), self)
         esc.activated.connect(self._clear_run_time_zoom)
         self.save_shortcuts.append(esc)
 
     def _clear_run_time_zoom(self):
-        if self._zoom_run_time is None:
+        had_zoom = self._zoom_run_time is not None
+        had_exact_ie3_run = self._ie3_exact_run_time is not None
+        if not had_zoom and not had_exact_ie3_run:
             return
         self._zoom_run_time = None
+        self._ie3_exact_run_time = None
+        if had_exact_ie3_run:
+            self.load_selected_run()
         if not self.run.empty:
             self.update_smoothing_combobox()
-            self.gc_plot(self._current_yparam or 'resp', sub_info='unzoomed')
+            sub = 'returned to chunk' if had_exact_ie3_run else 'unzoomed'
+            self.gc_plot(self._current_yparam or 'resp', sub_info=sub)
 
     def _setup_analyte_shortcuts(self):
         """
@@ -3243,6 +3300,9 @@ class MainWindow(QMainWindow):
         For IE3 the current_run_time is a chunk label spanning a date range;
         for other instruments it's a single GC run timestamp used for both ends.
         """
+        if self.instrument.inst_id == 'ie3' and self._ie3_exact_run_time is not None:
+            rt = pd.Timestamp(self._ie3_exact_run_time).strftime('%Y-%m-%d %H:%M:%S')
+            return (rt, rt)
         if self.instrument.inst_id == 'ie3' and self.current_run_time:
             start, end = _ie3_chunk_sql_range(self.current_run_time)
             if start is not None:
@@ -3339,6 +3399,8 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.current_run_times):
             return
         self.current_run_time = self.current_run_times[index]
+        self._ie3_exact_run_time = None
+        self._zoom_run_time = None
 
         # If Calibration plot is active but the new run is not a calibration run,
         # switch to the Response plot to prevent a crash.
