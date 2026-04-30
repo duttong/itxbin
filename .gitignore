@@ -1,6 +1,6 @@
 __py*
 
-.env
+.*
 
 *.png
 !logosdata/assets/*.png
@@ -10,6 +10,11 @@ cfc113a/
 hats_receptors/*
 
 pr1/
+Perseus_Scripts/
+
+coredata/
+FE3data/
+backup/
 
 unused/
 hatsdb.py
