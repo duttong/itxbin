@@ -489,6 +489,7 @@ class MainWindow(QMainWindow):
 
         self.tagging_enabled = False
         self.tag_options = []
+        self._all_tag_names = {}
         self.selected_tag = None
         self._last_selected_tag_num = 141
         self._highlighted_point = {}
@@ -833,15 +834,15 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.setMinimumWidth(260)
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
         tag_layout.addWidget(self.tag_select_cb)
-        self.hide_flagged_cb = QCheckBox("Hide Rejected Data")
-        self.hide_flagged_cb.setChecked(False)
-        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
-        tag_layout.addWidget(self.hide_flagged_cb)
         self._multi_tag_btn = QPushButton("Multi-Tag")
         self._multi_tag_btn.setCheckable(True)
         self._multi_tag_btn.setToolTip("Open floating panel to view/edit all tags for a selected point")
         self._multi_tag_btn.toggled.connect(self._on_multi_tag_btn_toggled)
         tag_layout.addWidget(self._multi_tag_btn)
+        self.hide_flagged_cb = QCheckBox("Hide Rejected Data")
+        self.hide_flagged_cb.setChecked(False)
+        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
+        tag_layout.addWidget(self.hide_flagged_cb)
         processing_layout.addWidget(tag_gb)
         self.populate_tag_selector()
 
@@ -1093,6 +1094,17 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.blockSignals(True)
         self.tag_select_cb.clear()
         self.tag_options = []
+        # Full lookup for tooltips — includes auto-tags excluded from the combobox.
+        try:
+            all_rows = self.instrument.db.doquery("""
+                SELECT tag_num, display_name
+                FROM ccgg.tag_view
+                WHERE hats_ng = 1
+                ORDER BY hats_sort;
+            """)
+            self._all_tag_names = {int(r["tag_num"]): r["display_name"] or "" for r in (all_rows or [])}
+        except Exception:
+            self._all_tag_names = {}
         try:
             rows = self.instrument.db.doquery("""
                 SELECT tag_num, internal_flag, display_name, reject
@@ -2248,6 +2260,20 @@ class MainWindow(QMainWindow):
                 parts.append(f"<b>Loop Pressure:</b> {loop_pressure} mbar")
             if not _is_blank(loop_flow):
                 parts.append(f"<b>Loop Flow:</b> {loop_flow} cc/min")
+
+            # Applied tags — look up via DB
+            try:
+                df_index = getattr(artist, "_df_index", None)
+                row_idx = df_index[nearest_idx] if df_index is not None else self.run.index[nearest_idx]
+                mf_nums = self._mole_fraction_nums_for_indices([row_idx])
+                applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
+                tag_names = getattr(self, "_all_tag_names", {})
+                for tnum in sorted(applied):
+                    desc = tag_names.get(tnum, f"tag {tnum}")
+                    short = " ".join(desc.split()[:5])
+                    parts.append(f"<b>Tag:</b> {short}")
+            except Exception:
+                pass
 
             # Combine for tooltip
             text = "<br>".join(parts)
