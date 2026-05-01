@@ -18,6 +18,9 @@
 | M4 (mass spec) | 192 | `m4` |
 | FE3 (flask ECD) | 193 | `fe3` |
 | BLD1 | 220 | `bld1` |
+| PR1 (Perseus 1) | 58 | `pr1` |
+| PR2 (Perseus 2) | 238 | `pr2` |
+| Perseus combined tanks view | 58/238 | `prs` |
 | IE3 | 236 | `ie3` |
 
 | Compound | parameter_num |
@@ -29,12 +32,18 @@
 
 - `hats.ng_data_processing_view` — main analysis view (areas, normalized
   responses, mole fractions, run metadata)
+- `hats.ng_insitu_data_view` — IE3 analysis/mole-fraction view with
+  `rejected`, `rej_flags`, and `background`; used by
+  `IE3_Instrument.load_data()`
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
+- `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions
+- `hats.ng_insitu_mole_fraction_tags` — tag table for IE3 mole fractions
 - `hats.calibrations` — per-run aggregated tank calibration values (avg
   mole fraction, stddev, n, run_number, scale_num) keyed on
   `(serial_number, date, time, species, inst, parameter_num)`; kept current
-  by `upsert_calibrations()` (see below); read by the Tanks tab in logos_data
+  by `upsert_calibrations()` (see below); read by the Tanks tab in logos_data.
+  Tank plots filter out sentinel values with `mixratio <= -99`.
 - `hats.ng_cfc113a` — M4 molar response factors (R1–R4) for CFC-113/113a
   deconvolution, windowed by reference tank and date
 - `hats.scale_assignments` — calibration scale coefficients (coef0, coef1)
@@ -70,8 +79,25 @@ LOGOS_Instruments
         ├── M4_Instrument      # inst_num=192, scale-value mole fractions
         ├── FE3_Instrument     # inst_num=193, polynomial response inversion
         ├── IE3_Instrument     # inst_num=236
+        ├── Perseus_Instrument # inst_id=prs, PR1/PR2 tank facade
         └── BLD1_Instrument    # inst_num=220
 ```
+
+`Perseus_Instrument` is currently for tanks/calibrations. It uses PR1
+analytes from `hats.analyte_list` and queries calibration records for both
+`PR1` and `PR2`.
+
+## Tagging / rejection model
+
+- Current NG rejection state comes from tag tables, not the legacy
+  three-character `flag` columns.
+- `rejected` is the dataframe column used by `logos_data`, `logos_timeseries`,
+  and `logos_tanks` filtering.
+- Manual reject tags default to `tag_num=141`.
+- GCwerks reject tags use `tag_num=324`; GCwerks DB loaders synchronize this
+  tag for the rows in the current flagged export by deleting stale 324 tags and
+  reinserting current ones.
+- M4 first-reference tags use `tag_num=316`.
 
 ## IE3 in-situ timeseries (logos_timeseries.py)
 
@@ -95,3 +121,11 @@ LOGOS_Instruments
   be correctly computed before saving
 - For M4 CFC-113/113a, the GUI recalc paths load the partner pnum from DB
   internally; authoritative recalc should be done with `m4_batch.py -p 32 -i`
+
+## logos_tanks.py / logos_tanks
+
+- Standalone launcher: `logos_tanks [instrument]`
+- Valid direct-launch instruments: `m4`, `fe3`, `bld1`, `prs`
+- If omitted, the default instrument is read from `~/.logos-tanks.conf` as
+  JSON key `default_inst`; if missing, the launcher prompts once and saves it.
+- The same config file stores saved tank sets under `sets_by_analyte`.

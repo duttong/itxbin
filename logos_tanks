@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+"""Launcher for the logos_tanks GUI.
+
+Usage:
+    logos_tanks [instrument]
+
+    instrument  One of: m4, fe3, bld1, prs
+
+If instrument is omitted, logos_tanks uses default_inst from
+~/.logos-tanks.conf. If no default is saved, it prompts once and stores it.
+"""
+
+import os
+import runpy
+import sys
+
+os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_logosdata = os.path.join(_here, "logosdata")
+if _logosdata not in sys.path:
+    sys.path.insert(0, _logosdata)
+
+_target = os.path.join(_logosdata, "logos_tanks.py")
+sys.argv[0] = "logos_tanks"
+runpy.run_path(_target, run_name="__main__")

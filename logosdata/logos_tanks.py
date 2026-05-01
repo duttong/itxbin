@@ -35,18 +35,43 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
 MAX_SAVED_SETS = 5
 
 
+def _read_config() -> dict:
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_config(data: dict) -> None:
+    with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, sort_keys=True)
+
+
 class TanksPlotter:
         
-    def __init__(self, db, inst_num):
+    def __init__(self, db, inst_num, calibration_inst_ids=None):
         self.db = db
         self.inst_num = inst_num
+        self.calibration_inst_ids = calibration_inst_ids
 
     def _active_tanks_dataframe(self, start_year, end_year) -> pd.DataFrame:
         """Return raw DataFrame of active tanks across all analytes for a window."""
         start_ts = f"{start_year}-01-01"
         end_ts = f"{end_year + 1}-01-01"
         
-        inst_map = {193: "fe3", 192: "m4", 220: "bld1", 236: "ie3"}
+        inst_map = {193: "fe3", 192: "m4", 220: "bld1", 236: "ie3", 58: "pr1", 238: "pr2"}
+        calibration_inst_ids = self.calibration_inst_ids or (inst_map.get(self.inst_num, ""),)
+        inst_list = ",".join(
+            f"'{str(inst).replace(chr(39), chr(39) + chr(39))}'"
+            for inst in calibration_inst_ids
+            if inst
+        )
+        if not inst_list:
+            return pd.DataFrame()
 
         fills_sql_old = f"""
             SELECT
@@ -80,7 +105,9 @@ class TanksPlotter:
                     WHERE f2.serial_number = c.serial_number
                     AND f2.`date` <= c.date
                 )
-            WHERE inst = '{inst_map.get(self.inst_num, "")}'
+            WHERE inst IN ({inst_list})
+            AND c.mixratio IS NOT NULL
+            AND c.mixratio > -99
             AND c.date > '{start_ts}'
             AND c.date <  '{end_ts}';
         """
@@ -192,7 +219,14 @@ class TanksWidget(QWidget):
         super().__init__(parent)
         self.instrument = instrument
         self.main_window = self.parent()
-        self.tanks_plotter = TanksPlotter(self.instrument.db, self.instrument.inst_num) if self.instrument else None
+        self.tanks_plotter = (
+            TanksPlotter(
+                self.instrument.db,
+                self.instrument.inst_num,
+                getattr(self.instrument, "calibration_inst_ids", None),
+            )
+            if self.instrument else None
+        )
         self.tank_checks: list[QCheckBox] = []
         self.analyte_checks: list[QCheckBox] = []
         self._ready = False
@@ -697,11 +731,8 @@ class TanksWidget(QWidget):
     # --- Tank set persistence helpers ---
     def _load_saved_sets(self):
         """Load saved tank sets from disk."""
-        if not os.path.exists(CONFIG_PATH):
-            return
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+            data = _read_config()
             sets_by_analyte = {}
             if isinstance(data, dict) and isinstance(data.get("sets_by_analyte"), dict):
                 for key, lst in data["sets_by_analyte"].items():
@@ -731,10 +762,10 @@ class TanksWidget(QWidget):
 
     def _persist_sets(self):
         """Persist saved sets to a JSON config."""
-        payload = {"sets_by_analyte": self.saved_sets}
+        payload = _read_config()
+        payload["sets_by_analyte"] = self.saved_sets
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
+            _write_config(payload)
         except Exception:
             # Silent failure to avoid UI crash; caller may re-attempt.
             return
@@ -1125,7 +1156,17 @@ class TanksWidget(QWidget):
     ) -> pd.DataFrame:
         """Query calibration mole fractions for a tank/parameter from hats.calibrations."""
         serial_safe = str(serial).replace("'", "''")
-        inst_upper = str(inst_id).upper().replace("'", "''")
+        calibration_inst_ids = getattr(self.instrument, "calibration_inst_ids", None)
+        if calibration_inst_ids:
+            inst_filter = "c.inst IN ({})".format(
+                ",".join(
+                    f"'{str(inst).upper().replace(chr(39), chr(39) + chr(39))}'"
+                    for inst in calibration_inst_ids
+                )
+            )
+        else:
+            inst_upper = str(inst_id).upper().replace("'", "''")
+            inst_filter = f"c.inst = '{inst_upper}'"
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
@@ -1135,9 +1176,10 @@ class TanksWidget(QWidget):
                 c.run_number
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
-              AND c.inst = '{inst_upper}'
+              AND {inst_filter}
               AND c.parameter_num = {int(parameter_num)}
               AND c.mixratio IS NOT NULL
+              AND c.mixratio > -99
               AND c.mixratio != 0
               AND c.num >= 3
             ORDER BY c.date, c.time;
@@ -1605,10 +1647,41 @@ if __name__ == "__main__":
     from PyQt5.QtWidgets import QApplication
 
     try:
-        from logos_instruments import M4_Instrument, FE3_Instrument, BLD1_Instrument
+        from logos_instruments import M4_Instrument, FE3_Instrument, BLD1_Instrument, Perseus_Instrument
     except Exception as exc:  # pragma: no cover - import-time failure path
         print(f"Could not import instrument classes: {exc}", file=sys.stderr)
-        M4_Instrument = FE3_Instrument = BLD1_Instrument = None  # type: ignore
+        M4_Instrument = FE3_Instrument = BLD1_Instrument = Perseus_Instrument = None  # type: ignore
+
+    VALID_INSTRUMENTS = ["m4", "fe3", "bld1", "prs"]
+
+    def _default_instrument() -> str | None:
+        inst = _read_config().get("default_inst")
+        return str(inst).lower() if inst else None
+
+    def _save_default_instrument(inst_key: str) -> None:
+        data = _read_config()
+        data["default_inst"] = inst_key
+        try:
+            _write_config(data)
+        except Exception as exc:
+            print(f"Could not save default_inst to {CONFIG_PATH}: {exc}", file=sys.stderr)
+
+    def _prompt_and_save_instrument() -> str:
+        opts = ", ".join(VALID_INSTRUMENTS)
+        while True:
+            try:
+                choice = input(
+                    f"No default instrument set.\n"
+                    f"Choose one [{opts}]: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                sys.exit(1)
+            if choice in VALID_INSTRUMENTS:
+                _save_default_instrument(choice)
+                print(f"Saved default_inst = {choice} to {CONFIG_PATH}")
+                return choice
+            print(f'  Invalid choice "{choice}". Pick from: {opts}')
 
     def build_instrument(inst_key: str):
         """Factory to build an instrument by key, with fallback."""
@@ -1617,6 +1690,7 @@ if __name__ == "__main__":
             "m4": M4_Instrument,
             "fe3": FE3_Instrument,
             "bld1": BLD1_Instrument,
+            "prs": Perseus_Instrument,
         }
         cls = class_map.get(inst_key)
         if cls is None:
@@ -1628,23 +1702,27 @@ if __name__ == "__main__":
             print(f"Failed to initialize {cls.__name__}: {exc}", file=sys.stderr)
             return None
 
-    parser = argparse.ArgumentParser(description="TanksWidget test harness")
+    parser = argparse.ArgumentParser(prog="logos_tanks", description="TanksWidget test harness")
     parser.add_argument(
-        "-i",
-        "--instrument",
-        choices=["m4", "fe3", "bld1"],
-        default="m4",
-        help="Instrument to load (default: m4)",
+        "instrument",
+        nargs="?",
+        choices=VALID_INSTRUMENTS,
+        help=f"Instrument to load: {VALID_INSTRUMENTS}. Defaults to default_inst in {CONFIG_PATH}.",
     )
     args = parser.parse_args()
+    inst_key = args.instrument or _default_instrument()
+    if inst_key not in VALID_INSTRUMENTS:
+        inst_key = _prompt_and_save_instrument()
+    elif args.instrument:
+        _save_default_instrument(inst_key)
 
     app = QApplication(sys.argv)
-    instrument = build_instrument(args.instrument)
+    instrument = build_instrument(inst_key)
     if instrument is None:
         print("Could not initialize instrument; exiting.", file=sys.stderr)
         sys.exit(1)
     widget = TanksWidget(instrument=instrument)
-    widget.setWindowTitle(f"TanksWidget Test Harness ({args.instrument.upper()})")
+    widget.setWindowTitle(f"TanksWidget Test Harness ({inst_key.upper()})")
     widget.resize(320, 420)
     widget.show()
     sys.exit(app.exec_())

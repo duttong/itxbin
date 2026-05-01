@@ -10,7 +10,15 @@ import time
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 class LOGOS_Instruments:
-    INSTRUMENTS = {'m4': 192, 'fe3': 193, 'bld1': 220, 'pr1': 58, 'ie3': 236} 
+    INSTRUMENTS = {
+        'm4': 192,
+        'fe3': 193,
+        'bld1': 220,
+        'pr1': 58,
+        'pr2': 238,
+        'prs': 58,
+        'ie3': 236,
+    }
     
     LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
@@ -2349,6 +2357,35 @@ class IE3_Instrument(HATS_DB_Functions):
         df['port_color'] = df['port'].map(port_colors).fillna('gray')
 
         return df
+
+
+class Perseus_Instrument(HATS_DB_Functions):
+    """Combined Perseus PR1/PR2 instrument facade for tank/calibration tools."""
+
+    def __init__(self):
+        super().__init__(inst_id='pr1')
+        self.inst_id = 'prs'
+        self.inst_num = self.INSTRUMENTS['pr1']
+        self.inst_nums = (self.INSTRUMENTS['pr1'], self.INSTRUMENTS['pr2'])
+        self.calibration_inst_ids = ('PR1', 'PR2')
+        self.start_date = '20100101'
+        self.analytes = self.query_analytes()
+        self.molecules = self.analytes.keys()
+        self.analytes_inv = {v: k for k, v in self.analytes.items()}
+
+    def query_analytes(self):
+        """Use the PR1 analyte list for the combined Perseus system."""
+        sql = f"""
+            SELECT param_num, channel, display_name
+            FROM hats.analyte_list
+            WHERE inst_num = {self.INSTRUMENTS['pr1']};
+        """
+        df = pd.DataFrame(self.doquery(sql))
+        if df.empty:
+            return {}
+        return dict(zip(df['display_name'], df['param_num']))
+
+
 class BLD1_Instrument(HATS_DB_Functions):
     """ Class for accessing BLD1 (Stratcore) specific functions in the HATS database. """
     
