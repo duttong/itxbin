@@ -1226,7 +1226,7 @@ class MainWindow(QMainWindow):
             f"SELECT DISTINCT tag_num FROM {tag_table} WHERE {tag_key} IN ({placeholders});",
             list(mf_nums),
         )
-        return {int(r["tag_num"]) for r in rows}
+        return {int(r["tag_num"]) for r in (rows or [])}
 
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
