@@ -352,25 +352,31 @@ class FE3_Prepare(fe3_inst):
             for r in rows
         }
 
-        # 4) Bulk upsert ng_mole_fractions (insert new, update existing)
-        # I need to add qc status and flags to this insert
+        # 4) Bulk upsert ng_mole_fractions (insert new, update existing).
+        # GCwerks reject flags are stored as tags below.
         mole_sql = """
             INSERT INTO hats.ng_mole_fractions (
               analysis_num,
               parameter_num,
               channel,
-              flag,
               height,
               area,
               retention_time
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-              flag           = IF(VALUES(flag) = 'W..', 'W..', flag),
               height         = VALUES(height),
               area           = VALUES(area),
               retention_time = VALUES(retention_time)
         """
+        tag_sql = """
+            INSERT IGNORE INTO hats.ng_mole_fraction_tags (
+                ng_mole_fraction_num,
+                tag_num
+            ) VALUES (%s, %s)
+        """
         mole_params = []
+        all_keys = set()
+        flagged_keys = set()
         params = self.query_analytes()
         for r in df.itertuples(index=False):
             analysis_num = existing[r.analysis_time_str]
@@ -383,12 +389,54 @@ class FE3_Prepare(fe3_inst):
                     area   = getattr(r, f"{key}_area")
                     rt     = getattr(r, f"{key}_rt")
                     flagged = bool(getattr(r, f"{key}_flag", False))
-                    flag = 'W..' if flagged else '...'
-                    mole_params.append((analysis_num, param, ch, flag, height, area, rt))
+                    mole_params.append((analysis_num, param, ch, height, area, rt))
+                    all_keys.add((analysis_num, param, ch))
+                    if flagged:
+                        flagged_keys.add((analysis_num, param, ch))
 
         for i in range(0, len(mole_params), batch_size):
             batch = mole_params[i : i + batch_size]
             self.db.doMultiInsert(mole_sql, batch, all=True)
+
+        if self.flagged and all_keys:
+            keys = sorted(all_keys)
+            for i in range(0, len(keys), batch_size):
+                chunk = keys[i : i + batch_size]
+                terms = []
+                select_params = []
+                for analysis_num, param, ch in chunk:
+                    terms.append("(mf.analysis_num = %s AND mf.parameter_num = %s AND mf.channel = %s)")
+                    select_params.extend([analysis_num, param, ch])
+                delete_sql = f"""
+                    DELETE t
+                    FROM hats.ng_mole_fraction_tags t
+                    JOIN hats.ng_mole_fractions mf
+                        ON t.ng_mole_fraction_num = mf.num
+                    WHERE t.tag_num = 324
+                      AND ({' OR '.join(terms)})
+                """
+                self.db.doquery(delete_sql, select_params)
+
+        if flagged_keys:
+            tag_params = []
+            keys = sorted(flagged_keys)
+            for i in range(0, len(keys), batch_size):
+                chunk = keys[i : i + batch_size]
+                terms = []
+                select_params = []
+                for analysis_num, param, ch in chunk:
+                    terms.append("(analysis_num = %s AND parameter_num = %s AND channel = %s)")
+                    select_params.extend([analysis_num, param, ch])
+                rows = self.db.doquery(
+                    f"SELECT num FROM hats.ng_mole_fractions WHERE {' OR '.join(terms)}",
+                    select_params,
+                )
+                tag_params.extend((r["num"], 324) for r in rows)
+                if len(tag_params) >= batch_size:
+                    self.db.doMultiInsert(tag_sql, tag_params, all=True)
+                    tag_params = []
+            if tag_params:
+                self.db.doMultiInsert(tag_sql, tag_params, all=True)
                
     def upsert_ng_analysis(df_slice):
         """ Use this method manually if there is a problem with ng_analysis """

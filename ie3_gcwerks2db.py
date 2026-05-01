@@ -216,6 +216,7 @@ class IE3_GCwerks2DB:
             print(f"Warning: missing analyte mapping for {missing}")
 
         params = []
+        all_keys = set()
         flagged_keys = set()
         for r in df.itertuples(index=False):
             analysis_num = analysis_map.get(r.analysis_time_str)
@@ -243,6 +244,7 @@ class IE3_GCwerks2DB:
                     rt = None
                 flagged = bool(getattr(r, flag_col, False))
                 params.append((analysis_num, param, channel, ht, area, rt))
+                all_keys.add((analysis_num, param, channel))
                 if flagged:
                     flagged_keys.add((analysis_num, param, channel))
 
@@ -252,6 +254,25 @@ class IE3_GCwerks2DB:
 
         if params:
             self.db.doMultiInsert(mole_sql, params, all=True)
+
+        if self.flagged and all_keys:
+            keys = sorted(all_keys)
+            for i in range(0, len(keys), batch_size):
+                chunk = keys[i : i + batch_size]
+                where_terms = []
+                query_params = []
+                for analysis_num, param, channel in chunk:
+                    where_terms.append("(m.analysis_num = %s AND m.parameter_num = %s AND m.channel = %s)")
+                    query_params.extend([analysis_num, param, channel])
+                delete_sql = f"""
+                    DELETE t
+                    FROM hats.ng_insitu_mole_fraction_tags t
+                    JOIN hats.ng_insitu_mole_fractions m
+                        ON t.ng_insitu_mole_fraction_num = m.num
+                    WHERE t.tag_num = 324
+                      AND ({' OR '.join(where_terms)})
+                """
+                self.db.doquery(delete_sql, query_params)
 
         if flagged_keys:
             tag_params = []

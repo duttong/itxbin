@@ -87,6 +87,7 @@ class M4_GCwerks(M4_Instrument):
         Inserts or updates rows in hats.ng_mole_fractions using a batch upsert.
         This function uses db.doMultiInsert to perform the insertions.
         NOTE: detrend_method_num is hardcoded to 2 (Lowess) and qc_status is set to "P" (Preliminary).
+        GCwerks reject flags are stored as tag_num=324 in hats.ng_mole_fraction_tags.
         """
         sql_insert = """
             INSERT INTO hats.ng_mole_fractions (
@@ -96,20 +97,26 @@ class M4_GCwerks(M4_Instrument):
                 height,
                 retention_time,
                 detrend_method_num,
-                qc_status,
-                flag
+                qc_status
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
-                flag           = IF(VALUES(flag) = 'W..', 'W..', flag),
                 area           = VALUES(area),
                 height         = VALUES(height),
                 retention_time = VALUES(retention_time)
             """
+        tag_insert = """
+            INSERT IGNORE INTO hats.ng_mole_fraction_tags (
+                ng_mole_fraction_num,
+                tag_num
+            ) VALUES (%s, %s)
+            """
 
         df = df.fillna('')
         params = []
+        all_keys = set()
+        flagged_keys = set()
 
         for _, row in df.iterrows():
             p = (
@@ -119,10 +126,12 @@ class M4_GCwerks(M4_Instrument):
                 row.ht,              # height
                 row.rt,              # retention time
                 2,                   # detrend method number (default to 2 = Lowess)
-                "P",                 # Preliminary QC status flag
-                "W.." if bool(getattr(row, 'gcwerks_flag', False)) else "..."
+                "P"                  # Preliminary QC status flag
             )
             params.append(p)
+            all_keys.add((row.analysis_num, row.pnum))
+            if bool(getattr(row, 'gcwerks_flag', False)):
+                flagged_keys.add((row.analysis_num, row.pnum))
 
             if self.db.doMultiInsert(sql_insert, params): 
                 params=[]
@@ -130,12 +139,80 @@ class M4_GCwerks(M4_Instrument):
         # Process any remaining rows in the final batch:
         self.db.doMultiInsert(sql_insert, params, all=True)
 
+        if self.flagged and all_keys:
+            keys = sorted(all_keys)
+            for i in range(0, len(keys), 500):
+                chunk = keys[i : i + 500]
+                terms = []
+                select_params = []
+                for analysis_num, pnum in chunk:
+                    terms.append("(mf.analysis_num = %s AND mf.parameter_num = %s)")
+                    select_params.extend([analysis_num, pnum])
+                delete_sql = f"""
+                    DELETE t
+                    FROM hats.ng_mole_fraction_tags t
+                    JOIN hats.ng_mole_fractions mf
+                        ON t.ng_mole_fraction_num = mf.num
+                    WHERE t.tag_num = 324
+                      AND ({' OR '.join(terms)})
+                """
+                self.db.doquery(delete_sql, select_params)
+
+        if flagged_keys:
+            tag_params = []
+            keys = sorted(flagged_keys)
+            for i in range(0, len(keys), 500):
+                chunk = keys[i : i + 500]
+                terms = []
+                select_params = []
+                for analysis_num, pnum in chunk:
+                    terms.append("(analysis_num = %s AND parameter_num = %s)")
+                    select_params.extend([analysis_num, pnum])
+                rows = self.db.doquery(
+                    f"SELECT num FROM hats.ng_mole_fractions WHERE {' OR '.join(terms)}",
+                    select_params,
+                )
+                tag_params.extend((r["num"], 324) for r in rows)
+                if len(tag_params) >= 500:
+                    self.db.doMultiInsert(tag_insert, tag_params, all=True)
+                    tag_params = []
+            if tag_params:
+                self.db.doMultiInsert(tag_insert, tag_params, all=True)
+
     def flag_first_reference_run(self, start_time, end_time):
-        """Flag the first reference run in each run_time group after mole fractions exist."""
+        """Tag the first reference run in each run_time group after mole fractions exist."""
         start_str = pd.to_datetime(start_time).strftime('%Y-%m-%d %H:%M:%S')
         end_str = pd.to_datetime(end_time).strftime('%Y-%m-%d %H:%M:%S')
 
         sql = f"""
+            INSERT IGNORE INTO hats.ng_mole_fraction_tags (
+                ng_mole_fraction_num,
+                tag_num
+            )
+            SELECT mf.num, 316
+            FROM hats.ng_mole_fractions mf
+            JOIN hats.ng_analysis a
+            ON mf.analysis_num = a.num
+            JOIN (
+                SELECT
+                    run_time,
+                    MIN(analysis_time) AS first_analysis_time
+                FROM hats.ng_analysis
+                WHERE inst_num = {self.inst_num}
+                AND run_type_num = 8
+                AND analysis_time BETWEEN '{start_str}' AND '{end_str}'
+                GROUP BY run_time
+            ) firsts
+            ON a.run_time = firsts.run_time
+            AND a.analysis_time = firsts.first_analysis_time
+            WHERE a.inst_num = {self.inst_num}
+            AND a.run_type_num = 8
+            AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}'
+            AND mf.qc_status = 'P';
+        """
+        self.db.doquery(sql)
+
+        qc_sql = f"""
             UPDATE hats.ng_mole_fractions mf
             JOIN hats.ng_analysis a
             ON mf.analysis_num = a.num
@@ -151,14 +228,13 @@ class M4_GCwerks(M4_Instrument):
             ) firsts
             ON a.run_time = firsts.run_time
             AND a.analysis_time = firsts.first_analysis_time
-            SET mf.flag = 'X..',
-                mf.qc_status = 'F'
+            SET mf.qc_status = 'F'
             WHERE a.inst_num = {self.inst_num}
             AND a.run_type_num = 8
             AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}'
             AND mf.qc_status = 'P';
         """
-        self.db.doquery(sql)
+        self.db.doquery(qc_sql)
 
 
 def get_default_date():
@@ -184,7 +260,7 @@ def main():
     parser.add_argument('-m', '--molecules', type=str, default=m4.molecules,
                         help='Comma-separated list of molecules. Add quotes around the list if spaces are used. Default all molecules.')
     parser.add_argument('-x', '--extract', action='store_true', help='Re-extract data from GCwerks first.')
-    parser.add_argument('--flagged', action='store_true', help='Use flagged GCwerks exports and set flag=W.. when indicated.')
+    parser.add_argument('--flagged', action='store_true', help='Use flagged GCwerks exports and add tag_num=324 when indicated.')
     parser.add_argument('--list', action='store_true', help='List all available molecule names.')
 
     args = parser.parse_args()

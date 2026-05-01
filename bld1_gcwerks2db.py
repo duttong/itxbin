@@ -301,7 +301,12 @@ def stratcore_to_hats_analysis(df_analysis: pd.DataFrame, batch_size: int = 500)
     print(f"✅ Upsert complete for Stratcore ({inst_num}). {len(mapping)} rows confirmed in hats.ng_analysis.")
     return mapping
 
-def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, batch_size: int = 500):
+def stratcore_to_hats_molefractions(
+    df_tidy: pd.DataFrame,
+    analysis_map: dict,
+    flagged: bool = False,
+    batch_size: int = 500,
+):
     """
     Bulk upsert Stratcore gas-level data into hats.ng_mole_fractions.
 
@@ -318,19 +323,23 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
             parameter_num,
             channel,
             detrend_method_num,
-            flag,
             height,
             retention_time,
             area
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
-            flag               = IF(VALUES(flag) = 'W..', 'W..', flag),
             height             = VALUES(height),
             retention_time     = VALUES(retention_time),
             area               = VALUES(area),
             detrend_method_num = VALUES(detrend_method_num);
+    """
+    tag_sql = """
+        INSERT IGNORE INTO hats.ng_mole_fraction_tags (
+            ng_mole_fraction_num,
+            tag_num
+        ) VALUES (%s, %s)
     """
 
     def safe(x):
@@ -340,6 +349,8 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
         return x
 
     mole_params = []
+    all_keys = set()
+    flagged_keys = set()
     for r in df.itertuples(index=False):
         analysis_num = analysis_map.get(r.analysis_time.strftime('%Y-%m-%d %H:%M:%S'))
         if analysis_num is None:
@@ -350,15 +361,57 @@ def stratcore_to_hats_molefractions(df_tidy: pd.DataFrame, analysis_map: dict, b
             int(r.pnum),                                # parameter_num
             r.channel,                                  # channel ('a'/'b')
             2,                                          # detrend_method_num (2 = lowess)
-            'W..' if bool(r.flag) else '...',           # flag
             safe(r.ht),                                 # height
             safe(r.rt),                                 # retention_time
             safe(r.area),                               # area
         ))
+        all_keys.add((analysis_num, int(r.pnum), r.channel))
+        if bool(r.flag):
+            flagged_keys.add((analysis_num, int(r.pnum), r.channel))
 
     for i in range(0, len(mole_params), batch_size):
         batch = mole_params[i:i + batch_size]
         bld1.db.doMultiInsert(mole_sql, batch, all=True)
+
+    if flagged and all_keys:
+        keys = sorted(all_keys)
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i:i + batch_size]
+            terms = []
+            params = []
+            for analysis_num, pnum, channel in chunk:
+                terms.append("(mf.analysis_num = %s AND mf.parameter_num = %s AND mf.channel = %s)")
+                params.extend([analysis_num, pnum, channel])
+            delete_sql = f"""
+                DELETE t
+                FROM hats.ng_mole_fraction_tags t
+                JOIN hats.ng_mole_fractions mf
+                    ON t.ng_mole_fraction_num = mf.num
+                WHERE t.tag_num = 324
+                  AND ({' OR '.join(terms)})
+            """
+            bld1.db.doquery(delete_sql, params)
+
+    if flagged_keys:
+        tag_params = []
+        keys = sorted(flagged_keys)
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i:i + batch_size]
+            terms = []
+            params = []
+            for analysis_num, pnum, channel in chunk:
+                terms.append("(analysis_num = %s AND parameter_num = %s AND channel = %s)")
+                params.extend([analysis_num, pnum, channel])
+            rows = bld1.db.doquery(
+                f"SELECT num FROM hats.ng_mole_fractions WHERE {' OR '.join(terms)}",
+                params,
+            )
+            tag_params.extend((r["num"], 324) for r in rows)
+            if len(tag_params) >= batch_size:
+                bld1.db.doMultiInsert(tag_sql, tag_params, all=True)
+                tag_params = []
+        if tag_params:
+            bld1.db.doMultiInsert(tag_sql, tag_params, all=True)
 
     print(f"✅ Upserted {len(mole_params)} rows into hats.ng_mole_fractions.")
 
@@ -374,7 +427,11 @@ def main(year=None, flagged=False):
     df_analysis = create_analysis_df(df_tidy)
     
     analysis_nums = stratcore_to_hats_analysis(df_analysis)
-    stratcore_to_hats_molefractions(df_tidy=df_tidy, analysis_map=analysis_nums)
+    stratcore_to_hats_molefractions(
+        df_tidy=df_tidy,
+        analysis_map=analysis_nums,
+        flagged=flagged,
+    )
     
 
 if __name__ == '__main__':
