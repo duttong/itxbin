@@ -1332,8 +1332,14 @@ class TanksWidget(QWidget):
                         key = row["inst_upper"]
                         if key not in seen:
                             if seen:   # not the very first instrument
+                                label = "Transition" if not any(
+                                    isinstance(a, mlines.Line2D)
+                                    and a.get_label() == "Transition"
+                                    for a in ax.lines
+                                ) else "_"
                                 ax.axvline(row["datetime"], color="darkblue",
-                                           linewidth=1.5, linestyle="-", alpha=0.4, zorder=0)
+                                           linewidth=1.5, linestyle="--", alpha=0.4,
+                                           zorder=0, label=label)
                                 ax.text(row["datetime"], 1.0, f" {row['inst']}",
                                         transform=ax.get_xaxis_transform(),
                                         color="darkblue", fontsize=8,
