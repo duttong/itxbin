@@ -440,6 +440,7 @@ class MultiTagPanel(QWidget):
                     self.mw.run.at[idx, "rejected"] = 1
         else:
             self.mw._delete_tag_for_mf_nums(self._mf_nums, tag_num)
+            self.mw._sync_rejected_state(self._row_idxs)
 
         self.mw.madechanges = True
         self.mw._style_gc_buttons()
@@ -2261,8 +2262,19 @@ class MainWindow(QMainWindow):
 
         self._toggle_flags(idxs)
 
+    def _sync_rejected_state(self, idxs):
+        """Re-query the DB and update run['rejected'] for the given DataFrame indices."""
+        if "rejected" not in self.run.columns:
+            self.run["rejected"] = 0
+        reject_nums = {t["tag_num"] for t in self.tag_options
+                       if int(t.get("reject") or 0) == 1}
+        for row_idx in idxs:
+            mf_nums = self._mole_fraction_nums_for_indices([row_idx])
+            applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
+            self.run.at[row_idx, "rejected"] = 1 if (applied & reject_nums) else 0
+
     def _toggle_flags(self, idxs):
-        """Apply the selected tag to one or more points given by DataFrame indices."""
+        """Toggle the selected tag on one or more points: apply if absent, remove if present."""
         if idxs is None or len(idxs) == 0:
             return
         if not self.selected_tag:
@@ -2275,20 +2287,26 @@ class MainWindow(QMainWindow):
             self.run["_pending_tag_num"] = pd.NA
 
         tag_num = int(self.selected_tag["tag_num"])
-        applied = self._insert_tag_for_indices(idxs, tag_num)
-        if applied == 0:
-            QMessageBox.warning(
-                self,
-                "Tag Not Applied",
-                "Could not resolve mole-fraction row IDs for the selected points.",
-            )
+        mf_nums = self._mole_fraction_nums_for_indices(idxs)
+        if not mf_nums:
+            QMessageBox.warning(self, "Tag Not Applied",
+                                "Could not resolve mole-fraction row IDs for the selected points.")
             return
 
-        is_reject = int(self.selected_tag.get("reject") or 0) == 1
-        for row_idx in idxs:
-            self.run.at[row_idx, "_pending_tag_num"] = tag_num
-            if is_reject:
-                self.run.at[row_idx, "rejected"] = 1
+        # Toggle: if ALL selected points already carry this tag, remove it; otherwise apply it.
+        already = self._fetch_tag_nums_for_mf_nums(mf_nums)
+        if tag_num in already:
+            self._delete_tag_for_mf_nums(mf_nums, tag_num)
+            for row_idx in idxs:
+                self.run.at[row_idx, "_pending_tag_num"] = pd.NA
+            self._sync_rejected_state(idxs)
+        else:
+            self._insert_tag_for_mf_nums(mf_nums, tag_num)
+            is_reject = int(self.selected_tag.get("reject") or 0) == 1
+            for row_idx in idxs:
+                self.run.at[row_idx, "_pending_tag_num"] = tag_num
+                if is_reject:
+                    self.run.at[row_idx, "rejected"] = 1
 
         self.madechanges = True
         self._style_gc_buttons()
@@ -2302,7 +2320,7 @@ class MainWindow(QMainWindow):
         # Recalculate normalized response and mole fractions
         self.run = self.instrument.norm.merge_smoothed_data(self.run)
         self.run = self.instrument.calc_mole_fraction(self.run)
-        
+
         # Redraw
         self.gc_plot(self._current_yparam)
         
