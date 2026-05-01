@@ -1233,17 +1233,19 @@ class MainWindow(QMainWindow):
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
                 panel.populate_tags(self.tag_options)
-                # Keep button in sync when the panel is closed via its title-bar X
-                panel.closeEvent = lambda e, p=panel: (
+                # Keep button and combobox in sync when panel closed via title-bar X
+                panel.closeEvent = lambda e: (
                     e.accept(),
                     self._multi_tag_btn.setChecked(False),
                 )
                 self._multi_tag_panel = panel
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
+            self.tag_select_cb.setEnabled(False)
         else:
             if self._multi_tag_panel is not None:
                 self._multi_tag_panel.hide()
+            self.tag_select_cb.setEnabled(True)
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
