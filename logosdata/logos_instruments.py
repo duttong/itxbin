@@ -2363,6 +2363,8 @@ class IE3_Instrument(HATS_DB_Functions):
 class Perseus_Instrument(HATS_DB_Functions):
     """Combined Perseus PR1/PR2 instrument facade for tank/calibration tools."""
 
+    RUN_TYPE_MAP = {"All": None}
+
     def __init__(self):
         super().__init__(inst_id='pr1')
         self.inst_id = 'prs'
