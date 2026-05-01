@@ -970,6 +970,7 @@ class MainWindow(QMainWindow):
                 SELECT tag_num, internal_flag, display_name, reject
                 FROM ccgg.tag_view
                 WHERE hats_ng = 1
+                  AND tag_num NOT IN (316, 26, 25, 2, 32)
                 ORDER BY hats_sort;
             """)
         except Exception as e:
