@@ -491,6 +491,7 @@ class MainWindow(QMainWindow):
         self.tag_options = []
         self.selected_tag = None
         self._last_selected_tag_num = 141
+        self._highlighted_point = {}
         self.tag_select_cb = QComboBox()
         self._multi_tag_panel: MultiTagPanel | None = None
         self._rect_selector = None
@@ -1244,16 +1245,20 @@ class MainWindow(QMainWindow):
                 # Must be a def, not a tuple-returning lambda — SIP requires None.
                 def _panel_close(e):
                     e.accept()
+                    self._clear_highlight()
                     self._multi_tag_btn.setChecked(False)
                 panel.closeEvent = _panel_close
                 self._multi_tag_panel = panel
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
             self.tag_select_cb.setEnabled(False)
+            self.toolbar.flag_action.setEnabled(False)
         else:
             if self._multi_tag_panel is not None:
                 self._multi_tag_panel.hide()
+            self._clear_highlight()
             self.tag_select_cb.setEnabled(True)
+            self.toolbar.flag_action.setEnabled(True)
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -1897,6 +1902,7 @@ class MainWindow(QMainWindow):
         self._reattach_rect_selector()
 
         self._adjust_layout_for_legend(leg)
+        self._restore_highlight()
 
         if self._pick_cid is None:
             self._pick_cid = self.canvas.mpl_connect('pick_event', self._on_pick_point)
@@ -2111,6 +2117,7 @@ class MainWindow(QMainWindow):
             mf_nums = self._mole_fraction_nums_for_indices([row_idx])
             applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
             self._multi_tag_panel.update_for_point([row_idx], mf_nums, applied)
+            self._highlight_point(scatter, i, row_idx)
 
         if self.tagging_enabled:
             self._toggle_flags([row_idx])
@@ -2261,6 +2268,76 @@ class MainWindow(QMainWindow):
         idxs = self.run.index[mask]
 
         self._toggle_flags(idxs)
+
+    def _highlight_point(self, scatter, scatter_i: int, row_idx=None):
+        """Overlay a hollow black circle on the selected scatter point."""
+        self._clear_highlight()
+        try:
+            offsets = np.asarray(scatter.get_offsets())
+            x, y = offsets[scatter_i]
+            ax = scatter.axes
+            marker_size = scatter.get_sizes()
+            ms = float(np.sqrt(marker_size[0]) * 1.4) if len(marker_size) else 10.0
+            (artist,) = ax.plot(
+                x, y, 'o',
+                markerfacecolor='none',
+                markeredgecolor='black',
+                markeredgewidth=1.5,
+                markersize=ms,
+                zorder=10,
+                transform=ax.transData,
+            )
+            self._highlighted_point = {'artist': artist, 'row_idx': row_idx, 'x': x, 'y': y, 'ms': ms}
+            scatter.figure.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _clear_highlight(self):
+        """Remove the overlay highlight marker."""
+        artist = self._highlighted_point.get('artist')
+        if artist is not None:
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._highlighted_point = {}
+        try:
+            self.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _restore_highlight(self):
+        """Re-apply the highlight after gc_plot rebuilds scatter objects.
+        Uses stored x,y coordinates so it works regardless of which scatter
+        (main or flagged) the point now lives in."""
+        x = self._highlighted_point.get('x')
+        y = self._highlighted_point.get('y')
+        ms = self._highlighted_point.get('ms', 10.0)
+        if x is None or y is None:
+            return
+        if self._multi_tag_panel is None or not self._multi_tag_panel.isVisible():
+            self._highlighted_point = {}
+            return
+        row_idx = self._highlighted_point.get('row_idx')
+        self._highlighted_point = {}  # drop stale artist reference
+        axes = self.figure.axes
+        if not axes:
+            return
+        ax = axes[0]
+        try:
+            (artist,) = ax.plot(
+                x, y, 'o',
+                markerfacecolor='none',
+                markeredgecolor='black',
+                markeredgewidth=1.5,
+                markersize=ms,
+                zorder=10,
+                transform=ax.transData,
+            )
+            self._highlighted_point = {'artist': artist, 'row_idx': row_idx, 'x': x, 'y': y, 'ms': ms}
+            self.canvas.draw_idle()
+        except Exception:
+            pass
 
     def _sync_rejected_state(self, idxs):
         """Re-query the DB and update run['rejected'] for the given DataFrame indices."""
