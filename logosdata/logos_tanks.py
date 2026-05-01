@@ -1333,7 +1333,7 @@ class TanksWidget(QWidget):
                         if key not in seen:
                             if seen:   # not the very first instrument
                                 ax.axvline(row["datetime"], color="darkblue",
-                                           linewidth=1.2, linestyle="--", zorder=3)
+                                           linewidth=1.5, linestyle="-", alpha=0.4, zorder=0)
                                 ax.text(row["datetime"], 1.0, f" {row['inst']}",
                                         transform=ax.get_xaxis_transform(),
                                         color="darkblue", fontsize=8,
