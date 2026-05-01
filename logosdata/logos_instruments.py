@@ -1345,7 +1345,7 @@ class M4_Instrument(HATS_DB_Functions):
         super().__init__()
         self.inst_id = 'm4'
         self.inst_num = self.INSTRUMENTS.get(self.inst_id)  # Lookup inst_num from INSTRUMENTS
-        self.start_date = '20231223'         # data before this date is not used.
+        self.start_date = '19940718'         # M-system tank/calibration history starts with M3 records.
         self.gc_dir = Path("/hats/gc/m4")
         self.export_dir = self.gc_dir / "results"
 
@@ -1355,6 +1355,7 @@ class M4_Instrument(HATS_DB_Functions):
         self.response_type = 'area'
         
         self.norm = Normalizing(self.inst_id, self.STANDARD_RUN_TYPE, 'run_type_num', self.response_type)
+        self.calibration_inst_ids = ('M1', 'm1', 'M3', 'm3', 'M4')
                 
     def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
         """Load data from the database with date filtering.

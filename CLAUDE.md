@@ -87,6 +87,11 @@ LOGOS_Instruments
 analytes from `hats.analyte_list` and queries calibration records for both
 `PR1` and `PR2`.
 
+`M4_Instrument` is also the tank/calibration facade for the M-system. The
+standalone `logos_tanks m4` entry queries `hats.calibrations` for `M1`, `m1`,
+`M3`, `m3`, and `M4`, while keeping M4 as the user-facing entry point and
+analyte list.
+
 ## Tagging / rejection model
 
 - Current NG rejection state comes from tag tables, not the legacy

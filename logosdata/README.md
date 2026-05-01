@@ -50,8 +50,12 @@ logos_tanks m4
 logos_tanks          # uses default_inst from ~/.logos-tanks.conf
 ```
 
+`m4` is the M-system tank/calibration view. It uses the M4 analyte list and
+queries `hats.calibrations` for M1, M3, and M4 calibration records so older
+tank history appears when the date range reaches back before M4.
+
 `prs` is the combined Perseus tank/calibration view. It uses PR1 analytes and
-queries `hats.calibrations` for both `PR1` and `PR2` calibration records.
+queries `hats.calibrations` for both PR1 and PR2 calibration records.
 On first no-argument run, `logos_tanks` prompts for a default instrument and
 saves it as `default_inst` in `~/.logos-tanks.conf`.
 
