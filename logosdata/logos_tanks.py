@@ -1167,17 +1167,22 @@ class TanksWidget(QWidget):
         else:
             inst_upper = str(inst_id).upper().replace("'", "''")
             inst_filter = f"c.inst = '{inst_upper}'"
+        start_yr = self.start_year.value()
+        end_yr   = self.end_year.value()
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
                 c.mixratio,
                 c.stddev,
                 c.num,
-                c.run_number
+                c.run_number,
+                c.inst
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
               AND c.parameter_num = {int(parameter_num)}
+              AND c.date >= '{start_yr}-01-01'
+              AND c.date <  '{end_yr + 1}-01-01'
               AND c.mixratio IS NOT NULL
               AND c.mixratio > -99
               AND c.mixratio != 0
@@ -1252,6 +1257,7 @@ class TanksWidget(QWidget):
                 ax.clear()
                 pick_map = {}
                 any_data = False
+                all_inst_dts: list[tuple] = []   # (datetime, inst) across all tanks
 
                 for fill_key in tank_keys:
                     meta = self._tank_metadata.get(str(fill_key), {})
@@ -1289,6 +1295,9 @@ class TanksWidget(QWidget):
                         continue
                     df = df.reset_index(drop=True)
 
+                    if "inst" in df.columns:
+                        all_inst_dts.extend(zip(df["datetime"], df["inst"]))
+
                     err_container = ax.errorbar(
                         df["datetime"],
                         df["mixratio"],
@@ -1310,6 +1319,26 @@ class TanksWidget(QWidget):
                     any_data = True
 
                 state["pick_map"] = pick_map
+
+                # Draw instrument-transition vertical lines when the calibration
+                # data spans multiple instruments (e.g. PR1→PR2, m3→M4).
+                if all_inst_dts:
+                    inst_df = pd.DataFrame(all_inst_dts, columns=["datetime", "inst"])
+                    inst_df = inst_df.dropna().sort_values("datetime")
+                    # Normalise case so m3/M3 etc. are treated as the same group
+                    inst_df["inst_upper"] = inst_df["inst"].str.upper()
+                    seen: set = set()
+                    for _, row in inst_df.iterrows():
+                        key = row["inst_upper"]
+                        if key not in seen:
+                            if seen:   # not the very first instrument
+                                ax.axvline(row["datetime"], color="darkblue",
+                                           linewidth=1.2, linestyle="--", zorder=3)
+                                ax.text(row["datetime"], 1.0, f" {row['inst']}",
+                                        transform=ax.get_xaxis_transform(),
+                                        color="darkblue", fontsize=8,
+                                        va="bottom", ha="left", clip_on=True)
+                            seen.add(key)
 
                 species = None
                 try:
