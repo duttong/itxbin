@@ -2675,3 +2675,6 @@ class BLD1_Instrument(HATS_DB_Functions):
         df_out = df_out[export_cols]
         df_out.to_csv(filepath, index=False)
         print(f"Legacy CSV saved: {filepath}")
+
+
+PRS_Instrument = Perseus_Instrument
