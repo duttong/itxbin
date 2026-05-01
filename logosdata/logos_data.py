@@ -422,6 +422,12 @@ class MultiTagPanel(QWidget):
             self._updating = False
 
     def _on_toggled(self, checked: bool, tag: dict):
+        try:
+            self._on_toggled_inner(checked, tag)
+        except Exception as exc:
+            print(f"MultiTagPanel toggle error: {exc}")
+
+    def _on_toggled_inner(self, checked: bool, tag: dict):
         if self._updating or not self._mf_nums:
             return
         tag_num = tag["tag_num"]
@@ -1233,11 +1239,12 @@ class MainWindow(QMainWindow):
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
                 panel.populate_tags(self.tag_options)
-                # Keep button and combobox in sync when panel closed via title-bar X
-                panel.closeEvent = lambda e: (
-                    e.accept(),
-                    self._multi_tag_btn.setChecked(False),
-                )
+                # Keep button and combobox in sync when panel closed via title-bar X.
+                # Must be a def, not a tuple-returning lambda — SIP requires None.
+                def _panel_close(e):
+                    e.accept()
+                    self._multi_tag_btn.setChecked(False)
+                panel.closeEvent = _panel_close
                 self._multi_tag_panel = panel
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
@@ -2052,6 +2059,12 @@ class MainWindow(QMainWindow):
         self.calcurve_combo.blockSignals(False)    
     
     def _on_pick_point(self, event):
+        try:
+            self._on_pick_point_inner(event)
+        except Exception as exc:
+            print(f"_on_pick_point error: {exc}")
+
+    def _on_pick_point_inner(self, event):
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
             return
