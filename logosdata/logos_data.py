@@ -353,28 +353,23 @@ class MultiTagPanel(QWidget):
         layout.addWidget(self._info_label)
 
         self._table = QTableWidget(0, 2)
-        self._table.setHorizontalHeaderLabels(["Tag", "✓"])
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
-        self._table.setColumnWidth(1, 32)
+        self._table.setHorizontalHeaderLabels(["✓", "Tag"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self._table.setColumnWidth(0, 32)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionMode(QTableWidget.NoSelection)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
+        self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self._table)
 
-        self.setMinimumWidth(340)
-        self.setMinimumHeight(420)
+        self.setMinimumWidth(380)
 
     def populate_tags(self, tag_options: list):
         """Build rows from tag_options (called once after tags are loaded)."""
         self._table.setRowCount(len(tag_options))
         for i, tag in enumerate(tag_options):
-            name_item = QTableWidgetItem(tag["display_name"])
-            name_item.setData(Qt.UserRole, tag)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self._table.setItem(i, 0, name_item)
-
             cb = QCheckBox()
             cb.setEnabled(False)
             container = QWidget()
@@ -382,10 +377,20 @@ class MultiTagPanel(QWidget):
             hbox.addWidget(cb)
             hbox.setAlignment(Qt.AlignCenter)
             hbox.setContentsMargins(0, 0, 0, 0)
-            self._table.setCellWidget(i, 1, container)
+            self._table.setCellWidget(i, 0, container)
             cb.toggled.connect(lambda checked, t=tag: self._on_toggled(checked, t))
 
+            name_item = QTableWidgetItem(tag["display_name"])
+            name_item.setData(Qt.UserRole, tag)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 1, name_item)
+
         self._table.resizeRowsToContents()
+        # Resize the panel to show all rows without a scrollbar
+        header_h = self._table.horizontalHeader().height()
+        rows_h = sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
+        self._table.setFixedHeight(header_h + rows_h + 4)
+        self.adjustSize()
 
     def update_for_point(self, row_idxs: list, mf_nums: list[int], applied_tag_nums: set[int]):
         """Refresh checkboxes for a newly selected point."""
@@ -404,11 +409,11 @@ class MultiTagPanel(QWidget):
                 self._info_label.setText(f"{len(row_idxs)} points")
 
             for i in range(self._table.rowCount()):
-                item = self._table.item(i, 0)
+                item = self._table.item(i, 1)
                 if item is None:
                     continue
                 tag = item.data(Qt.UserRole)
-                container = self._table.cellWidget(i, 1)
+                container = self._table.cellWidget(i, 0)
                 cb = container.findChild(QCheckBox) if container else None
                 if cb:
                     cb.setEnabled(bool(mf_nums))
