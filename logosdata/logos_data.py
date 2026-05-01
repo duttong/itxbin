@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QTabWidget, QStyle,
     QLabel, QComboBox, QPushButton, QRadioButton, QAction, QPlainTextEdit,
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
-    QLineEdit, QTextEdit, QListWidget, QListWidgetItem
+    QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
+    QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
@@ -332,8 +333,116 @@ class FastNavigationToolbar(NavigationToolbar):
         rcParams["lines.antialiased"] = self._old_aa
         self._save_y_limits_if_locked("pan")
         
+class MultiTagPanel(QWidget):
+    """Floating panel: shows all manual tags as checkboxes for the picked point."""
+
+    def __init__(self, main_window):
+        super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.mw = main_window
+        self.setWindowTitle("Multi-Tag")
+        self._mf_nums: list[int] = []
+        self._row_idxs: list = []
+        self._updating = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+
+        self._info_label = QLabel("No point selected")
+        self._info_label.setStyleSheet("color: gray; font-style: italic; font-size: 11px;")
+        layout.addWidget(self._info_label)
+
+        self._table = QTableWidget(0, 2)
+        self._table.setHorizontalHeaderLabels(["Tag", "✓"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self._table.setColumnWidth(1, 32)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionMode(QTableWidget.NoSelection)
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        layout.addWidget(self._table)
+
+        self.setMinimumWidth(340)
+        self.setMinimumHeight(420)
+
+    def populate_tags(self, tag_options: list):
+        """Build rows from tag_options (called once after tags are loaded)."""
+        self._table.setRowCount(len(tag_options))
+        for i, tag in enumerate(tag_options):
+            name_item = QTableWidgetItem(tag["display_name"])
+            name_item.setData(Qt.UserRole, tag)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(i, 0, name_item)
+
+            cb = QCheckBox()
+            cb.setEnabled(False)
+            container = QWidget()
+            hbox = QHBoxLayout(container)
+            hbox.addWidget(cb)
+            hbox.setAlignment(Qt.AlignCenter)
+            hbox.setContentsMargins(0, 0, 0, 0)
+            self._table.setCellWidget(i, 1, container)
+            cb.toggled.connect(lambda checked, t=tag: self._on_toggled(checked, t))
+
+        self._table.resizeRowsToContents()
+
+    def update_for_point(self, row_idxs: list, mf_nums: list[int], applied_tag_nums: set[int]):
+        """Refresh checkboxes for a newly selected point."""
+        self._row_idxs = row_idxs
+        self._mf_nums = mf_nums
+        self._updating = True
+        try:
+            if len(row_idxs) == 1:
+                try:
+                    row = self.mw.run.loc[row_idxs[0]]
+                    rt = row.get("run_time") or row.get("datetime") or ""
+                    self._info_label.setText(str(rt)[:19] if rt else f"row {row_idxs[0]}")
+                except Exception:
+                    self._info_label.setText(f"row {row_idxs[0]}")
+            else:
+                self._info_label.setText(f"{len(row_idxs)} points")
+
+            for i in range(self._table.rowCount()):
+                item = self._table.item(i, 0)
+                if item is None:
+                    continue
+                tag = item.data(Qt.UserRole)
+                container = self._table.cellWidget(i, 1)
+                cb = container.findChild(QCheckBox) if container else None
+                if cb:
+                    cb.setEnabled(bool(mf_nums))
+                    cb.setChecked(tag["tag_num"] in applied_tag_nums)
+        finally:
+            self._updating = False
+
+    def _on_toggled(self, checked: bool, tag: dict):
+        if self._updating or not self._mf_nums:
+            return
+        tag_num = tag["tag_num"]
+        if checked:
+            self.mw._insert_tag_for_mf_nums(self._mf_nums, tag_num)
+            is_reject = int(tag.get("reject") or 0) == 1
+            for idx in self._row_idxs:
+                self.mw.run.at[idx, "_pending_tag_num"] = tag_num
+                if is_reject:
+                    self.mw.run.at[idx, "rejected"] = 1
+        else:
+            self.mw._delete_tag_for_mf_nums(self._mf_nums, tag_num)
+
+        self.mw.madechanges = True
+        self.mw._style_gc_buttons()
+        ax = self.mw.figure.axes[0] if self.mw.figure.axes else None
+        if ax:
+            self.mw._pending_xlim = ax.get_xlim()
+            self.mw._pending_ylim = ax.get_ylim()
+        self.mw.run = self.mw.instrument.norm.merge_smoothed_data(self.mw.run)
+        self.mw.run = self.mw.instrument.calc_mole_fraction(self.mw.run)
+        self.mw.gc_plot(self.mw._current_yparam)
+
+
 class MainWindow(QMainWindow):
-    
+
     def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
         super().__init__()
@@ -371,6 +480,7 @@ class MainWindow(QMainWindow):
         self.selected_tag = None
         self._last_selected_tag_num = 141
         self.tag_select_cb = QComboBox()
+        self._multi_tag_panel: MultiTagPanel | None = None
         self._rect_selector = None
         self._pick_cid = None
         self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
@@ -714,6 +824,11 @@ class MainWindow(QMainWindow):
         self.hide_flagged_cb.setChecked(False)
         self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
         tag_layout.addWidget(self.hide_flagged_cb)
+        self._multi_tag_btn = QPushButton("Multi-Tag")
+        self._multi_tag_btn.setCheckable(True)
+        self._multi_tag_btn.setToolTip("Open floating panel to view/edit all tags for a selected point")
+        self._multi_tag_btn.toggled.connect(self._on_multi_tag_btn_toggled)
+        tag_layout.addWidget(self._multi_tag_btn)
         processing_layout.addWidget(tag_gb)
         self.populate_tag_selector()
 
@@ -1003,6 +1118,9 @@ class MainWindow(QMainWindow):
             self.selected_tag = self.tag_options[default_idx]
         self.tag_select_cb.blockSignals(False)
 
+        if self._multi_tag_panel is not None:
+            self._multi_tag_panel.populate_tags(self.tag_options)
+
     def on_tag_selection_changed(self, index):
         self.selected_tag = self.tag_select_cb.itemData(index) if index >= 0 else None
         if self.selected_tag:
@@ -1073,6 +1191,54 @@ class MainWindow(QMainWindow):
         params = [(num, int(tag_num)) for num in mf_nums]
         self.instrument.db.doMultiInsert(sql, params, all=True)
         return len(mf_nums)
+
+    def _insert_tag_for_mf_nums(self, mf_nums: list[int], tag_num: int):
+        """Insert a tag directly given mole-fraction primary keys."""
+        if not mf_nums:
+            return
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        sql = f"INSERT IGNORE INTO {tag_table} ({tag_key}, tag_num) VALUES (%s, %s);"
+        self.instrument.db.doMultiInsert(sql, [(n, tag_num) for n in mf_nums], all=True)
+
+    def _delete_tag_for_mf_nums(self, mf_nums: list[int], tag_num: int):
+        """Remove a specific tag from the given mole-fraction primary keys."""
+        if not mf_nums:
+            return
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        self.instrument.db.doquery(
+            f"DELETE FROM {tag_table} WHERE {tag_key} IN ({placeholders}) AND tag_num = %s;",
+            list(mf_nums) + [tag_num],
+        )
+
+    def _fetch_tag_nums_for_mf_nums(self, mf_nums: list[int]) -> set[int]:
+        """Return the set of tag_nums currently applied to the given mf primary keys."""
+        if not mf_nums:
+            return set()
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        rows = self.instrument.db.doquery(
+            f"SELECT DISTINCT tag_num FROM {tag_table} WHERE {tag_key} IN ({placeholders});",
+            list(mf_nums),
+        )
+        return {int(r["tag_num"]) for r in rows}
+
+    def _on_multi_tag_btn_toggled(self, checked: bool):
+        if checked:
+            if self._multi_tag_panel is None:
+                panel = MultiTagPanel(self)
+                panel.populate_tags(self.tag_options)
+                # Keep button in sync when the panel is closed via its title-bar X
+                panel.closeEvent = lambda e, p=panel: (
+                    e.accept(),
+                    self._multi_tag_btn.setChecked(False),
+                )
+                self._multi_tag_panel = panel
+            self._multi_tag_panel.show()
+            self._multi_tag_panel.raise_()
+        else:
+            if self._multi_tag_panel is not None:
+                self._multi_tag_panel.hide()
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -1894,7 +2060,7 @@ class MainWindow(QMainWindow):
             self._toggle_run_time_zoom(event.artist._rt)
             return
 
-        if not self.tagging_enabled or event.artist not in self._scatter_main:
+        if event.artist not in self._scatter_main:
             return
 
         scatter = event.artist
@@ -1918,7 +2084,15 @@ class MainWindow(QMainWindow):
 
         df_index = getattr(scatter, "_df_index", None)
         row_idx = df_index[i] if df_index is not None else self.run.index[i]
-        self._toggle_flags([row_idx])
+
+        # Update multi-tag panel for any scatter click (tagging mode not required).
+        if (self._multi_tag_panel is not None and self._multi_tag_panel.isVisible()):
+            mf_nums = self._mole_fraction_nums_for_indices([row_idx])
+            applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
+            self._multi_tag_panel.update_for_point([row_idx], mf_nums, applied)
+
+        if self.tagging_enabled:
+            self._toggle_flags([row_idx])
 
     def _toggle_run_time_zoom(self, rt):
         """Click-to-zoom on a run_time transition line. Clicking the active line
