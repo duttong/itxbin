@@ -2123,59 +2123,46 @@ class IE3_Instrument(HATS_DB_Functions):
             start_date = datetime.strptime(start_date, "%y%m")
             start_date = start_date.strftime("%Y-%m-01")
 
-        channel_str = f"AND m.channel = '{channel}'" if channel else ""
+        channel_str = f"AND channel = '{channel}'" if channel else ""
         if site_num is None:
             site_num = self.site_num
-        site_str = f"AND a.site_num = {site_num}" if site_num is not None else ""
+        site_str = f"AND site_num = {site_num}" if site_num is not None else ""
 
         if verbose:
             print(f"Loading IE3 data from {start_date} to {end_date} for parameter {pnum}")
 
         if str(start_date) == str(end_date):
-            time_filter = f"AND a.run_time = '{start_date}'"
+            time_filter = f"AND run_time = '{start_date}'"
         else:
-            time_filter = f"AND a.analysis_time BETWEEN '{start_date}' AND '{end_date}'"
+            time_filter = f"AND analysis_time BETWEEN '{start_date}' AND '{end_date}'"
 
         query = f"""
             SELECT
-                a.num AS analysis_num,
-                a.analysis_time,
-                a.run_time,
-                a.site_num,
-                a.inst_num,
-                a.port,
-                m.parameter_num,
-                m.channel,
-                m.height,
-                m.area,
-                m.retention_time,
-                m.num AS mf_num,
-                m.mole_fraction,
-                COALESCE(tags.rejected, 0) AS rejected,
-                m.sample_loop_temp,
-                m.sample_loop_pressure,
-                m.sample_loop_flow,
-                m.detrend_method_num
-            FROM hats.ng_insitu_analysis AS a
-            JOIN hats.ng_insitu_mole_fractions AS m
-                ON m.analysis_num = a.num
-            LEFT JOIN (
-                SELECT
-                    t.ng_insitu_mole_fraction_num,
-                    MAX(CASE WHEN d.reject = 1 THEN 1 ELSE 0 END) AS rejected
-                FROM hats.ng_insitu_mole_fraction_tags AS t
-                JOIN ccgg.tag_dictionary AS d
-                    ON d.num = t.tag_num
-                GROUP BY t.ng_insitu_mole_fraction_num
-            ) AS tags
-                ON tags.ng_insitu_mole_fraction_num = m.num
-            WHERE a.inst_num = {self.inst_num}
-                AND m.parameter_num = {pnum}
+                analysis_num,
+                analysis_time,
+                run_time,
+                site_num,
+                inst_num,
+                port,
+                parameter_num,
+                channel,
+                height,
+                area,
+                retention_time,
+                mole_fraction,
+                rejected,
+                sample_loop_temp,
+                sample_loop_pressure,
+                sample_loop_flow,
+                detrend_method_num
+            FROM hats.ng_insitu_data_view
+            WHERE inst_num = {self.inst_num}
+                AND parameter_num = {pnum}
                 {channel_str}
                 {site_str}
-                AND m.height <> -999
+                AND height <> -999
                 {time_filter}
-            ORDER BY a.analysis_time;
+            ORDER BY analysis_time;
         """
         df = pd.DataFrame(self.db.doquery(query))
         if df.empty:
