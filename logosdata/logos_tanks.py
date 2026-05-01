@@ -1236,6 +1236,7 @@ class TanksWidget(QWidget):
             "channel": channel,
             "pick_map": pick_map,
         }
+        _saved_xlim: list = [None]   # persists across analyte switches
 
         try:
             def _plot_for(param_name: str, param_num: int, param_channel: str | None,
@@ -1244,6 +1245,10 @@ class TanksWidget(QWidget):
                 state["parameter_name"] = param_name
                 state["parameter_num"] = param_num
                 state["channel"] = param_channel
+
+                # Capture the live xlim (reflects any user pan/zoom since last plot).
+                # _saved_xlim[0] is None only before the first successful plot.
+                prev_xlim = ax.get_xlim() if _saved_xlim[0] is not None else None
                 ax.clear()
                 pick_map = {}
                 any_data = False
@@ -1328,6 +1333,7 @@ class TanksWidget(QWidget):
                         ha="center",
                         va="center",
                     )
+                    _saved_xlim[0] = None
                     fig.canvas.draw_idle()
                     if close_on_empty:
                         plt.close(fig)
@@ -1337,6 +1343,28 @@ class TanksWidget(QWidget):
                 ax.legend()
                 fig.autofmt_xdate()
                 fig.tight_layout()
+
+                # Compute autoscaled limits for the new data.
+                ax.relim()
+                ax.autoscale()
+                auto_ylim = ax.get_ylim()
+
+                # Push autoscaled state as the toolbar Home view so pressing
+                # Home always resets to natural autoscale for the current data.
+                toolbar = getattr(getattr(fig.canvas, "manager", None), "toolbar", None)
+                if toolbar is not None and hasattr(toolbar, "update"):
+                    toolbar.update()
+                    if hasattr(toolbar, "push_current"):
+                        toolbar.push_current()
+
+                # Restore the user's x-zoom (y always rescales).
+                if prev_xlim is not None:
+                    ax.set_xlim(prev_xlim)
+                ax.set_ylim(auto_ylim)
+
+                # Mark that at least one successful plot has been drawn.
+                _saved_xlim[0] = True
+
                 fig.canvas.draw_idle()
                 return True
 
