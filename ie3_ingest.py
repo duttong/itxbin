@@ -39,7 +39,8 @@ def ingest(
             except Exception as e:
                 typer.secho(f"Warning: could not copy {src.name}: {e}", fg=typer.colors.YELLOW, err=True)
 
-    # 3. Export from GCwerks and load into database (ie3_export runs automatically inside)
+    # 3. Export from GCwerks and load into database. The --flagged path writes
+    # GCwerks flags to hats.ng_insitu_mole_fraction_tags.
     load_cmd = [str(bin_dir / "ie3_gcwerks2db.py"), site, "--flagged"]
     if all_data:
         load_cmd.append("--all")

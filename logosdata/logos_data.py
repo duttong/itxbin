@@ -367,6 +367,10 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb = QCheckBox()
 
         self.tagging_enabled = False
+        self.tag_options = []
+        self.selected_tag = None
+        self._last_selected_tag_num = 141
+        self.tag_select_cb = QComboBox()
         self._rect_selector = None
         self._pick_cid = None
         self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
@@ -685,11 +689,6 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.hide_flagged_cb = QCheckBox("Hide Flagged Data")
-        self.hide_flagged_cb.setChecked(False)
-        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
-        options_layout.addWidget(self.hide_flagged_cb)
-
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("PLOT AND OPTIONS")
         combined_layout = QHBoxLayout()
@@ -700,6 +699,23 @@ class MainWindow(QMainWindow):
         combined_layout.addWidget(options_gb, stretch=1)
 
         processing_layout.addWidget(combined_gb)
+
+        # Tagging controls. The toolbar button still controls tag mode; this
+        # selector controls which tag is applied to picked points.
+        tag_gb = QGroupBox("TAGGING")
+        tag_layout = QVBoxLayout()
+        tag_layout.setSpacing(6)
+        tag_gb.setLayout(tag_layout)
+        tag_layout.addWidget(QLabel("Selected Tag:"))
+        self.tag_select_cb.setMinimumWidth(260)
+        self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
+        tag_layout.addWidget(self.tag_select_cb)
+        self.hide_flagged_cb = QCheckBox("Hide Rejected Data")
+        self.hide_flagged_cb.setChecked(False)
+        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
+        tag_layout.addWidget(self.hide_flagged_cb)
+        processing_layout.addWidget(tag_gb)
+        self.populate_tag_selector()
 
         # --- Save Run Button ---
         if self._inst_cfg.getboolean('csv_export', fallback=self.instrument.inst_id in {'bld1'}):
@@ -944,6 +960,119 @@ class MainWindow(QMainWindow):
             if self._rect_selector is not None:
                 self._rect_selector.set_active(False)
 
+    def populate_tag_selector(self):
+        """Load HATS NG tag options used by the point tagging tool."""
+        self.tag_select_cb.blockSignals(True)
+        self.tag_select_cb.clear()
+        self.tag_options = []
+        try:
+            rows = self.instrument.db.doquery("""
+                SELECT tag_num, internal_flag, display_name, reject
+                FROM ccgg.tag_view
+                WHERE hats_ng = 1
+                ORDER BY hats_sort;
+            """)
+        except Exception as e:
+            print(f"Could not load tag options: {e}")
+            self.tag_select_cb.addItem("Tag options unavailable", None)
+            self.tag_select_cb.setEnabled(False)
+            self.tag_select_cb.blockSignals(False)
+            return
+
+        for row in rows:
+            tag = {
+                "tag_num": int(row["tag_num"]),
+                "internal_flag": row.get("internal_flag") or "",
+                "display_name": row.get("display_name") or row.get("name") or "",
+                "reject": int(row.get("reject") or 0),
+            }
+            self.tag_options.append(tag)
+            label = tag["display_name"]
+            if len(label) > 90:
+                label = label[:87] + "..."
+            self.tag_select_cb.addItem(label, tag)
+
+        default_tag_num = self._last_selected_tag_num or 141
+        default_idx = next(
+            (i for i, tag in enumerate(self.tag_options) if tag["tag_num"] == default_tag_num),
+            0,
+        )
+        if self.tag_options:
+            self.tag_select_cb.setCurrentIndex(default_idx)
+            self.selected_tag = self.tag_options[default_idx]
+        self.tag_select_cb.blockSignals(False)
+
+    def on_tag_selection_changed(self, index):
+        self.selected_tag = self.tag_select_cb.itemData(index) if index >= 0 else None
+        if self.selected_tag:
+            self._last_selected_tag_num = int(self.selected_tag["tag_num"])
+
+    def _tag_table_info(self):
+        if self.instrument.inst_id == 'ie3':
+            return (
+                'hats.ng_insitu_mole_fraction_tags',
+                'ng_insitu_mole_fraction_num',
+                'hats.ng_insitu_mole_fractions',
+                'mf_num',
+            )
+        return (
+            'hats.ng_mole_fraction_tags',
+            'ng_mole_fraction_num',
+            'hats.ng_mole_fractions',
+            'ng_mole_fraction_num',
+        )
+
+    def _mole_fraction_nums_for_indices(self, idxs):
+        """Return mole-fraction primary keys for DataFrame rows being tagged."""
+        if idxs is None or len(idxs) == 0:
+            return []
+        _tag_table, _tag_key, mf_table, id_col = self._tag_table_info()
+        subset = self.run.loc[list(idxs)]
+        if id_col in subset.columns:
+            vals = pd.to_numeric(subset[id_col], errors='coerce').dropna().astype(int)
+            return sorted(vals.unique().tolist())
+
+        if not {'analysis_num', 'parameter_num', 'channel'}.issubset(subset.columns):
+            return []
+
+        keys = (
+            subset[['analysis_num', 'parameter_num', 'channel']]
+            .dropna()
+            .drop_duplicates()
+            .itertuples(index=False, name=None)
+        )
+        keys = list(keys)
+        if not keys:
+            return []
+
+        out = []
+        for i in range(0, len(keys), 400):
+            chunk = keys[i:i + 400]
+            terms = []
+            params = []
+            for analysis_num, parameter_num, channel in chunk:
+                terms.append("(analysis_num = %s AND parameter_num = %s AND channel = %s)")
+                params.extend([int(analysis_num), int(parameter_num), str(channel)])
+            rows = self.instrument.db.doquery(
+                f"SELECT num FROM {mf_table} WHERE {' OR '.join(terms)}",
+                params,
+            )
+            out.extend(int(r["num"]) for r in rows)
+        return sorted(set(out))
+
+    def _insert_tag_for_indices(self, idxs, tag_num):
+        mf_nums = self._mole_fraction_nums_for_indices(idxs)
+        if not mf_nums:
+            return 0
+        tag_table, tag_key, _mf_table, _id_col = self._tag_table_info()
+        sql = f"""
+            INSERT IGNORE INTO {tag_table} ({tag_key}, tag_num)
+            VALUES (%s, %s);
+        """
+        params = [(num, int(tag_num)) for num in mf_nums]
+        self.instrument.db.doMultiInsert(sql, params, all=True)
+        return len(mf_nums)
+
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
         self.fit_method_cb.setEnabled(enabled)
@@ -1122,7 +1251,7 @@ class MainWindow(QMainWindow):
 
         # Calculate mean and std for each port
         flags = (
-            self.run['data_flag_int'] if 'data_flag_int' in self.run.columns
+            self.run['rejected'] if 'rejected' in self.run.columns
             else pd.Series(0, index=self.run.index)
         )
         flags = flags.fillna(0).astype(int).astype(bool)        
@@ -1176,7 +1305,8 @@ class MainWindow(QMainWindow):
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         hide_flagged = self.hide_flagged_cb.isChecked()
-        plot_df = self.run.loc[self.run['data_flag_int'] == 0] if hide_flagged else self.run
+        rejected = self.run['rejected'].fillna(0).astype(int)
+        plot_df = self.run.loc[rejected == 0] if hide_flagged else self.run
         for port, subset in plot_df.groupby('port_idx'):
             marker = subset['port_marker'].iloc[0]
             color = subset['port_color']
@@ -1245,8 +1375,8 @@ class MainWindow(QMainWindow):
             }
             self._scatter_main.append(scatter)
         
-        # overlay: show data_flag characters on top of flagged points
-        flags = self.run['data_flag_int'] != 0
+        # overlay: show rejected points with open circles
+        flags = rejected != 0
         flagged = self.run.loc[flags]
         if not flagged.empty and not hide_flagged:
             ax.scatter(
@@ -1369,7 +1499,7 @@ class MainWindow(QMainWindow):
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
 
         # --- Detrend summary box for resp/ratio plots ---
-        if yparam in ('ratio', 'resp'):
+        if yparam in ('ratio', 'resp') and self.instrument.inst_id != 'ie3':
             try:
                 # Order from least to most smoothing
                 method_order = [1, 3, 2, 4, 6, 5]
@@ -1549,7 +1679,7 @@ class MainWindow(QMainWindow):
                     exclude_variable = 'port'
                     standard = self.instrument.STANDARD_PORT_NUM
 
-                unflagged = self.run['data_flag_int'] == 0
+                unflagged = self.run['rejected'].fillna(0).astype(int) == 0
                 if autoscale_mode == "standard":
                     scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar].dropna()
                     if scale_df.empty:
@@ -1937,21 +2067,33 @@ class MainWindow(QMainWindow):
         self._toggle_flags(idxs)
 
     def _toggle_flags(self, idxs):
-        """Toggle flags for one or more points given by DataFrame indices."""
+        """Apply the selected tag to one or more points given by DataFrame indices."""
         if idxs is None or len(idxs) == 0:
             return
+        if not self.selected_tag:
+            QMessageBox.information(self, "No Tag Selected", "Select a tag before tagging points.")
+            return
 
-        # Ensure flag columns exist
-        if "data_flag_int" not in self.run.columns:
-            self.run["data_flag_int"] = 0
-        if "data_flag" not in self.run.columns:
-            self.run["data_flag"] = ""
+        if "rejected" not in self.run.columns:
+            self.run["rejected"] = 0
+        if "_pending_tag_num" not in self.run.columns:
+            self.run["_pending_tag_num"] = pd.NA
 
+        tag_num = int(self.selected_tag["tag_num"])
+        applied = self._insert_tag_for_indices(idxs, tag_num)
+        if applied == 0:
+            QMessageBox.warning(
+                self,
+                "Tag Not Applied",
+                "Could not resolve mole-fraction row IDs for the selected points.",
+            )
+            return
+
+        is_reject = int(self.selected_tag.get("reject") or 0) == 1
         for row_idx in idxs:
-            cur = int(self.run.at[row_idx, "data_flag_int"]) if not pd.isna(self.run.at[row_idx, "data_flag_int"]) else 0
-            new_val = 0 if cur else 1
-            self.run.at[row_idx, "data_flag_int"] = new_val
-            self.run.at[row_idx, "data_flag"] = 'M..' if new_val else '...'
+            self.run.at[row_idx, "_pending_tag_num"] = tag_num
+            if is_reject:
+                self.run.at[row_idx, "rejected"] = 1
 
         self.madechanges = True
         self._style_gc_buttons()
@@ -2003,7 +2145,7 @@ class MainWindow(QMainWindow):
         # Get unflagged STANDARD_PORT rows
         ref_estimate = self.run.loc[
             (self.run['port'] == self.instrument.STANDARD_PORT_NUM)
-            & (self.run['data_flag_int'] != 1)
+            & (self.run['rejected'].fillna(0).astype(int) != 1)
         ].copy()
 
         # Extract coefficients from new_fit dict
@@ -2204,7 +2346,7 @@ class MainWindow(QMainWindow):
         hide_flagged = self.hide_flagged_cb.isChecked()
         
         if hide_flagged:
-            plot_df = self.run.loc[mask_main & (self.run['data_flag_int'].fillna(0).astype(int) == 0)]
+            plot_df = self.run.loc[mask_main & (self.run['rejected'].fillna(0).astype(int) == 0)]
         else:
             plot_df = self.run.loc[mask_main]
 
@@ -2224,7 +2366,7 @@ class MainWindow(QMainWindow):
 
         # Mask for flagged subset
         flags = (
-            self.run['data_flag_int'].fillna(0).astype(int) != 0
+            self.run['rejected'].fillna(0).astype(int) != 0
         ) & mask_main
         
         if not hide_flagged:

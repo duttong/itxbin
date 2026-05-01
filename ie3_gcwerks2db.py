@@ -189,40 +189,26 @@ class IE3_GCwerks2DB:
         return analysis_map
 
     def upsert_mole_fractions(self, df: pd.DataFrame, analysis_map: dict, batch_size: int = 1000):
-        if self.flagged:
-            mole_sql = """
-                INSERT INTO hats.ng_insitu_mole_fractions (
-                    analysis_num,
-                    parameter_num,
-                    channel,
-                    flag,
-                    height,
-                    area,
-                    retention_time
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    flag           = IF(VALUES(flag) = 'W..', 'W..', flag),
-                    height         = VALUES(height),
-                    area           = VALUES(area),
-                    retention_time = VALUES(retention_time)
-            """
-        else:
-            mole_sql = """
-                INSERT INTO hats.ng_insitu_mole_fractions (
-                    analysis_num,
-                    parameter_num,
-                    channel,
-                    flag,
-                    height,
-                    area,
-                    retention_time
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    flag           = VALUES(flag),
-                    height         = VALUES(height),
-                    area           = VALUES(area),
-                    retention_time = VALUES(retention_time)
-            """
+        mole_sql = """
+            INSERT INTO hats.ng_insitu_mole_fractions (
+                analysis_num,
+                parameter_num,
+                channel,
+                height,
+                area,
+                retention_time
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                height         = VALUES(height),
+                area           = VALUES(area),
+                retention_time = VALUES(retention_time)
+        """
+        tag_sql = """
+            INSERT IGNORE INTO hats.ng_insitu_mole_fraction_tags (
+                ng_insitu_mole_fraction_num,
+                tag_num
+            ) VALUES (%s, %s)
+        """
 
         col_map = self._parse_measurement_columns(df.columns)
         missing = sorted({mol for (mol, _ch) in col_map if mol not in self.analytes})
@@ -230,6 +216,7 @@ class IE3_GCwerks2DB:
             print(f"Warning: missing analyte mapping for {missing}")
 
         params = []
+        flagged_keys = set()
         for r in df.itertuples(index=False):
             analysis_num = analysis_map.get(r.analysis_time_str)
             if analysis_num is None:
@@ -255,8 +242,9 @@ class IE3_GCwerks2DB:
                 if pd.isna(rt):
                     rt = None
                 flagged = bool(getattr(r, flag_col, False))
-                flag = "W.." if flagged else "..."
-                params.append((analysis_num, param, channel, flag, ht, area, rt))
+                params.append((analysis_num, param, channel, ht, area, rt))
+                if flagged:
+                    flagged_keys.add((analysis_num, param, channel))
 
             if len(params) >= batch_size:
                 self.db.doMultiInsert(mole_sql, params, all=True)
@@ -264,6 +252,30 @@ class IE3_GCwerks2DB:
 
         if params:
             self.db.doMultiInsert(mole_sql, params, all=True)
+
+        if flagged_keys:
+            tag_params = []
+            keys = sorted(flagged_keys)
+            for i in range(0, len(keys), batch_size):
+                chunk = keys[i : i + batch_size]
+                where_terms = []
+                query_params = []
+                for analysis_num, param, channel in chunk:
+                    where_terms.append("(analysis_num = %s AND parameter_num = %s AND channel = %s)")
+                    query_params.extend([analysis_num, param, channel])
+                select_sql = (
+                    "SELECT num FROM hats.ng_insitu_mole_fractions "
+                    f"WHERE {' OR '.join(where_terms)}"
+                )
+                rows = self.db.doquery(select_sql, query_params)
+                tag_params.extend((r["num"], 324) for r in rows)
+
+                if len(tag_params) >= batch_size:
+                    self.db.doMultiInsert(tag_sql, tag_params, all=True)
+                    tag_params = []
+
+            if tag_params:
+                self.db.doMultiInsert(tag_sql, tag_params, all=True)
 
     def load(self, duration_months=2, year=None):
         IE3_Process(site=self.site, flagged=self.flagged).export_onefile()

@@ -463,7 +463,7 @@ class LOGOSDataAgentTools:
             WHERE inst_num = %s
               AND run_type_num = 1
               AND pair_id_num > 0
-              AND data_flag = '...'
+              AND rejected = 0
               AND UPPER(site) = %s
             GROUP BY pair_id_num
             ORDER BY run_time DESC, pair_id_num DESC

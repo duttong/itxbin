@@ -214,7 +214,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         mole-fraction edits are reflected in the aggregated calibration values.
 
         Filtering applied before aggregation:
-          - data_flag == '...'  (unflagged injections only)
+          - rejected == 0  (unrejected injections only)
           - run_type_num in self.CAL_RUN_TYPES  (instrument-specific;
             M4=tank(7), FE3=calibration+other(2,4), BLD1=calibration(2))
           - excludes the normalizing/reference tank (identified via self.norm)
@@ -259,13 +259,18 @@ class HATS_DB_Functions(LOGOS_Instruments):
         except ValueError:
             scale_num = None
 
-        # Filter to unflagged tank injections.
+        # Filter to unrejected tank injections.
         # Only include run types designated for calibrations (excludes flasks, warmup, etc.).
         # Also exclude the normalizing/reference tank (standard run type or port).
         std_col = self.norm.run_type_column
         std_val = self.norm.standard_run_type
+        rejected = (
+            df['rejected'].fillna(0).astype(int)
+            if 'rejected' in df.columns
+            else pd.Series(0, index=df.index)
+        )
         tank_df = df[
-            (df['data_flag'] == '...') &
+            (rejected == 0) &
             df['tank_serial_num'].notna() &
             (df['tank_serial_num'] != '') &
             (df['run_type_num'].isin(self.CAL_RUN_TYPES)) &
@@ -371,15 +376,13 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 ng_response_id,
                 detrend_method_num,
                 channel,
-                mole_fraction,
-                flag
+                mole_fraction
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 ng_response_id = VALUES(ng_response_id),
                 mole_fraction = VALUES(mole_fraction),
-                flag = VALUES(flag),
                 detrend_method_num = VALUES(detrend_method_num);         
         """
 
@@ -407,8 +410,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 id,
                 row.detrend_method_num,
                 row.channel,
-                mole_fraction,
-                row.data_flag
+                mole_fraction
             ))
 
             # flush batch if doMultiInsert returns True
@@ -420,35 +422,31 @@ class HATS_DB_Functions(LOGOS_Instruments):
             self.db.doMultiInsert(sql_insert, params, all=True)
         
     def update_flags_all_analytes(self, df):
-        """Duplicate flags from df to all rows with the same analysis_num."""
+        """Propagate newly applied tags to all rows with the same analysis_num."""
 
-        run_time = df.run_time.iat[0]
+        if df.empty or '_pending_tag_num' not in df.columns:
+            return
 
-        # 1. Clear only manual flags for this run_time, preserving GCwerks ('W..')
-        # and first-reference ('X..') flags that may have been set earlier.
-        sql_clear = f"""
-            UPDATE hats.ng_mole_fractions mf
-            JOIN hats.ng_analysis a ON mf.analysis_num = a.num
-            SET mf.flag = '...'
-            WHERE a.inst_num = {self.inst_num}
-            AND a.run_time = %s
-        """
-        self.db.doquery(sql_clear + " AND mf.flag = 'M..'", [run_time])
+        tagged = df.loc[df['_pending_tag_num'].notna(), ['analysis_num', '_pending_tag_num']]
+        if tagged.empty:
+            return
 
-        # 2. Apply flagged values ('M..') to the appropriate analysis_nums
-        flagged = df.loc[df['data_flag'] == 'M..']
-        if not flagged.empty:
-            analysis_nums = flagged['analysis_num'].unique().tolist()
+        for tag_num, group in tagged.groupby('_pending_tag_num'):
+            analysis_nums = group['analysis_num'].dropna().astype(int).unique().tolist()
+            if not analysis_nums:
+                continue
             sql_set = f"""
-                UPDATE hats.ng_mole_fractions mf
+                INSERT IGNORE INTO hats.ng_mole_fraction_tags (
+                    ng_mole_fraction_num,
+                    tag_num
+                )
+                SELECT mf.num, %s
+                FROM hats.ng_mole_fractions mf
                 JOIN hats.ng_analysis a ON mf.analysis_num = a.num
-                SET mf.flag = 'M..'
                 WHERE a.inst_num = {self.inst_num}
-                AND a.run_time = %s
                 AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
             """
-            params = [run_time] + analysis_nums
-            self.db.doquery(sql_set, params)
+            self.db.doquery(sql_set, [int(tag_num), *analysis_nums])
             
     def scale_values(self, tank, pnum):
         """
@@ -723,7 +721,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         except IndexError:
             return None
         
-        model, _, _ = self.fit_poly(run, order=int(order), flag_col='data_flag_int', bad_flag=1)
+        model, _, _ = self.fit_poly(run, order=int(order), flag_col='rejected', bad_flag=1)
         if model is None:
             print('Not enough points to fit polynomial.')
             return None
@@ -775,7 +773,7 @@ class Normalizing():
         std = (
             df.loc[
                 (df[self.run_type_column] == self.standard_run_type)
-                & (df['data_flag'].eq('...')),
+                & (df['rejected'].fillna(0).astype(int).eq(0)),
                 ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]
             ]
             .dropna()
@@ -949,7 +947,7 @@ class Normalizing():
         """
 
         run_time = run_df['run_time'].iloc[0]
-        df = run_df.loc[run_df['data_flag_int'] == 0].copy()
+        df = run_df.loc[run_df['rejected'].fillna(0).astype(int) == 0].copy()
 
         # ---------- Flask pairs (run_type_num == 1) ----------
         # In-situ instruments (e.g. IE3) have no sample_id column
@@ -1134,8 +1132,8 @@ class Normalizing():
             RMS for the selected best_method (NaN if no data).
         """
         
-        # use only unflagged data
-        run_df = run_df.loc[run_df['data_flag'] == '...'].copy()
+        # use only unrejected data
+        run_df = run_df.loc[run_df['rejected'].fillna(0).astype(int) == 0].copy()
          
         if run_df.empty:
             return (
@@ -1415,8 +1413,11 @@ class M4_Instrument(HATS_DB_Functions):
         df = self.norm.merge_smoothed_data(df)
         df['parameter_num']     = pnum
 
-        df['data_flag_int'] = 0
-        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
+        if 'rejected' in df.columns:
+            df['rejected'] = df['rejected'].fillna(0).astype(int)
+        else:
+            df['rejected'] = 0
+        df.drop(columns=['data_flag'], errors='ignore', inplace=True)
         
         # build a port_idx for plotting colors
         mask = df['run_type_num'].eq(5)     # pfp runtype
@@ -1858,8 +1859,11 @@ class FE3_Instrument(HATS_DB_Functions):
         if df['cal_scale_num'].isna().iat[0]:
             df['cal_scale_num'] = self.qurey_return_scale_num(pnum)
 
-        df['data_flag_int'] = 0
-        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
+        if 'rejected' in df.columns:
+            df['rejected'] = df['rejected'].fillna(0).astype(int)
+        else:
+            df['rejected'] = 0
+        df.drop(columns=['data_flag'], errors='ignore', inplace=True)
         
         df = self.add_port_labels(df)   # port labels, colors, and markers (port_idx)
 
@@ -2145,8 +2149,9 @@ class IE3_Instrument(HATS_DB_Functions):
                 m.height,
                 m.area,
                 m.retention_time,
+                m.num AS mf_num,
                 m.mole_fraction,
-                COALESCE(m.flag, '...') AS data_flag,
+                COALESCE(tags.rejected, 0) AS rejected,
                 m.sample_loop_temp,
                 m.sample_loop_pressure,
                 m.sample_loop_flow,
@@ -2154,6 +2159,16 @@ class IE3_Instrument(HATS_DB_Functions):
             FROM hats.ng_insitu_analysis AS a
             JOIN hats.ng_insitu_mole_fractions AS m
                 ON m.analysis_num = a.num
+            LEFT JOIN (
+                SELECT
+                    t.ng_insitu_mole_fraction_num,
+                    MAX(CASE WHEN d.reject = 1 THEN 1 ELSE 0 END) AS rejected
+                FROM hats.ng_insitu_mole_fraction_tags AS t
+                JOIN ccgg.tag_dictionary AS d
+                    ON d.num = t.tag_num
+                GROUP BY t.ng_insitu_mole_fraction_num
+            ) AS tags
+                ON tags.ng_insitu_mole_fraction_num = m.num
             WHERE a.inst_num = {self.inst_num}
                 AND m.parameter_num = {pnum}
                 {channel_str}
@@ -2177,8 +2192,7 @@ class IE3_Instrument(HATS_DB_Functions):
         df['area'] = df['area'].astype(float)
         df['retention_time'] = df['retention_time'].astype(float)
 
-        df['data_flag'] = df['data_flag'].fillna('...')
-        df['data_flag_int'] = (df['data_flag'] != '...').astype(int)
+        df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
@@ -2219,14 +2233,14 @@ class IE3_Instrument(HATS_DB_Functions):
 
     def upsert_mole_fractions(self, df, response_id=None):
         """
-        Update mole_fraction and flag in hats.ng_insitu_mole_fractions.
+        Update mole_fraction and detrend method in hats.ng_insitu_mole_fractions.
         Overrides the base class which writes to ng_mole_fractions (wrong table for IE3).
         """
         if df.empty or 'mole_fraction' not in df.columns:
             return
         sql = """
             UPDATE hats.ng_insitu_mole_fractions
-            SET mole_fraction = %s, flag = %s, detrend_method_num = %s
+            SET mole_fraction = %s, detrend_method_num = %s
             WHERE analysis_num = %s
               AND parameter_num = %s
               AND channel = %s;
@@ -2241,7 +2255,6 @@ class IE3_Instrument(HATS_DB_Functions):
             mf = row['mole_fraction']
             self.db.doquery(sql, [
                 None if pd.isna(mf) else float(mf),
-                row['data_flag'],
                 int(row['detrend_method_num']),
                 row['analysis_num'],
                 row['parameter_num'],
@@ -2250,40 +2263,31 @@ class IE3_Instrument(HATS_DB_Functions):
 
     def update_flags_all_analytes(self, df):
         """
-        Propagate flags from df to all parameter rows sharing the same analysis_num.
+        Propagate newly applied tags from df to all parameter rows sharing the same analysis_num.
         Overrides the base class which joins on ng_mole_fractions/ng_analysis (wrong tables for IE3).
-        Operates over every run_time present in df, so it is safe in monthly/half-monthly
-        chunk mode where df spans many GC runs.
         """
-        if df.empty:
+        if df.empty or '_pending_tag_num' not in df.columns:
             return
 
-        run_times = pd.Series(df['run_time'].unique()).dropna().tolist()
-        if not run_times:
+        tagged = df.loc[df['_pending_tag_num'].notna(), ['analysis_num', '_pending_tag_num']]
+        if tagged.empty:
             return
 
-        # 1. Clear all flags for every run_time in the loaded chunk
-        rt_placeholders = ','.join(['%s'] * len(run_times))
-        sql_clear = f"""
-            UPDATE hats.ng_insitu_mole_fractions m
-            JOIN hats.ng_insitu_analysis a ON m.analysis_num = a.num
-            SET m.flag = '...'
-            WHERE a.inst_num = %s
-              AND a.run_time IN ({rt_placeholders});
-        """
-        self.db.doquery(sql_clear, [self.inst_num, *run_times])
-
-        # 2. Apply 'M..' to flagged analysis_nums
-        flagged = df.loc[df['data_flag'] == 'M..']
-        if not flagged.empty:
-            analysis_nums = flagged['analysis_num'].unique().tolist()
+        for tag_num, group in tagged.groupby('_pending_tag_num'):
+            analysis_nums = group['analysis_num'].dropna().astype(int).unique().tolist()
+            if not analysis_nums:
+                continue
             placeholders = ','.join(['%s'] * len(analysis_nums))
             sql_set = f"""
-                UPDATE hats.ng_insitu_mole_fractions
-                SET flag = 'M..'
+                INSERT IGNORE INTO hats.ng_insitu_mole_fraction_tags (
+                    ng_insitu_mole_fraction_num,
+                    tag_num
+                )
+                SELECT num, %s
+                FROM hats.ng_insitu_mole_fractions
                 WHERE analysis_num IN ({placeholders});
             """
-            self.db.doquery(sql_set, analysis_nums)
+            self.db.doquery(sql_set, [int(tag_num), *analysis_nums])
 
     def calc_mole_fraction_scale_simple(self, df):
         """Compute mole_fraction = normalized_resp * coef0 from hats.scale_assignments.
@@ -2486,8 +2490,11 @@ class BLD1_Instrument(HATS_DB_Functions):
         if df['cal_scale_num'].isna().iat[0]:
             df['cal_scale_num'] = self.qurey_return_scale_num(pnum)
 
-        df['data_flag_int'] = 0
-        df.loc[df['data_flag'] != '...', 'data_flag_int'] = 1
+        if 'rejected' in df.columns:
+            df['rejected'] = df['rejected'].fillna(0).astype(int)
+        else:
+            df['rejected'] = 0
+        df.drop(columns=['data_flag'], errors='ignore', inplace=True)
         
         df = self.add_port_labels(df)   # port labels, colors, and markers (port_idx)
 

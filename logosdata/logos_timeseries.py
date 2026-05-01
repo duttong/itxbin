@@ -1673,7 +1673,7 @@ class TimeseriesWidget(QWidget):
         WHERE inst_num = %s
           AND parameter_num = %s
           AND run_type_num = 1  # only flask runs for the stddev plot
-          AND data_flag = '...'
+          AND rejected = 0
           AND sample_datetime BETWEEN %s AND %s
           AND site IN ({",".join(["%s"]*len(sites))})
         GROUP BY run_time, sample_id, pair_id_num, site
@@ -1753,7 +1753,7 @@ class TimeseriesWidget(QWidget):
         if force or query_params != self._last_query_params:
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
-                   data_flag, site, sample_id, pair_id_num, run_type_num
+                   rejected, site, sample_id, pair_id_num, run_type_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
               AND parameter_num = {pnum}
@@ -1823,7 +1823,13 @@ class TimeseriesWidget(QWidget):
         JOIN gmd.site s ON a.site_num = s.num
         WHERE a.inst_num = 236
           AND a.port IN (3, 7)
-          AND mf.flag = '...'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hats.ng_insitu_mole_fraction_tags t
+              JOIN ccgg.tag_dictionary d ON d.num = t.tag_num
+              WHERE t.ng_insitu_mole_fraction_num = mf.num
+                AND d.reject = 1
+          )
           AND mf.parameter_num = {pnum}
           {ch_filter}
           AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
@@ -2298,19 +2304,21 @@ class TimeseriesWidget(QWidget):
     def build_datasets(self, df: pd.DataFrame) -> dict:
         if df.empty:
             all_s = pd.DataFrame(columns=["sample_datetime", "run_time", "analysis_datetime",
-                                          "mole_fraction", "channel", "data_flag", "site",
+                                          "mole_fraction", "channel", "rejected", "site",
                                           "sample_id", "pair_id_num", "run_type_num"])
             fm = pd.DataFrame(columns=["site", "sample_id", "sample_datetime", "mean", "std"])
             pm = pd.DataFrame(columns=["site", "pair_id_num", "sample_datetime", "mean", "std"])
             return {"All samples": all_s, "Flask mean": fm, "Pair mean": pm}
 
         datasets = {}
+        rejected = df["rejected"].fillna(0).astype(int)
+
         if self.hide_flagged.isChecked():
-            datasets["All samples"] = df[df["data_flag"] == "..."].copy()
+            datasets["All samples"] = df[rejected == 0].copy()
         else:
             datasets["All samples"] = df.copy()
 
-        clean = df[df["data_flag"] == "..."].copy()
+        clean = df[rejected == 0].copy()
         flask_runs = clean[(clean["run_type_num"] == 1) & (clean["pair_id_num"] > 0)].copy()
         pfp_runs = clean[clean["run_type_num"] == 5].copy()
 
