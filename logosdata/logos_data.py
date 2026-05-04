@@ -353,6 +353,17 @@ class MultiTagPanel(QWidget):
         self._select_btn = QPushButton("Select Region")
         self._select_btn.setCheckable(True)
         self._select_btn.setToolTip("Drag a rectangle on the plot to select multiple points")
+        self._select_btn.setStyleSheet("""
+            QPushButton {
+                padding: 2px 8px;
+                border-radius: 6px;
+            }
+            QPushButton:checked {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 600;
+            }
+        """)
         self._select_btn.toggled.connect(self._on_select_btn_toggled)
         layout.addWidget(self._select_btn)
 
