@@ -519,6 +519,23 @@ class MultiTagPanel(QWidget):
         self.mw.run = self.mw.instrument.calc_mole_fraction(self.mw.run)
         self.mw.gc_plot(self.mw._current_yparam)
 
+    def clear_selection(self):
+        """Reset panel to 'no point selected' state."""
+        self._mf_nums = []
+        self._row_idxs = []
+        self._total_points = 0
+        self._info_label.setText("No point selected")
+        self._updating = True
+        try:
+            for i in range(self._table.rowCount()):
+                container = self._table.cellWidget(i, 0)
+                cb = container.findChild(QCheckBox) if container else None
+                if cb:
+                    cb.setEnabled(False)
+                    cb.setCheckState(Qt.Unchecked)
+        finally:
+            self._updating = False
+
 
 class MainWindow(QMainWindow):
 
@@ -2461,6 +2478,13 @@ class MainWindow(QMainWindow):
             text = "<br>".join(parts)
             QToolTip.showText(QCursor.pos(), text)
             break
+        else:
+            # Click landed on empty space — deselect multi-tag selection if open.
+            if (self._multi_tag_panel is not None
+                    and self._multi_tag_panel.isVisible()
+                    and not self._multi_tag_panel._select_btn.isChecked()):
+                self._clear_highlight()
+                self._multi_tag_panel.clear_selection()
 
     def _on_box_select(self, eclick, erelease):
         if not self.tagging_enabled:
