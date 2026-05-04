@@ -2056,10 +2056,10 @@ class MainWindow(QMainWindow):
                     zorder=20,
                 )
                 if cur_idx > 0:
-                    prev_art = ax.text(0.01, 0.99, '◀', ha='left', **arrow_kw)
+                    prev_art = ax.text(0.015, 0.975, '◀', ha='left', **arrow_kw)
                     prev_art._rt_nav = all_rts[cur_idx - 1]
                 if cur_idx < len(all_rts) - 1:
-                    next_art = ax.text(0.99, 0.99, '▶', ha='right', **arrow_kw)
+                    next_art = ax.text(0.985, 0.975, '▶', ha='right', **arrow_kw)
                     next_art._rt_nav = all_rts[cur_idx + 1]
 
         ax.format_coord = self._fmt_gc_plot
