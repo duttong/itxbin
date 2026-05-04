@@ -2260,8 +2260,8 @@ class MainWindow(QMainWindow):
                 if pid and pid not in {"0", "000", "None", "nan"}:
                     parts.append(f"<b>Pair ID:</b> {pid}")
 
-            # Flask Type
-            if run_type_num is not None:
+            # Flask Type — not applicable for in-situ instruments
+            if run_type_num is not None and self.instrument.inst_num != 236:
                 flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
                 parts.append(f"<b>Flask Type:</b> {flask_type}")
 
@@ -3807,6 +3807,7 @@ class MainWindow(QMainWindow):
                 self.run_shortcuts.append(sc)
         
     def load_selected_run(self):
+        self._clear_highlight()
         # call sql load function from instrument class
         # all of the input parameters are set with UI controls.
         start, end = self._current_load_dates()
