@@ -194,69 +194,6 @@ class FastNavigationToolbar(NavigationToolbar):
         )
 
         self.on_flag_toggle = on_flag_toggle
-        self.addSeparator()
-        self.flag_action = QAction("Tagging (g)", self)
-        self.flag_action.setCheckable(True)
-        self.flag_action.setShortcut("G")
-        self.flag_action.setToolTip("Toggle Tagging mode (g)")
-        self.flag_action.toggled.connect(self._toggle_flag)
-        self.addAction(self.flag_action)
-
-        acts = self.actions()
-        anchor_idx = None
-        for i, a in enumerate(acts):
-            tip = (a.toolTip() or "").lower()
-            text = (a.text() or "").lower()
-            icon = (a.iconText() or "").lower()
-            if "save" in tip or text == "save" or "save" in icon:
-                anchor_idx = i
-                break
-
-        if anchor_idx is not None:
-            # place *after* Zoom
-            self.removeAction(self.flag_action)
-            if anchor_idx + 1 < len(acts):
-                self.insertAction(acts[anchor_idx + 1], self.flag_action)
-                # optional: a tiny separator right after your button
-                self.insertSeparator(acts[anchor_idx + 1])
-            else:
-                self.addAction(self.flag_action)
-        else:
-            # fallback: put it before Save
-            for i, a in enumerate(self.actions()):
-                if "save" in (a.toolTip() or "").lower():
-                    self.removeAction(self.flag_action)
-                    self.insertAction(a, self.flag_action)   # before Save
-                    break
-                
-        self._style_flag_button()
-
-    def _style_flag_button(self):
-        # Grab the *current* QToolButton for the action (it changes if you reinsert)
-        btn = self.widgetForAction(self.flag_action)
-        if btn is None:
-            # Defer until the toolbar finishes creating the widget
-            QTimer.singleShot(0, self._style_flag_button)
-            return
-
-        self.flag_button = btn
-        # Ensure it paints a background (autoRaise=True makes it flat/grey on some styles)
-        self.flag_button.setAutoRaise(False)
-        self.flag_button.setCheckable(True)   # mirrors the action's checkable
-
-        # Style normal vs checked states
-        self.flag_button.setStyleSheet("""
-            QToolButton {
-                background: none;
-                padding: 2px 8px;
-                border-radius: 6px;
-            }
-            QToolButton:checked {
-                background-color: #2e7d32;  /* green */
-                color: white;
-                font-weight: 600;
-            }
-        """)
 
     def home(self, *args, **kwargs):
         """Override home to always look at the data's ranges."""
@@ -273,10 +210,9 @@ class FastNavigationToolbar(NavigationToolbar):
                 
     def zoom(self, *args, **kwargs):
         super().zoom(*args, **kwargs)
-        # If we just entered a tool mode, turn Tagging OFF
-        if getattr(self, "mode", None):  # non-empty when active
+        if getattr(self, "mode", None):
             try:
-                self.flag_action.setChecked(False)
+                self.main_window._tagging_btn.setChecked(False)
             except Exception:
                 pass
 
@@ -284,13 +220,9 @@ class FastNavigationToolbar(NavigationToolbar):
         super().pan(*args, **kwargs)
         if getattr(self, "mode", None):
             try:
-                self.flag_action.setChecked(False)
+                self.main_window._tagging_btn.setChecked(False)
             except Exception:
                 pass
-
-    def _toggle_flag(self, checked):
-        if self.on_flag_toggle:
-            self.on_flag_toggle(checked)
             
     def draw_rubberband(self, event, x0, y0, x1, y1):
         w, h = self.canvas.width(), self.canvas.height()
@@ -929,11 +861,43 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.setMinimumWidth(260)
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
         tag_layout.addWidget(self.tag_select_cb)
+
+        _btn_style = """
+            QPushButton {
+                padding: 2px 8px;
+                border: 1px solid #aaa;
+                border-radius: 6px;
+                background-color: #f0f0f0;
+            }
+            QPushButton:hover:!checked {
+                background-color: #e0e0e0;
+            }
+            QPushButton:checked {
+                background-color: #2e7d32;
+                color: white;
+                font-weight: 600;
+                border: 1px solid #1b5e20;
+            }
+        """
+        self._tagging_btn = QPushButton("Tagging (g)")
+        self._tagging_btn.setCheckable(True)
+        self._tagging_btn.setToolTip("Toggle tagging mode — drag a box or click a point to tag (g)")
+        self._tagging_btn.setStyleSheet(_btn_style)
+        self._tagging_btn.toggled.connect(self.on_flag_mode_toggled)
+        tagging_sc = QShortcut(QKeySequence("G"), self)
+        tagging_sc.activated.connect(self._tagging_btn.toggle)
+
         self._multi_tag_btn = QPushButton("Multi-Tag")
         self._multi_tag_btn.setCheckable(True)
         self._multi_tag_btn.setToolTip("Open floating panel to view/edit all tags for a selected point")
+        self._multi_tag_btn.setStyleSheet(_btn_style)
         self._multi_tag_btn.toggled.connect(self._on_multi_tag_btn_toggled)
-        tag_layout.addWidget(self._multi_tag_btn)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        btn_row.addWidget(self._tagging_btn)
+        btn_row.addWidget(self._multi_tag_btn)
+        tag_layout.addLayout(btn_row)
         self.hide_flagged_cb = QCheckBox("Hide Rejected Data")
         self.hide_flagged_cb.setChecked(False)
         self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
@@ -1036,7 +1000,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.canvas)
 
         # Add a NavigationToolbar for the figure
-        self.toolbar = FastNavigationToolbar(self.canvas, self, on_flag_toggle=self.on_flag_mode_toggled)  # Pass self explicitly
+        self.toolbar = FastNavigationToolbar(self.canvas, self)
         right_layout.addWidget(self.toolbar)
         self.right_placeholder = right_placeholder
 
@@ -1359,7 +1323,7 @@ class MainWindow(QMainWindow):
         if checked:
             # If tagging (g) mode is active, turn it off before opening multi-tag.
             if self.tagging_enabled:
-                self.toolbar.flag_action.setChecked(False)
+                self._tagging_btn.setChecked(False)
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
                 panel.populate_tags(self._all_tags_ordered)
@@ -1375,7 +1339,7 @@ class MainWindow(QMainWindow):
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
             self.tag_select_cb.setEnabled(False)
-            self.toolbar.flag_action.setEnabled(False)
+            self._tagging_btn.setEnabled(False)
         else:
             self._set_multi_tag_select(False)
             if self._multi_tag_panel is not None:
@@ -1383,7 +1347,7 @@ class MainWindow(QMainWindow):
                 self._multi_tag_panel.hide()
             self._clear_highlight()
             self.tag_select_cb.setEnabled(True)
-            self.toolbar.flag_action.setEnabled(True)
+            self._tagging_btn.setEnabled(True)
 
     def _set_multi_tag_select(self, enabled: bool):
         """Activate or deactivate the multi-tag window-select RectangleSelector."""
