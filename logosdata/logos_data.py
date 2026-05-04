@@ -593,6 +593,7 @@ class MainWindow(QMainWindow):
         self._pick_cid = None
         self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
         self._ie3_exact_run_time = None  # pd.Timestamp for full IE3 carry-in run loads
+        self._all_run_times = []  # sorted run_times in the loaded chunk, for nav arrows
         self._scatter_main = []
         self._current_yparam = None
         self._current_yvar = None
@@ -1531,6 +1532,18 @@ class MainWindow(QMainWindow):
         if self.run.empty:
             return
 
+        # Store ordered run_times from the full chunk for zoom navigation arrows.
+        if 'run_time' in self.run.columns:
+            self._all_run_times = list(
+                pd.to_datetime(self.run['run_time'], utc=True, errors='coerce')
+                .dropna()
+                .dt.tz_convert(None)
+                .sort_values()
+                .unique()
+            )
+        else:
+            self._all_run_times = []
+
         # Filter to the zoomed run_time, if any. Done as a temporary swap so
         # the existing body uses self.run normally; restored in `finally`.
         _full_run = None
@@ -2025,8 +2038,32 @@ class MainWindow(QMainWindow):
                     alpha=0.9,
                 ))
 
+        # ---- Run-time navigation arrows (IE3 zoom mode) ----
+        if self._zoom_run_time is not None:
+            all_rts = getattr(self, '_all_run_times', [])
+            zr = pd.Timestamp(self._zoom_run_time)
+            try:
+                cur_idx = next(i for i, rt in enumerate(all_rts) if pd.Timestamp(rt) == zr)
+            except StopIteration:
+                cur_idx = None
+            if cur_idx is not None:
+                arrow_kw = dict(
+                    transform=ax.transAxes, va='top', fontsize=12,
+                    fontweight='bold', color='steelblue',
+                    picker=True,
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                              edgecolor='steelblue', alpha=0.85),
+                    zorder=20,
+                )
+                if cur_idx > 0:
+                    prev_art = ax.text(0.01, 0.99, '◀', ha='left', **arrow_kw)
+                    prev_art._rt_nav = all_rts[cur_idx - 1]
+                if cur_idx < len(all_rts) - 1:
+                    next_art = ax.text(0.99, 0.99, '▶', ha='right', **arrow_kw)
+                    next_art._rt_nav = all_rts[cur_idx + 1]
+
         ax.format_coord = self._fmt_gc_plot
- 
+
         if not hasattr(self, "_legend_pick_cid") or self._legend_pick_cid is None:
             self._legend_pick_cid = self.canvas.mpl_connect(
                 "pick_event", self._on_legend_pick
@@ -2292,6 +2329,11 @@ class MainWindow(QMainWindow):
     def _on_pick_point_inner(self, event):
         tb = getattr(self.canvas, "toolbar", None)
         if tb is not None and getattr(tb, "mode", None):
+            return
+
+        # Run-time navigation arrow clicked (IE3 zoom mode).
+        if not self.tagging_enabled and hasattr(event.artist, '_rt_nav'):
+            self._toggle_run_time_zoom(event.artist._rt_nav)
             return
 
         # run_time transition line clicked: zoom toggle (only when tagging is off,
