@@ -1356,7 +1356,9 @@ class MainWindow(QMainWindow):
         else:
             self._set_multi_tag_select(False)
             if self._multi_tag_panel is not None:
+                self._multi_tag_panel._select_btn.blockSignals(True)
                 self._multi_tag_panel._select_btn.setChecked(False)
+                self._multi_tag_panel._select_btn.blockSignals(False)
                 self._multi_tag_panel.hide()
             self._clear_highlight()
             self.tag_select_cb.setEnabled(True)
@@ -2015,8 +2017,17 @@ class MainWindow(QMainWindow):
                     alpha=0.9,
                 ))
 
-        # ---- Run-time navigation arrows (IE3 zoom mode) ----
+        # ---- Run-time navigation arrows ----
+        arrow_kw = dict(
+            transform=ax.transAxes, va='top', fontsize=12,
+            fontweight='bold', color='steelblue',
+            picker=True,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                      edgecolor='steelblue', alpha=0.85),
+            zorder=20,
+        )
         if self._zoom_run_time is not None:
+            # IE3 zoom mode: step between run_time groups within loaded data
             all_rts = getattr(self, '_all_run_times', [])
             zr = pd.Timestamp(self._zoom_run_time)
             try:
@@ -2024,20 +2035,23 @@ class MainWindow(QMainWindow):
             except StopIteration:
                 cur_idx = None
             if cur_idx is not None:
-                arrow_kw = dict(
-                    transform=ax.transAxes, va='top', fontsize=12,
-                    fontweight='bold', color='steelblue',
-                    picker=True,
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
-                              edgecolor='steelblue', alpha=0.85),
-                    zorder=20,
-                )
                 if cur_idx > 0:
                     prev_art = ax.text(0.015, 0.99, '◀', ha='left', **arrow_kw)
                     prev_art._rt_nav = all_rts[cur_idx - 1]
                 if cur_idx < len(all_rts) - 1:
                     next_art = ax.text(0.985, 0.99, '▶', ha='right', **arrow_kw)
                     next_art._rt_nav = all_rts[cur_idx + 1]
+        else:
+            # All instruments: step between loaded run_times via the run combobox
+            cur_idx = self.run_cb.currentIndex()
+            count = self.run_cb.count()
+            if count > 1:
+                if cur_idx > 0:
+                    prev_art = ax.text(0.015, 0.99, '◀', ha='left', **arrow_kw)
+                    prev_art._run_nav = 'prev'
+                if cur_idx < count - 1:
+                    next_art = ax.text(0.985, 0.99, '▶', ha='right', **arrow_kw)
+                    next_art._run_nav = 'next'
 
         ax.format_coord = self._fmt_gc_plot
 
@@ -2126,9 +2140,6 @@ class MainWindow(QMainWindow):
                         
     def _reattach_rect_selector(self):
         """Ensure RectangleSelector follows the current axes after a redraw."""
-        if not hasattr(self, "_rect_selector"):
-            return
-
         if self._rect_selector is not None:
             self._rect_selector.set_active(False)
             self._rect_selector.disconnect_events()
@@ -2155,22 +2166,7 @@ class MainWindow(QMainWindow):
                 and self._multi_tag_panel.isVisible()
                 and self._multi_tag_panel._select_btn.isChecked())
         )
-        if self._multi_tag_rect_selector is not None:
-            self._multi_tag_rect_selector.set_active(False)
-            self._multi_tag_rect_selector.disconnect_events()
-            self._multi_tag_rect_selector = None
-        if multi_select_active and self.figure.axes:
-            self._multi_tag_rect_selector = RectangleSelector(
-                ax=self.figure.axes[0],
-                onselect=self._on_multi_tag_box_select,
-                useblit=True,
-                button=[1],
-                minspanx=5, minspany=5,
-                spancoords="pixels",
-                drag_from_anywhere=True,
-                ignore_event_outside=False,
-            )
-            self._multi_tag_rect_selector.set_active(True)
+        self._set_multi_tag_select(multi_select_active)
                     
     def _style_gc_buttons(self):
         """
@@ -2312,6 +2308,14 @@ class MainWindow(QMainWindow):
         # Run-time navigation arrow clicked (IE3 zoom mode).
         if not self.tagging_enabled and hasattr(event.artist, '_rt_nav'):
             self._toggle_run_time_zoom(event.artist._rt_nav)
+            return
+
+        # Run-time navigation arrow clicked (all instruments, non-zoom mode).
+        if not self.tagging_enabled and hasattr(event.artist, '_run_nav'):
+            if event.artist._run_nav == 'prev':
+                self.on_prev_run()
+            else:
+                self.on_next_run()
             return
 
         # run_time transition line clicked: zoom toggle (only when tagging is off,
