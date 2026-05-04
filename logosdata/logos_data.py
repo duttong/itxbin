@@ -356,12 +356,18 @@ class MultiTagPanel(QWidget):
         self._select_btn.setStyleSheet("""
             QPushButton {
                 padding: 2px 8px;
+                border: 1px solid #aaa;
                 border-radius: 6px;
+                background-color: #f0f0f0;
+            }
+            QPushButton:hover:!checked {
+                background-color: #e0e0e0;
             }
             QPushButton:checked {
                 background-color: #2e7d32;
                 color: white;
                 font-weight: 600;
+                border: 1px solid #1b5e20;
             }
         """)
         self._select_btn.toggled.connect(self._on_select_btn_toggled)
