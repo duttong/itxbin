@@ -568,9 +568,9 @@ class MainWindow(QMainWindow):
 
         # ── DATE RANGE SELECTION ──
         date_gb = QGroupBox("DATE RANGE (BY MONTH)")
-        date_layout = QHBoxLayout()
+        date_layout = QVBoxLayout()
         date_layout.setContentsMargins(2, 2, 2, 2)
-        date_layout.setSpacing(4)
+        date_layout.setSpacing(2)
         date_gb.setLayout(date_layout)
 
         # Start: Year / Month
@@ -602,14 +602,36 @@ class MainWindow(QMainWindow):
         self.apply_date_btn = QPushButton("Apply ▶")
         self.apply_date_btn.clicked.connect(self.apply_dates)
 
-        # Add to layout
-        date_layout.addWidget(QLabel("From:"))
-        date_layout.addWidget(self.start_year_cb)
-        date_layout.addWidget(self.start_month_cb)
-        date_layout.addWidget(QLabel("To:"))
-        date_layout.addWidget(self.end_year_cb)
-        date_layout.addWidget(self.end_month_cb)
-        date_layout.addWidget(self.apply_date_btn)
+        # Row 1: From / To selectors + Apply
+        date_row1 = QHBoxLayout()
+        date_row1.setSpacing(4)
+        date_row1.addWidget(QLabel("From:"))
+        date_row1.addWidget(self.start_year_cb)
+        date_row1.addWidget(self.start_month_cb)
+        date_row1.addWidget(QLabel("To:"))
+        date_row1.addWidget(self.end_year_cb)
+        date_row1.addWidget(self.end_month_cb)
+        date_row1.addWidget(self.apply_date_btn)
+        date_layout.addLayout(date_row1)
+
+        # Row 2: month-step buttons
+        _step_style = "font-size: 10px; padding: 1px 5px;"
+        date_row2 = QHBoxLayout()
+        date_row2.setSpacing(2)
+        for months in (3, 6, 12):
+            btn = QPushButton(f"+{months}M")
+            btn.setToolTip(f"Move From date forward {months} months and apply")
+            btn.setStyleSheet(_step_style)
+            btn.clicked.connect(lambda _, m=months: self._shift_date(self.start_year_cb, self.start_month_cb, m))
+            date_row2.addWidget(btn)
+        date_row2.addStretch()
+        for months in (3, 6, 12):
+            btn = QPushButton(f"-{months}M")
+            btn.setToolTip(f"Move To date back {months} months and apply")
+            btn.setStyleSheet(_step_style)
+            btn.clicked.connect(lambda _, m=months: self._shift_date(self.end_year_cb, self.end_month_cb, -m))
+            date_row2.addWidget(btn)
+        date_layout.addLayout(date_row2)
 
         processing_layout.addWidget(date_gb)
 
@@ -1433,6 +1455,20 @@ class MainWindow(QMainWindow):
             self.apply_date_btn.setStyleSheet("background-color: lightgreen;")
         else:
             self.apply_date_btn.setStyleSheet("")
+
+    def _shift_date(self, year_cb: 'QComboBox', month_cb: 'QComboBox', months: int):
+        """Shift a year/month combobox pair by `months` (negative = backward) and apply."""
+        year = int(year_cb.currentText())
+        month = month_cb.currentIndex() + 1
+        total = year * 12 + (month - 1) + months
+        new_year, new_month_0 = divmod(total, 12)
+        new_month = new_month_0 + 1
+        min_year = int(year_cb.itemText(0))
+        max_year = int(year_cb.itemText(year_cb.count() - 1))
+        new_year = max(min_year, min(max_year, new_year))
+        year_cb.setCurrentText(str(new_year))
+        month_cb.setCurrentIndex(new_month - 1)
+        self.apply_dates()
 
     def apply_dates(self):
         self.apply_date_btn.setStyleSheet("")
