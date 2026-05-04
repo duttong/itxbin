@@ -2490,8 +2490,7 @@ class MainWindow(QMainWindow):
         else:
             # Click landed on empty space — deselect multi-tag selection if open.
             if (self._multi_tag_panel is not None
-                    and self._multi_tag_panel.isVisible()
-                    and not self._multi_tag_panel._select_btn.isChecked()):
+                    and self._multi_tag_panel.isVisible()):
                 self._clear_highlight()
                 self._multi_tag_panel.clear_selection()
 
