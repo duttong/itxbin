@@ -334,7 +334,7 @@ class FastNavigationToolbar(NavigationToolbar):
         self._save_y_limits_if_locked("pan")
         
 class MultiTagPanel(QWidget):
-    """Floating panel: shows all manual tags as checkboxes for the picked point."""
+    """Floating panel: shows all manual tags as checkboxes for the picked point(s)."""
 
     def __init__(self, main_window):
         super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
@@ -342,11 +342,19 @@ class MultiTagPanel(QWidget):
         self.setWindowTitle("Multi-Tag")
         self._mf_nums: list[int] = []
         self._row_idxs: list = []
+        self._total_points: int = 0
         self._updating = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
+
+        # "Select Region" toggle button
+        self._select_btn = QPushButton("Select Region")
+        self._select_btn.setCheckable(True)
+        self._select_btn.setToolTip("Drag a rectangle on the plot to select multiple points")
+        self._select_btn.toggled.connect(self._on_select_btn_toggled)
+        layout.addWidget(self._select_btn)
 
         self._info_label = QLabel("No point selected")
         self._info_label.setStyleSheet("color: gray; font-style: italic; font-size: 11px;")
@@ -366,6 +374,9 @@ class MultiTagPanel(QWidget):
 
         self.setMinimumWidth(380)
 
+    def _on_select_btn_toggled(self, checked: bool):
+        self.mw._set_multi_tag_select(checked)
+
     def populate_tags(self, all_tags_ordered: list):
         """Build rows from (tag, is_auto) pairs in hats_sort order.
         Auto-tags appear in their natural position with yellow background, read-only."""
@@ -374,6 +385,7 @@ class MultiTagPanel(QWidget):
 
         for i, (tag, is_auto) in enumerate(all_tags_ordered):
             cb = QCheckBox()
+            cb.setTristate(True)
             cb.setEnabled(False)
             container = QWidget()
             hbox = QHBoxLayout(container)
@@ -382,7 +394,7 @@ class MultiTagPanel(QWidget):
             hbox.setContentsMargins(0, 0, 0, 0)
             self._table.setCellWidget(i, 0, container)
             if not is_auto:
-                cb.toggled.connect(lambda checked, t=tag: self._on_toggled(checked, t))
+                cb.clicked.connect(lambda _checked, t=tag, c=cb: self._on_clicked(c, t))
 
             label = tag["display_name"]
             if is_auto:
@@ -401,10 +413,16 @@ class MultiTagPanel(QWidget):
         self._table.setFixedHeight(header_h + rows_h + 4)
         self.adjustSize()
 
-    def update_for_point(self, row_idxs: list, mf_nums: list[int], applied_tag_nums: set[int]):
-        """Refresh checkboxes for a newly selected point."""
+    def update_for_point(self, row_idxs: list, mf_nums: list[int],
+                         tag_counts: dict[int, int], total: int = 1):
+        """Refresh checkboxes for one or more selected points.
+
+        tag_counts maps tag_num → number of selected mf_nums that carry the tag.
+        total is the total number of selected mf_nums (used for tri-state logic).
+        """
         self._row_idxs = row_idxs
         self._mf_nums = mf_nums
+        self._total_points = total
         self._updating = True
         try:
             if len(row_idxs) == 1:
@@ -415,7 +433,7 @@ class MultiTagPanel(QWidget):
                 except Exception:
                     self._info_label.setText(f"row {row_idxs[0]}")
             else:
-                self._info_label.setText(f"{len(row_idxs)} points")
+                self._info_label.setText(f"{len(row_idxs)} points selected")
 
             auto_tag_nums = self.mw.AUTO_TAG_NUMS
             for i in range(self._table.rowCount()):
@@ -428,21 +446,48 @@ class MultiTagPanel(QWidget):
                 cb = container.findChild(QCheckBox) if container else None
                 if cb:
                     cb.setEnabled(bool(mf_nums) and not is_auto)
-                    cb.setChecked(tag["tag_num"] in applied_tag_nums)
+                    count = tag_counts.get(tag["tag_num"], 0)
+                    if count == 0:
+                        cb.setCheckState(Qt.Unchecked)
+                    elif count >= total:
+                        cb.setCheckState(Qt.Checked)
+                    else:
+                        cb.setCheckState(Qt.PartiallyChecked)
         finally:
             self._updating = False
 
-    def _on_toggled(self, checked: bool, tag: dict):
-        try:
-            self._on_toggled_inner(checked, tag)
-        except Exception as exc:
-            print(f"MultiTagPanel toggle error: {exc}")
+    def _on_clicked(self, cb: 'QCheckBox', tag: dict):
+        """Handle user click on a tri-state checkbox.
 
-    def _on_toggled_inner(self, checked: bool, tag: dict):
+        Cycle: Unchecked/Partial → apply to all; Checked → remove from all.
+        Qt's default tristate click goes Unchecked→Partial→Checked, so we
+        intercept the Partial state and force it to Checked immediately.
+        """
+        try:
+            self._on_clicked_inner(cb, tag)
+        except Exception as exc:
+            print(f"MultiTagPanel click error: {exc}")
+
+    def _on_clicked_inner(self, cb: 'QCheckBox', tag: dict):
         if self._updating or not self._mf_nums:
             return
         tag_num = tag["tag_num"]
-        if checked:
+        new_state = cb.checkState()
+
+        # Qt tristate cycle on click: Unchecked→Partial→Checked→Unchecked.
+        # We want: Unchecked/Partial → apply all; Checked → remove all.
+        if new_state == Qt.PartiallyChecked:
+            # User clicked from Unchecked; skip Partial and go straight to Checked.
+            self._updating = True
+            cb.setCheckState(Qt.Checked)
+            self._updating = False
+            apply = True
+        elif new_state == Qt.Checked:
+            apply = True
+        else:
+            apply = False
+
+        if apply:
             self.mw._insert_tag_for_mf_nums(self._mf_nums, tag_num)
             is_reject = int(tag.get("reject") or 0) == 1
             for idx in self._row_idxs:
@@ -510,6 +555,7 @@ class MainWindow(QMainWindow):
         self.tag_select_cb = QComboBox()
         self._multi_tag_panel: MultiTagPanel | None = None
         self._rect_selector = None
+        self._multi_tag_rect_selector = None
         self._pick_cid = None
         self._zoom_run_time = None  # pd.Timestamp (UTC, tz-naive) when zoomed to one GC run, else None
         self._ie3_exact_run_time = None  # pd.Timestamp for full IE3 carry-in run loads
@@ -1261,6 +1307,19 @@ class MainWindow(QMainWindow):
         )
         return {int(r["tag_num"]) for r in (rows or [])}
 
+    def _fetch_tag_counts_for_mf_nums(self, mf_nums: list[int]) -> dict[int, int]:
+        """Return {tag_num: count} for how many of the given mf_nums carry each tag."""
+        if not mf_nums:
+            return {}
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        rows = self.instrument.db.doquery(
+            f"SELECT tag_num, COUNT(*) AS cnt FROM {tag_table} "
+            f"WHERE {tag_key} IN ({placeholders}) GROUP BY tag_num;",
+            list(mf_nums),
+        )
+        return {int(r["tag_num"]): int(r["cnt"]) for r in (rows or [])}
+
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
             if self._multi_tag_panel is None:
@@ -1270,6 +1329,7 @@ class MainWindow(QMainWindow):
                 # Must be a def, not a tuple-returning lambda — SIP requires None.
                 def _panel_close(e):
                     e.accept()
+                    self._set_multi_tag_select(False)
                     self._clear_highlight()
                     self._multi_tag_btn.setChecked(False)
                 panel.closeEvent = _panel_close
@@ -1279,11 +1339,57 @@ class MainWindow(QMainWindow):
             self.tag_select_cb.setEnabled(False)
             self.toolbar.flag_action.setEnabled(False)
         else:
+            self._set_multi_tag_select(False)
             if self._multi_tag_panel is not None:
+                self._multi_tag_panel._select_btn.setChecked(False)
                 self._multi_tag_panel.hide()
             self._clear_highlight()
             self.tag_select_cb.setEnabled(True)
             self.toolbar.flag_action.setEnabled(True)
+
+    def _set_multi_tag_select(self, enabled: bool):
+        """Activate or deactivate the multi-tag window-select RectangleSelector."""
+        if self._multi_tag_rect_selector is not None:
+            self._multi_tag_rect_selector.set_active(False)
+            self._multi_tag_rect_selector.disconnect_events()
+            self._multi_tag_rect_selector = None
+        if enabled and self.figure.axes:
+            self._multi_tag_rect_selector = RectangleSelector(
+                ax=self.figure.axes[0],
+                onselect=self._on_multi_tag_box_select,
+                useblit=True,
+                button=[1],
+                minspanx=5, minspany=5,
+                spancoords="pixels",
+                drag_from_anywhere=True,
+                ignore_event_outside=False,
+            )
+            self._multi_tag_rect_selector.set_active(True)
+            self.canvas.setCursor(Qt.CrossCursor)
+        else:
+            self.canvas.setCursor(Qt.ArrowCursor)
+
+    def _on_multi_tag_box_select(self, eclick, erelease):
+        """Handle rectangle select in multi-tag mode: select all points in the box."""
+        if self._multi_tag_panel is None or not self._multi_tag_panel.isVisible():
+            return
+        if not self._current_yvar or self.run.empty or self._current_yvar not in self.run.columns:
+            return
+        x0, x1 = sorted([eclick.xdata, erelease.xdata])
+        y0, y1 = sorted([eclick.ydata, erelease.ydata])
+        if None in (x0, y0, x1, y1):
+            return
+
+        y_all = self.run[self._current_yvar].to_numpy()
+        mask = (self._x_num >= x0) & (self._x_num <= x1) & (y_all >= y0) & (y_all <= y1)
+        row_idxs = list(self.run.index[mask])
+        if not row_idxs:
+            return
+
+        mf_nums = self._mole_fraction_nums_for_indices(row_idxs)
+        tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
+        self._multi_tag_panel.update_for_point(row_idxs, mf_nums, tag_counts, total=len(mf_nums))
+        self._clear_highlight()
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -1962,27 +2068,47 @@ class MainWindow(QMainWindow):
             return
 
         if self._rect_selector is not None:
-            # Kill the old selector
             self._rect_selector.set_active(False)
             self._rect_selector.disconnect_events()
             self._rect_selector = None
 
-        # Recreate on the fresh axes
         if self.figure.axes and self.tagging_enabled:
             ax = self.figure.axes[0]
-            from matplotlib.widgets import RectangleSelector
             self._rect_selector = RectangleSelector(
                 ax=ax,
                 onselect=self._on_box_select,
                 useblit=True,
-                button=[1],             # left mouse
+                button=[1],
                 minspanx=5, minspany=5,
                 spancoords="pixels",
                 drag_from_anywhere=True,
-                ignore_event_outside=False
-
+                ignore_event_outside=False,
             )
             self._rect_selector.set_active(True)
+
+        # Rebuild multi-tag region selector on the new axes if it was active.
+        multi_select_active = (
+            self._multi_tag_rect_selector is not None
+            or (self._multi_tag_panel is not None
+                and self._multi_tag_panel.isVisible()
+                and self._multi_tag_panel._select_btn.isChecked())
+        )
+        if self._multi_tag_rect_selector is not None:
+            self._multi_tag_rect_selector.set_active(False)
+            self._multi_tag_rect_selector.disconnect_events()
+            self._multi_tag_rect_selector = None
+        if multi_select_active and self.figure.axes:
+            self._multi_tag_rect_selector = RectangleSelector(
+                ax=self.figure.axes[0],
+                onselect=self._on_multi_tag_box_select,
+                useblit=True,
+                button=[1],
+                minspanx=5, minspany=5,
+                spancoords="pixels",
+                drag_from_anywhere=True,
+                ignore_event_outside=False,
+            )
+            self._multi_tag_rect_selector.set_active(True)
                     
     def _style_gc_buttons(self):
         """
@@ -2160,8 +2286,10 @@ class MainWindow(QMainWindow):
         # Update multi-tag panel for any scatter click (tagging mode not required).
         if (self._multi_tag_panel is not None and self._multi_tag_panel.isVisible()):
             mf_nums = self._mole_fraction_nums_for_indices([row_idx])
-            applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
-            self._multi_tag_panel.update_for_point([row_idx], mf_nums, applied)
+            tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
+            self._multi_tag_panel.update_for_point(
+                [row_idx], mf_nums, tag_counts, total=len(mf_nums) or 1
+            )
             self._highlight_point(scatter, i, row_idx)
 
         if self.tagging_enabled:
