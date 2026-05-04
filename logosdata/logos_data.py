@@ -2447,8 +2447,8 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
         else:
-            # Fall back: auto_rejected = True for all rejected with no manual tag info
-            self.run.loc[rejected_mask, "auto_rejected"] = True
+            # Can't determine tag breakdown — treat all as manual (plain open circle).
+            pass
 
     def _toggle_flags(self, idxs):
         """Toggle the selected tag on one or more points: apply if absent, remove if present."""
