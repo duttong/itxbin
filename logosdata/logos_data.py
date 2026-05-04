@@ -1389,7 +1389,7 @@ class MainWindow(QMainWindow):
         mf_nums = self._mole_fraction_nums_for_indices(row_idxs)
         tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
         self._multi_tag_panel.update_for_point(row_idxs, mf_nums, tag_counts, total=len(mf_nums))
-        self._clear_highlight()
+        self._highlight_region(row_idxs, self._x_num[mask])
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -2455,6 +2455,37 @@ class MainWindow(QMainWindow):
         idxs = self.run.index[mask]
 
         self._toggle_flags(idxs)
+
+    def _highlight_region(self, row_idxs: list, x_nums):
+        """Overlay hollow black circles on all points in a region selection."""
+        self._clear_highlight()
+        if not row_idxs or not self.figure.axes:
+            return
+        if not self._current_yvar or self._current_yvar not in self.run.columns:
+            return
+        try:
+            ax = self.figure.axes[0]
+            x_arr = np.asarray(x_nums, dtype=float)
+            y_arr = self.run.loc[row_idxs, self._current_yvar].to_numpy(dtype=float)
+            valid = np.isfinite(x_arr) & np.isfinite(y_arr)
+            x_plot, y_plot = x_arr[valid], y_arr[valid]
+            if len(x_plot) == 0:
+                return
+            ms = 10.0
+            (artist,) = ax.plot(
+                x_plot, y_plot, 'o',
+                markerfacecolor='none',
+                markeredgecolor='black',
+                markeredgewidth=1.5,
+                markersize=ms,
+                zorder=10,
+                linestyle='none',
+                transform=ax.transData,
+            )
+            self._highlighted_point = {'artist': artist, 'x': x_plot, 'y': y_plot, 'ms': ms}
+            self.canvas.draw_idle()
+        except Exception:
+            pass
 
     def _highlight_point(self, scatter, scatter_i: int, row_idx=None):
         """Overlay a hollow black circle on the selected scatter point."""
