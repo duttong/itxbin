@@ -885,7 +885,7 @@ class MainWindow(QMainWindow):
         self._tagging_btn.setStyleSheet(_btn_style)
         self._tagging_btn.toggled.connect(self.on_flag_mode_toggled)
         tagging_sc = QShortcut(QKeySequence("G"), self)
-        tagging_sc.activated.connect(self._tagging_btn.toggle)
+        tagging_sc.activated.connect(self._cycle_g_mode)
 
         self._multi_tag_btn = QPushButton("Multi-Tag")
         self._multi_tag_btn.setCheckable(True)
@@ -1111,6 +1111,19 @@ class MainWindow(QMainWindow):
             dialog.hide()
             dialog.deleteLater()
         self._on_tab_changed(self.tabs.currentIndex())
+
+    def _cycle_g_mode(self):
+        """Cycle G key: off → tagging → multi-tag → off → ..."""
+        if self._tagging_btn.isChecked():
+            # tagging on → switch to multi-tag
+            self._tagging_btn.setChecked(False)
+            self._multi_tag_btn.setChecked(True)
+        elif self._multi_tag_panel is not None and self._multi_tag_panel.isVisible():
+            # multi-tag open → close it (back to off)
+            self._multi_tag_btn.setChecked(False)
+        else:
+            # both off → start tagging
+            self._tagging_btn.setChecked(True)
 
     def on_flag_mode_toggled(self, checked: bool):
         self.tagging_enabled = checked
