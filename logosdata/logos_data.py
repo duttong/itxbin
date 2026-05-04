@@ -1730,7 +1730,8 @@ class MainWindow(QMainWindow):
                         )
         
         if yparam == 'resp':
-            ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
+            smooth_df = self.run.dropna(subset=['analysis_datetime'])
+            ax.plot(smooth_df['analysis_datetime'], smooth_df['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
             
         if self._zoom_run_time is not None:
             zr_str = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
@@ -2041,6 +2042,15 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     pass  # In case of empty data, do not set limits
         
+        # ---- Clamp x-axis to valid data range ----
+        # Any plot element containing NaT datetimes would otherwise push autoscale to 1970.
+        valid_dt = pd.to_datetime(self.run['analysis_datetime'], errors='coerce').dropna()
+        if not valid_dt.empty:
+            x_min = mdates.date2num(valid_dt.min().to_pydatetime())
+            x_max = mdates.date2num(valid_dt.max().to_pydatetime())
+            margin = max((x_max - x_min) * 0.02, 1.0)
+            ax.set_xlim(x_min - margin, x_max + margin)
+
         # ---- Restore view if requested by a prior click ----
         if getattr(self, "_pending_xlim", None) is not None:
             ax.set_xlim(self._pending_xlim)
