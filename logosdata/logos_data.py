@@ -17,8 +17,8 @@ import pandas as pd
 import argparse
 
 from PyQt5 import QtCore
-from PyQt5.QtGui import (QCursor, QPainter, QPalette, QPen, QStandardItemModel, QStandardItem,
-    QKeySequence, QTextCursor, QFont
+from PyQt5.QtGui import (QBrush, QColor, QCursor, QPainter, QPalette, QPen, QStandardItemModel,
+    QStandardItem, QKeySequence, QTextCursor, QFont
 )
 
 from PyQt5.QtWidgets import (
@@ -366,10 +366,13 @@ class MultiTagPanel(QWidget):
 
         self.setMinimumWidth(380)
 
-    def populate_tags(self, tag_options: list):
-        """Build rows from tag_options (called once after tags are loaded)."""
-        self._table.setRowCount(len(tag_options))
-        for i, tag in enumerate(tag_options):
+    def populate_tags(self, all_tags_ordered: list):
+        """Build rows from (tag, is_auto) pairs in hats_sort order.
+        Auto-tags appear in their natural position with yellow background, read-only."""
+        self._table.setRowCount(len(all_tags_ordered))
+        auto_bg = QBrush(QColor(255, 255, 200))
+
+        for i, (tag, is_auto) in enumerate(all_tags_ordered):
             cb = QCheckBox()
             cb.setEnabled(False)
             container = QWidget()
@@ -378,15 +381,21 @@ class MultiTagPanel(QWidget):
             hbox.setAlignment(Qt.AlignCenter)
             hbox.setContentsMargins(0, 0, 0, 0)
             self._table.setCellWidget(i, 0, container)
-            cb.toggled.connect(lambda checked, t=tag: self._on_toggled(checked, t))
+            if not is_auto:
+                cb.toggled.connect(lambda checked, t=tag: self._on_toggled(checked, t))
 
-            name_item = QTableWidgetItem(tag["display_name"])
+            label = tag["display_name"]
+            if is_auto:
+                label = f"[auto] {label}"
+            name_item = QTableWidgetItem(label)
             name_item.setData(Qt.UserRole, tag)
             name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            if is_auto:
+                name_item.setBackground(auto_bg)
+                container.setStyleSheet("background-color: rgb(255,255,200);")
             self._table.setItem(i, 1, name_item)
 
         self._table.resizeRowsToContents()
-        # Resize the panel to show all rows without a scrollbar
         header_h = self._table.horizontalHeader().height()
         rows_h = sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
         self._table.setFixedHeight(header_h + rows_h + 4)
@@ -408,15 +417,17 @@ class MultiTagPanel(QWidget):
             else:
                 self._info_label.setText(f"{len(row_idxs)} points")
 
+            auto_tag_nums = self.mw.AUTO_TAG_NUMS
             for i in range(self._table.rowCount()):
                 item = self._table.item(i, 1)
                 if item is None:
                     continue
                 tag = item.data(Qt.UserRole)
+                is_auto = tag["tag_num"] in auto_tag_nums
                 container = self._table.cellWidget(i, 0)
                 cb = container.findChild(QCheckBox) if container else None
                 if cb:
-                    cb.setEnabled(bool(mf_nums))
+                    cb.setEnabled(bool(mf_nums) and not is_auto)
                     cb.setChecked(tag["tag_num"] in applied_tag_nums)
         finally:
             self._updating = False
@@ -455,6 +466,8 @@ class MultiTagPanel(QWidget):
 
 class MainWindow(QMainWindow):
 
+    AUTO_TAG_NUMS = {316, 26, 25, 2, 32}
+
     def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
         super().__init__()
@@ -490,6 +503,7 @@ class MainWindow(QMainWindow):
         self.tagging_enabled = False
         self.tag_options = []
         self._all_tag_names = {}
+        self._all_tags_ordered = []
         self.selected_tag = None
         self._last_selected_tag_num = 141
         self._highlighted_point = {}
@@ -1094,24 +1108,15 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.blockSignals(True)
         self.tag_select_cb.clear()
         self.tag_options = []
-        # Full lookup for tooltips — includes auto-tags excluded from the combobox.
+        # Single query: manual tags sorted by flag, auto-tags appended at end.
         try:
             all_rows = self.instrument.db.doquery("""
-                SELECT tag_num, display_name
-                FROM ccgg.tag_view
-                WHERE hats_ng = 1
-                ORDER BY hats_sort;
-            """)
-            self._all_tag_names = {int(r["tag_num"]): r["display_name"] or "" for r in (all_rows or [])}
-        except Exception:
-            self._all_tag_names = {}
-        try:
-            rows = self.instrument.db.doquery("""
                 SELECT tag_num, internal_flag, display_name, reject
                 FROM ccgg.tag_view
                 WHERE hats_ng = 1
-                  AND tag_num NOT IN (316, 26, 25, 2, 32)
-                ORDER BY hats_sort;
+                ORDER BY
+                    CASE WHEN tag_num IN (316, 26, 25, 2, 32) THEN 1 ELSE 0 END,
+                    flag;
             """)
         except Exception as e:
             print(f"Could not load tag options: {e}")
@@ -1120,18 +1125,26 @@ class MainWindow(QMainWindow):
             self.tag_select_cb.blockSignals(False)
             return
 
-        for row in rows:
+        # _all_tags_ordered: full list in hats_sort order, used by MultiTagPanel.
+        # tag_options: manual-only subset, used by the combobox.
+        self._all_tag_names = {}
+        self._all_tags_ordered = []   # list of (tag_dict, is_auto)
+        for row in (all_rows or []):
+            tnum = int(row["tag_num"])
+            dname = row.get("display_name") or row.get("name") or ""
+            self._all_tag_names[tnum] = dname
             tag = {
-                "tag_num": int(row["tag_num"]),
+                "tag_num": tnum,
                 "internal_flag": row.get("internal_flag") or "",
-                "display_name": row.get("display_name") or row.get("name") or "",
+                "display_name": dname,
                 "reject": int(row.get("reject") or 0),
             }
-            self.tag_options.append(tag)
-            label = tag["display_name"]
-            if len(label) > 90:
-                label = label[:87] + "..."
-            self.tag_select_cb.addItem(label, tag)
+            is_auto = tnum in self.AUTO_TAG_NUMS
+            self._all_tags_ordered.append((tag, is_auto))
+            if not is_auto:
+                self.tag_options.append(tag)
+                label = dname[:87] + "..." if len(dname) > 90 else dname
+                self.tag_select_cb.addItem(label, tag)
 
         default_tag_num = self._last_selected_tag_num or 141
         default_idx = next(
@@ -1144,7 +1157,7 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.blockSignals(False)
 
         if self._multi_tag_panel is not None:
-            self._multi_tag_panel.populate_tags(self.tag_options)
+            self._multi_tag_panel.populate_tags(self._all_tags_ordered)
 
     def on_tag_selection_changed(self, index):
         self.selected_tag = self.tag_select_cb.itemData(index) if index >= 0 else None
@@ -1252,7 +1265,7 @@ class MainWindow(QMainWindow):
         if checked:
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
-                panel.populate_tags(self.tag_options)
+                panel.populate_tags(self._all_tags_ordered)
                 # Keep button and combobox in sync when panel closed via title-bar X.
                 # Must be a def, not a tuple-returning lambda — SIP requires None.
                 def _panel_close(e):
@@ -1574,21 +1587,41 @@ class MainWindow(QMainWindow):
             }
             self._scatter_main.append(scatter)
         
-        # overlay: show rejected points with open circles
+        # overlay: show rejected points — auto-only with circle+X, manual with open circle
         flags = rejected != 0
-        flagged = self.run.loc[flags]
-        if not flagged.empty and not hide_flagged:
-            ax.scatter(
-                flagged['analysis_datetime'],
-                flagged[yvar],
-                marker='o',  # or same marker as their port if you prefer
-                facecolors='whitesmoke',
-                edgecolors=flagged['port_color'],
-                linewidths=1.5,
-                s=self.instrument.BASE_MARKER_SIZE * 1.1,  # slightly larger for visibility
-                zorder=4,
-                picker=False
-            )
+        auto_rej = flags & self.run.get("auto_rejected", pd.Series(False, index=self.run.index)).fillna(False)
+        manual_rej = flags & ~auto_rej
+        marker_size = self.instrument.BASE_MARKER_SIZE * 1.1
+        if not hide_flagged:
+            for mask, draw_x in ((manual_rej, False), (auto_rej, True)):
+                grp = self.run.loc[mask]
+                if grp.empty:
+                    continue
+                ax.scatter(
+                    grp['analysis_datetime'],
+                    grp[yvar],
+                    marker='o',
+                    facecolors='whitesmoke',
+                    edgecolors=grp['port_color'],
+                    linewidths=1.5,
+                    s=marker_size,
+                    zorder=4,
+                    picker=False,
+                )
+                if draw_x:
+                    x_ms = float(np.sqrt(marker_size * 0.6))
+                    for clr in grp['port_color'].unique():
+                        cg = grp[grp['port_color'] == clr]
+                        ax.plot(
+                            cg['analysis_datetime'],
+                            cg[yvar],
+                            linestyle='none',
+                            marker='x',
+                            color=clr,
+                            markeredgewidth=1.2,
+                            markersize=x_ms,
+                            zorder=5,
+                        )
         
         if yparam == 'resp':
             ax.plot(self.run['analysis_datetime'], self.run['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
@@ -2375,6 +2408,47 @@ class MainWindow(QMainWindow):
             mf_nums = self._mole_fraction_nums_for_indices([row_idx])
             applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
             self.run.at[row_idx, "rejected"] = 1 if (applied & reject_nums) else 0
+        self._update_auto_rejected()
+
+    def _update_auto_rejected(self):
+        """Mark run['auto_rejected']=True for points rejected only by automatic tags.
+        Points with any manual rejection tag (not in AUTO_TAG_NUMS) get False."""
+        if self.run.empty or "rejected" not in self.run.columns:
+            return
+        rejected_mask = self.run["rejected"].fillna(0).astype(int) != 0
+        self.run["auto_rejected"] = False
+        if not rejected_mask.any():
+            return
+        rejected_idxs = self.run.index[rejected_mask].tolist()
+        mf_nums = self._mole_fraction_nums_for_indices(rejected_idxs)
+        if not mf_nums:
+            return
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        auto_placeholders = ",".join(["%s"] * len(self.AUTO_TAG_NUMS))
+        # Find mf_nums that have at least one non-auto rejection tag.
+        rows = self.instrument.db.doquery(
+            f"""SELECT DISTINCT t.{tag_key} AS mf_num
+                FROM {tag_table} t
+                JOIN ccgg.tag_view tv ON tv.tag_num = t.tag_num
+                WHERE t.{tag_key} IN ({placeholders})
+                  AND t.tag_num NOT IN ({auto_placeholders})
+                  AND tv.reject = 1""",
+            mf_nums + list(self.AUTO_TAG_NUMS),
+        )
+        has_manual = {int(r["mf_num"]) for r in (rows or [])}
+        # Identify the id_col so we can map mf_num back to run rows.
+        _, _, _, id_col = self._tag_table_info()
+        if id_col in self.run.columns:
+            for idx in rejected_idxs:
+                mf = self.run.at[idx, id_col]
+                try:
+                    self.run.at[idx, "auto_rejected"] = int(mf) not in has_manual
+                except Exception:
+                    pass
+        else:
+            # Fall back: auto_rejected = True for all rejected with no manual tag info
+            self.run.loc[rejected_mask, "auto_rejected"] = True
 
     def _toggle_flags(self, idxs):
         """Toggle the selected tag on one or more points: apply if absent, remove if present."""
@@ -3750,6 +3824,7 @@ class MainWindow(QMainWindow):
 
         self.update_smoothing_combobox()
         self.set_runtype_combo()
+        self._update_auto_rejected()
 
         self.madechanges = False
 
