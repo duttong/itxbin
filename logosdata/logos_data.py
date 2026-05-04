@@ -1350,6 +1350,9 @@ class MainWindow(QMainWindow):
 
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
+            # If tagging (g) mode is active, turn it off before opening multi-tag.
+            if self.tagging_enabled:
+                self.toolbar.flag_action.setChecked(False)
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
                 panel.populate_tags(self._all_tags_ordered)
