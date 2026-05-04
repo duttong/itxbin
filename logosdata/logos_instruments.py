@@ -2001,7 +2001,7 @@ class IE3_Instrument(HATS_DB_Functions):
     DEFAULT_ANALYTE_NAME = "N2O (a)"
     DEFAULT_ANALYTE_CHANNEL = "a"
     STANDARD_PORT_NUM = 5
-    EXCLUDE = []
+    EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
 
     def __init__(self, site: str = "smo"):
         super().__init__('ie3')

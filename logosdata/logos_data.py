@@ -2122,7 +2122,8 @@ class MainWindow(QMainWindow):
         if not valid_dt.empty:
             x_min = mdates.date2num(valid_dt.min().to_pydatetime())
             x_max = mdates.date2num(valid_dt.max().to_pydatetime())
-            margin = max((x_max - x_min) * 0.02, 1.0)
+            span = x_max - x_min
+            margin = max(span * 0.03, 1 / 12)  # 3% or 2 hours, whichever is larger
             ax.set_xlim(x_min - margin, x_max + margin)
 
         # ---- Restore view if requested by a prior click ----
