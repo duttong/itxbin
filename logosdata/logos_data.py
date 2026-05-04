@@ -620,9 +620,9 @@ class MainWindow(QMainWindow):
         date_row2.setSpacing(2)
         for months in (3, 6, 12):
             btn = QPushButton(f"+{months}M")
-            btn.setToolTip(f"Move From date forward {months} months and apply")
+            btn.setToolTip(f"Set To date to From date + {months} months and apply")
             btn.setStyleSheet(_step_style)
-            btn.clicked.connect(lambda _, m=months: self._shift_date(self.start_year_cb, self.start_month_cb, m))
+            btn.clicked.connect(lambda _, m=months: self._set_end_from_start(m))
             date_row2.addWidget(btn)
         date_row2.addStretch()
         for months in (3, 6, 12):
@@ -1455,6 +1455,19 @@ class MainWindow(QMainWindow):
             self.apply_date_btn.setStyleSheet("background-color: lightgreen;")
         else:
             self.apply_date_btn.setStyleSheet("")
+
+    def _set_end_from_start(self, months: int):
+        """Set the To date to From date + months and apply."""
+        year = int(self.start_year_cb.currentText())
+        month = self.start_month_cb.currentIndex() + 1
+        total = year * 12 + (month - 1) + months
+        new_year, new_month_0 = divmod(total, 12)
+        new_month = new_month_0 + 1
+        max_year = int(self.end_year_cb.itemText(self.end_year_cb.count() - 1))
+        new_year = min(max_year, new_year)
+        self.end_year_cb.setCurrentText(str(new_year))
+        self.end_month_cb.setCurrentIndex(new_month - 1)
+        self.apply_dates()
 
     def _shift_date(self, year_cb: 'QComboBox', month_cb: 'QComboBox', months: int):
         """Shift a year/month combobox pair by `months` (negative = backward) and apply."""
