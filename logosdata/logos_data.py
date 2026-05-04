@@ -677,10 +677,15 @@ class MainWindow(QMainWindow):
         self.run_cb = QComboBox()
         self.run_cb.setMinimumWidth(200)
         self.run_cb.currentIndexChanged.connect(self.on_run_changed)
+        self._copy_run_time_btn = QPushButton("⎘")
+        self._copy_run_time_btn.setToolTip("Copy run_time to clipboard")
+        self._copy_run_time_btn.setFixedWidth(28)
+        self._copy_run_time_btn.clicked.connect(self._copy_run_time)
 
         runsel_hbox.addWidget(self.prev_btn)
         runsel_hbox.addWidget(self.run_cb, stretch=1)
         runsel_hbox.addWidget(self.next_btn)
+        runsel_hbox.addWidget(self._copy_run_time_btn)
         run_layout.addLayout(runsel_hbox)
         self._setup_run_shortcuts()
         run_layout.addLayout(runtype_row)
@@ -4477,6 +4482,15 @@ class MainWindow(QMainWindow):
             self.on_run_changed(idx)
         self.run_cb.blockSignals(False)
         
+    def _copy_run_time(self):
+        """Copy the current run_time (without Cal/PFP suffix) to the clipboard."""
+        text = self.run_cb.currentText().split(" (")[0].strip()
+        if not text:
+            return
+        QApplication.clipboard().setText(text)
+        self._copy_run_time_btn.setText("✓")
+        QTimer.singleShot(1200, lambda: self._copy_run_time_btn.setText("⎘"))
+
     def on_lock_y_axis_toggled(self, state):
         """
         Called when the lock_y_axis_cb checkbox is toggled.
