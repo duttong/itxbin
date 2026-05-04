@@ -627,9 +627,9 @@ class MainWindow(QMainWindow):
         date_row2.addStretch()
         for months in (3, 6, 12):
             btn = QPushButton(f"-{months}M")
-            btn.setToolTip(f"Move To date back {months} months and apply")
+            btn.setToolTip(f"Set From date to To date - {months} months and apply")
             btn.setStyleSheet(_step_style)
-            btn.clicked.connect(lambda _, m=months: self._shift_date(self.end_year_cb, self.end_month_cb, -m))
+            btn.clicked.connect(lambda _, m=months: self._set_start_from_end(m))
             date_row2.addWidget(btn)
         date_layout.addLayout(date_row2)
 
@@ -1469,18 +1469,17 @@ class MainWindow(QMainWindow):
         self.end_month_cb.setCurrentIndex(new_month - 1)
         self.apply_dates()
 
-    def _shift_date(self, year_cb: 'QComboBox', month_cb: 'QComboBox', months: int):
-        """Shift a year/month combobox pair by `months` (negative = backward) and apply."""
-        year = int(year_cb.currentText())
-        month = month_cb.currentIndex() + 1
-        total = year * 12 + (month - 1) + months
+    def _set_start_from_end(self, months: int):
+        """Set the From date to To date - months and apply."""
+        year = int(self.end_year_cb.currentText())
+        month = self.end_month_cb.currentIndex() + 1
+        total = year * 12 + (month - 1) - months
         new_year, new_month_0 = divmod(total, 12)
         new_month = new_month_0 + 1
-        min_year = int(year_cb.itemText(0))
-        max_year = int(year_cb.itemText(year_cb.count() - 1))
-        new_year = max(min_year, min(max_year, new_year))
-        year_cb.setCurrentText(str(new_year))
-        month_cb.setCurrentIndex(new_month - 1)
+        min_year = int(self.start_year_cb.itemText(0))
+        new_year = max(min_year, new_year)
+        self.start_year_cb.setCurrentText(str(new_year))
+        self.start_month_cb.setCurrentIndex(new_month - 1)
         self.apply_dates()
 
     def apply_dates(self):
