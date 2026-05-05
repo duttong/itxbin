@@ -1376,6 +1376,7 @@ class MainWindow(QMainWindow):
                     self._multi_tag_btn.setChecked(False)
                 panel.closeEvent = _panel_close
                 self._multi_tag_panel = panel
+            self._multi_tag_panel.clear_selection()
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
             self.tag_select_cb.setEnabled(False)
