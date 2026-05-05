@@ -891,14 +891,13 @@ class Normalizing():
               .sort_values('analysis_datetime')
         )
 
-        # Record first valid reference datetime per run_time before filling.
-        # Used below to prevent backward extrapolation into the pre-reference region.
-        first_ref_per_rt = (
+        # Record first and last valid reference datetime per run_time before filling.
+        # Used below to clamp smoothed to the bracketed region only.
+        ref_bounds = (
             out.loc[out['smoothed'].notna(), ['run_time', 'analysis_datetime']]
             .groupby('run_time')['analysis_datetime']
-            .min()
+            .agg(first_ref='min', last_ref='max')
             .reset_index()
-            .rename(columns={'analysis_datetime': '_first_ref_dt'})
         )
 
         # Fill missing smoothed values within each run_time
@@ -907,16 +906,19 @@ class Normalizing():
             .apply(lambda s: s.interpolate(method='linear', limit_direction='both').ffill().bfill())
         )
 
-        # Null out smoothed for rows that precede the first valid reference in their
-        # run_time group. Backward extrapolation here produces a spurious horizontal
-        # norm line when early reference measurements are flagged.
-        out = out.merge(first_ref_per_rt, on='run_time', how='left')
-        before_first_ref = (
-            out['_first_ref_dt'].notna()
-            & (out['analysis_datetime'] < out['_first_ref_dt'])
+        # Null out smoothed outside the first–last valid reference bracket.
+        # Extrapolation beyond the reference bounds produces a spurious horizontal
+        # norm line when leading or trailing reference measurements are flagged.
+        out = out.merge(ref_bounds, on='run_time', how='left')
+        outside_refs = (
+            out['first_ref'].notna()
+            & (
+                (out['analysis_datetime'] < out['first_ref'])
+                | (out['analysis_datetime'] > out['last_ref'])
+            )
         )
-        out.loc[before_first_ref, 'smoothed'] = np.nan
-        out = out.drop(columns=['_first_ref_dt'])
+        out.loc[outside_refs, 'smoothed'] = np.nan
+        out = out.drop(columns=['first_ref', 'last_ref'])
 
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
 
