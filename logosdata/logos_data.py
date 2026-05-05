@@ -4198,10 +4198,14 @@ class MainWindow(QMainWindow):
         if hasattr(self, "timeseries_tab") and self.timeseries_tab:
             self.timeseries_tab.set_current_analyte(name)
 
+        self._clear_highlight()
+        if self._multi_tag_panel is not None and self._multi_tag_panel.isVisible():
+            self._multi_tag_panel.clear_selection()
+
         if self.current_run_time is None:
             self.set_runlist()
         else:
-            self.load_selected_run()       
+            self.load_selected_run()
         self.on_plot_type_changed(self.current_plot_type)
 
     def current_run_type_filter(self):
