@@ -891,11 +891,32 @@ class Normalizing():
               .sort_values('analysis_datetime')
         )
 
+        # Record first valid reference datetime per run_time before filling.
+        # Used below to prevent backward extrapolation into the pre-reference region.
+        first_ref_per_rt = (
+            out.loc[out['smoothed'].notna(), ['run_time', 'analysis_datetime']]
+            .groupby('run_time')['analysis_datetime']
+            .min()
+            .reset_index()
+            .rename(columns={'analysis_datetime': '_first_ref_dt'})
+        )
+
         # Fill missing smoothed values within each run_time
         out['smoothed'] = (
             out.groupby('run_time', group_keys=False)['smoothed']
             .apply(lambda s: s.interpolate(method='linear', limit_direction='both').ffill().bfill())
         )
+
+        # Null out smoothed for rows that precede the first valid reference in their
+        # run_time group. Backward extrapolation here produces a spurious horizontal
+        # norm line when early reference measurements are flagged.
+        out = out.merge(first_ref_per_rt, on='run_time', how='left')
+        before_first_ref = (
+            out['_first_ref_dt'].notna()
+            & (out['analysis_datetime'] < out['_first_ref_dt'])
+        )
+        out.loc[before_first_ref, 'smoothed'] = np.nan
+        out = out.drop(columns=['_first_ref_dt'])
 
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
 
