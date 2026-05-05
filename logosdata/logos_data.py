@@ -4239,6 +4239,10 @@ class MainWindow(QMainWindow):
         self._ie3_exact_run_time = None
         self._zoom_run_time = None
 
+        self._clear_highlight()
+        if self._multi_tag_panel is not None and self._multi_tag_panel.isVisible():
+            self._multi_tag_panel.clear_selection()
+
         # If Calibration plot is active but the new run is not a calibration run,
         # switch to the Response plot to prevent a crash.
         is_cal_plot_selected = self.plot_radio_group.checkedId() == 3
