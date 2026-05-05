@@ -2025,6 +2025,7 @@ class IE3_Instrument(HATS_DB_Functions):
     DEFAULT_ANALYTE_CHANNEL = "a"
     STANDARD_PORT_NUM = 5
     EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
+    AUTOSCALE_STANDARD_PORTS = [1, 5, 9]  # ref tank + high/low standards
 
     def __init__(self, site: str = "smo"):
         super().__init__('ie3')

@@ -2139,7 +2139,11 @@ class MainWindow(QMainWindow):
 
                 unflagged = self.run['rejected'].fillna(0).astype(int) == 0
                 if autoscale_mode == "standard":
-                    scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar].dropna()
+                    std_ports = getattr(self.instrument, 'AUTOSCALE_STANDARD_PORTS', None)
+                    if std_ports:
+                        scale_df = self.run.loc[self.run[exclude_variable].isin(std_ports) & unflagged, yvar].dropna()
+                    else:
+                        scale_df = self.run.loc[(self.run[exclude_variable] == standard) & unflagged, yvar].dropna()
                     if scale_df.empty:
                         # Fall back to samples mode if no valid unflagged standard data
                         scale_df = self.run.loc[~self.run[exclude_variable].isin(exclude) & unflagged, yvar].dropna()
