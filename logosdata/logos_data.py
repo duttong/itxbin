@@ -618,14 +618,14 @@ class MainWindow(QMainWindow):
         _step_style = "font-size: 10px; padding: 1px 5px;"
         date_row2 = QHBoxLayout()
         date_row2.setSpacing(2)
-        for months in (3, 6, 12):
+        for months in (1, 2, 6):
             btn = QPushButton(f"+{months}M")
             btn.setToolTip(f"Set To date to From date + {months} months and apply")
             btn.setStyleSheet(_step_style)
             btn.clicked.connect(lambda _, m=months: self._set_end_from_start(m))
             date_row2.addWidget(btn)
         date_row2.addStretch()
-        for months in (3, 6, 12):
+        for months in (1, 2, 6):
             btn = QPushButton(f"-{months}M")
             btn.setToolTip(f"Set From date to To date - {months} months and apply")
             btn.setStyleSheet(_step_style)
