@@ -85,7 +85,7 @@ def load_eng_data(site: str, dates: list[date]) -> pd.DataFrame | None:
     if not frames:
         return None
 
-    df = pd.concat(frames, ignore_index=True)
+    df = pd.concat([f.dropna(axis=1, how='all') for f in frames], ignore_index=True)
     df['ie3_time'] = (pd.to_datetime(df['ie3_time'], format='mixed', utc=True, errors='coerce')
                        .dt.tz_convert(None))
     df = (df.dropna(subset=['ie3_time'])
