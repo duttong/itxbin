@@ -4127,9 +4127,14 @@ class MainWindow(QMainWindow):
         """Return (start_date, end_date) to pass to instrument.load_data().
         For IE3 the current_run_time is a chunk label spanning a date range;
         for other instruments it's a single GC run timestamp used for both ends.
+        When zoomed into a specific IE3 run_time group, returns that run_time
+        so that Save all gases operates only on the visible data.
         """
         if self.instrument.inst_id == 'ie3' and self._ie3_exact_run_time is not None:
             rt = pd.Timestamp(self._ie3_exact_run_time).strftime('%Y-%m-%d %H:%M:%S')
+            return (rt, rt)
+        if self.instrument.inst_id == 'ie3' and self._zoom_run_time is not None:
+            rt = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
             return (rt, rt)
         if self.instrument.inst_id == 'ie3' and self.current_run_time:
             start, end = _ie3_chunk_sql_range(self.current_run_time)
