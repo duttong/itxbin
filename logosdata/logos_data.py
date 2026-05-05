@@ -477,7 +477,7 @@ class MultiTagPanel(QWidget):
 
 class MainWindow(QMainWindow):
 
-    AUTO_TAG_NUMS = {316, 26, 25, 2, 32}
+    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324}
 
     def __init__(self, instrument):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
