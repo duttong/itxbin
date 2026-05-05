@@ -1200,7 +1200,7 @@ class MainWindow(QMainWindow):
                 FROM ccgg.tag_view
                 WHERE hats_ng = 1
                 ORDER BY
-                    CASE WHEN tag_num IN (316, 26, 25, 2, 32) THEN 1 ELSE 0 END,
+                    CASE WHEN tag_num IN (316, 26, 25, 2, 32, 324) THEN 1 ELSE 0 END,
                     flag;
             """)
         except Exception as e:
