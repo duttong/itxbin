@@ -113,6 +113,9 @@ class M4_GCwerks(M4_Instrument):
             ) VALUES (%s, %s)
             """
 
+        df = df.dropna(subset=['analysis_num'])
+        df = df.copy()
+        df['analysis_num'] = df['analysis_num'].astype(int)
         df = df.fillna('')
         params = []
         all_keys = set()
