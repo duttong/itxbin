@@ -138,14 +138,14 @@ class TanksPlotter:
                 h.comment,
                 f.notes AS fill_notes,
                 g.notes AS grav_notes
-            FROM hats.ng_tank_use_history h
-            JOIN reftank.fill f
-              ON f.idx = h.fill_idx
+            FROM reftank.fill f
+            LEFT JOIN hats.ng_tank_use_history h
+              ON h.fill_idx = f.idx
             LEFT JOIN hats.ng_tank_uses u
               ON u.num = h.ng_tank_uses_num
             LEFT JOIN reftank.grav_view g
-              ON g.fill_num = h.fill_idx
-            WHERE h.fill_idx IN ({fill_list})
+              ON g.fill_num = f.idx
+            WHERE f.idx IN ({fill_list})
             ORDER BY f.serial_number, f.`date` DESC;
         """
         df = pd.DataFrame(self.db.doquery(sql))
