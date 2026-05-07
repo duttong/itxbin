@@ -265,8 +265,37 @@ class FastNavigationToolbar(NavigationToolbar):
         rcParams["lines.antialiased"] = self._old_aa
         self._save_y_limits_if_locked("pan")
         
+_TAG_LAYOUT = [
+    ("Sampling/Collection Issues", [
+        ("B", "Leaky flask valve",                                   168, 223),
+        ("F", "Insufficient flushing of sample collection system",     6, 222),
+        ("K", "Contamination (Room air)",                              8,   9),
+        ("L", "Leak in sample collection system",                     10,  11),
+        ("P", "Bad flask pair agreement",                             14,  15),
+        ("T", "Test sample collected not used in data analysis",      16, 189),
+        ("U", "Unknown sample collection problem",                    17,  18),
+        ("V", "Insufficient sample pressure",                         19, 136),
+    ]),
+    ("Measurement Issues", [
+        ("A", "Known measurement problem",                           282,  24),
+        ("C", "Mole fraction falls outside of calibration",          107,  26),
+        ("G", "Chromatography issue",                                290, 291),
+        ("M", "Agilent (MS or GC) device issue",                    132, 133),
+        ("O", "Measurement lab operator error",                       43, 121),
+        ("U", "Unknown measurement problem",                         141, 142),
+    ]),
+    ("Automatic Tags", [
+        ("C", "Mole fraction falls outside of calibration",          286, 287),
+        ("G", "Chromatography issue",                                316,   0),
+        ("P", "Bad flask pair agreement",                            167,   0),
+        ("V", "Out of range sample pressure",                         32,   0),
+        ("W", "Rejected in GCwerks integration",                     324,   0),
+    ]),
+]
+
+
 class MultiTagPanel(QWidget):
-    """Floating panel: shows all manual tags as checkboxes for the picked point(s)."""
+    """Floating panel: R/I tag checkboxes grouped by Sampling, Measurement, and Auto categories."""
 
     def __init__(self, main_window):
         super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
@@ -276,12 +305,12 @@ class MultiTagPanel(QWidget):
         self._row_idxs: list = []
         self._total_points: int = 0
         self._updating = False
+        self._rows: list[dict] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
-        # "Select Region" toggle button
         self._select_btn = QPushButton("Select Region")
         self._select_btn.setCheckable(True)
         self._select_btn.setToolTip("Drag a rectangle on the plot to select multiple points")
@@ -292,9 +321,7 @@ class MultiTagPanel(QWidget):
                 border-radius: 6px;
                 background-color: #f0f0f0;
             }
-            QPushButton:hover:!checked {
-                background-color: #e0e0e0;
-            }
+            QPushButton:hover:!checked { background-color: #e0e0e0; }
             QPushButton:checked {
                 background-color: #2e7d32;
                 color: white;
@@ -309,66 +336,150 @@ class MultiTagPanel(QWidget):
         self._info_label.setStyleSheet("color: gray; font-style: italic; font-size: 11px;")
         layout.addWidget(self._info_label)
 
-        self._table = QTableWidget(0, 2)
-        self._table.setHorizontalHeaderLabels(["✓", "Tag"])
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._table.setColumnWidth(0, 32)
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["R", "I", "N", "Description"])
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Fixed)
+        hh.setSectionResizeMode(1, QHeaderView.Fixed)
+        hh.setSectionResizeMode(2, QHeaderView.Fixed)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
+        self._table.setColumnWidth(0, 30)
+        self._table.setColumnWidth(1, 30)
+        self._table.setColumnWidth(2, 22)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionMode(QTableWidget.NoSelection)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self._table)
 
-        self.setMinimumWidth(380)
+        # Comment section
+        _comment_yellow = "#fffde7"
+        comment_header = QWidget()
+        comment_header.setStyleSheet(f"background-color: {_comment_yellow};")
+        ch_layout = QHBoxLayout(comment_header)
+        ch_layout.setContentsMargins(6, 3, 4, 3)
+        ch_label = QLabel("Tag Comment")
+        ch_label.setStyleSheet(f"background-color: {_comment_yellow}; font-weight: bold; font-size: 11px;")
+        self._save_comment_btn = QPushButton("Save")
+        self._save_comment_btn.setFixedWidth(50)
+        self._save_comment_btn.setEnabled(False)
+        self._save_comment_btn.clicked.connect(self._save_comment)
+        ch_layout.addWidget(ch_label)
+        ch_layout.addStretch()
+        ch_layout.addWidget(self._save_comment_btn)
+        layout.addWidget(comment_header)
 
-    def _on_select_btn_toggled(self, checked: bool):
-        self.mw._set_multi_tag_select(checked)
+        self._comment_edit = QTextEdit()
+        self._comment_edit.setPlaceholderText("Enter comment…")
+        self._comment_edit.setStyleSheet(f"background-color: {_comment_yellow};")
+        self._comment_edit.setEnabled(False)
+        self._comment_edit.setFixedHeight(62)
+        layout.addWidget(self._comment_edit)
 
-    def populate_tags(self, all_tags_ordered: list):
-        """Build rows from (tag, is_auto) pairs in hats_sort order.
-        Auto-tags appear in their natural position with yellow background, read-only."""
-        self._table.setRowCount(len(all_tags_ordered))
-        auto_bg = QBrush(QColor(255, 255, 200))
+        self.setMinimumWidth(420)
+        self._build_layout()
 
-        for i, (tag, is_auto) in enumerate(all_tags_ordered):
-            cb = QCheckBox()
-            cb.setTristate(True)
-            cb.setEnabled(False)
-            container = QWidget()
-            hbox = QHBoxLayout(container)
-            hbox.addWidget(cb)
-            hbox.setAlignment(Qt.AlignCenter)
-            hbox.setContentsMargins(0, 0, 0, 0)
-            self._table.setCellWidget(i, 0, container)
-            if not is_auto:
-                cb.clicked.connect(lambda _checked, t=tag, c=cb: self._on_clicked(c, t))
+    def _build_layout(self):
+        self._rows = []
+        row_count = sum(1 + len(entries) for _, entries in _TAG_LAYOUT)
+        self._table.setRowCount(row_count)
 
-            label = tag["display_name"]
-            if is_auto:
-                label = f"[auto] {label}"
-            name_item = QTableWidgetItem(label)
-            name_item.setData(Qt.UserRole, tag)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            if is_auto:
-                name_item.setBackground(auto_bg)
-                container.setStyleSheet("background-color: rgb(255,255,200);")
-            self._table.setItem(i, 1, name_item)
+        section_bg = QColor("#c8d4e8")
+
+        table_row = 0
+        for section_name, entries in _TAG_LAYOUT:
+            is_auto_section = (section_name == "Automatic Tags")
+
+            hdr = QTableWidgetItem(f"  {section_name}")
+            hdr.setBackground(QBrush(section_bg))
+            hdr.setForeground(QBrush(QColor("#1a2a4a")))
+            f = hdr.font()
+            f.setBold(True)
+            hdr.setFont(f)
+            hdr.setFlags(Qt.ItemIsEnabled)
+            self._table.setItem(table_row, 0, hdr)
+            self._table.setSpan(table_row, 0, 1, 4)
+            self._table.setRowHeight(table_row, 22)
+            table_row += 1
+
+            for letter, desc, r_tag, i_tag in entries:
+                r_cb = QCheckBox()
+                r_cb.setTristate(True)
+                r_cb.setEnabled(False)
+                r_wrap = QWidget()
+                r_box = QHBoxLayout(r_wrap)
+                r_box.addWidget(r_cb)
+                r_box.setAlignment(Qt.AlignCenter)
+                r_box.setContentsMargins(0, 0, 0, 0)
+                self._table.setCellWidget(table_row, 0, r_wrap)
+                if not is_auto_section:
+                    r_cb.clicked.connect(
+                        lambda _c, tnum=r_tag, cb=r_cb: self._on_clicked(cb, tnum, is_reject=True)
+                    )
+
+                i_cb = None
+                if i_tag:
+                    i_cb = QCheckBox()
+                    i_cb.setTristate(True)
+                    i_cb.setEnabled(False)
+                    i_wrap = QWidget()
+                    i_box = QHBoxLayout(i_wrap)
+                    i_box.addWidget(i_cb)
+                    i_box.setAlignment(Qt.AlignCenter)
+                    i_box.setContentsMargins(0, 0, 0, 0)
+                    self._table.setCellWidget(table_row, 1, i_wrap)
+                    if not is_auto_section:
+                        i_cb.clicked.connect(
+                            lambda _c, tnum=i_tag, cb=i_cb: self._on_clicked(cb, tnum, is_reject=False)
+                        )
+
+                n_item = QTableWidgetItem(letter)
+                n_item.setTextAlignment(Qt.AlignCenter)
+                n_item.setFlags(Qt.ItemIsEnabled)
+                fn = n_item.font()
+                fn.setBold(True)
+                n_item.setFont(fn)
+                self._table.setItem(table_row, 2, n_item)
+
+                desc_item = QTableWidgetItem(desc)
+                desc_item.setFlags(Qt.ItemIsEnabled)
+                self._table.setItem(table_row, 3, desc_item)
+
+                self._rows.append({
+                    "table_row": table_row,
+                    "r_tag": r_tag,
+                    "i_tag": i_tag,
+                    "is_auto": is_auto_section,
+                    "r_cb": r_cb,
+                    "i_cb": i_cb,
+                })
+                table_row += 1
 
         self._table.resizeRowsToContents()
+        self._fit_table_height()
+
+    def _fit_table_height(self):
         header_h = self._table.horizontalHeader().height()
         rows_h = sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
         self._table.setFixedHeight(header_h + rows_h + 4)
         self.adjustSize()
 
+    def _on_select_btn_toggled(self, checked: bool):
+        self.mw._set_multi_tag_select(checked)
+
+    def _save_comment(self):
+        if not self._mf_nums:
+            return
+        try:
+            self.mw._save_comment_for_mf_nums(self._mf_nums, self._comment_edit.toPlainText().strip() or None)
+        except Exception as exc:
+            print(f"MultiTagPanel save comment error: {exc}")
+
+    def populate_tags(self, all_tags_ordered: list):
+        pass  # layout is static; kept for API compatibility
+
     def update_for_point(self, row_idxs: list, mf_nums: list[int],
                          tag_counts: dict[int, int], total: int = 1):
-        """Refresh checkboxes for one or more selected points.
-
-        tag_counts maps tag_num → number of selected mf_nums that carry the tag.
-        total is the total number of selected mf_nums (used for tri-state logic).
-        """
         self._row_idxs = row_idxs
         self._mf_nums = mf_nums
         self._total_points = total
@@ -384,49 +495,52 @@ class MultiTagPanel(QWidget):
             else:
                 self._info_label.setText(f"{len(row_idxs)} points selected")
 
-            auto_tag_nums = self.mw.AUTO_TAG_NUMS
-            for i in range(self._table.rowCount()):
-                item = self._table.item(i, 1)
-                if item is None:
-                    continue
-                tag = item.data(Qt.UserRole)
-                is_auto = tag["tag_num"] in auto_tag_nums
-                container = self._table.cellWidget(i, 0)
-                cb = container.findChild(QCheckBox) if container else None
-                if cb:
-                    cb.setEnabled(bool(mf_nums) and not is_auto)
-                    count = tag_counts.get(tag["tag_num"], 0)
-                    if count == 0:
-                        cb.setCheckState(Qt.Unchecked)
-                    elif count >= total:
-                        cb.setCheckState(Qt.Checked)
+            for entry in self._rows:
+                r_tag = entry["r_tag"]
+                i_tag = entry["i_tag"]
+                is_auto = entry["is_auto"]
+                r_cb: QCheckBox = entry["r_cb"]
+                i_cb: QCheckBox | None = entry["i_cb"]
+
+                r_count = tag_counts.get(r_tag, 0)
+                r_cb.setEnabled(bool(mf_nums) and not is_auto)
+                if r_count == 0:
+                    r_cb.setCheckState(Qt.Unchecked)
+                elif r_count >= total:
+                    r_cb.setCheckState(Qt.Checked)
+                else:
+                    r_cb.setCheckState(Qt.PartiallyChecked)
+
+                if i_cb is not None:
+                    i_count = tag_counts.get(i_tag, 0)
+                    i_cb.setEnabled(bool(mf_nums) and not is_auto)
+                    if i_count == 0:
+                        i_cb.setCheckState(Qt.Unchecked)
+                    elif i_count >= total:
+                        i_cb.setCheckState(Qt.Checked)
                     else:
-                        cb.setCheckState(Qt.PartiallyChecked)
+                        i_cb.setCheckState(Qt.PartiallyChecked)
+
+            self._comment_edit.setEnabled(bool(mf_nums))
+            self._save_comment_btn.setEnabled(bool(mf_nums))
+            comment = self.mw._fetch_first_comment_for_mf_nums(mf_nums) if mf_nums else ""
+            self._comment_edit.setPlainText(comment)
+
         finally:
             self._updating = False
 
-    def _on_clicked(self, cb: 'QCheckBox', tag: dict):
-        """Handle user click on a tri-state checkbox.
-
-        Cycle: Unchecked/Partial → apply to all; Checked → remove from all.
-        Qt's default tristate click goes Unchecked→Partial→Checked, so we
-        intercept the Partial state and force it to Checked immediately.
-        """
+    def _on_clicked(self, cb: QCheckBox, tag_num: int, is_reject: bool):
         try:
-            self._on_clicked_inner(cb, tag)
+            self._on_clicked_inner(cb, tag_num, is_reject)
         except Exception as exc:
             print(f"MultiTagPanel click error: {exc}")
 
-    def _on_clicked_inner(self, cb: 'QCheckBox', tag: dict):
+    def _on_clicked_inner(self, cb: QCheckBox, tag_num: int, is_reject: bool):
         if self._updating or not self._mf_nums:
             return
-        tag_num = tag["tag_num"]
         new_state = cb.checkState()
 
-        # Qt tristate cycle on click: Unchecked→Partial→Checked→Unchecked.
-        # We want: Unchecked/Partial → apply all; Checked → remove all.
         if new_state == Qt.PartiallyChecked:
-            # User clicked from Unchecked; skip Partial and go straight to Checked.
             self._updating = True
             cb.setCheckState(Qt.Checked)
             self._updating = False
@@ -438,10 +552,9 @@ class MultiTagPanel(QWidget):
 
         if apply:
             self.mw._insert_tag_for_mf_nums(self._mf_nums, tag_num)
-            is_reject = int(tag.get("reject") or 0) == 1
-            for idx in self._row_idxs:
-                self.mw.run.at[idx, "_pending_tag_num"] = tag_num
-                if is_reject:
+            if is_reject:
+                for idx in self._row_idxs:
+                    self.mw.run.at[idx, "_pending_tag_num"] = tag_num
                     self.mw.run.at[idx, "rejected"] = 1
         else:
             self.mw._delete_tag_for_mf_nums(self._mf_nums, tag_num)
@@ -458,19 +571,21 @@ class MultiTagPanel(QWidget):
         self.mw.gc_plot(self.mw._current_yparam)
 
     def clear_selection(self):
-        """Reset panel to 'no point selected' state."""
         self._mf_nums = []
         self._row_idxs = []
         self._total_points = 0
         self._info_label.setText("No point selected")
+        self._comment_edit.setPlainText("")
+        self._comment_edit.setEnabled(False)
+        self._save_comment_btn.setEnabled(False)
         self._updating = True
         try:
-            for i in range(self._table.rowCount()):
-                container = self._table.cellWidget(i, 0)
-                cb = container.findChild(QCheckBox) if container else None
-                if cb:
-                    cb.setEnabled(False)
-                    cb.setCheckState(Qt.Unchecked)
+            for entry in self._rows:
+                entry["r_cb"].setEnabled(False)
+                entry["r_cb"].setCheckState(Qt.Unchecked)
+                if entry["i_cb"] is not None:
+                    entry["i_cb"].setEnabled(False)
+                    entry["i_cb"].setCheckState(Qt.Unchecked)
         finally:
             self._updating = False
 
@@ -1358,6 +1473,28 @@ class MainWindow(QMainWindow):
             list(mf_nums),
         )
         return {int(r["tag_num"]): int(r["cnt"]) for r in (rows or [])}
+
+    def _fetch_first_comment_for_mf_nums(self, mf_nums: list[int]) -> str:
+        if not mf_nums:
+            return ""
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        rows = self.instrument.db.doquery(
+            f"SELECT comment FROM {tag_table} WHERE {tag_key} IN ({placeholders}) "
+            f"AND comment IS NOT NULL AND comment != '' LIMIT 1;",
+            list(mf_nums),
+        )
+        return (rows[0].get("comment") or "") if rows else ""
+
+    def _save_comment_for_mf_nums(self, mf_nums: list[int], comment: str | None):
+        if not mf_nums:
+            return
+        tag_table, tag_key, _, _ = self._tag_table_info()
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        self.instrument.db.doquery(
+            f"UPDATE {tag_table} SET comment = %s WHERE {tag_key} IN ({placeholders});",
+            [comment] + list(mf_nums),
+        )
 
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
