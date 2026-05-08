@@ -293,6 +293,20 @@ _TAG_LAYOUT = [
     ]),
 ]
 
+_INFO_TAG_NUMS = frozenset(
+    i_tag
+    for _, entries in _TAG_LAYOUT
+    for _, _, _r, i_tag in entries
+    if i_tag
+)
+
+_INFO_TAG_DESCRIPTIONS = {
+    i_tag: desc
+    for _, entries in _TAG_LAYOUT
+    for _, desc, _r, i_tag in entries
+    if i_tag
+}
+
 
 class MultiTagPanel(QWidget):
     """Floating panel: R/I tag checkboxes grouped by Sampling, Measurement, and Auto categories."""
@@ -360,8 +374,7 @@ class MultiTagPanel(QWidget):
         ch_layout.setContentsMargins(6, 3, 4, 3)
         ch_label = QLabel("Tag Comment")
         ch_label.setStyleSheet(f"background-color: {_comment_yellow}; font-weight: bold; font-size: 11px;")
-        self._save_comment_btn = QPushButton("Save")
-        self._save_comment_btn.setFixedWidth(50)
+        self._save_comment_btn = QPushButton("Save/Update Comment")
         self._save_comment_btn.setEnabled(False)
         self._save_comment_btn.clicked.connect(self._save_comment)
         ch_layout.addWidget(ch_label)
@@ -522,7 +535,7 @@ class MultiTagPanel(QWidget):
                         i_cb.setCheckState(Qt.PartiallyChecked)
 
             self._comment_edit.setEnabled(bool(mf_nums))
-            self._save_comment_btn.setEnabled(bool(mf_nums))
+            self._save_comment_btn.setEnabled(bool(mf_nums) and bool(tag_counts))
             comment = self.mw._fetch_first_comment_for_mf_nums(mf_nums) if mf_nums else ""
             self._comment_edit.setPlainText(comment)
 
@@ -556,6 +569,9 @@ class MultiTagPanel(QWidget):
                 for idx in self._row_idxs:
                     self.mw.run.at[idx, "_pending_tag_num"] = tag_num
                     self.mw.run.at[idx, "rejected"] = 1
+            elif tag_num in _INFO_TAG_NUMS:
+                for idx in self._row_idxs:
+                    self.mw.run.at[idx, 'has_info_tag'] = True
         else:
             self.mw._delete_tag_for_mf_nums(self._mf_nums, tag_num)
             self.mw._sync_rejected_state(self._row_idxs)
@@ -1044,6 +1060,10 @@ class MainWindow(QMainWindow):
         self.hide_flagged_cb.setChecked(False)
         self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
         tag_layout.addWidget(self.hide_flagged_cb)
+        self.show_info_cb = QCheckBox("Show Info Tags")
+        self.show_info_cb.setChecked(False)
+        self.show_info_cb.stateChanged.connect(self._on_show_info_toggled)
+        tag_layout.addWidget(self.show_info_cb)
         processing_layout.addWidget(tag_gb)
         self.populate_tag_selector()
 
@@ -1948,7 +1968,24 @@ class MainWindow(QMainWindow):
                             markersize=x_ms,
                             zorder=5,
                         )
-        
+
+        # overlay: informational-tag marker (steelblue +)
+        if self.show_info_cb.isChecked() and 'has_info_tag' in self.run.columns:
+            info_mask = self.run['has_info_tag'].fillna(False).astype(bool)
+            info_grp = self.run.loc[info_mask]
+            if not info_grp.empty:
+                ax.scatter(
+                    info_grp['analysis_datetime'],
+                    info_grp[yvar],
+                    marker='D',
+                    facecolors='none',
+                    edgecolors='mediumpurple',
+                    linewidths=1.2,
+                    s=marker_size * 0.7,
+                    zorder=3,
+                    picker=False,
+                )
+
         if yparam == 'resp':
             smooth_df = self.run.dropna(subset=['analysis_datetime'])
             ax.plot(smooth_df['analysis_datetime'], smooth_df['smoothed'], color='black', linewidth=0.5, label='Lowess-Smooth')
@@ -2696,9 +2733,13 @@ class MainWindow(QMainWindow):
                 applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
                 tag_names = getattr(self, "_all_tag_names", {})
                 for tnum in sorted(applied):
-                    desc = tag_names.get(tnum, f"tag {tnum}")
-                    short = " ".join(desc.split()[:5])
-                    parts.append(f"<b>Tag:</b> {short}")
+                    if tnum in _INFO_TAG_DESCRIPTIONS:
+                        short = " ".join(_INFO_TAG_DESCRIPTIONS[tnum].split()[:5])
+                        parts.append(f"<b>Info Tag:</b> {short}")
+                    else:
+                        desc = tag_names.get(tnum, f"tag {tnum}")
+                        short = " ".join(desc.split()[:5])
+                        parts.append(f"<b>Tag:</b> {short}")
             except Exception:
                 pass
 
@@ -2840,6 +2881,7 @@ class MainWindow(QMainWindow):
             applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
             self.run.at[row_idx, "rejected"] = 1 if (applied & reject_nums) else 0
         self._update_auto_rejected()
+        self._update_info_tagged()
 
     def _update_auto_rejected(self):
         """Mark run['auto_rejected']=True for points rejected only by automatic tags.
@@ -2881,6 +2923,66 @@ class MainWindow(QMainWindow):
             # Can't determine tag breakdown — treat all as manual (plain open circle).
             pass
 
+    def _update_info_tagged(self):
+        """Set run['has_info_tag']=True for rows that carry any informational tag."""
+        if self.run.empty or not _INFO_TAG_NUMS:
+            return
+        self.run['has_info_tag'] = False
+        tag_table, tag_key, mf_table, id_col = self._tag_table_info()
+        it_ph = ",".join(["%s"] * len(_INFO_TAG_NUMS))
+
+        if id_col in self.run.columns:
+            # Direct path: id_col (ng_mole_fraction_num) is in the DataFrame
+            all_mf_nums = [int(v) for v in self.run[id_col].dropna().tolist()]
+            if not all_mf_nums:
+                return
+            mf_ph = ",".join(["%s"] * len(all_mf_nums))
+            rows = self.instrument.db.doquery(
+                f"SELECT DISTINCT {tag_key} AS mf_num FROM {tag_table} "
+                f"WHERE {tag_key} IN ({mf_ph}) AND tag_num IN ({it_ph});",
+                all_mf_nums + list(_INFO_TAG_NUMS),
+            )
+            has_info = {int(r["mf_num"]) for r in (rows or [])}
+            for idx in self.run.index:
+                try:
+                    self.run.at[idx, 'has_info_tag'] = int(self.run.at[idx, id_col]) in has_info
+                except Exception:
+                    pass
+
+        elif {'analysis_num', 'parameter_num', 'channel'}.issubset(self.run.columns):
+            # IE3 path: look up via join through the mf table
+            all_analysis_nums = [int(v) for v in self.run['analysis_num'].dropna().unique()]
+            if not all_analysis_nums:
+                return
+            an_ph = ",".join(["%s"] * len(all_analysis_nums))
+            rows = self.instrument.db.doquery(
+                f"""SELECT DISTINCT mf.analysis_num, mf.parameter_num, mf.channel
+                    FROM {mf_table} mf
+                    JOIN {tag_table} t ON t.{tag_key} = mf.num
+                    WHERE mf.analysis_num IN ({an_ph})
+                      AND t.tag_num IN ({it_ph})""",
+                all_analysis_nums + list(_INFO_TAG_NUMS),
+            )
+            has_info_keys = {
+                (int(r["analysis_num"]), int(r["parameter_num"]), str(r["channel"]))
+                for r in (rows or [])
+            }
+            for idx in self.run.index:
+                try:
+                    key = (
+                        int(self.run.at[idx, 'analysis_num']),
+                        int(self.run.at[idx, 'parameter_num']),
+                        str(self.run.at[idx, 'channel']),
+                    )
+                    self.run.at[idx, 'has_info_tag'] = key in has_info_keys
+                except Exception:
+                    pass
+
+    def _on_show_info_toggled(self, state):
+        if state:
+            self._update_info_tagged()
+        self.on_plot_type_changed(self.current_plot_type)
+
     def _toggle_flags(self, idxs):
         """Toggle the selected tag on one or more points: apply if absent, remove if present."""
         if idxs is None or len(idxs) == 0:
@@ -2915,6 +3017,8 @@ class MainWindow(QMainWindow):
                 self.run.at[row_idx, "_pending_tag_num"] = tag_num
                 if is_reject:
                     self.run.at[row_idx, "rejected"] = 1
+                elif tag_num in _INFO_TAG_NUMS:
+                    self.run.at[row_idx, 'has_info_tag'] = True
 
         self.madechanges = True
         self._style_gc_buttons()
@@ -4257,6 +4361,7 @@ class MainWindow(QMainWindow):
         self.update_smoothing_combobox()
         self.set_runtype_combo()
         self._update_auto_rejected()
+        self._update_info_tagged()
 
         self.madechanges = False
 
