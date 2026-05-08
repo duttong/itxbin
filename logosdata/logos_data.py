@@ -307,6 +307,11 @@ _INFO_TAG_DESCRIPTIONS = {
     if i_tag
 }
 
+# Auto tags the user may manually remove (but not add).
+# 316: first-reference-run flag set by m4_gcwerks2db; qc_status is moved to
+# 'F' at the same time, so removing the tag won't cause it to be reapplied.
+_USER_REMOVABLE_AUTO_TAGS = frozenset({316})
+
 
 class MultiTagPanel(QWidget):
     """Floating panel: R/I tag checkboxes grouped by Sampling, Measurement, and Auto categories."""
@@ -425,7 +430,8 @@ class MultiTagPanel(QWidget):
                 r_box.setAlignment(Qt.AlignCenter)
                 r_box.setContentsMargins(0, 0, 0, 0)
                 self._table.setCellWidget(table_row, 0, r_wrap)
-                if not is_auto_section:
+                is_removable = is_auto_section and r_tag in _USER_REMOVABLE_AUTO_TAGS
+                if not is_auto_section or is_removable:
                     r_cb.clicked.connect(
                         lambda _c, tnum=r_tag, cb=r_cb: self._on_clicked(cb, tnum, is_reject=True)
                     )
@@ -463,6 +469,7 @@ class MultiTagPanel(QWidget):
                     "r_tag": r_tag,
                     "i_tag": i_tag,
                     "is_auto": is_auto_section,
+                    "is_removable": is_removable,
                     "r_cb": r_cb,
                     "i_cb": i_cb,
                 })
@@ -516,7 +523,12 @@ class MultiTagPanel(QWidget):
                 i_cb: QCheckBox | None = entry["i_cb"]
 
                 r_count = tag_counts.get(r_tag, 0)
-                r_cb.setEnabled(bool(mf_nums) and not is_auto)
+                is_removable = entry.get("is_removable", False)
+                if is_removable:
+                    # Enabled only when all selected points carry the tag — remove only, no re-add.
+                    r_cb.setEnabled(bool(mf_nums) and r_count >= total)
+                else:
+                    r_cb.setEnabled(bool(mf_nums) and not is_auto)
                 if r_count == 0:
                     r_cb.setCheckState(Qt.Unchecked)
                 elif r_count >= total:
