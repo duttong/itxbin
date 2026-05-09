@@ -1395,10 +1395,15 @@ class MainWindow(QMainWindow):
 
         # Populate combobox from _TAG_LAYOUT: Sampling and Measurement sections,
         # R tags only — matches the Multi-Tag panel descriptions, no Auto tags.
+        _section_colors = {
+            "Sampling/Collection Issues": QColor("#dce8f5"),
+            "Measurement Issues":         QColor("#fde8d0"),
+        }
         self.tag_options = []
         for section_name, entries in _TAG_LAYOUT:
             if section_name == "Automatic Tags":
                 continue
+            row_color = _section_colors.get(section_name)
             for letter, desc, r_tag, i_tag in entries:
                 if not r_tag:
                     continue
@@ -1413,6 +1418,9 @@ class MainWindow(QMainWindow):
                 if len(label) > 90:
                     label = label[:87] + "..."
                 self.tag_select_cb.addItem(label, tag)
+                if row_color:
+                    idx = self.tag_select_cb.count() - 1
+                    self.tag_select_cb.setItemData(idx, row_color, Qt.BackgroundRole)
 
         default_tag_num = self._last_selected_tag_num or 141
         default_idx = next(
