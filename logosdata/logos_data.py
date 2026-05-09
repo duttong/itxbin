@@ -1049,6 +1049,7 @@ class MainWindow(QMainWindow):
         tag_layout.addWidget(QLabel("Selected Tag:"))
         self.tag_select_cb.setMinimumWidth(260)
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
+        self.tag_select_cb.activated.connect(self._apply_tag_combobox_color)
         tag_layout.addWidget(self.tag_select_cb)
 
         _btn_style = """
@@ -1425,6 +1426,7 @@ class MainWindow(QMainWindow):
             self.tag_select_cb.setCurrentIndex(default_idx)
             self.selected_tag = self.tag_options[default_idx]
         self.tag_select_cb.blockSignals(False)
+        self._apply_tag_combobox_color(default_idx)
 
         if self._multi_tag_panel is not None:
             self._multi_tag_panel.populate_tags(self._all_tags_ordered)
@@ -1433,9 +1435,13 @@ class MainWindow(QMainWindow):
         self.selected_tag = self.tag_select_cb.itemData(index) if index >= 0 else None
         if self.selected_tag:
             self._last_selected_tag_num = int(self.selected_tag["tag_num"])
+
+    def _apply_tag_combobox_color(self, index):
         bg = self.tag_select_cb.itemData(index, Qt.BackgroundRole)
         if isinstance(bg, QColor):
-            self.tag_select_cb.setStyleSheet(f"QComboBox {{ background-color: {bg.name()}; }}")
+            self.tag_select_cb.setStyleSheet(
+                f"QComboBox {{ background-color: {bg.name()}; color: #222; }}"
+            )
         else:
             self.tag_select_cb.setStyleSheet("")
 
