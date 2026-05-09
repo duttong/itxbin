@@ -277,8 +277,8 @@ _TAG_LAYOUT = [
         ("V", "Insufficient sample pressure",                         19, 136),
     ]),
     ("Measurement Issues", [
-        ("A", "Known measurement problem",                           282,  24),
-        ("C", "Mole fraction falls outside of calibration",          107,  26),
+        ("A", "Known measurement problem",                           282, 326),
+        ("C", "Mole fraction falls outside of calibration",          107, 327),
         ("G", "Chromatography issue",                                290, 291),
         ("M", "Agilent (MS or GC) device issue",                    132, 133),
         ("O", "Measurement lab operator error",                       43, 121),
@@ -394,6 +394,19 @@ class MultiTagPanel(QWidget):
         self._comment_edit.setFixedHeight(62)
         layout.addWidget(self._comment_edit)
 
+        copy_row = QWidget()
+        copy_layout = QHBoxLayout(copy_row)
+        copy_layout.setContentsMargins(4, 4, 4, 2)
+        copy_layout.addStretch()
+        self._copy_tags_btn = QPushButton("Copy Tags to all Analytes")
+        self._copy_tags_btn.setToolTip(
+            "Propagate pending reject tags to all analytes for the same injection,\n"
+            "then recalculate and save mole fractions for all analytes."
+        )
+        self._copy_tags_btn.clicked.connect(self._copy_tags_to_all)
+        copy_layout.addWidget(self._copy_tags_btn)
+        layout.addWidget(copy_row)
+
         self.setMinimumWidth(420)
         self._build_layout()
 
@@ -494,6 +507,12 @@ class MultiTagPanel(QWidget):
             self.mw._save_comment_for_mf_nums(self._mf_nums, self._comment_edit.toPlainText().strip() or None)
         except Exception as exc:
             print(f"MultiTagPanel save comment error: {exc}")
+
+    def _copy_tags_to_all(self):
+        try:
+            self.mw.update_all_analytes()
+        except Exception as exc:
+            print(f"Copy tags error: {exc}")
 
     def populate_tags(self, all_tags_ordered: list):
         pass  # layout is static; kept for API compatibility
