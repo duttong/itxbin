@@ -319,12 +319,14 @@ class _TagComboDelegate(QStyledItemDelegate):
     _HOVER_BG = QColor("#fef9c3")
 
     def paint(self, painter, option, index):
-        opt = QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        if opt.state & (QStyle.State_MouseOver | QStyle.State_Selected):
-            opt.backgroundBrush = QBrush(self._HOVER_BG)
+        is_active = bool(option.state & (QStyle.State_MouseOver | QStyle.State_Selected))
+        bg = self._HOVER_BG if is_active else index.data(Qt.BackgroundRole)
         painter.save()
-        opt.widget.style().drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        if isinstance(bg, QColor):
+            painter.fillRect(option.rect, bg)
+        text = index.data(Qt.DisplayRole) or ""
+        painter.setPen(QColor("#222222"))
+        painter.drawText(option.rect.adjusted(6, 0, -4, 0), Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()
 
 
