@@ -1108,18 +1108,6 @@ class MainWindow(QMainWindow):
             processing_layout.addWidget(self.save_csv_btn) 
 
         # Stretch to push everything to the top
-        help_label = QLabel(
-            "Ctrl+Shift+Left/Right for Run Selection\n"
-            "Ctrl+Shift+Up/Down for Analyte Selection\n"
-            "r/t/m for Response, Ratio, Mole Fraction\n"
-            "p/l for point-to-point / Lowess smoothing\n"
-            "a for Autoscale toggle: Samples / Standard / Fullscale\n"
-            "s to 'Save Current Gas' results\n"
-        )
-        help_label.setStyleSheet("color: #555; font-size: 10px;")
-        help_label.setAlignment(Qt.AlignLeft)
-        help_label.setWordWrap(True)
-        processing_layout.addWidget(help_label)
         processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
         # ── TABS ──
