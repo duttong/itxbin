@@ -1157,7 +1157,7 @@ class MainWindow(QMainWindow):
         tabs.setStyleSheet("""
             QTabWidget::pane {
                 border: 1px solid darkblue;
-                border-top: none;
+                margin-top: -1px;
             }
         """)
         tabs.addTab(processing_pane, "PROCESSING")
