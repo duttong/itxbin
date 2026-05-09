@@ -1154,6 +1154,12 @@ class MainWindow(QMainWindow):
                 margin-top: 2px;
             }
         """)
+        tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid darkblue;
+                border-top: none;
+            }
+        """)
         tabs.addTab(processing_pane, "PROCESSING")
 
         if 'timeseries' in _visible_tabs:
