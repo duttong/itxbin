@@ -280,7 +280,7 @@ _TAG_LAYOUT = [
         ("A", "Known measurement problem",                           282, 326),
         ("C", "Mole fraction falls outside of calibration",          107, 327),
         ("G", "Chromatography issue",                                290, 291),
-        ("M", "Agilent (MS or GC) device issue",                    132, 133),
+        ("M", "Agilent (MS or GC) device issue",                     132, 133),
         ("O", "Measurement lab operator error",                       43, 121),
         ("U", "Unknown measurement problem",                         141, 142),
     ]),
@@ -1377,7 +1377,7 @@ class MainWindow(QMainWindow):
             return
 
         # _all_tags_ordered: full list in hats_sort order, used by MultiTagPanel.
-        # tag_options: manual-only subset, used by the combobox.
+        # tag_options: Sampling/Measurement R-tags only, built from _TAG_LAYOUT.
         self._all_tag_names = {}
         self._all_tags_ordered = []   # list of (tag_dict, is_auto)
         for row in (all_rows or []):
@@ -1392,9 +1392,26 @@ class MainWindow(QMainWindow):
             }
             is_auto = tnum in self.AUTO_TAG_NUMS
             self._all_tags_ordered.append((tag, is_auto))
-            if not is_auto:
+
+        # Populate combobox from _TAG_LAYOUT: Sampling and Measurement sections,
+        # R tags only — matches the Multi-Tag panel descriptions, no Auto tags.
+        self.tag_options = []
+        for section_name, entries in _TAG_LAYOUT:
+            if section_name == "Automatic Tags":
+                continue
+            for letter, desc, r_tag, i_tag in entries:
+                if not r_tag:
+                    continue
+                tag = {
+                    "tag_num": r_tag,
+                    "internal_flag": letter,
+                    "display_name": desc,
+                    "reject": 1,
+                }
                 self.tag_options.append(tag)
-                label = dname[:87] + "..." if len(dname) > 90 else dname
+                label = f"{letter}: {desc}"
+                if len(label) > 90:
+                    label = label[:87] + "..."
                 self.tag_select_cb.addItem(label, tag)
 
         default_tag_num = self._last_selected_tag_num or 141
