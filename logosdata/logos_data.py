@@ -1050,6 +1050,12 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.setMinimumWidth(260)
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
         self.tag_select_cb.activated.connect(self._apply_tag_combobox_color)
+        self.tag_select_cb.view().setStyleSheet("""
+            QListView::item:hover, QListView::item:selected {
+                background-color: #fef9c3;
+                color: #222;
+            }
+        """)
         tag_layout.addWidget(self.tag_select_cb)
 
         _btn_style = """
