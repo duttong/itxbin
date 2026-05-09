@@ -1433,6 +1433,11 @@ class MainWindow(QMainWindow):
         self.selected_tag = self.tag_select_cb.itemData(index) if index >= 0 else None
         if self.selected_tag:
             self._last_selected_tag_num = int(self.selected_tag["tag_num"])
+        bg = self.tag_select_cb.itemData(index, Qt.BackgroundRole)
+        if isinstance(bg, QColor):
+            self.tag_select_cb.setStyleSheet(f"QComboBox {{ background-color: {bg.name()}; }}")
+        else:
+            self.tag_select_cb.setStyleSheet("")
 
     def _tag_table_info(self):
         if self.instrument.inst_id == 'ie3':
