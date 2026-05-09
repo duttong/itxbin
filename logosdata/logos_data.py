@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
     QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
     QTableWidget, QTableWidgetItem, QHeaderView,
+    QStyledItemDelegate, QStyleOptionViewItem,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
@@ -311,6 +312,20 @@ _INFO_TAG_DESCRIPTIONS = {
 # 316: first-reference-run flag set by m4_gcwerks2db; qc_status is moved to
 # 'F' at the same time, so removing the tag won't cause it to be reapplied.
 _USER_REMOVABLE_AUTO_TAGS = frozenset({316})
+
+
+class _TagComboDelegate(QStyledItemDelegate):
+    """Item delegate for the single-tag combobox: shows light yellow on hover/selection."""
+    _HOVER_BG = QColor("#fef9c3")
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        if opt.state & (QStyle.State_MouseOver | QStyle.State_Selected):
+            opt.backgroundBrush = QBrush(self._HOVER_BG)
+        painter.save()
+        opt.widget.style().drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        painter.restore()
 
 
 class MultiTagPanel(QWidget):
@@ -1050,12 +1065,7 @@ class MainWindow(QMainWindow):
         self.tag_select_cb.setMinimumWidth(260)
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
         self.tag_select_cb.activated.connect(self._apply_tag_combobox_color)
-        self.tag_select_cb.view().setStyleSheet("""
-            QListView::item:hover, QListView::item:selected {
-                background-color: #fef9c3;
-                color: #222;
-            }
-        """)
+        self.tag_select_cb.setItemDelegate(_TagComboDelegate(self.tag_select_cb))
         tag_layout.addWidget(self.tag_select_cb)
 
         _btn_style = """
