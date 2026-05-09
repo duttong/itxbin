@@ -33,8 +33,8 @@
 - `hats.ng_data_processing_view` — main analysis view (areas, normalized
   responses, mole fractions, run metadata)
 - `hats.ng_insitu_data_view` — IE3 analysis/mole-fraction view with
-  `rejected`, `rej_flags`, and `background`; used by
-  `IE3_Instrument.load_data()`
+  `rejected`, `rej_flags`, `background`, and `mf_num`
+  (`ng_insitu_mole_fractions.num`); used by `IE3_Instrument.load_data()`
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions
@@ -102,7 +102,10 @@ analyte list.
 - GCwerks reject tags use `tag_num=324`; GCwerks DB loaders synchronize this
   tag for the rows in the current flagged export by deleting stale 324 tags and
   reinserting current ones.
-- M4 first-reference tags use `tag_num=316`.
+- M4 first-reference tags use `tag_num=316`. `flag_first_reference_run()` in
+  `m4_gcwerks2db.py` applies 316 and simultaneously sets `qc_status='F'`;
+  reapplication only targets `qc_status='P'` rows, so manually removing 316
+  in logos_data is safe — it will not be reapplied on the next batch run.
 
 ## IE3 in-situ timeseries (logos_timeseries.py)
 
