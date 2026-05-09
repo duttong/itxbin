@@ -2172,6 +2172,7 @@ class IE3_Instrument(HATS_DB_Functions):
         query = f"""
             SELECT
                 analysis_num,
+                mf_num,
                 analysis_time,
                 run_time,
                 site_num,
