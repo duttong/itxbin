@@ -2188,7 +2188,8 @@ class IE3_Instrument(HATS_DB_Functions):
                 sample_loop_temp,
                 sample_loop_pressure,
                 sample_loop_flow,
-                detrend_method_num
+                detrend_method_num,
+                mf_method_num
             FROM hats.ng_insitu_data_view
             WHERE inst_num = {self.inst_num}
                 AND parameter_num = {pnum}
@@ -2215,6 +2216,7 @@ class IE3_Instrument(HATS_DB_Functions):
 
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
+        df['mf_method_num'] = df['mf_method_num'].fillna(1).astype(int)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
 
@@ -2261,7 +2263,7 @@ class IE3_Instrument(HATS_DB_Functions):
             return
         sql = """
             UPDATE hats.ng_insitu_mole_fractions
-            SET mole_fraction = %s, detrend_method_num = %s
+            SET mole_fraction = %s, detrend_method_num = %s, mf_method_num = %s
             WHERE analysis_num = %s
               AND parameter_num = %s
               AND channel = %s;
@@ -2272,11 +2274,14 @@ class IE3_Instrument(HATS_DB_Functions):
             .replace([np.inf, -np.inf], np.nan)
             .round(5)
         )
+        if 'mf_method_num' not in df.columns:
+            df['mf_method_num'] = 1
         for _, row in df.iterrows():
             mf = row['mole_fraction']
             self.db.doquery(sql, [
                 None if pd.isna(mf) else float(mf),
                 int(row['detrend_method_num']),
+                int(row['mf_method_num']),
                 row['analysis_num'],
                 row['parameter_num'],
                 row['channel'],
