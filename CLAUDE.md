@@ -130,6 +130,18 @@ analyte list.
 - For M4 CFC-113/113a, the GUI recalc paths load the partner pnum from DB
   internally; authoritative recalc should be done with `m4_batch.py -p 32 -i`
 
+## sample_sheets_account.py
+
+Audits archived sample sheets against `hats.Status_MetData`.
+
+- Archive root: `/hats/gc/sample_sheets/archived/{site}/`
+- Filename pattern matched: `logos_{site}_{pairid}_*`
+- Default output: CSV (`pairid, sample_datetime, site`) of DB records with no
+  archived PDF; sorted by pairid unless `--sort-datetime` is given
+- `--orphans`: instead report archived PDFs whose PairID has no DB record
+  (sample_datetime will be empty since these are absent from the DB)
+- Summary line (record counts) is written to stderr so CSV redirects are clean
+
 ## logos_tanks.py / logos_tanks
 
 - Standalone launcher: `logos_tanks [instrument]`
