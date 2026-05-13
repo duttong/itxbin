@@ -14,7 +14,8 @@ from pathlib import Path
 import typer
 from typing_extensions import Annotated
 
-from hats_db import HATSdb
+sys.path.append('/ccg/src/db/')
+import db_utils.db_conn as db_conn
 
 ARCHIVE_ROOT = Path("/hats/gc/sample_sheets/archived")
 FILENAME_RE = re.compile(r"^logos_[a-z]+_(\d+)_", re.IGNORECASE)
@@ -41,7 +42,7 @@ def archived_pair_ids(site: str) -> set[int]:
 
 def db_records(site: str) -> dict[int, str | None]:
     """Return {PairID: sample_datetime_utc} for all DB records at the station."""
-    db = HATSdb()
+    db = db_conn.HATS_ng()
     sql = "SELECT PairID, sample_datetime_utc FROM hats.Status_MetData WHERE Station = %s"
     rows = db.doquery(sql, [site.upper()])
     return {int(r["PairID"]): r["sample_datetime_utc"] for r in rows}
