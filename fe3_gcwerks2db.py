@@ -247,7 +247,9 @@ class FE3_Prepare(fe3_inst):
             if grp.name not in runs:
                 return grp
 
-            port_id, flask_port = self._seq2list(grp, run_id=grp.name)
+            # fe3_import always excludes the first ITX file (the port-10 setup
+            # injection), so seq[0] is always the dropped char.
+            port_id, flask_port = self._seq2list(grp, drop_initial=True, run_id=grp.name)
             return grp.assign(
                 port_id    = port_id,
                 flask_port = flask_port,
