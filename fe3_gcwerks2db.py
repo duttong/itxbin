@@ -299,60 +299,80 @@ class FE3_Prepare(fe3_inst):
         df['pair_id_num']  = pd.to_numeric(df['pair_id_num'], errors='coerce').fillna(0).astype(int)
         df['flask_id']     = pd.to_numeric(df['flask_id'], errors='coerce').fillna(0).astype(int)
         
-        # 2) Bulk upsert ng_analysis (insert new, update existing)
-        analysis_sql = """
-            INSERT INTO hats.ng_analysis (
-                analysis_time,
-                inst_num,
-                run_time,
-                run_type_num,
-                port,
-                port_info,
-                flask_port,
-                pair_id_num,
-                flask_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                run_time      = VALUES(run_time),
-                run_type_num  = VALUES(run_type_num),
-                port          = VALUES(port),
-                port_info     = VALUES(port_info),
-                flask_port    = VALUES(flask_port),
-                pair_id_num   = VALUES(pair_id_num),
-                flask_id      = VALUES(flask_id)
-        """
-        analysis_params = [
-            (
-                r.analysis_time_str,
-                self.inst_num,
-                r.run_time_str,
-                int(r.run_type_num),
-                int(r.port),
-                r.port_info,
-                r.flask_port,
-                int(r.pair_id_num),
-                int(r.flask_id)
-            )
-            for r in df.itertuples(index=False)
-        ]
-        for i in range(0, len(analysis_params), batch_size):
-            batch = analysis_params[i : i + batch_size]
-            self.db.doMultiInsert(analysis_sql, batch, all=True)
-
-        # 3) Fetch mapping of analysis_time -> num after upsert
-        unique_times = df['analysis_time_str'].unique().tolist()
-        placeholders = ','.join(['%s'] * len(unique_times))
-        select_sql = f"""
-            SELECT analysis_time, num
+        # 2) Pre-fetch existing ng_analysis rows by (analysis_time, port).
+        # ng_analysis has no UNIQUE key other than the PK, so ON DUPLICATE KEY
+        # UPDATE would never fire — we must route inserts vs updates in Python.
+        min_time = df['analysis_time_str'].min()
+        max_time = df['analysis_time_str'].max()
+        existing_rows = self.db.doquery("""
+            SELECT num, analysis_time, port
               FROM hats.ng_analysis
              WHERE inst_num = %s
-               AND analysis_time IN ({placeholders})
-        """
-        rows = self.db.doquery(select_sql, [self.inst_num] + unique_times)
+               AND analysis_time BETWEEN %s AND %s
+        """, [self.inst_num, min_time, max_time])
+        # keyed by (analysis_time_str, port)
         existing = {
-            r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'): r['num']
-            for r in rows
+            (r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'), int(r['port'])): r['num']
+            for r in existing_rows
         }
+
+        update_params = []
+        insert_params = []
+        for r in df.itertuples(index=False):
+            key = (r.analysis_time_str, int(r.port))
+            if key in existing:
+                update_params.append((
+                    r.run_time_str, int(r.run_type_num),
+                    r.port_info, r.flask_port, int(r.pair_id_num), int(r.flask_id),
+                    existing[key],
+                ))
+            else:
+                insert_params.append((
+                    r.analysis_time_str, self.inst_num, r.run_time_str,
+                    int(r.run_type_num), int(r.port), r.port_info,
+                    r.flask_port, int(r.pair_id_num), int(r.flask_id),
+                ))
+
+        if update_params:
+            update_sql = """
+                UPDATE hats.ng_analysis
+                   SET run_time     = %s,
+                       run_type_num = %s,
+                       port_info    = %s,
+                       flask_port   = %s,
+                       pair_id_num  = %s,
+                       flask_id     = %s
+                 WHERE num = %s
+            """
+            for i in range(0, len(update_params), batch_size):
+                self.db.doMultiInsert(update_sql, update_params[i:i+batch_size], all=True)
+
+        if insert_params:
+            insert_sql = """
+                INSERT INTO hats.ng_analysis (
+                    analysis_time, inst_num, run_time, run_type_num, port,
+                    port_info, flask_port, pair_id_num, flask_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            for i in range(0, len(insert_params), batch_size):
+                self.db.doMultiInsert(insert_sql, insert_params[i:i+batch_size], all=True)
+
+            # Fetch nums for the newly inserted rows and merge into existing
+            new_times = [p[0] for p in insert_params]
+            placeholders = ','.join(['%s'] * len(new_times))
+            new_rows = self.db.doquery(
+                f"SELECT num, analysis_time, port FROM hats.ng_analysis"
+                f" WHERE inst_num = %s AND analysis_time IN ({placeholders})",
+                [self.inst_num] + new_times,
+            )
+            for r in new_rows:
+                k = (r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'), int(r['port']))
+                existing.setdefault(k, r['num'])
+
+        # 3) Flatten existing to analysis_time_str -> num for mole fraction lookup.
+        # analysis_times are unique per row (one ITX file per channel injection),
+        # so collapsing port is safe here.
+        existing_by_time = {at: num for (at, _port), num in existing.items()}
 
         # 4) Bulk upsert ng_mole_fractions (insert new, update existing).
         # GCwerks reject flags are stored as tags below.
@@ -381,7 +401,7 @@ class FE3_Prepare(fe3_inst):
         flagged_keys = set()
         params = self.query_analytes()
         for r in df.itertuples(index=False):
-            analysis_num = existing[r.analysis_time_str]
+            analysis_num = existing_by_time[r.analysis_time_str]
             for ch, mol_list in self.gc_channels.items():
                 for mol in mol_list:
                     param = params[mol]
