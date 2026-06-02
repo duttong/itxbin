@@ -2164,7 +2164,7 @@ class IE3_Instrument(HATS_DB_Functions):
         site_str = f"AND site_num = {site_num}" if site_num is not None else ""
 
         if verbose:
-            print(f"Loading IE3 data from {start_date} to {end_date} for parameter {pnum}")
+            print(f"Loading {self.inst_id.upper()} data from {start_date} to {end_date} for parameter {pnum}")
 
         if str(start_date) == str(end_date):
             time_filter = f"AND run_time = '{start_date}'"
