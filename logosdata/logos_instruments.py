@@ -2461,6 +2461,32 @@ class CATS_Instrument(IE3_Instrument):
             self.analytes = dict(zip(df_analytes['display_name_ch'], df_analytes['param_num']))
         else:
             self.analytes = {}
+
+        # Add a "(pref)" entry for compounds that have ng_preferred_channel entries.
+        # Inserted immediately after the last channel variant of each compound.
+        pref_rows = self.db.doquery(
+            "SELECT DISTINCT parameter_num FROM hats.ng_preferred_channel "
+            f"WHERE inst_num = {self.inst_num};"
+        ) or []
+        pref_params = {int(r['parameter_num']) for r in pref_rows}
+        if pref_params:
+            augmented = {}
+            seen_pref = set()
+            # Track the last position of each compound name so we can insert after it.
+            for key, pnum in self.analytes.items():
+                augmented[key] = pnum
+                base = key.split(" (")[0]
+                pref_key = f"{base} (pref)"
+                if int(pnum) in pref_params and pref_key not in seen_pref:
+                    # Peek ahead: only insert after the LAST channel variant.
+                    remaining_bases = [k.split(" (")[0] for k in list(self.analytes)[
+                        list(self.analytes).index(key) + 1:
+                    ]]
+                    if base not in remaining_bases:
+                        augmented[pref_key] = pnum
+                        seen_pref.add(pref_key)
+            self.analytes = augmented
+
         self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
         self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME
 

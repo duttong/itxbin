@@ -1807,10 +1807,11 @@ class TimeseriesWidget(QWidget):
             return pd.DataFrame()
 
         # Extract channel from analyte name, e.g. "CFC12 (b)" -> "b"
+        # The sentinel "(pref)" activates the time-varying preferred-channel SQL.
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel()
+        use_preferred_channel = self._uses_forced_preferred_channel() or channel == 'pref'
         if use_preferred_channel:
             channel = None
 
