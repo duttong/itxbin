@@ -387,9 +387,12 @@ class TimeseriesFigure:
         self._fig.canvas.draw_idle()
 
     def _draw_insitu_artists(self, ax, site_colors):
-        """Draw IE3 in-situ air ports grouped by port then site; return dataset_handles dict."""
-        PORT_LABELS = {3: "Air1", 7: "Air2"}
-        PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+        """Draw in-situ air ports grouped by port then site; return dataset_handles dict."""
+        air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
+        shades = [1.0, 0.65, 0.45, 0.30]
+        port_names = [f"Air{i+1}" for i in range(len(air_ports))]
+        PORT_LABELS = dict(zip(air_ports, port_names))
+        PORT_SHADE  = dict(zip(port_names, shades))
         dataset_handles = {}
         sites = self.parent_widget.get_active_sites()
         filtered = self.insitu_df[self.insitu_df["site"].isin(sites)]
@@ -456,8 +459,9 @@ class TimeseriesFigure:
 
         # ── Insitu 10-day means ─────────────────────────────────────
         if not self.insitu_df.empty:
-            PORT_LABELS = {3: "Air1", 7: "Air2"}
-            PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+            _air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
+            PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
+            PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
             sites = self.parent_widget.get_active_sites()
             insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
             month_start = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
@@ -534,8 +538,9 @@ class TimeseriesFigure:
 
         # ── Insitu monthly means ─────────────────────────────────
         if not self.insitu_df.empty:
-            PORT_LABELS = {3: "Air1", 7: "Air2"}
-            PORT_SHADE  = {"Air1": 1.0, "Air2": 0.65}
+            _air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
+            PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
+            PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
             sites = self.parent_widget.get_active_sites()
             insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
             insitu["_month"] = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
