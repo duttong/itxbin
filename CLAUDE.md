@@ -22,6 +22,12 @@
 | PR2 (Perseus 2) | 238 | `pr2` |
 | Perseus combined tanks view | 58/238 | `prs` |
 | IE3 | 236 | `ie3` |
+| CATS-BRW | 239 | `cats` (site=brw) |
+| CATS-SUM | 240 | `cats` (site=sum) |
+| CATS-NWR | 241 | `cats` (site=nwr) |
+| CATS-MLO | 242 | `cats` (site=mlo) |
+| CATS-SMO | 243 | `cats` (site=smo) |
+| CATS-SPO | 244 | `cats` (site=spo) |
 
 | Compound | parameter_num |
 |---|---|
@@ -51,9 +57,10 @@
 - `hats.ng_insitu_analysis` — IE3 GC run metadata (`num, run_time,
   analysis_time, site_num, inst_num, port`); `run_time` groups all port
   injections for one GC run, `analysis_time` is per-injection
-- `hats.ng_insitu_mole_fractions` — IE3 computed mole fractions joined to
-  `ng_insitu_analysis` via `analysis_num`; air ports are 3 and 7;
-  `sample_loop_temp/pressure/flow` upserted by `ie3_eng2db.py`
+- `hats.ng_insitu_mole_fractions` — IE3/CATS computed mole fractions joined to
+  `ng_insitu_analysis` via `analysis_num`; IE3 air ports are 3 and 7;
+  CATS air ports are 4 and 8; `sample_loop_temp/pressure/flow` upserted by
+  `ie3_eng2db.py` (IE3 only)
 - `hats.ng_preferred_channel` — preferred channel per `(inst_num,
   parameter_num, start_date)`; used by `return_preferred_channel()` on FE3
   and IE3 instruments (e.g. IE3 CFC12→`b`, CFC11→`c`)
@@ -79,6 +86,7 @@ LOGOS_Instruments
         ├── M4_Instrument      # inst_num=192, scale-value mole fractions
         ├── FE3_Instrument     # inst_num=193, polynomial response inversion
         ├── IE3_Instrument     # inst_num=236
+        │     └── CATS_Instrument  # inst_num=239-244 (per site), scale-simple mole fractions
         ├── Perseus_Instrument # inst_id=prs, PR1/PR2 tank facade
         └── BLD1_Instrument    # inst_num=220
 ```
@@ -107,19 +115,37 @@ analyte list.
   reapplication only targets `qc_status='P'` rows, so manually removing 316
   in logos_data is safe — it will not be reapplied on the next batch run.
 
-## IE3 in-situ timeseries (logos_timeseries.py)
+## IE3/CATS in-situ timeseries (logos_timeseries.py)
 
 - `TimeseriesWidget.query_insitu_data()` queries `ng_insitu_analysis` ⋈
-  `ng_insitu_mole_fractions` ⋈ `gmd.site` for unflagged air-port data
-  (ports 3 & 7); only runs when `instrument.inst_num == 236`
+  `ng_insitu_mole_fractions` ⋈ `gmd.site` for unflagged air-port data;
+  runs for IE3 (inst_num=236) and all CATS inst_nums (239-244)
+- Air ports: IE3 uses ports 3 & 7; CATS uses ports 4 & 8 (from `AIR_PORTS`
+  class attribute on each instrument)
 - Channel is extracted from the analyte display name (e.g. `"CFC12 (b)"` →
   `channel='b'`) and applied as a SQL filter — avoids mixing channels that
   share a `parameter_num`
-- Air ports are split into **Air1** (port 3) and **Air2** (port 7) on the
-  plot, both as filled circles at different brightness levels of the site color
+- Air ports are split into **Air1** and **Air2** on the plot, both as filled
+  circles at different brightness levels of the site color
 - `TimeseriesWidget` defaults to the site passed via `--site` (stored as
   `instrument.site`); other instruments default to BRW/MLO/SMO/SPO
 - Right-click a point → navigates main window to that GC `run_time`
+
+## CATS ingest pipeline
+
+- `cats_export.py` (in `~/bin/`) — exports GCwerks data to per-molecule CSVs
+  in `/hats/gc/cats_results/` (e.g. `brw_N2O.csv`, `brw_F12.csv`)
+- `cats_gcwerks2db.py` — merges per-molecule CSVs and loads into
+  `ng_insitu_analysis` + `ng_insitu_mole_fractions`; handles CATS channel
+  suffixes (q, f, cc); syncs GCwerks flags (F, *, B) as tag 324
+- `cats_aftp2db.py` — imports published mole fractions from
+  `/aftp/hats/.../insituGCs/CATS/hourly/{site}_{compound}_All.dat` into
+  `ng_insitu_mole_fractions.mole_fraction`; requires gcwerks2db to run first
+- `cats_ingest.py` — orchestrator: export → gcwerks2db → aftp2db
+- Port layout (all sites): port 2=cal1 (Std), port 4=air1, port 6=cal2 (Ref),
+  port 8=air2; cal2 is near-ambient and used as the normalization reference
+- Mole fractions: `mf = normalized_resp × coef0` from `hats.scale_assignments`
+  keyed on (cal2 serial number, parameter_num)
 
 ## logos_data.py (GUI)
 

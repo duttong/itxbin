@@ -1787,8 +1787,10 @@ class TimeseriesWidget(QWidget):
 
 
     def query_insitu_data(self, analyte: str | None = None, force: bool = False) -> pd.DataFrame:
-        """Query unflagged IE3 in-situ air port data for the selected analyte and date range."""
-        if self.instrument.inst_num != 236:
+        """Query unflagged in-situ air port data (IE3 and CATS) for the selected analyte and date range."""
+        insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
+            if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
+        if self.instrument.inst_num not in insitu_inst_nums:
             return pd.DataFrame()
 
         start = self.start_year.value()
@@ -1821,8 +1823,8 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_insitu_analysis a
         JOIN hats.ng_insitu_mole_fractions mf ON a.num = mf.analysis_num
         JOIN gmd.site s ON a.site_num = s.num
-        WHERE a.inst_num = 236
-          AND a.port IN (3, 7)
+        WHERE a.inst_num = {self.instrument.inst_num}
+          AND a.port IN ({",".join(str(p) for p in getattr(self.instrument, "AIR_PORTS", [3, 7]))})
           AND NOT EXISTS (
               SELECT 1
               FROM hats.ng_insitu_mole_fraction_tags t
@@ -1924,9 +1926,11 @@ class TimeseriesWidget(QWidget):
         return df
 
     def query_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3 handled via insitu).
+        """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3/CATS handled via insitu).
         PFP pseudo-sites (MLO_PFP, MKO_PFP) use sample_type='PFP' filter."""
-        if self.instrument.inst_num == 236:
+        insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
+            if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
+        if self.instrument.inst_num in insitu_inst_nums:
             return pd.DataFrame()
 
         analyte = analyte or self.analyte_combo.currentText()
