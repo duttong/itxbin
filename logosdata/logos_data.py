@@ -1464,7 +1464,7 @@ class MainWindow(QMainWindow):
             self.tag_select_cb.setStyleSheet("")
 
     def _tag_table_info(self):
-        if self.instrument.inst_id == 'ie3':
+        if self.instrument.inst_id in ('ie3', 'cats'):
             return (
                 'hats.ng_insitu_mole_fraction_tags',
                 'ng_insitu_mole_fraction_num',
@@ -2113,7 +2113,7 @@ class MainWindow(QMainWindow):
 
         chunk_start = None
         carry_in_rt = None
-        if (self.instrument.inst_id == 'ie3'
+        if (self.instrument.inst_id in ('ie3', 'cats')
                 and self._ie3_exact_run_time is None
                 and self.current_run_time):
             try:
@@ -5319,7 +5319,7 @@ def get_instrument_for(instrument_id: str, site: str | None = None):
             f"Could not find class '{inst}_Instrument' in logos_instruments.py"
         )
 
-    if inst == "IE3" and site:
+    if inst in ("IE3", "CATS") and site:
         instrument = instrument_cls(site=site)
     else:
         instrument = instrument_cls()
@@ -5341,7 +5341,7 @@ def main():
         "--site",
         type=str,
         default=None,
-        help="IE3 site code (e.g. smo, brw, spo, mlo). Used only with instrument=ie3.",
+        help="Site code (e.g. brw, spo, smo). Used with ie3 and cats.",
     )
     
     args = parser.parse_args()

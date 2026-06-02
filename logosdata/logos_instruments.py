@@ -18,6 +18,7 @@ class LOGOS_Instruments:
         'pr2': 238,
         'prs': 58,
         'ie3': 236,
+        'cats': 239,   # per-site inst_num is overridden in CATS_Instrument.__init__
     }
     
     LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
@@ -2388,6 +2389,95 @@ class IE3_Instrument(HATS_DB_Functions):
         df['port_color'] = df['port'].map(port_colors).fillna('gray')
 
         return df
+
+
+class CATS_Instrument(IE3_Instrument):
+    """CATS in-situ GC instrument.
+
+    CATS has one instrument per site, each with its own inst_num (239-244).
+    Data lives in the same ng_insitu_* tables as IE3.  Port layout:
+      port 2 = cal1 (Std),  port 4 = air1,  port 6 = cal2 (Ref),  port 8 = air2.
+    Mole fractions are computed via scale_simple: mf = normalized_resp * coef0.
+    """
+
+    INST_NUM_BY_SITE: dict[str, int] = {
+        'brw': 239,
+        'sum': 240,
+        'nwr': 241,
+        'mlo': 242,
+        'smo': 243,
+        'spo': 244,
+    }
+
+    RUN_TYPE_MAP = {"All": None}
+    DEFAULT_ANALYTE_NAME = "N2O"
+    DEFAULT_ANALYTE_CHANNEL = "q"
+
+    # cal2 (Ref tank, port 6) is the normalization reference.
+    STANDARD_PORT_NUM = 6
+    # Exclude cal tank ports from air-only autoscale; keep air ports 4 & 8.
+    EXCLUDE = [2, 6]
+    AUTOSCALE_STANDARD_PORTS = [2, 6]
+
+    def __init__(self, site: str = "brw"):
+        site = site.lower()
+        if site not in self.INST_NUM_BY_SITE:
+            raise ValueError(
+                f"Invalid CATS site {site!r}. Valid: {sorted(self.INST_NUM_BY_SITE)}"
+            )
+
+        # Bootstrap HATS_DB_Functions (sets up DB connection, inst_id, inst_num=239).
+        # Then immediately override inst_num for the actual site.
+        HATS_DB_Functions.__init__(self, 'cats')
+        self.inst_num = self.INST_NUM_BY_SITE[site]
+
+        self.site = site
+        self.site_num = self._site_num_for(site)
+        self.start_date = '19980101'
+        self.gc_dir = Path(f"/hats/gc/{site}")
+        self.export_dir = Path("/hats/gc/cats_results")
+        self.response_type = 'height'
+
+        self.molecules = self.query_molecules()
+        analyte_rows = self.db.doquery(
+            "SELECT display_name, param_num, channel "
+            f"FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
+        ) or []
+        df_analytes = pd.DataFrame(analyte_rows)
+        if not df_analytes.empty:
+            df_analytes['channel'] = (
+                df_analytes['channel'].fillna('').astype(str).str.lower().str.strip()
+            )
+            df_analytes = df_analytes.sort_values(['channel', 'display_name'])
+            df_analytes['display_name_ch'] = df_analytes.apply(
+                lambda r: f"{r['display_name']} ({r['channel']})" if r['channel'] else r['display_name'],
+                axis=1,
+            )
+            self.analytes = dict(zip(df_analytes['display_name_ch'], df_analytes['param_num']))
+        else:
+            self.analytes = {}
+        self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
+        self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME
+
+        self.port_config = self._load_port_config()
+        self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+
+    def _site_num_for(self, site: str) -> int:
+        rows = self.db.doquery(
+            f"SELECT num FROM gmd.site WHERE lower(code) = '{site}';"
+        )
+        return int(rows[0]['num'])
+
+    def get_valid_sites(self) -> dict:
+        codes = ",".join(f"'{s.upper()}'" for s in self.INST_NUM_BY_SITE)
+        sql = f"SELECT num, code FROM gmd.site WHERE code IN ({codes});"
+        df = pd.DataFrame(self.db.doquery(sql))
+        if df.empty:
+            return {}
+        return dict(zip(df['code'].str.lower(), df['num']))
+
+    def calc_mole_fraction(self, df):
+        return self.calc_mole_fraction_scale_simple(df)
 
 
 class Perseus_Instrument(HATS_DB_Functions):
