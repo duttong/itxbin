@@ -2442,7 +2442,7 @@ class CATS_Instrument(IE3_Instrument):
 
         self.molecules = self.query_molecules()
         analyte_rows = self.db.doquery(
-            "SELECT display_name, param_num, channel "
+            "SELECT display_name, param_num, channel, disp_order "
             f"FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
         ) or []
         df_analytes = pd.DataFrame(analyte_rows)
@@ -2450,7 +2450,10 @@ class CATS_Instrument(IE3_Instrument):
             df_analytes['channel'] = (
                 df_analytes['channel'].fillna('').astype(str).str.lower().str.strip()
             )
-            df_analytes = df_analytes.sort_values(['channel', 'display_name'])
+            df_analytes['disp_order'] = pd.to_numeric(df_analytes['disp_order'], errors='coerce')
+            df_analytes = df_analytes.sort_values(
+                ['disp_order', 'channel', 'display_name'], na_position='last'
+            )
             df_analytes['display_name_ch'] = df_analytes.apply(
                 lambda r: f"{r['display_name']} ({r['channel']})" if r['channel'] else r['display_name'],
                 axis=1,
