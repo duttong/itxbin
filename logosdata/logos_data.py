@@ -279,6 +279,7 @@ _TAG_LAYOUT = [
     ]),
     ("Measurement Issues", [
         ("A", "Known measurement problem",                           282, 326),
+        ("A", "Valco Valve Problem",                                 143, 164),
         ("C", "Mole fraction falls outside of calibration",          107, 327),
         ("G", "Chromatography issue",                                290, 291),
         ("M", "Agilent (MS or GC) device issue",                     132, 133),
@@ -2796,7 +2797,7 @@ class MainWindow(QMainWindow):
                     parts.append(f"<b>Pair ID:</b> {pid}")
 
             # Flask Type — not applicable for in-situ instruments
-            if run_type_num is not None and self.instrument.inst_num != 236:
+            if run_type_num is not None and self.instrument.inst_num not in range(236, 245):
                 flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
                 parts.append(f"<b>Flask Type:</b> {flask_type}")
 
