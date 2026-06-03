@@ -724,6 +724,33 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
 
+    def _latest_data_month(self):
+        """Return (end_year, end_month, start_year, start_month) based on the most
+        recent run_time in the DB for this instrument. End = latest data month,
+        start = 2 months earlier. Falls back to current date if the query fails."""
+        inst_num = getattr(self.instrument, 'inst_num', None)
+        run_time = None
+        try:
+            if inst_num in range(236, 245):  # IE3/CATS
+                rows = self.instrument.db.doquery(
+                    f"SELECT MAX(run_time) AS rt FROM hats.ng_insitu_analysis "
+                    f"WHERE inst_num = {inst_num};"
+                )
+            else:
+                rows = self.instrument.db.doquery(
+                    f"SELECT MAX(run_time) AS rt FROM hats.ng_data_processing_view "
+                    f"WHERE inst_num = {inst_num};"
+                )
+            if rows and rows[0]['rt'] is not None:
+                run_time = pd.Timestamp(rows[0]['rt'])
+        except Exception:
+            pass
+        if run_time is None:
+            run_time = pd.Timestamp.now()
+        end = run_time.replace(day=1)
+        start = end - pd.DateOffset(months=2)
+        return end.year, end.month, start.year, start.month
+
     def init_ui(self):
         # Central widget + top‐level layout
         central = QWidget()
@@ -755,11 +782,9 @@ class MainWindow(QMainWindow):
         # Start: Year / Month
         self.start_year_cb = QComboBox()
         self.start_month_cb = QComboBox()
-        current_year = datetime.now().year
-        current_month = datetime.now().month
-        start_year = (datetime.now() - timedelta(days=32)).year
-        start_month = (datetime.now() - timedelta(days=32)).month
-        for y in range(int(self.instrument.start_date[0:4]), current_year + 1):
+        end_year, end_month, start_year, start_month = self._latest_data_month()
+        max_year = max(end_year, datetime.now().year)
+        for y in range(int(self.instrument.start_date[0:4]), max_year + 1):
             self.start_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.start_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
@@ -767,15 +792,15 @@ class MainWindow(QMainWindow):
         # End: Year / Month
         self.end_year_cb = QComboBox()
         self.end_month_cb = QComboBox()
-        for y in range(int(self.instrument.start_date[0:4]), current_year + 1):
+        for y in range(int(self.instrument.start_date[0:4]), max_year + 1):
             self.end_year_cb.addItem(str(y))
         for m in range(1, 13):
             self.end_month_cb.addItem(datetime(2000, m, 1).strftime("%b"))
 
-        self.end_year_cb.setCurrentText(str(current_year))
-        self.end_month_cb.setCurrentIndex(current_month - 1)
+        self.end_year_cb.setCurrentText(str(end_year))
+        self.end_month_cb.setCurrentIndex(end_month - 1)
         self.start_year_cb.setCurrentText(str(start_year))
-        self.start_month_cb.setCurrentIndex(int(start_month) - 1)
+        self.start_month_cb.setCurrentIndex(start_month - 1)
 
         # Apply button
         self.apply_date_btn = QPushButton("Apply ▶")
@@ -2174,7 +2199,7 @@ class MainWindow(QMainWindow):
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
 
         # --- Detrend summary box for resp/ratio plots ---
-        if yparam in ('ratio', 'resp') and self.instrument.inst_id != 'ie3':
+        if yparam in ('ratio', 'resp') and self.instrument.inst_id not in ('ie3', 'cats'):
             try:
                 # Order from least to most smoothing
                 method_order = [1, 3, 2, 4, 6, 5]
@@ -3955,7 +3980,7 @@ class MainWindow(QMainWindow):
         self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
         self._update_calibration_button_state()
 
-        if self.instrument.inst_id == 'ie3':
+        if self.instrument.inst_id in ('ie3', 'cats'):
             period = _ie3_chunk_period(self._inst_cfg)
             self.current_run_times = [
                 label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
@@ -3997,7 +4022,7 @@ class MainWindow(QMainWindow):
             if target is None:
                 return None
             target_str = str(target)
-            if self.instrument.inst_id == 'ie3':
+            if self.instrument.inst_id in ('ie3', 'cats'):
                 # Direct label match first; otherwise treat target as a timestamp
                 # and find the chunk containing it.
                 for idx, label in enumerate(self.current_run_times):
@@ -4339,7 +4364,7 @@ class MainWindow(QMainWindow):
             print(f"Saving with response_id: {response_id}")
             self.instrument.upsert_mole_fractions(self.run, response_id=response_id)
         else:
-            if self.instrument.inst_id != 'ie3':
+            if self.instrument.inst_id not in ('ie3', 'cats'):
                 print("Warning: No calibration ID found. Saving with NULL.")
             self.instrument.upsert_mole_fractions(self.run, response_id=None)
 
@@ -4451,13 +4476,13 @@ class MainWindow(QMainWindow):
         When zoomed into a specific IE3 run_time group, returns that run_time
         so that Save all gases operates only on the visible data.
         """
-        if self.instrument.inst_id == 'ie3' and self._ie3_exact_run_time is not None:
+        if self.instrument.inst_id in ('ie3', 'cats') and self._ie3_exact_run_time is not None:
             rt = pd.Timestamp(self._ie3_exact_run_time).strftime('%Y-%m-%d %H:%M:%S')
             return (rt, rt)
-        if self.instrument.inst_id == 'ie3' and self._zoom_run_time is not None:
+        if self.instrument.inst_id in ('ie3', 'cats') and self._zoom_run_time is not None:
             rt = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
             return (rt, rt)
-        if self.instrument.inst_id == 'ie3' and self.current_run_time:
+        if self.instrument.inst_id in ('ie3', 'cats') and self.current_run_time:
             start, end = _ie3_chunk_sql_range(self.current_run_time)
             if start is not None:
                 return (start, end)
@@ -4583,8 +4608,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Run Selected", "Please select a run first.")
             return
 
-        # IE3 chunk mode: pick a specific GC run_time inside the loaded chunk first
-        if self.instrument.inst_id == 'ie3':
+        # IE3/CATS chunk mode: pick a specific GC run_time inside the loaded chunk first
+        if self.instrument.inst_id in ('ie3', 'cats'):
             run_time_str = self._pick_ie3_run_time_for_notes()
             if not run_time_str:
                 return
@@ -4786,7 +4811,7 @@ class MainWindow(QMainWindow):
             self.edit_notes_btn.setStyleSheet("background-color: #d3d3d3;") # lightgrey
             return
 
-        if self.instrument.inst_id == 'ie3':
+        if self.instrument.inst_id in ('ie3', 'cats'):
             # Chunk mode: green if any GC run in the chunk has notes
             if self.run is None or self.run.empty:
                 has_note = False
