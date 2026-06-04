@@ -29,7 +29,11 @@ def _load_dotenv(dotenv_path: str | Path = ".env") -> None:
     path = Path(dotenv_path)
     if not path.exists():
         return
-    for raw_line in path.read_text().splitlines():
+    try:
+        text = path.read_text()
+    except PermissionError:
+        return
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -45,6 +49,11 @@ def _load_dotenv(dotenv_path: str | Path = ".env") -> None:
 
 for _dotenv_path in (".env", "/hats/gc/itxbin/.env"):
     _load_dotenv(_dotenv_path)
+
+
+def api_key_available() -> bool:
+    """Return True if an API key is present in the environment."""
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"))
 
 
 class LOGOSChatAgent:

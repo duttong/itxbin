@@ -45,7 +45,7 @@ from matplotlib.widgets import RectangleSelector
 
 import logos_instruments as li
 from logos_agent_tools import LOGOSDataAgentTools
-from logos_ai_agent import LOGOSChatAgent
+from logos_ai_agent import LOGOSChatAgent, api_key_available
 from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
 
@@ -1161,6 +1161,8 @@ class MainWindow(QMainWindow):
             fallback='processing, timeseries, tanks, ai'
         )
         _visible_tabs = {t.strip().lower() for t in _visible_tabs_raw.split(',')}
+        if not api_key_available():
+            _visible_tabs.discard('ai')
 
         tabs = QTabWidget()
         tab_font = QFont()
