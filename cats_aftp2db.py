@@ -30,9 +30,6 @@ AFTP_MANIFEST: dict[str, tuple[str, int, str]] = {
     "F11":      ("cfcs/cfc11/insituGCs/CATS/hourly/{site}_F11_All.dat",    114, "f"),
     "F113":     ("cfcs/cfc113/insituGCs/CATS/hourly/{site}_F113_All.dat",  32,  "f"),
     "H1211":    ("halons/insituGCs/CATS/hourly/{site}_H1211_All.dat",      26,  "f"),
-    "HCFC22":   ("hcfcs/hcfc22/insituGCs/CATS/hourly/{site}_HCFC22_All.dat",     21,  "cc"),
-    "HCFC142b": ("hcfcs/hcfc142b/insituGCs/CATS/hourly/{site}_HCFC142b_All.dat", 25,  "cc"),
-    "CH3Cl":    ("methylhalides/ch3cl/insituGCs/CATS/hourly/{site}_CH3Cl_All.dat", 23, "cc"),
     "CCl4":     ("solvents/CCl4/insituGCs/CATS/hourly/{site}_CCl4_All.dat", 37,  "f"),
     "MC":       ("solvents/CH3CCl3/insituGCs/CATS/hourly/{site}_MC_All.dat", 131, "f"),
 }

@@ -48,6 +48,15 @@ class CATS_GCwerks2DB:
     # CATS cycles through ports every ~30 min; 90 min separates distinct cycles.
     RUN_TIME_GAP_MIN = 90
 
+    # Mols to upload to ng_insitu_mole_fractions. All channels for each mol
+    # are uploaded; excluded mols (HCFCs, HFCs, CH3Cl, CH3Br, OCS, TCE, etc.)
+    # remain in analyte_list for reference but are not loaded into the DB.
+    UPLOAD_MOLS: frozenset = frozenset({
+        "N2O", "SF6",
+        "CFC12", "CFC11", "CFC113",
+        "H1211", "CCl4", "CH3CCl3", "CHCl3",
+    })
+
     # GCwerks mol name → parameter_num.  Used as a fallback until
     # hats.analyte_list is populated for the CATS inst_nums.
     # Mol names come from the GCwerks column prefix after stripping the channel
@@ -63,6 +72,11 @@ class CATS_GCwerks2DB:
         "CH3CCl3":  131,   # MC; FE3 uses 131, Perseus uses 35 — confirm for CATS
         "CCl4":     37,
         "OCS":      42,    # stored as COS (param 42) in hats.parameters
+        "H2":       4,
+        "CH4":      2,
+        "CO":       3,
+        "TCE":      139,
+        "H1301":    64,
         "HCFC22":   21,
         "CH3Cl":    23,
         "HCFC142b": 25,
@@ -295,7 +309,8 @@ class CATS_GCwerks2DB:
         """
 
         col_map = self._parse_measurement_columns(df.columns)
-        missing = sorted({mol for (mol, _ch) in col_map if mol not in self.analytes})
+        missing = sorted({mol for (mol, _ch) in col_map
+                          if mol in self.UPLOAD_MOLS and mol not in self.analytes})
         if missing:
             print(f"Warning: no analyte mapping for GCwerks mols: {missing}")
 
@@ -308,6 +323,8 @@ class CATS_GCwerks2DB:
             if analysis_num is None:
                 continue
             for (mol, ch), cols in col_map.items():
+                if mol not in self.UPLOAD_MOLS:
+                    continue
                 param = self.analytes.get(mol)
                 if param is None:
                     continue

@@ -2025,6 +2025,8 @@ class IE3_Instrument(HATS_DB_Functions):
     DEFAULT_ANALYTE_NAME = "N2O (a)"
     DEFAULT_ANALYTE_CHANNEL = "a"
     STANDARD_PORT_NUM = 5
+    CAL1_PORT = 9
+    CAL2_PORT = 1
     AIR_PORTS = [3, 7]
     EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
     AUTOSCALE_STANDARD_PORTS = [1, 5, 9]  # ref tank + high/low standards
@@ -2414,8 +2416,10 @@ class CATS_Instrument(IE3_Instrument):
     DEFAULT_ANALYTE_NAME = "N2O"
     DEFAULT_ANALYTE_CHANNEL = "q"
 
-    # cal2 (Ref tank, port 6) is the normalization reference.
+    # cal2 (Ref tank, port 6) is both the normalization reference and CAL2.
     STANDARD_PORT_NUM = 6
+    CAL1_PORT = 2
+    CAL2_PORT = 6
     AIR_PORTS = [4, 8]
     # Exclude cal tank ports from air-only autoscale; keep air ports 4 & 8.
     EXCLUDE = [2, 6]

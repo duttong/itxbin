@@ -28,7 +28,7 @@ def ingest(
     site: str = typer.Argument(..., help="Site code: brw, spo"),
     all_data: bool = typer.Option(False, "--all", help="Process all data (overrides --year)"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
-    flagged: bool = typer.Option(False, "--flagged", help="Parse and sync GCwerks flag characters"),
+    flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
     skip_export: bool = typer.Option(False, "--skip-export", help="Skip GCwerks CSV export step"),
     skip_aftp: bool = typer.Option(False, "--skip-aftp", help="Skip /aftp mole fraction import"),
 ):
@@ -42,6 +42,8 @@ def ingest(
     # 1. GCwerks export
     if not skip_export:
         cmd = [sys.executable, str(CATS_EXPORT), site]
+        if flagged:
+            cmd.append("--flagged")
         _run(cmd)
 
     # 2. Load GCwerks results into DB
