@@ -157,7 +157,7 @@ class GCwerks_export:
                 maxdate = f'{str(year)[2:4]}1231.2359'
                 self.gcwerks_export(mol, mindate, maxdate)
 
-    def export_mols(self, mol_list=None, csv=True, mk2yrfile=False):
+    def export_mols(self, mol_list=None, csv=True, flagged=False, mk2yrfile=False):
         """ Exports a list of molecules, by default the list is from peak.list
             file in the gcwerks config directory. """
 
@@ -169,7 +169,8 @@ class GCwerks_export:
 
         pool = mp.Pool(7)
         for mol in mols:
-            pool.apply_async(self.gcwerks_export, args=([mol, mindate, maxdate, csv, mk2yrfile]))
+            pool.apply_async(self.gcwerks_export, args=(mol, mindate, maxdate),
+                             kwds={'csv': csv, 'flagged': flagged, 'mk2yrfile': mk2yrfile})
         pool.close()
         pool.join()
 
