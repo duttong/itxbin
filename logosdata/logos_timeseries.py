@@ -1387,10 +1387,13 @@ class TimeseriesWidget(QWidget):
                 site_info = self.get_site_info()
                 site_info = site_info.sort_values("lat", ascending=False)
                 self.sites_by_lat = site_info["code"].tolist()
+                self.site_lat_map = dict(zip(site_info["code"], site_info["lat"]))
             except Exception:
                 self.sites_by_lat = sorted(LOGOS_sites)
+                self.site_lat_map = {}
         else:
             self.sites_by_lat = sorted(LOGOS_sites)
+            self.site_lat_map = {}
 
         cols = 4
         row = 0
@@ -1402,7 +1405,14 @@ class TimeseriesWidget(QWidget):
             self.site_checks.append(cb)
             row, col = divmod(i, cols)
             site_layout.addWidget(cb, row, col)
-        
+
+        band_layout = QHBoxLayout()
+        for label, lo, hi in [("HNH", 45, 90.1), ("LNH", 0, 45), ("LSH", -45, 0), ("HSH", -90.1, -45)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _=False, a=lo, b=hi: self.select_band_sites(a, b))
+            band_layout.addWidget(btn)
+        site_layout.addLayout(band_layout, row + 1, 0, 1, cols)
+
         btn_layout = QHBoxLayout()
         all_btn = QPushButton("All")
         all_btn.clicked.connect(self.select_all_sites)
@@ -1410,7 +1420,7 @@ class TimeseriesWidget(QWidget):
         none_btn.clicked.connect(self.select_none_sites)
         btn_layout.addWidget(all_btn)
         btn_layout.addWidget(none_btn)
-        site_layout.addLayout(btn_layout, row + 1, 0, 1, cols)
+        site_layout.addLayout(btn_layout, row + 2, 0, 1, cols)
 
         site_group.setLayout(site_layout)
         controls.addWidget(site_group)
@@ -1596,6 +1606,12 @@ class TimeseriesWidget(QWidget):
     def select_none_sites(self):
         for cb in self.site_checks:
             cb.setChecked(False)
+
+    def select_band_sites(self, lat_min, lat_max):
+        for cb in self.site_checks:
+            lat = self.site_lat_map.get(cb.text())
+            if lat is not None and lat_min <= lat < lat_max:
+                cb.setChecked(True)
 
     def _draw_dataset_artists(self, ax, datasets, analyte, palette="Latitude"):
         """Draw datasets on a specific Axes, return dataset_handles dict."""
