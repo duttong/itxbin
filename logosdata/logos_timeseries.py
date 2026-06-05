@@ -47,6 +47,24 @@ def _save_timeseries_years(start_year: int, end_year: int) -> None:
         cfg.write(fh)
 
 
+def _load_timeseries_palette() -> str:
+    """Return saved colormap palette name, or 'Latitude' as default."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    return cfg.get('timeseries', 'palette', fallback='Latitude')
+
+
+def _save_timeseries_palette(palette: str) -> None:
+    """Persist colormap palette selection to the user config file."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    if not cfg.has_section('timeseries'):
+        cfg.add_section('timeseries')
+    cfg.set('timeseries', 'palette', palette)
+    with open(_USER_CONF, 'w') as fh:
+        cfg.write(fh)
+
+
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MLO_PFP', 'MKO_PFP']
@@ -65,17 +83,21 @@ FE3_EXTRA_SITES = ['ITN', 'USH']
 MSTAR_EXPORT_EXCLUDE = {'MKO_PFP', 'BLD'}
 
 
-def build_site_colors(sites):
+# colors for site-based plotting; "Latitude" is a special case that assigns colors based on lat order
+# see: https://matplotlib.org/stable/users/explain/colors/colormaps.html
+SITE_PALETTES = ["Latitude", "tab10", "Dark2", "Paired", "Set1"]
+
+def build_site_colors(sites, palette="Latitude"):
     """
     Assign each site a consistent base color from a colormap.
     Always returns a mapping for *all* sites in the list.
+    palette: "Latitude" (jet ordered by lat), "tab10", or "Dark2".
     """
-    # use a perceptually uniform colormap with enough variety
-    cmap = plt.cm.get_cmap("jet", len(sites))
-    site_colors = {}
-    for i, site in enumerate(sites):
-        site_colors[site] = cmap(i)
-    return site_colors
+    if palette == "Latitude":
+        cmap = plt.cm.get_cmap("jet", len(sites))
+        return {site: cmap(i) for i, site in enumerate(sites)}
+    cmap = plt.cm.get_cmap(palette)
+    return {site: cmap(i % cmap.N) for i, site in enumerate(sites)}
 
 def adjust_brightness(color, factor=1.0):
     """Darken/lighten an RGBA color. factor < 1 darkens, > 1 lightens."""
@@ -112,6 +134,7 @@ class TimeseriesFigure:
         }
         self.legend_label_lookup = {v: k for k, v in self.legend_label_map.items()}
 
+        self._palette = _load_timeseries_palette()
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
         self._build_plot()
@@ -130,7 +153,25 @@ class TimeseriesFigure:
         analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
         if not analyte_names:
             analyte_names = [self.analyte]
-        
+
+        self.fig_start_year = QSpinBox()
+        self.fig_start_year.setRange(1990, 2030)
+        self.fig_start_year.setValue(self.parent_widget.start_year.value())
+        self.fig_start_year.setFixedWidth(55)
+        self.fig_end_year = QSpinBox()
+        self.fig_end_year.setRange(1990, 2030)
+        self.fig_end_year.setValue(self.parent_widget.end_year.value())
+        self.fig_end_year.setFixedWidth(55)
+        self.fig_start_year.valueChanged.connect(self._on_year_changed)
+        self.fig_end_year.valueChanged.connect(self._on_year_changed)
+
+        self.palette_combo = QComboBox()
+        self.palette_combo.addItems(SITE_PALETTES)
+        pidx = self.palette_combo.findText(self._palette, Qt.MatchExactly)
+        if pidx >= 0:
+            self.palette_combo.setCurrentIndex(pidx)
+        self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(analyte_names)
         idx = self.analyte_combo.findText(self.analyte, Qt.MatchExactly)
@@ -146,6 +187,13 @@ class TimeseriesFigure:
         combo_layout = QHBoxLayout()
         combo_layout.setContentsMargins(0, 0, 0, 0)
         combo_layout.setSpacing(4)
+        combo_layout.addWidget(QLabel("Years:"))
+        combo_layout.addWidget(self.fig_start_year)
+        combo_layout.addWidget(QLabel("–"))
+        combo_layout.addWidget(self.fig_end_year)
+        combo_layout.addSpacing(8)
+        combo_layout.addWidget(QLabel("Colormap:"))
+        combo_layout.addWidget(self.palette_combo)
         combo_layout.addWidget(self.analyte_combo)
         combo_layout.addWidget(self.reload_btn)
         combo_container.setLayout(combo_layout)
@@ -182,10 +230,10 @@ class TimeseriesFigure:
         datasets = self.parent_widget.build_datasets(self.df)
         sites_by_lat = self.parent_widget.sites_by_lat
 
-        site_colors = build_site_colors(sites_by_lat)
+        site_colors = build_site_colors(sites_by_lat, self._palette)
 
         # --- Draw datasets ---
-        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte)
+        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte, palette=self._palette)
 
         if not self.insitu_df.empty:
             insitu_handles = self._draw_insitu_artists(self._ax, site_colors)
@@ -314,7 +362,7 @@ class TimeseriesFigure:
             legline._is_dataset_legend = True
 
         # ─── Site Legend ───
-        site_colors = build_site_colors(sites_by_lat)
+        site_colors = build_site_colors(sites_by_lat, self._palette)
         sites = self.parent_widget.get_active_sites()
 
         # Create dummy handles for legend
@@ -771,6 +819,20 @@ class TimeseriesFigure:
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, default_text)
 
+    def _on_year_changed(self):
+        self.parent_widget.start_year.setValue(self.fig_start_year.value())
+        self.parent_widget.end_year.setValue(self.fig_end_year.value())
+
+    def _on_palette_changed(self, palette):
+        self._palette = palette
+        _save_timeseries_palette(palette)
+        self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
+        try:
+            self._ax.clear()
+            self._build_plot()
+        finally:
+            self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
+
     def _rebuild_data_artists(self):
         """Cache only artists that represent data points we can tooltip (have _meta)."""
         self._data_artists = []
@@ -928,6 +990,7 @@ class RelStdDevFigure:
         self._radio = None
         self._metric_radio_ax = None
         self._metric_radio = None
+        self._palette = _load_timeseries_palette()
 
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
@@ -945,7 +1008,25 @@ class RelStdDevFigure:
         analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
         if not analyte_names:
             analyte_names = [self.analyte]
-        
+
+        self.fig_start_year = QSpinBox()
+        self.fig_start_year.setRange(1990, 2030)
+        self.fig_start_year.setValue(self.parent_widget.start_year.value())
+        self.fig_start_year.setFixedWidth(55)
+        self.fig_end_year = QSpinBox()
+        self.fig_end_year.setRange(1990, 2030)
+        self.fig_end_year.setValue(self.parent_widget.end_year.value())
+        self.fig_end_year.setFixedWidth(55)
+        self.fig_start_year.valueChanged.connect(self._on_year_changed)
+        self.fig_end_year.valueChanged.connect(self._on_year_changed)
+
+        self.palette_combo = QComboBox()
+        self.palette_combo.addItems(SITE_PALETTES)
+        pidx = self.palette_combo.findText(self._palette, Qt.MatchExactly)
+        if pidx >= 0:
+            self.palette_combo.setCurrentIndex(pidx)
+        self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(analyte_names)
         idx = self.analyte_combo.findText(self.analyte, Qt.MatchExactly)
@@ -961,6 +1042,13 @@ class RelStdDevFigure:
         combo_layout = QHBoxLayout()
         combo_layout.setContentsMargins(0, 0, 0, 0)
         combo_layout.setSpacing(4)
+        combo_layout.addWidget(QLabel("Years:"))
+        combo_layout.addWidget(self.fig_start_year)
+        combo_layout.addWidget(QLabel("–"))
+        combo_layout.addWidget(self.fig_end_year)
+        combo_layout.addSpacing(8)
+        combo_layout.addWidget(QLabel("Colormap:"))
+        combo_layout.addWidget(self.palette_combo)
         combo_layout.addWidget(self.analyte_combo)
         combo_layout.addWidget(self.reload_btn)
         combo_container.setLayout(combo_layout)
@@ -996,7 +1084,7 @@ class RelStdDevFigure:
         self._on_reload_clicked()
 
     def _on_reload_clicked(self):
-        self.reload_btn.setText("Reloading...")
+        self.reload_btn.setText("Loading...")
         self.reload_btn.setEnabled(False)
         QApplication.processEvents()
 
@@ -1007,6 +1095,22 @@ class RelStdDevFigure:
         
         self.reload_btn.setText("Reload")
         self.reload_btn.setEnabled(True)
+
+    def _on_year_changed(self):
+        self.parent_widget.start_year.setValue(self.fig_start_year.value())
+        self.parent_widget.end_year.setValue(self.fig_end_year.value())
+
+    def _on_palette_changed(self, palette):
+        self._palette = palette
+        _save_timeseries_palette(palette)
+        self.reload_btn.setText("Loading...")
+        self.reload_btn.setEnabled(False)
+        QApplication.processEvents()
+        try:
+            self._build_plot()
+        finally:
+            self.reload_btn.setText("Reload")
+            self.reload_btn.setEnabled(True)
 
     def _build_plot(self):
         if self._radio_ax is not None:
@@ -1023,7 +1127,7 @@ class RelStdDevFigure:
         self.site_artists = {}
 
         sites_by_lat = self.parent_widget.sites_by_lat
-        site_colors = build_site_colors(sites_by_lat)
+        site_colors = build_site_colors(sites_by_lat, self._palette)
 
         # --- Draw data ---
         active_sites = self.df['site'].unique()
@@ -1423,7 +1527,7 @@ class TimeseriesWidget(QWidget):
 
     def _set_button_loading_state(self, button, loading: bool, default_text: str):
         if loading:
-            button.setText("Loading data...")
+            button.setText("Loading...")
             button.setStyleSheet(
                 "QPushButton {"
                 "background-color: #f6e7a1;"
@@ -1493,12 +1597,12 @@ class TimeseriesWidget(QWidget):
         for cb in self.site_checks:
             cb.setChecked(False)
 
-    def _draw_dataset_artists(self, ax, datasets, analyte):
+    def _draw_dataset_artists(self, ax, datasets, analyte, palette="Latitude"):
         """Draw datasets on a specific Axes, return dataset_handles dict."""
         dataset_handles = {}
 
         sites = self.get_active_sites()
-        site_colors = build_site_colors(self.sites_by_lat)
+        site_colors = build_site_colors(self.sites_by_lat, palette)
         styles = {
             "All samples": {"marker": "o", "shade": 1.1, "error": False, "size": 3, "alpha": 0.4},
             "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
