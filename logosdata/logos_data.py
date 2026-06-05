@@ -734,12 +734,12 @@ class MainWindow(QMainWindow):
         try:
             if inst_num in range(236, 245):  # IE3/CATS
                 rows = self.instrument.db.doquery(
-                    f"SELECT MAX(run_time) AS rt FROM hats.ng_insitu_analysis "
+                    f"SELECT MAX(analysis_time) AS rt FROM hats.ng_insitu_analysis "
                     f"WHERE inst_num = {inst_num};"
                 )
             else:
                 rows = self.instrument.db.doquery(
-                    f"SELECT MAX(run_time) AS rt FROM hats.ng_data_processing_view "
+                    f"SELECT MAX(analysis_datetime) AS rt FROM hats.ng_data_processing_view "
                     f"WHERE inst_num = {inst_num};"
                 )
             if rows and rows[0]['rt'] is not None:
