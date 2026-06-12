@@ -2020,7 +2020,9 @@ class IE3_Instrument(HATS_DB_Functions):
     """
 
     RUN_TYPE_MAP = {
-        "All": None,        # no filter
+        "All": None,
+        "Air Samples": "air",
+        "Calibrations": "cal",
     }
     DEFAULT_ANALYTE_NAME = "N2O (a)"
     DEFAULT_ANALYTE_CHANNEL = "a"
@@ -2030,6 +2032,17 @@ class IE3_Instrument(HATS_DB_Functions):
     AIR_PORTS = [3, 7]
     EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
     AUTOSCALE_STANDARD_PORTS = [1, 5, 9]  # ref tank + high/low standards
+
+    # mf_method_num values in hats.ng_insitu_mole_fractions; the calibration
+    # method is recorded per-week per-analyte on the air rows themselves.
+    MF_METHOD_REF = 1            # mf = normalized_resp * coef0(ref tank); no weekly fit
+    MF_METHOD_SCALE_SIMPLE = 1   # alias for MF_METHOD_REF (scale-simple to ref tank)
+    MF_METHOD_CAL12 = 2          # 2-point weekly fit through both cal tanks
+    MF_METHOD_CAL1 = 3           # single tank through origin, CAL1_PORT (9)
+    MF_METHOD_CAL2 = 4           # single tank through origin, CAL2_PORT (1)
+    MF_METHOD_LABELS = {1: 'ref', 2: 'cal12', 3: 'cal1', 4: 'cal2'}
+    # methods 2/3/4 build a weekly ng_response fit; method 1 (ref) does not.
+    NG_RESPONSE_METHODS = (2, 3, 4)
 
     def __init__(self, site: str = "smo"):
         super().__init__('ie3')
@@ -2184,10 +2197,12 @@ class IE3_Instrument(HATS_DB_Functions):
                 port,
                 parameter_num,
                 channel,
+                ng_response_id,
                 height,
                 area,
                 retention_time,
                 mole_fraction,
+                unc,
                 rejected,
                 sample_loop_temp,
                 sample_loop_pressure,
@@ -2260,14 +2275,16 @@ class IE3_Instrument(HATS_DB_Functions):
 
     def upsert_mole_fractions(self, df, response_id=None):
         """
-        Update mole_fraction and detrend method in hats.ng_insitu_mole_fractions.
+        Update mole_fraction, unc, ng_response_id, detrend_method_num, and
+        mf_method_num in hats.ng_insitu_mole_fractions.
         Overrides the base class which writes to ng_mole_fractions (wrong table for IE3).
         """
         if df.empty or 'mole_fraction' not in df.columns:
             return
         sql = """
             UPDATE hats.ng_insitu_mole_fractions
-            SET mole_fraction = %s, detrend_method_num = %s, mf_method_num = %s
+            SET mole_fraction = %s, unc = %s, ng_response_id = %s,
+                detrend_method_num = %s, mf_method_num = %s
             WHERE analysis_num = %s
               AND parameter_num = %s
               AND channel = %s;
@@ -2280,10 +2297,18 @@ class IE3_Instrument(HATS_DB_Functions):
         )
         if 'mf_method_num' not in df.columns:
             df['mf_method_num'] = 1
+        if 'unc' not in df.columns:
+            df['unc'] = np.nan
+        if 'ng_response_id' not in df.columns:
+            df['ng_response_id'] = None
         for _, row in df.iterrows():
             mf = row['mole_fraction']
+            unc = row['unc']
+            rid = row['ng_response_id']
             self.db.doquery(sql, [
                 None if pd.isna(mf) else float(mf),
+                None if pd.isna(unc) else float(unc),
+                None if pd.isna(rid) else int(rid),
                 int(row['detrend_method_num']),
                 int(row['mf_method_num']),
                 row['analysis_num'],
@@ -2359,6 +2384,364 @@ class IE3_Instrument(HATS_DB_Functions):
         out = df.copy()
         out['mole_fraction'] = out['normalized_resp'] * coef0
         return out
+
+    def calc_mole_fraction(self, df):
+        """Route by mf_method_num: method 1 → scale_simple; 2/3/4 → cal_fit."""
+        if df.empty:
+            out = df.copy()
+            out['mole_fraction'] = pd.Series(dtype='float64')
+            return out
+
+        if 'mf_method_num' not in df.columns:
+            df = df.copy()
+            df['mf_method_num'] = 1
+
+        method_nums = df['mf_method_num'].fillna(1).astype(int).unique()
+
+        if len(method_nums) == 1 and method_nums[0] == 1:
+            return self.calc_mole_fraction_scale_simple(df)
+
+        parts = []
+        for method, grp in df.groupby(df['mf_method_num'].fillna(1).astype(int)):
+            if method == 1:
+                parts.append(self.calc_mole_fraction_scale_simple(grp))
+            else:
+                parts.append(self.calc_mole_fraction_cal_fit(grp))
+        return pd.concat(parts).sort_values('analysis_datetime')
+
+    def calc_mole_fraction_cal_fit(self, df):
+        """Compute mole_fraction from a stored ng_response weekly cal fit.
+
+        For each row, finds the most recent ng_response row with
+        run_date <= analysis_date for (inst_num, site, channel, scale_num).
+
+        method 2 (cal12): mf = coef1 * normalized_resp + coef0
+        method 3 (cal1):  mf = coef1 * normalized_resp
+        method 4 (cal2):  mf = coef1 * normalized_resp
+        """
+        if df.empty:
+            out = df.copy()
+            out['mole_fraction'] = pd.Series(dtype='float64')
+            out['unc'] = pd.Series(dtype='float64')
+            out['ng_response_id'] = pd.Series(dtype='object')
+            return out
+
+        pnum = int(df['parameter_num'].iat[0])
+        channel = str(df['channel'].iat[0])
+
+        # Fetch the current scale_num for this parameter
+        scale_rows = self.db.doquery(
+            f"SELECT idx FROM reftank.scales WHERE parameter_num={pnum} AND current=1"
+        )
+        if not scale_rows:
+            out = df.copy()
+            out['mole_fraction'] = np.nan
+            out['unc'] = np.nan
+            out['ng_response_id'] = None
+            return out
+        scale_num = int(scale_rows[0]['idx'])
+
+        # Load all ng_response fits for this inst/site/channel/scale
+        fits_rows = self.db.doquery(f"""
+            SELECT id, run_date, coef0, coef1, unc_fit, sigma_ref
+            FROM hats.ng_response
+            WHERE inst_num = {self.inst_num}
+              AND site = '{self.site}'
+              AND channel = '{channel}'
+              AND scale_num = {scale_num}
+            ORDER BY run_date
+        """)
+        if not fits_rows:
+            out = df.copy()
+            out['mole_fraction'] = np.nan
+            out['unc'] = np.nan
+            out['ng_response_id'] = None
+            return out
+
+        fits = pd.DataFrame(fits_rows)
+        fits['run_date'] = pd.to_datetime(fits['run_date'], utc=True)
+
+        out = df.copy()
+        mf = pd.Series(index=df.index, dtype=float)
+        unc = pd.Series(index=df.index, dtype=float)
+        rid = pd.Series(index=df.index, dtype=object)
+
+        for idx, row in df.iterrows():
+            analysis_dt = pd.to_datetime(row['analysis_datetime'], utc=True)
+            mask = fits['run_date'] <= analysis_dt
+            if not mask.any():
+                continue
+            fit = fits.loc[mask].iloc[-1]
+            method = int(row['mf_method_num']) if pd.notna(row.get('mf_method_num')) else 2
+            resp = row['normalized_resp']
+            if pd.isna(resp):
+                continue
+            if method == 2:
+                mf.at[idx] = float(fit['coef1']) * resp + float(fit['coef0'])
+            else:
+                mf.at[idx] = float(fit['coef1']) * resp
+            unc.at[idx] = np.sqrt(
+                float(fit['unc_fit']) ** 2
+                + (float(fit['coef1']) * float(fit['sigma_ref'])) ** 2
+            )
+            rid.at[idx] = int(fit['id'])
+
+        out['mole_fraction'] = mf
+        out['unc'] = unc
+        out['ng_response_id'] = rid
+        return out
+
+    def upsert_ng_response(self, inst_num, site, run_date, channel, scale_num,
+                           coef0, coef1, unc_fit, sigma_ref, serial_number):
+        """Insert or update a weekly cal fit row in hats.ng_response.
+
+        Uniqueness key: (inst_num, site, run_date, channel, scale_num).
+        Returns the row id.
+        """
+        run_date_str = pd.Timestamp(run_date).strftime('%Y-%m-%d %H:%M:%S')
+        existing = self.db.doquery(f"""
+            SELECT id FROM hats.ng_response
+            WHERE inst_num = {inst_num}
+              AND site = '{site}'
+              AND run_date = '{run_date_str}'
+              AND channel = '{channel}'
+              AND scale_num = {scale_num}
+        """)
+        if existing:
+            row_id = existing[0]['id']
+            self.db.doquery(f"""
+                UPDATE hats.ng_response
+                SET coef0={coef0}, coef1={coef1}, coef2=0, coef3=0,
+                    unc_fit={unc_fit}, sigma_ref={sigma_ref},
+                    serial_number='{serial_number}', function='poly', flag='.'
+                WHERE id={row_id}
+            """)
+        else:
+            self.db.doquery(f"""
+                INSERT INTO hats.ng_response
+                    (inst_num, site, run_date, channel, scale_num,
+                     coef0, coef1, coef2, coef3, unc_fit, sigma_ref,
+                     serial_number, function, flag)
+                VALUES
+                    ({inst_num}, '{site}', '{run_date_str}', '{channel}', {scale_num},
+                     {coef0}, {coef1}, 0, 0, {unc_fit}, {sigma_ref},
+                     '{serial_number}', 'poly', '.')
+            """)
+            row = self.db.doquery(f"""
+                SELECT id FROM hats.ng_response
+                WHERE inst_num = {inst_num}
+                  AND site = '{site}'
+                  AND run_date = '{run_date_str}'
+                  AND channel = '{channel}'
+                  AND scale_num = {scale_num}
+            """)
+            row_id = row[0]['id'] if row else None
+        return row_id
+
+    def query_cal_run_dates(self, pnum, channel, start_date=None, end_date=None):
+        """Return list of weekly cal fit dates from ng_response for this site/channel.
+
+        Used by the logos_data run selector to add '(Cal)' entries.
+        Returns list of 'YYYY-MM-DD HH:MM:SS' strings.
+        """
+        scale_rows = self.db.doquery(
+            f"SELECT idx FROM reftank.scales WHERE parameter_num={pnum} AND current=1"
+        )
+        if not scale_rows:
+            return []
+        scale_num = int(scale_rows[0]['idx'])
+
+        channel_str = channel or ''
+        date_filter = ""
+        if start_date:
+            date_filter += f" AND run_date >= '{start_date}'"
+        if end_date:
+            date_filter += f" AND run_date <= '{end_date}'"
+
+        rows = self.db.doquery(f"""
+            SELECT run_date FROM hats.ng_response
+            WHERE inst_num = {self.inst_num}
+              AND site = '{self.site}'
+              AND channel = '{channel_str}'
+              AND scale_num = {scale_num}
+              {date_filter}
+            ORDER BY run_date
+        """)
+        if not rows:
+            return []
+        return [
+            pd.Timestamp(r['run_date']).strftime('%Y-%m-%d %H:%M:%S')
+            for r in rows
+        ]
+
+    def default_mf_method(self, pnum):
+        """Default calibration method for an analyte with no recorded value.
+
+        CCl4 (pnum 37) defaults to cal1 (single tank through origin); every
+        other analyte defaults to cal12 (2-point fit).
+        """
+        return self.MF_METHOD_CAL1 if int(pnum) == 37 else self.MF_METHOD_CAL12
+
+    def uses_ng_response_fit(self, method_num):
+        """True if the method builds a stored weekly ng_response fit (2/3/4).
+        Method 1 (ref / scale-simple) computes mole fractions directly from the
+        reference tank coef0 and stores no fit."""
+        return int(method_num) in self.NG_RESPONSE_METHODS
+
+    def fit_params_for_method(self, method_num):
+        """Map an mf_method_num to (force_zero, single_port) for a weekly fit.
+
+        cal12 -> 2-point fit through both cal tanks (force_zero=False, no single
+        port); cal1 -> through origin on CAL1_PORT (9); cal2 -> through origin on
+        CAL2_PORT (1).
+        """
+        m = int(method_num)
+        if m == self.MF_METHOD_CAL1:
+            return True, self.CAL1_PORT
+        if m == self.MF_METHOD_CAL2:
+            return True, self.CAL2_PORT
+        return False, None
+
+    def ref_tank_serial(self):
+        """Serial number of the reference tank on STANDARD_PORT_NUM (port 5)."""
+        if self.port_config is None:
+            return None
+        mask = ((self.port_config['site_num'] == self.site_num)
+                & (self.port_config['port_num'] == self.STANDARD_PORT_NUM))
+        rows = self.port_config.loc[mask, 'label']
+        return rows.iat[0] if not rows.empty else None
+
+    def ref_tank_coef0(self, pnum):
+        """Reference-tank coef0 (assigned value) for this parameter, or None.
+        This is the slope of the method-1 (ref) scaling: mf = coef0 * resp."""
+        serial = self.ref_tank_serial()
+        if serial is None:
+            return None
+        coefs = self.scale_assignments(serial, pnum)
+        if not coefs or coefs.get('coef0') is None:
+            return None
+        return float(coefs['coef0'])
+
+    def _week_air_filter(self, pnum, channel, week_start):
+        """Return SQL fragments (where, t0, t1) selecting this analyte's air
+        rows within the week [week_start, week_start+7d)."""
+        t0 = pd.Timestamp(week_start).strftime('%Y-%m-%d')
+        t1 = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+        air_in = ', '.join(str(p) for p in self.AIR_PORTS)
+        channel_str = f"AND mf.channel = '{channel}'" if channel else ""
+        where = (
+            f"a.inst_num = {self.inst_num} "
+            f"AND a.site_num = {self.site_num} "
+            f"AND a.port IN ({air_in}) "
+            f"AND mf.parameter_num = {pnum} "
+            f"{channel_str} "
+            f"AND a.analysis_time >= '{t0}' AND a.analysis_time < '{t1}'"
+        )
+        return where
+
+    def get_week_mf_method(self, pnum, channel, week_start):
+        """Return the recorded cal method (cal12/cal1/cal2) for this
+        analyte/channel's air rows in the given week.
+
+        Any value that is not a valid IE3 cal method (e.g. a legacy
+        scale-simple 1, or NULL) is coerced to default_mf_method() so the GUI
+        and batch always agree on a concrete cal method.
+        """
+        where = self._week_air_filter(pnum, channel, week_start)
+        rows = self.db.doquery(f"""
+            SELECT mf.mf_method_num AS m, COUNT(*) AS n
+            FROM hats.ng_insitu_mole_fractions mf
+            JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
+            WHERE {where}
+              AND mf.mf_method_num IS NOT NULL
+            GROUP BY mf.mf_method_num
+            ORDER BY n DESC
+            LIMIT 1
+        """)
+        if rows:
+            m = int(rows[0]['m'])
+            if m in self.MF_METHOD_LABELS:
+                return m
+        return self.default_mf_method(pnum)
+
+    def set_week_mf_method(self, pnum, channel, week_start, method_num):
+        """Record the calibration method for this analyte/channel by writing
+        mf_method_num on the air rows in the given week only. Returns nothing.
+        """
+        where = self._week_air_filter(pnum, channel, week_start)
+        self.db.doquery(f"""
+            UPDATE hats.ng_insitu_mole_fractions mf
+            JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
+            SET mf.mf_method_num = {int(method_num)}
+            WHERE {where}
+        """)
+
+    def load_cal_week_data(self, pnum, channel, week_start):
+        """Load cal+ref port data for the week starting on week_start.
+
+        Returns same DataFrame structure as load_data() but limited to
+        cal ports (1, 9) and ref port (5), covering [week_start, week_start+7d).
+        """
+        from datetime import timedelta as _td
+        t0 = pd.Timestamp(week_start).strftime('%Y-%m-%d')
+        t1 = (pd.Timestamp(week_start) + _td(days=7)).strftime('%Y-%m-%d')
+
+        cal_ports = (self.CAL1_PORT, self.CAL2_PORT, self.STANDARD_PORT_NUM)
+        port_in = ', '.join(str(p) for p in cal_ports)
+
+        channel_str = f"AND channel = '{channel}'" if channel else ""
+
+        query = f"""
+            SELECT
+                analysis_num,
+                mf_num,
+                analysis_time,
+                run_time,
+                site_num,
+                inst_num,
+                port,
+                parameter_num,
+                channel,
+                ng_response_id,
+                height,
+                area,
+                retention_time,
+                mole_fraction,
+                unc,
+                rejected,
+                sample_loop_temp,
+                sample_loop_pressure,
+                sample_loop_flow,
+                detrend_method_num,
+                mf_method_num
+            FROM hats.ng_insitu_data_view
+            WHERE inst_num = {self.inst_num}
+              AND parameter_num = {pnum}
+              {channel_str}
+              AND site_num = {self.site_num}
+              AND port IN ({port_in})
+              AND height <> -999
+              AND analysis_time BETWEEN '{t0}' AND '{t1}'
+            ORDER BY analysis_time;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            return pd.DataFrame()
+
+        df['analysis_time'] = pd.to_datetime(df['analysis_time'], errors='raise', utc=True)
+        df['analysis_datetime'] = df['analysis_time']
+        df['run_time'] = pd.to_datetime(df['run_time'], errors='raise', utc=True)
+        df['parameter_num'] = df['parameter_num'].astype(int)
+        df['run_type_num'] = 0
+        df['height'] = df['height'].astype(float)
+        df['area'] = df['area'].astype(float)
+        df['retention_time'] = df['retention_time'].astype(float)
+        df['rejected'] = df['rejected'].fillna(0).astype(int)
+        df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
+        df['mf_method_num'] = df['mf_method_num'].fillna(1).astype(int)
+        df = self.norm.merge_smoothed_data(df)
+        df = self.add_port_labels(df)
+        return df.sort_values('analysis_datetime')
 
     def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add simple port labels and colors based on port number."""

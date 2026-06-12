@@ -170,22 +170,61 @@ def cal_tank_serials(instrument: IE3_Instrument) -> dict[int, str]:
 
 def cal_tank_coefs(
     instrument: IE3_Instrument, pnum: int, serials: dict[int, str]
-) -> dict[int, float]:
-    """Look up coef0 from hats.scale_assignments for each cal tank serial."""
-    coefs: dict[int, float] = {}
+) -> dict[int, list[dict]]:
+    """Return fill-aware coef0 timeline for each cal tank port.
+
+    Queries reftank.fill_end_dates_view joined to hats.scale_assignments so
+    that the correct coef0 is selected based on analysis_date rather than
+    always using the first (oldest) row.
+
+    Returns {port: [{'fill_code', 'start_date', 'end_date', 'coef0'}, ...]},
+    with fills sorted oldest-first. end_date is None for the current fill.
+    """
+    coefs: dict[int, list[dict]] = {}
     for port, serial in serials.items():
-        rec = instrument.scale_assignments(serial, pnum)
-        if rec is None:
-            print(f"  ⚠  No scale_assignments row for tank {serial} (port {port}), pnum {pnum}")
+        sql = f"""
+            SELECT fill_code, start_date, end_date, coef0, unc_c0
+            FROM hats.scale_assignments_view
+            WHERE serial_number = '{serial}'
+              AND parameter_num = {pnum}
+              AND current_scale = 1
+            ORDER BY start_date
+        """
+        rows = instrument.db.doquery(sql)
+        if not rows:
+            print(f"  ⚠  No scale_assignments for tank {serial} (port {port}), pnum {pnum}")
             continue
-        coefs[port] = float(rec['coef0'])
-        print(f"  port {port}: tank {serial} coef0 = {coefs[port]:.5g}")
+        fills = []
+        for row in rows:
+            end = None if row['end_date'] == '9999-12-31' else row['end_date']
+            entry = {
+                'fill_code': row['fill_code'],
+                'start_date': row['start_date'],
+                'end_date': end,
+                'coef0': float(row['coef0']),
+                'unc_c0': float(row['unc_c0']),
+            }
+            fills.append(entry)
+            end_str = str(end) if end else 'present'
+            print(f"  port {port} tank {serial} fill {row['fill_code']}: "
+                  f"{row['start_date']} → {end_str}  coef0={entry['coef0']:.5g}"
+                  f"  unc_c0={entry['unc_c0']:.5g}")
+        coefs[port] = fills
     return coefs
+
+
+def _fill_value_for_date(fills: list[dict], date, key: str) -> Optional[float]:
+    """Return fills[key] for the fill active on *date* (a date or datetime object)."""
+    d = date.date() if hasattr(date, 'date') else date
+    for fill in reversed(fills):
+        if fill['start_date'] <= d:
+            return fill[key]
+    return None
 
 
 def weekly_cal_fits(
     weekly: pd.DataFrame,
-    coefs: dict[int, float],
+    coefs: dict[int, list[dict]],
     force_zero: bool = False,
 ) -> pd.DataFrame:
     """Fit y = m*x + b per week.
@@ -196,26 +235,49 @@ def weekly_cal_fits(
     Single-tank mode (force_zero=True): requires only one tank per week and
     fits a line constrained through the origin — equivalent to a single-point
     cal using just that tank.
+
+    coefs is fill-aware: {port: [{fill_code, start_date, end_date, coef0}, ...]}.
+    The coef0 for each weekly row is selected by matching week_start to the
+    active fill for that port.
     """
     cal = weekly[weekly['port'].isin(coefs.keys())].copy()
-    cal['mole_fraction'] = cal['port'].astype(int).map(coefs)
+
+    def _lookup(key):
+        def _f(row):
+            fills = coefs.get(int(row['port']))
+            return _fill_value_for_date(fills, row['week_start'], key) if fills else np.nan
+        return _f
+
+    cal['mole_fraction'] = cal.apply(_lookup('coef0'), axis=1)
+    cal['unc_c0'] = cal.apply(_lookup('unc_c0'), axis=1)
+    cal = cal[cal['mole_fraction'].notna()]
 
     rows = []
     for week, grp in cal.groupby('week_start'):
         grp = grp.sort_values('port')
         xs = grp['mean'].to_numpy()
         ys = grp['mole_fraction'].to_numpy()
+        ucs = grp['unc_c0'].to_numpy()
 
         if force_zero:
             if len(xs) < 1:
                 continue
             xs_fit = np.concatenate([[0.0], xs])
             ys_fit = np.concatenate([[0.0], ys])
+            uc0 = ucs[0]
+            unc_slope = uc0 / xs[0] if xs[0] != 0 else np.nan
+            unc_intercept = 0.0
+            unc_ref_pred = unc_slope
         else:
             if len(xs) < 2:
                 continue
             xs_fit = xs
             ys_fit = ys
+            uc0, uc1 = ucs[0], ucs[-1]
+            dx = abs(xs[-1] - xs[0])
+            unc_slope = np.sqrt(uc0**2 + uc1**2) / dx if dx != 0 else np.nan
+            unc_intercept = np.sqrt((xs[-1]*uc0)**2 + (xs[0]*uc1)**2) / dx if dx != 0 else np.nan
+            unc_ref_pred = np.sqrt((uc0*(1-xs[-1]))**2 + (uc1*(1-xs[0]))**2) / dx if dx != 0 else np.nan
 
         slope, intercept = np.polyfit(xs_fit, ys_fit, 1)
         rows.append({
@@ -224,6 +286,10 @@ def weekly_cal_fits(
             'intercept': intercept,
             'x0': xs[0], 'y0': ys[0],
             'x1': xs[-1], 'y1': ys[-1],
+            'uc0': ucs[0], 'uc1': ucs[-1],
+            'unc_slope': unc_slope,
+            'unc_intercept': unc_intercept,
+            'unc_ref_pred': unc_ref_pred,
         })
     return pd.DataFrame(rows)
 
@@ -254,14 +320,24 @@ def plot_weekly_cal_fits(
     week_nums = fits['week_start'].map(mdates.date2num).to_numpy()
     norm = plt.Normalize(vmin=week_nums.min(), vmax=week_nums.max())
 
+    has_unc = 'uc0' in fits.columns and fits['uc0'].notna().any()
+
     for _, row in fits.sort_values('week_start').iterrows():
         color = cmap(norm(mdates.date2num(row['week_start'])))
         y_line = row['slope'] * x_line + row['intercept']
         ax.plot(x_line, y_line, color=color, alpha=0.7, linewidth=1.1)
-        ax.plot(
-            [row['x0'], row['x1']], [row['y0'], row['y1']],
-            'o', color=color, markersize=5, alpha=0.9,
-        )
+        if has_unc:
+            ax.errorbar(
+                [row['x0'], row['x1']], [row['y0'], row['y1']],
+                yerr=[row['uc0'], row['uc1']],
+                fmt='o', markersize=5, color=color, alpha=0.9,
+                ecolor=color, elinewidth=1.0, capsize=2,
+            )
+        else:
+            ax.plot(
+                [row['x0'], row['x1']], [row['y0'], row['y1']],
+                'o', color=color, markersize=5, alpha=0.9,
+            )
 
     if ref_coef0 is not None:
         ref_text = ref_label or "ref tank"
@@ -272,15 +348,23 @@ def plot_weekly_cal_fits(
         pstd = predicted_at_ref.std()
         xerr_txt = f"1σ={ref_xerr:.3g}" if ref_xerr is not None else "—"
         yerr_txt = f"sd_resid={ref_yerr:.3g}" if ref_yerr is not None else "—"
+        mean_unc_ref = fits['unc_ref_pred'].mean() if has_unc and 'unc_ref_pred' in fits.columns else None
+        unc_ref_txt = f"unc(coef0)={mean_unc_ref:.3g}" if mean_unc_ref is not None else "—"
         legend_label = (
             f"{ref_text} predicted @ norm_resp=1.0\n"
             f"  min={pmin:.4g}  mean={pmean:.4g}  max={pmax:.4g}\n"
             f"  std={pstd:.4g}  (assigned={ref_coef0:.4g})\n"
-            f"  xerr: {xerr_txt}   yerr: {yerr_txt}"
+            f"  xerr: {xerr_txt}   yerr: {yerr_txt}\n"
+            f"  unc_ref_pred(coef0): {unc_ref_txt}"
+        )
+        combined_yerr = (
+            np.hypot(ref_yerr, mean_unc_ref)
+            if ref_yerr is not None and mean_unc_ref is not None
+            else (ref_yerr or mean_unc_ref)
         )
         ax.errorbar(
             1.0, ref_coef0,
-            xerr=ref_xerr, yerr=ref_yerr,
+            xerr=ref_xerr, yerr=combined_yerr,
             marker='*', markersize=11, color='red',
             markeredgecolor='black', markeredgewidth=0.8,
             ecolor='black', elinewidth=1.0, capsize=3,
@@ -293,10 +377,16 @@ def plot_weekly_cal_fits(
     mean_B = fits['intercept'].mean()
     std_A = fits['slope'].std()
     std_B = fits['intercept'].std()
+    unc_lines = ""
+    if has_unc and 'unc_slope' in fits.columns:
+        mean_unc_A = fits['unc_slope'].mean()
+        mean_unc_B = fits['unc_intercept'].mean()
+        unc_lines = f"\n  A_unc(coef0)={mean_unc_A:.3g}  B_unc(coef0)={mean_unc_B:.3g}"
     mean_fit_text = (
         f"Mean weekly fit (n={len(fits)})\n"
         f"  mf = {mean_A:.4g}·resp + {mean_B:.4g}\n"
         f"  A_std={std_A:.3g}  B_std={std_B:.3g}"
+        f"{unc_lines}"
     )
     ax.text(
         0.98, 0.02, mean_fit_text,

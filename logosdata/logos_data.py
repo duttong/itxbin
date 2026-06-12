@@ -51,6 +51,22 @@ from logos_tanks import TanksWidget
 
 import configparser as _configparser
 
+try:
+    import sys as _sys, os as _os
+    _itxbin = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    if _itxbin not in _sys.path:
+        _sys.path.insert(0, _itxbin)
+    from ie3_cal_test import (
+        cal_tank_coefs as _ie3_cal_tank_coefs,
+        cal_tank_serials as _ie3_cal_tank_serials,
+        weekly_aggregate as _ie3_weekly_aggregate,
+        weekly_cal_fits as _ie3_weekly_cal_fits,
+    )
+    _IE3_CAL_AVAILABLE = True
+    del _sys, _os, _itxbin
+except ImportError:
+    _IE3_CAL_AVAILABLE = False
+
 
 def _load_app_config() -> _configparser.ConfigParser:
     """Load the author-managed logos_data.conf from the same directory as this file."""
@@ -976,11 +992,21 @@ class MainWindow(QMainWindow):
         self.calcurve_combo.currentIndexChanged.connect(self.on_calcurve_selected)
 
         # Fit method combo for Calibration row ---
+        # IE3 (in-situ) offers the cal-fit methods cal12/cal1/cal2 (recorded as
+        # mf_method_num); other instruments offer polynomial fit degrees.
         self.fit_method_cb = QComboBox()
-        self.fit_method_cb.addItem("Linear", 1)
-        self.fit_method_cb.addItem("Quadratic", 2)
-        self.fit_method_cb.addItem("Cubic", 3)
-        self.fit_method_cb.setCurrentText("Quadratic")
+        if self.instrument.inst_id == 'ie3':
+            self.fit_method_cb.addItem("ref", self.instrument.MF_METHOD_REF)
+            self.fit_method_cb.addItem("cal12", self.instrument.MF_METHOD_CAL12)
+            self.fit_method_cb.addItem("cal1", self.instrument.MF_METHOD_CAL1)
+            self.fit_method_cb.addItem("cal2", self.instrument.MF_METHOD_CAL2)
+            self.fit_method_cb.setCurrentText("cal12")
+            self._ie3_cal_method = self.instrument.MF_METHOD_CAL12
+        else:
+            self.fit_method_cb.addItem("Linear", 1)
+            self.fit_method_cb.addItem("Quadratic", 2)
+            self.fit_method_cb.addItem("Cubic", 3)
+            self.fit_method_cb.setCurrentText("Quadratic")
         self.fit_method_cb.setEnabled(False)  # follows calibration availability
 
         self.current_fit_degree = 2
@@ -1755,6 +1781,17 @@ class MainWindow(QMainWindow):
     def on_fit_method_changed(self, _idx: int):
         data = self.fit_method_cb.currentData()
         if data is None:
+            return
+
+        # IE3: the combo selects the cal-fit method (cal12/cal1/cal2), not a
+        # polynomial degree. Re-render the cal-curve view live so the fit line
+        # reflects the chosen method.
+        if self.instrument.inst_id == 'ie3':
+            self._ie3_cal_method = int(data)
+            if (self.plot_radio_group.checkedId() == 3
+                    and self.current_run_time
+                    and '(Cal)' in self.current_run_time):
+                self._ie3_cal_plot()
             return
 
         self.current_fit_degree = int(data)  # 1/2/3
@@ -3197,7 +3234,245 @@ class MainWindow(QMainWindow):
         )
 
         return ref_estimate
-                        
+
+    def _ie3_cal_method_selected(self, week_start):
+        """Return the cal method to render: the user's combo choice if set,
+        otherwise the value recorded for this week."""
+        method = getattr(self, '_ie3_cal_method', None)
+        if method is None:
+            method = self.instrument.get_week_mf_method(
+                self.current_pnum, self.current_channel, week_start
+            )
+        return int(method)
+
+    def _ie3_week_fit(self, unflagged, pnum, method):
+        """Compute the single-week cal fit for the given method from the
+        unflagged cal/ref data. Returns (fit_row or None, coefs dict)."""
+        if not _IE3_CAL_AVAILABLE or unflagged.empty:
+            return None, {}
+        force_zero, single_port = self.instrument.fit_params_for_method(method)
+        weekly = _ie3_weekly_aggregate(unflagged)
+        serials = _ie3_cal_tank_serials(self.instrument)
+        coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
+        if not coefs:
+            return None, coefs
+        if force_zero:
+            if single_port not in coefs:
+                return None, coefs
+            fits = _ie3_weekly_cal_fits(
+                weekly, {single_port: coefs[single_port]}, force_zero=True
+            )
+        else:
+            if len(coefs) < 2:
+                return None, coefs
+            fits = _ie3_weekly_cal_fits(weekly, coefs)
+        if fits.empty:
+            return None, coefs
+        return fits.iloc[-1], coefs
+
+    def _ie3_cal_plot(self):
+        """Calibration-curve view for IE3 weekly cal runs.
+
+        Plots assigned mole fraction vs normalized_resp (weekly mean per cal
+        tank) with the fit line for the currently selected method
+        (cal12/cal1/cal2), the ref-tank predicted point, and a text box of the
+        per-port means ± std for ports 1, 5, 9.
+        """
+        self.figure.clear()
+        ax = self.figure.add_subplot(1, 1, 1)
+
+        if self.run.empty:
+            ax.text(0.5, 0.5, 'No data loaded', transform=ax.transAxes,
+                    ha='center', va='center')
+            self.canvas.draw()
+            return
+
+        week_start = self.current_run_time.split(' (')[0].strip()
+        gas_name = self.instrument.analytes_inv.get(self.current_pnum, str(self.current_pnum))
+        pnum = self.current_pnum
+        method = self._ie3_cal_method_selected(week_start)
+        method_label = self.instrument.MF_METHOD_LABELS.get(method, str(method))
+
+        unflagged = self.run[self.run['rejected'].fillna(0).astype(int) == 0]
+
+        # Per-port means ± std for the three standard ports (CAL2, REF, CAL1).
+        stats_lines = []
+        for port in (self.instrument.CAL2_PORT,
+                     self.instrument.STANDARD_PORT_NUM,
+                     self.instrument.CAL1_PORT):
+            grp = unflagged[unflagged['port'] == port]
+            if grp.empty:
+                continue
+            label = grp['port_label'].iat[0] if 'port_label' in grp.columns else f'Port {port}'
+            mean = grp['normalized_resp'].mean()
+            std = grp['normalized_resp'].std()
+            stats_lines.append(f"{label}: {mean:.5g} ± {std:.2g} (n={len(grp)})")
+
+        ref_grp = unflagged[unflagged['port'] == self.instrument.STANDARD_PORT_NUM]
+
+        if not self.instrument.uses_ng_response_fit(method):
+            # method 1 (ref): mf = coef0(ref tank) * normalized_resp — a line
+            # through the origin with slope = ref-tank coef0; no ng_response fit.
+            coef0 = self.instrument.ref_tank_coef0(pnum)
+            if coef0 is not None:
+                ref_x = ref_grp['normalized_resp'].mean() if not ref_grp.empty else 1.0
+                x_line = np.array([0.0, max(ref_x, 1.0) * 1.05])
+                ax.plot(x_line, coef0 * x_line, '-', color='seagreen', lw=1.3,
+                        label='ref scaling', zorder=2)
+                ax.plot([1.0], [coef0], 's', color='seagreen', ms=7, zorder=3,
+                        label=f'ref assigned = {coef0:.5g}')
+                if not ref_grp.empty:
+                    ax.plot([ref_x], [coef0 * ref_x], 'D', color='crimson', ms=8,
+                            zorder=4, label=f'ref mf = {coef0 * ref_x:.5g}')
+                fit_text = (f"method = {method_label}\n"
+                            f"slope (ref coef0) = {coef0:.5g}\n"
+                            f"intercept = 0")
+            else:
+                fit_text = (f"method = {method_label}\n"
+                            f"(no ref-tank coef0 available)")
+        else:
+            fit_row, _coefs = self._ie3_week_fit(unflagged, pnum, method)
+            if fit_row is not None:
+                force_zero, _sp = self.instrument.fit_params_for_method(method)
+                xs = [float(fit_row['x0']), float(fit_row['x1'])]
+                ys = [float(fit_row['y0']), float(fit_row['y1'])]
+                ucs = [float(fit_row['uc0']), float(fit_row['uc1'])]
+                slope = float(fit_row['slope'])
+                intercept = float(fit_row['intercept'])
+
+                if force_zero:
+                    x_line = np.array([0.0, max(xs) * 1.05])
+                else:
+                    span = abs(xs[1] - xs[0]) or 1.0
+                    x_line = np.array([min(xs) - 0.05 * span, max(xs) + 0.05 * span])
+                ax.plot(x_line, slope * x_line + intercept, '-',
+                        color='steelblue', lw=1.3, label='fit', zorder=2)
+                ax.errorbar(xs, ys, yerr=ucs, fmt='o', color='steelblue',
+                            ms=6, capsize=3, zorder=3, label='cal tanks')
+
+                # Reference tank predicted at its mean normalized_resp.
+                if not ref_grp.empty:
+                    ref_x = ref_grp['normalized_resp'].mean()
+                    ref_y = slope * ref_x + intercept
+                    ax.plot([ref_x], [ref_y], 'D', color='crimson', ms=8, zorder=4,
+                            label=f'ref predicted = {ref_y:.5g}')
+
+                fit_text = (f"method = {method_label}\n"
+                            f"slope = {slope:.5g}\n"
+                            f"intercept = {intercept:.5g}")
+            else:
+                fit_text = (f"method = {method_label}\n"
+                            f"(no fit: insufficient cal data)")
+
+        if stats_lines:
+            fit_text += "\n\n" + "\n".join(stats_lines)
+        ax.text(0.02, 0.98, fit_text, transform=ax.transAxes,
+                ha='left', va='top', fontsize=9, family='monospace',
+                bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='gray', alpha=0.9))
+
+        ax.set_title(
+            f"IE3 @ {self.instrument.site.upper()} — {gas_name} "
+            f"weekly cal run {week_start}  [{method_label}]"
+        )
+        ax.set_xlabel("normalized_resp (weekly mean per cal tank)")
+        ax.set_ylabel("assigned mole fraction")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='lower right', fontsize=9)
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def _ie3_cal_save(self):
+        """Recompute the weekly cal fit from self.run and upsert to ng_response.
+
+        Called from _perform_save_current_gas when the selected run is an IE3
+        cal week entry.  Saves rejection flag changes via upsert_mole_fractions,
+        then recomputes the fit from the updated unflagged data.
+        """
+        if not _IE3_CAL_AVAILABLE:
+            print("ie3_cal_test not available; cannot recompute fit.")
+            return
+
+        # 1. Save flag changes for cal/ref port rows
+        self.instrument.upsert_mole_fractions(self.run)
+
+        # 2. Determine and record the per-week calibration method.
+        pnum = self.current_pnum
+        week_start = self.current_run_time.split(' (')[0].strip()
+        method = self._ie3_cal_method_selected(week_start)
+        method_label = self.instrument.MF_METHOD_LABELS.get(method, str(method))
+        self.instrument.set_week_mf_method(
+            pnum, self.current_channel, week_start, method
+        )
+
+        # method 1 (ref) stores no ng_response fit; mole fractions come from the
+        # reference-tank coef0 directly in update_runs.
+        if not self.instrument.uses_ng_response_fit(method):
+            week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+            ch_arg = f" -c {self.current_channel}" if self.current_channel else ""
+            print(f"Recorded IE3 cal method ({method_label}) for week={week_start}; "
+                  "no ng_response fit (ref-tank scaling).")
+            print(f"Run 'ie3_batch.py -p {pnum}{ch_arg} --site {self.instrument.site} "
+                  f"-s {week_start} -e {week_end} -i' to recalculate this week's "
+                  "air-port mole fractions.")
+            return
+
+        # 3. Recompute the week's fit using the selected method.
+        unflagged = self.run[self.run['rejected'].fillna(0).astype(int) == 0].copy()
+        if unflagged.empty:
+            print("No unflagged cal data; skipping fit recompute.")
+            return
+
+        row, coefs = self._ie3_week_fit(unflagged, pnum, method)
+        if row is None:
+            if not coefs:
+                print("No scale_assignments for cal tanks; skipping fit recompute.")
+            else:
+                print(f"Could not compute {method_label} fit for this week; "
+                      "check cal tank coverage.")
+            return
+        ref_raw = unflagged[unflagged['port'] == self.instrument.STANDARD_PORT_NUM]
+        sigma_ref = float(ref_raw['normalized_resp'].std()) if len(ref_raw) > 1 else 0.0
+
+        # 4. Upsert the fit
+        scale_rows = self.instrument.db.doquery(
+            f"SELECT idx FROM reftank.scales "
+            f"WHERE parameter_num={pnum} AND current=1"
+        )
+        if not scale_rows:
+            print(f"No current scale for pnum={pnum}; cannot save fit.")
+            return
+        scale_num = int(scale_rows[0]['idx'])
+
+        pc = self.instrument.port_config
+        ref_serial = ''
+        if pc is not None:
+            mask = ((pc['site_num'] == self.instrument.site_num)
+                    & (pc['port_num'] == self.instrument.STANDARD_PORT_NUM))
+            rows = pc.loc[mask, 'label']
+            if not rows.empty:
+                ref_serial = rows.iat[0]
+
+        row_id = self.instrument.upsert_ng_response(
+            inst_num=self.instrument.inst_num,
+            site=self.instrument.site,
+            run_date=week_start,
+            channel=self.current_channel or '',
+            scale_num=scale_num,
+            coef0=float(row['intercept']),
+            coef1=float(row['slope']),
+            unc_fit=float(row['unc_ref_pred']) if pd.notna(row.get('unc_ref_pred')) else 0.0,
+            sigma_ref=sigma_ref,
+            serial_number=ref_serial,
+        )
+        print(f"Saved IE3 cal fit ({method_label}): ng_response id={row_id} "
+              f"week={week_start} slope={row['slope']:.4g} "
+              f"intercept={row['intercept']:.4g}")
+        week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+        ch_arg = f" -c {self.current_channel}" if self.current_channel else ""
+        print(f"Run 'ie3_batch.py -p {pnum}{ch_arg} --site {self.instrument.site} "
+              f"-s {week_start} -e {week_end} -i' to recalculate this week's "
+              "air-port mole fractions using the updated fit.")
+
     def calibration_plot(self):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -3205,6 +3480,13 @@ class MainWindow(QMainWindow):
         """
         if self.run.empty:
             self.clear_plot()
+            return
+
+        # IE3 cal run: show weekly cal fit plot instead of polynomial cal plot
+        if (self.instrument.inst_id == 'ie3'
+                and self.current_run_time
+                and '(Cal)' in self.current_run_time):
+            self._ie3_cal_plot()
             return
 
         # filter for run_time selected in run_cb
@@ -3985,9 +4267,29 @@ class MainWindow(QMainWindow):
 
         if self.instrument.inst_id in ('ie3', 'cats'):
             period = _ie3_chunk_period(self._inst_cfg)
-            self.current_run_times = [
+            chunk_labels = [
                 label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
             ]
+            if self.instrument.inst_id == 'ie3' and self.current_pnum is not None:
+                cal_dates = self.instrument.query_cal_run_dates(
+                    self.current_pnum, self.current_channel, t0, t1
+                )
+                cal_entries = [
+                    d.split(' ')[0] + ' (Cal)' for d in cal_dates
+                ]
+                if run_type == 'Calibrations':
+                    self.current_run_times = cal_entries
+                elif run_type == 'Air Samples':
+                    self.current_run_times = chunk_labels
+                else:
+                    def _cal_sort_key(s):
+                        base = s.split(' (')[0].strip()
+                        return base + '-01' if len(base) == 7 else base
+                    self.current_run_times = sorted(
+                        chunk_labels + cal_entries, key=_cal_sort_key
+                    )
+            else:
+                self.current_run_times = chunk_labels
         else:
             # make run_time lists
             cal_idx = self.instrument.RUN_TYPE_MAP.get('Calibrations')
@@ -4345,6 +4647,17 @@ class MainWindow(QMainWindow):
 
     def _perform_save_current_gas(self) -> None:
         """Actual save work; called via QTimer so the yellow flash is visible."""
+
+        # IE3 cal run: save flag changes + recompute and store the weekly fit
+        if (self.instrument.inst_id == 'ie3'
+                and self.current_run_time
+                and '(Cal)' in self.current_run_time):
+            self._ie3_cal_save()
+            self.madechanges = False
+            self.smoothing_changed = False
+            self._ie3_cal_plot()
+            return
+
         response_id = None
 
         # 1. Try from selected_calc_curve (if set via combo box)
@@ -4450,16 +4763,34 @@ class MainWindow(QMainWindow):
         
     def load_selected_run(self):
         self._clear_highlight()
-        # call sql load function from instrument class
-        # all of the input parameters are set with UI controls.
-        start, end = self._current_load_dates()
-        self.run = self.instrument.load_data(
-            pnum=self.current_pnum,
-            channel=self.current_channel,
-            run_type_num=self.run_type_num,
-            start_date=start,
-            end_date=end
-        )
+        # IE3 cal run: load cal+ref port data for the selected week
+        if (self.instrument.inst_id == 'ie3'
+                and self.current_run_time
+                and '(Cal)' in self.current_run_time):
+            week_start = self.current_run_time.split(' (')[0].strip()
+            self.run = self.instrument.load_cal_week_data(
+                self.current_pnum, self.current_channel, week_start
+            )
+            # Preselect the fit-method combo to this week's recorded method.
+            method = self.instrument.get_week_mf_method(
+                self.current_pnum, self.current_channel, week_start
+            )
+            self._ie3_cal_method = method
+            idx = self.fit_method_cb.findData(method)
+            if idx >= 0:
+                self.fit_method_cb.blockSignals(True)
+                self.fit_method_cb.setCurrentIndex(idx)
+                self.fit_method_cb.blockSignals(False)
+        else:
+            # call sql load function from instrument class
+            start, end = self._current_load_dates()
+            self.run = self.instrument.load_data(
+                pnum=self.current_pnum,
+                channel=self.current_channel,
+                run_type_num=self.run_type_num,
+                start_date=start,
+                end_date=end
+            )
 
         # Keep any active run_time zoom if the target run is still present in
         # the freshly loaded data (true for analyte switches within the same
