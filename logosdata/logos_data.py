@@ -1783,11 +1783,13 @@ class MainWindow(QMainWindow):
         if data is None:
             return
 
-        # IE3: the combo selects the cal-fit method (cal12/cal1/cal2), not a
-        # polynomial degree. Re-render the cal-curve view live so the fit line
-        # reflects the chosen method.
+        # IE3: the combo selects the cal-fit method (cal12/cal1/cal2/ref), not a
+        # polynomial degree. Mark the run dirty so the change can be saved, and
+        # re-render the cal-curve view live so the fit line reflects the choice.
         if self.instrument.inst_id == 'ie3':
             self._ie3_cal_method = int(data)
+            if (self.current_run_time and '(Cal)' in self.current_run_time):
+                self.madechanges = True
             if (self.plot_radio_group.checkedId() == 3
                     and self.current_run_time
                     and '(Cal)' in self.current_run_time):
@@ -4631,6 +4633,14 @@ class MainWindow(QMainWindow):
         """
         if not self.madechanges:
             return
+
+        # IE3 cal view has no save-legend button to flash; save directly.
+        if (self.instrument.inst_id == 'ie3'
+                and self.current_run_time
+                and '(Cal)' in self.current_run_time):
+            self._perform_save_current_gas()
+            return
+
         if getattr(self, "_save2db_text", None) is None:
             return
 
