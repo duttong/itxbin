@@ -61,6 +61,7 @@ try:
         cal_tank_serials as _ie3_cal_tank_serials,
         weekly_aggregate as _ie3_weekly_aggregate,
         weekly_cal_fits as _ie3_weekly_cal_fits,
+        _fill_value_for_date as _ie3_fill_value_for_date,
     )
     _IE3_CAL_AVAILABLE = True
     del _sys, _os, _itxbin
@@ -3247,15 +3248,18 @@ class MainWindow(QMainWindow):
             )
         return int(method)
 
-    def _ie3_week_fit(self, unflagged, pnum, method):
+    def _ie3_week_fit(self, unflagged, pnum, method, weekly=None, coefs=None):
         """Compute the single-week cal fit for the given method from the
-        unflagged cal/ref data. Returns (fit_row or None, coefs dict)."""
+        unflagged cal/ref data. ``weekly`` and ``coefs`` may be passed in to
+        avoid recomputing them. Returns (fit_row or None, coefs dict)."""
         if not _IE3_CAL_AVAILABLE or unflagged.empty:
-            return None, {}
+            return None, (coefs or {})
         force_zero, single_port = self.instrument.fit_params_for_method(method)
-        weekly = _ie3_weekly_aggregate(unflagged)
-        serials = _ie3_cal_tank_serials(self.instrument)
-        coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
+        if weekly is None:
+            weekly = _ie3_weekly_aggregate(unflagged)
+        if coefs is None:
+            serials = _ie3_cal_tank_serials(self.instrument)
+            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
         if not coefs:
             return None, coefs
         if force_zero:
@@ -3272,13 +3276,24 @@ class MainWindow(QMainWindow):
             return None, coefs
         return fits.iloc[-1], coefs
 
+    def _ie3_tank_assigned(self, port, pnum, coefs, week_start):
+        """Assigned mole fraction (coef0) for a standard port in this week.
+        Ref tank (port 5) uses ref_tank_coef0; cal tanks use the fill active on
+        week_start. Returns None if unavailable."""
+        if port == self.instrument.STANDARD_PORT_NUM:
+            return self.instrument.ref_tank_coef0(pnum)
+        fills = (coefs or {}).get(port)
+        if not fills:
+            return None
+        return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'coef0')
+
     def _ie3_cal_plot(self):
         """Calibration-curve view for IE3 weekly cal runs.
 
-        Plots assigned mole fraction vs normalized_resp (weekly mean per cal
-        tank) with the fit line for the currently selected method
-        (cal12/cal1/cal2), the ref-tank predicted point, and a text box of the
-        per-port means ± std for ports 1, 5, 9.
+        Plots assigned mole fraction vs normalized_resp (weekly mean per tank).
+        The cal2 / ref / cal1 tank means ± std are always shown (diagnostic),
+        regardless of the selected method, overlaid with the fit line for the
+        current method. The "Zero" checkbox extends the fit line to the origin.
         """
         self.figure.clear()
         ax = self.figure.add_subplot(1, 1, 1)
@@ -3294,11 +3309,26 @@ class MainWindow(QMainWindow):
         pnum = self.current_pnum
         method = self._ie3_cal_method_selected(week_start)
         method_label = self.instrument.MF_METHOD_LABELS.get(method, str(method))
+        zero = self.draw2zero_cb.isChecked()
 
         unflagged = self.run[self.run['rejected'].fillna(0).astype(int) == 0]
 
-        # Per-port means ± std for the three standard ports (CAL2, REF, CAL1).
+        # Resolve tank coef0 timelines once (reused for points and the fit).
+        coefs = {}
+        weekly = None
+        if _IE3_CAL_AVAILABLE and not unflagged.empty:
+            weekly = _ie3_weekly_aggregate(unflagged)
+            serials = _ie3_cal_tank_serials(self.instrument)
+            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
+
+        # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
+        port_color = {
+            self.instrument.CAL2_PORT: 'tab:orange',
+            self.instrument.STANDARD_PORT_NUM: 'tab:purple',
+            self.instrument.CAL1_PORT: 'tab:gray',
+        }
         stats_lines = []
+        xvals = []
         for port in (self.instrument.CAL2_PORT,
                      self.instrument.STANDARD_PORT_NUM,
                      self.instrument.CAL1_PORT):
@@ -3309,62 +3339,53 @@ class MainWindow(QMainWindow):
             mean = grp['normalized_resp'].mean()
             std = grp['normalized_resp'].std()
             stats_lines.append(f"{label}: {mean:.5g} ± {std:.2g} (n={len(grp)})")
+            assigned = self._ie3_tank_assigned(port, pnum, coefs, week_start)
+            if assigned is not None and pd.notna(mean):
+                ax.errorbar([mean], [assigned],
+                            xerr=[std if pd.notna(std) else 0.0],
+                            fmt='o', color=port_color.get(port, 'black'),
+                            ms=7, capsize=3, zorder=3, label=label)
+                xvals.append(mean)
 
-        ref_grp = unflagged[unflagged['port'] == self.instrument.STANDARD_PORT_NUM]
-
+        # Determine the fit line (slope/intercept) for the selected method.
+        slope = intercept = None
         if not self.instrument.uses_ng_response_fit(method):
-            # method 1 (ref): mf = coef0(ref tank) * normalized_resp — a line
-            # through the origin with slope = ref-tank coef0; no ng_response fit.
+            # method 1 (ref): mf = coef0(ref tank) * normalized_resp.
             coef0 = self.instrument.ref_tank_coef0(pnum)
             if coef0 is not None:
-                ref_x = ref_grp['normalized_resp'].mean() if not ref_grp.empty else 1.0
-                x_line = np.array([0.0, max(ref_x, 1.0) * 1.05])
-                ax.plot(x_line, coef0 * x_line, '-', color='seagreen', lw=1.3,
-                        label='ref scaling', zorder=2)
-                ax.plot([1.0], [coef0], 's', color='seagreen', ms=7, zorder=3,
-                        label=f'ref assigned = {coef0:.5g}')
-                if not ref_grp.empty:
-                    ax.plot([ref_x], [coef0 * ref_x], 'D', color='crimson', ms=8,
-                            zorder=4, label=f'ref mf = {coef0 * ref_x:.5g}')
+                slope, intercept = coef0, 0.0
                 fit_text = (f"method = {method_label}\n"
-                            f"slope (ref coef0) = {coef0:.5g}\n"
-                            f"intercept = 0")
+                            f"slope (ref coef0) = {coef0:.5g}\nintercept = 0")
             else:
-                fit_text = (f"method = {method_label}\n"
-                            f"(no ref-tank coef0 available)")
+                fit_text = f"method = {method_label}\n(no ref-tank coef0 available)"
         else:
-            fit_row, _coefs = self._ie3_week_fit(unflagged, pnum, method)
+            fit_row, _c = self._ie3_week_fit(unflagged, pnum, method,
+                                             weekly=weekly, coefs=coefs)
             if fit_row is not None:
-                force_zero, _sp = self.instrument.fit_params_for_method(method)
-                xs = [float(fit_row['x0']), float(fit_row['x1'])]
-                ys = [float(fit_row['y0']), float(fit_row['y1'])]
-                ucs = [float(fit_row['uc0']), float(fit_row['uc1'])]
                 slope = float(fit_row['slope'])
                 intercept = float(fit_row['intercept'])
-
-                if force_zero:
-                    x_line = np.array([0.0, max(xs) * 1.05])
-                else:
-                    span = abs(xs[1] - xs[0]) or 1.0
-                    x_line = np.array([min(xs) - 0.05 * span, max(xs) + 0.05 * span])
-                ax.plot(x_line, slope * x_line + intercept, '-',
-                        color='steelblue', lw=1.3, label='fit', zorder=2)
-                ax.errorbar(xs, ys, yerr=ucs, fmt='o', color='steelblue',
-                            ms=6, capsize=3, zorder=3, label='cal tanks')
-
-                # Reference tank predicted at its mean normalized_resp.
-                if not ref_grp.empty:
-                    ref_x = ref_grp['normalized_resp'].mean()
-                    ref_y = slope * ref_x + intercept
-                    ax.plot([ref_x], [ref_y], 'D', color='crimson', ms=8, zorder=4,
-                            label=f'ref predicted = {ref_y:.5g}')
-
                 fit_text = (f"method = {method_label}\n"
-                            f"slope = {slope:.5g}\n"
-                            f"intercept = {intercept:.5g}")
+                            f"slope = {slope:.5g}\nintercept = {intercept:.5g}")
             else:
-                fit_text = (f"method = {method_label}\n"
-                            f"(no fit: insufficient cal data)")
+                fit_text = f"method = {method_label}\n(no fit: insufficient cal data)"
+
+        # Draw the fit line; extend to the origin when "Zero" is checked.
+        if slope is not None:
+            xmax = (max(xvals) if xvals else 1.0) * 1.05
+            xmin = 0.0 if zero else (min(xvals) * 0.97 if xvals else 0.9)
+            x_line = np.array([xmin, xmax])
+            ax.plot(x_line, slope * x_line + intercept, '-',
+                    color='steelblue', lw=1.3, zorder=2, label='fit')
+            if zero:
+                ax.axhline(0.0, lw=0.8, ls='--', color='0.6', zorder=1)
+                ax.axvline(0.0, lw=0.8, ls='--', color='0.6', zorder=1)
+            # Ref-tank predicted point for cal-fit methods.
+            ref_grp = unflagged[unflagged['port'] == self.instrument.STANDARD_PORT_NUM]
+            if self.instrument.uses_ng_response_fit(method) and not ref_grp.empty:
+                ref_x = ref_grp['normalized_resp'].mean()
+                ref_y = slope * ref_x + intercept
+                ax.plot([ref_x], [ref_y], 'D', color='crimson', ms=8, zorder=4,
+                        label=f'ref predicted = {ref_y:.5g}')
 
         if stats_lines:
             fit_text += "\n\n" + "\n".join(stats_lines)
@@ -3376,7 +3397,7 @@ class MainWindow(QMainWindow):
             f"IE3 @ {self.instrument.site.upper()} — {gas_name} "
             f"weekly cal run {week_start}  [{method_label}]"
         )
-        ax.set_xlabel("normalized_resp (weekly mean per cal tank)")
+        ax.set_xlabel("normalized_resp (weekly mean per tank)")
         ax.set_ylabel("assigned mole fraction")
         ax.grid(True, alpha=0.3)
         ax.legend(loc='lower right', fontsize=9)
