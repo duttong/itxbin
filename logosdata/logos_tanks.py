@@ -1177,7 +1177,7 @@ class TanksWidget(QWidget):
                 c.num,
                 c.run_number,
                 c.inst
-            FROM hats.calibrations c
+            FROM hats.calibrations_view c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
               AND c.parameter_num = {int(parameter_num)}
