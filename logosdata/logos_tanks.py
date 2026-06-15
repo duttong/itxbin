@@ -1177,7 +1177,7 @@ class TanksWidget(QWidget):
                 c.num,
                 c.run_number,
                 c.inst
-            FROM hats.calibrations_view c
+            FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
               AND c.parameter_num = {int(parameter_num)}
@@ -1187,6 +1187,7 @@ class TanksWidget(QWidget):
               AND c.mixratio > -99
               AND c.mixratio != 0
               AND c.num >= 3
+              AND c.flag = '.'
             ORDER BY c.date, c.time;
         """
         try:

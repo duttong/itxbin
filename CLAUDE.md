@@ -49,7 +49,16 @@
   mole fraction, stddev, n, run_number, scale_num) keyed on
   `(serial_number, date, time, species, inst, parameter_num)`; kept current
   by `upsert_calibrations()` (see below); read by the Tanks tab in logos_data.
-  Tank plots filter out sentinel values with `mixratio <= -99`.
+  Tank plots filter out sentinel values with `mixratio <= -99` and `flag != '.'`.
+  `flag` column: `'.'` = all injections in the group were unrejected; `'M'`
+  reserved for partially-rejected groups (not yet written by `upsert_calibrations()`).
+  Groups where **all** injections are rejected are **deleted** from this table
+  by `upsert_calibrations()` rather than left stale — re-run the batch script
+  after rejections to keep this table current.
+  `hats.calibrations_view` re-derives the same data live from `ng_data_view` /
+  `prs_data_view` (always reflects current rejection state, but ~100× slower);
+  note: PR2 is currently absent from `calibrations_view` due to a `level`
+  filter bug in the view (tertiary standards excluded); awaiting DB fix.
 - `hats.ng_cfc113a` — M4 molar response factors (R1–R4) for CFC-113/113a
   deconvolution, windowed by reference tank and date
 - `hats.scale_assignments` — calibration scale coefficients (coef0, coef1)

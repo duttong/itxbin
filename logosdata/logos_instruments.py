@@ -278,13 +278,42 @@ class HATS_DB_Functions(LOGOS_Instruments):
             if 'rejected' in df.columns
             else pd.Series(0, index=df.index)
         )
-        tank_df = df[
-            (rejected == 0) &
+
+        base_mask = (
             df['tank_serial_num'].notna() &
             (df['tank_serial_num'] != '') &
             (df['run_type_num'].isin(self.CAL_RUN_TYPES)) &
             (df[std_col] != std_val)
-        ]
+        )
+
+        # Track all tank groups before rejection filter to detect fully-rejected runs.
+        all_tank_groups = {
+            (row.run_time, row.tank_serial_num)
+            for row in df[base_mask][['run_time', 'tank_serial_num']]
+            .drop_duplicates().itertuples(index=False)
+        }
+
+        tank_df = df[base_mask & (rejected == 0)]
+
+        inst_str = self.inst_id.upper()
+
+        # Groups where all injections are rejected — delete stale calibrations rows.
+        unrejected_groups = {
+            (row.run_time, row.tank_serial_num)
+            for row in tank_df[['run_time', 'tank_serial_num']]
+            .drop_duplicates().itertuples(index=False)
+        } if not tank_df.empty else set()
+        fully_rejected = all_tank_groups - unrejected_groups
+        if fully_rejected:
+            sql_del = """
+                DELETE FROM hats.calibrations
+                WHERE serial_number = %s AND date = %s AND time = %s
+                  AND species = %s AND inst = %s AND parameter_num = %s
+            """
+            for run_time, serial in fully_rejected:
+                rt = pd.Timestamp(run_time)
+                self.db.doquery(sql_del, (serial, rt.date(), rt.time(), species, inst_str, parameter_num))
+
         if tank_df.empty:
             return
 
@@ -328,8 +357,6 @@ class HATS_DB_Functions(LOGOS_Instruments):
         agg = agg[agg['num'] > 0]
         agg = agg.replace([float('inf'), float('-inf')], float('nan'))
         agg = agg.dropna(subset=['mixratio'])
-
-        inst_str = self.inst_id.upper()
 
         sql_upsert = """
             INSERT INTO hats.calibrations (
