@@ -142,18 +142,36 @@ class HATS_DB_Functions(LOGOS_Instruments):
             raise ValueError(f"No scale number found for parameter number {parameter_num}.")
         return r[0]['idx']
         
-    def scale_assignments(self, tank, pnum):
+    def scale_assignments(self, tank, pnum, run_date=None):
         """
-        Returns a dictionary of scale values for a given tank and parameter number (pnum).
+        Returns a dictionary of scale-assignment values for a given tank and
+        parameter number (pnum), selecting the fill record in effect on
+        run_date.
+
+        Reads hats.scale_assignments_view, which exposes parameter_num and the
+        derived fill window (start_date/end_date) that the base table lacks.
+        Tanks that have been refilled carry multiple records on the same scale;
+        the record whose start_date is the most recent on or before run_date is
+        returned, so each run gets the assigned value for the fill that was
+        actually in use. When run_date is None the latest fill is used. Only the
+        current scale (current_scale=1) is considered. Returns None if no record
+        is found.
         """
-        # Extract only the digits before the first "_" in the tank variable
-        #match = re.search(r'(\d+)[^\d_]*_', tank)
-        #tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
-        
+        date_clause = ""
+        if run_date is not None:
+            d = pd.Timestamp(run_date).strftime('%Y-%m-%d')
+            date_clause = f"and start_date <= '{d}'"
+
         sql = f"""
-            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments
+            SELECT start_date, end_date, fill_code, serial_number, level,
+                   coef0, coef1, coef2
+            FROM hats.scale_assignments_view
             where serial_number = '{tank}'
-            and scale_num = (select idx from reftank.scales where parameter_num={pnum} and current=1);
+              and parameter_num = {pnum}
+              and current_scale = 1
+              {date_clause}
+            ORDER BY start_date DESC
+            LIMIT 1;
         """
         df = pd.DataFrame(self.db.doquery(sql))
         if not df.empty:
@@ -484,19 +502,38 @@ class HATS_DB_Functions(LOGOS_Instruments):
             """
             self.db.doquery(sql_set, [int(tag_num), *analysis_nums])
             
-    def scale_values(self, tank, pnum):
+    def scale_values(self, tank, pnum, run_date=None):
         """
-        Returns a dictionary of scale values for a given tank and parameter number.
+        Returns a dictionary of scale-assignment values for a given tank and
+        parameter number, selecting the fill record in effect on run_date.
+
+        Like scale_assignments(), this reads hats.scale_assignments_view and
+        picks the most recent fill whose start_date is on or before run_date
+        (latest fill when run_date is None), so refilled tanks resolve to the
+        value for the fill actually in use. The view collapses scale assignments
+        across instruments, so the previous inst_num filter is dropped: a tank's
+        assigned value is a property of the tank/fill, not of the measuring
+        instrument, and fills for one tank are scattered across inst_nums.
         """
         # Extract only the digits before the first "_" in the tank variable
         match = re.search(r'(\d+)[^\d_]*_', tank)
         tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
-        
+
+        date_clause = ""
+        if run_date is not None:
+            d = pd.Timestamp(run_date).strftime('%Y-%m-%d')
+            date_clause = f"and start_date <= '{d}'"
+
         sql = f"""
-            SELECT start_date, serial_number, level, coef0, coef1, coef2 FROM hats.scale_assignments 
+            SELECT start_date, end_date, fill_code, serial_number, level,
+                   coef0, coef1, coef2
+            FROM hats.scale_assignments_view
             where serial_number like '%{tank}%'
-            and inst_num = {self.inst_num} 
-            and scale_num = (select idx from reftank.scales where parameter_num = {pnum});
+              and parameter_num = {pnum}
+              and current_scale = 1
+              {date_clause}
+            ORDER BY start_date DESC
+            LIMIT 1;
         """
         df = pd.DataFrame(self.db.doquery(sql))
         if not df.empty:
@@ -562,10 +599,12 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
             ref_tank = grp.loc[mask, 'port_info'].iat[0]
 
-            # only call scale_values once per tank
-            if ref_tank not in scale_cache:
-                scale_cache[ref_tank] = self.scale_values(ref_tank, pnum)
-            coefs = scale_cache[ref_tank]
+            # only call scale_values once per (tank, run_time): the fill in use
+            # can change between runs, so key the cache on the run date too.
+            cache_key = (ref_tank, rt)
+            if cache_key not in scale_cache:
+                scale_cache[cache_key] = self.scale_values(ref_tank, pnum, run_date=rt)
+            coefs = scale_cache[cache_key]
 
             if coefs is None:
                 mf.loc[grp.index] = np.nan
@@ -2401,7 +2440,15 @@ class IE3_Instrument(HATS_DB_Functions):
             out['mole_fraction'] = np.nan
             return out
 
-        coefs = self.scale_assignments(ref_tank, pnum)
+        # Pick the ref-tank fill in use over this batch of data. These rows are
+        # a single processing window, so a representative date is sufficient.
+        run_date = None
+        for col in ('analysis_datetime', 'analysis_time', 'run_time'):
+            if col in df.columns and df[col].notna().any():
+                run_date = pd.to_datetime(df[col]).max()
+                break
+
+        coefs = self.scale_assignments(ref_tank, pnum, run_date=run_date)
         if coefs is None:
             out = df.copy()
             out['mole_fraction'] = np.nan

@@ -3973,9 +3973,15 @@ class MainWindow(QMainWindow):
             self.run['cal_mf'] = np.nan
             return
 
+        # Date of this run, so refilled tanks resolve to the fill that was in
+        # use rather than an arbitrary record.
+        run_date = None
+        if 'analysis_datetime' in self.run and self.run['analysis_datetime'].notna().any():
+            run_date = pd.to_datetime(self.run['analysis_datetime']).max()
+
         @lru_cache(maxsize=None)
         def get_scale(tank_id: str):
-            rec = self.instrument.scale_assignments(tank_id, self.current_pnum)
+            rec = self.instrument.scale_assignments(tank_id, self.current_pnum, run_date=run_date)
             if rec is None:
                 return None
             if isinstance(rec, pd.Series):
