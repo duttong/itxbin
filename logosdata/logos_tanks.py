@@ -13,7 +13,8 @@ import math
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
-    QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut
+    QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut,
+    QLineEdit
 )
 from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
@@ -342,6 +343,17 @@ class TanksWidget(QWidget):
         analyte_layout.addWidget(self.tanks_status)
         analyte_layout.addLayout(category_bar)
         analyte_layout.addLayout(self.tank_grid)
+        search_bar = QHBoxLayout()
+        search_bar.addWidget(QLabel("Search for tank in list"))
+        self.tank_search = QLineEdit()
+        self.tank_search.setPlaceholderText("type to filter tanks (e.g. CC)")
+        self.tank_search.setClearButtonEnabled(False)
+        self.tank_search.textChanged.connect(self._on_tank_search_changed)
+        search_bar.addWidget(self.tank_search)
+        self.clear_search_btn = QPushButton("Clear")
+        self.clear_search_btn.clicked.connect(self._on_clear_tank_search)
+        search_bar.addWidget(self.clear_search_btn)
+        analyte_layout.addLayout(search_bar)
         selection_bar = QHBoxLayout()
         self.deselect_btn = QPushButton("Deselect All")
         self.deselect_btn.clicked.connect(self._on_deselect_all)
@@ -666,14 +678,6 @@ class TanksWidget(QWidget):
             self.tanks_status.setText(empty_msg or "No tanks found for that selection.")
             return
 
-        num_tanks = len(tanks)
-        self.tanks_status.setText(f"{num_tanks} tanks found.")
-
-        if num_tanks > 60:
-            # Keep the number of tanks per row at 15 or less
-            cols = math.ceil(num_tanks / 15)
-        else:
-            cols = 6
         for idx, tank in enumerate(tanks):
             serial = None
             use_short = None
@@ -712,14 +716,86 @@ class TanksWidget(QWidget):
                 elif use_lower.startswith("archive"):
                     cb.setStyleSheet("color: darkgreen;")
             self.tank_checks.append(cb)
+
+        self._populate_tank_grid()
+
+    def _tank_search_text(self) -> str:
+        """Current lowercased search filter text (empty if none)."""
+        widget = getattr(self, "tank_search", None)
+        if widget is None:
+            return ""
+        return widget.text().strip().lower()
+
+    def _tank_cb_matches_search(self, cb: QCheckBox) -> bool:
+        """Return True if a tank checkbox matches the current search filter."""
+        search = self._tank_search_text()
+        return (not search) or (search in cb.text().lower())
+
+    def _populate_tank_grid(self):
+        """Lay out only the search-matching tank checkboxes into the grid."""
+        # Detach all currently-laid-out widgets (keeps the checkbox objects).
+        for i in reversed(range(self.tank_grid.count())):
+            item = self.tank_grid.itemAt(i)
+            w = item.widget()
+            if w:
+                self.tank_grid.removeWidget(w)
+
+        visible = []
+        for cb in self.tank_checks:
+            if self._tank_cb_matches_search(cb):
+                visible.append(cb)
+            else:
+                # Safe on a parentless widget; only ever hides, never shows.
+                cb.setVisible(False)
+
+        num_visible = len(visible)
+        if num_visible > 60:
+            # Keep the number of tanks per row at 15 or less
+            cols = math.ceil(num_visible / 15)
+        else:
+            cols = 6
+        for idx, cb in enumerate(visible):
             row, col = divmod(idx, cols)
+            # Reparent into the grid first; only then make visible. Calling
+            # setVisible(True) on a still-parentless checkbox makes it flash as
+            # its own top-level window before it lands in the layout.
             self.tank_grid.addWidget(cb, row, col)
+            cb.setVisible(True)
+
+        total = len(self.tank_checks)
+        search = self._tank_search_text()
+        if search:
+            self.tanks_status.setText(
+                f"{num_visible} of {total} tanks match '{self.tank_search.text().strip()}'."
+            )
+        else:
+            self.tanks_status.setText(f"{total} tanks found.")
+
+    def _on_tank_search_changed(self, _text: str):
+        """Re-filter the displayed tank checkboxes as the user types."""
+        self._populate_tank_grid()
+
+    def _on_clear_tank_search(self):
+        """Clear the search field and show all tanks again."""
+        widget = getattr(self, "tank_search", None)
+        if widget is None:
+            return
+        widget.blockSignals(True)
+        widget.clear()
+        widget.blockSignals(False)
+        self._populate_tank_grid()
 
     def selected_tanks(self) -> list[str]:
-        """Return checked tank identifiers keyed by fill (fill_key)."""
+        """Return checked tank identifiers keyed by fill (fill_key).
+
+        Only tanks currently displayed (matching the search filter) are
+        returned, so plotting and saving act on the visible results.
+        """
         selected = []
         for cb in self.tank_checks:
             if not cb.isChecked():
+                continue
+            if not self._tank_cb_matches_search(cb):
                 continue
             fill_key = cb.property("fill_key")
             if fill_key is None:
