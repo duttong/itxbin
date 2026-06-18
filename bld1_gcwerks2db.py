@@ -66,8 +66,11 @@ class BLD1_GCwerks(Stratcore_GCwerks):
 
 def _port_id(row):
     """ assign port_id by cal SSV position where row is from a gcwerks dataframe """
-    ssv = row['port']
-    
+    try:
+        ssv = int(row['port'])
+    except (TypeError, ValueError):
+        return ''
+
     # ssv == 1 used to be ssv == 11 for cores. changed 220805
     try:
         if ssv == 1:

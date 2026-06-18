@@ -3601,6 +3601,7 @@ class MainWindow(QMainWindow):
                 self.figure.clear()
                 self.canvas.draw()
                 return
+            curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
             calcurve_exists = False
         elif not has_current:
             # Existing curves, but not for this run_time → append one row
