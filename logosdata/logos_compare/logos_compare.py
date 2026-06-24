@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import os
+import configparser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +21,7 @@ os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
 import numpy as np
 import pandas as pd
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -40,6 +41,7 @@ from PyQt5.QtWidgets import (
     QSpinBox,
     QSplitter,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -127,6 +129,38 @@ ANALYTE_PARAMETER_GROUPS = {
     29: ("CFC11", (29, 114)),
     114: ("CFC11", (29, 114)),
 }
+
+# User-managed config shared with logos_data / logos_timeseries; logos_compare
+# persists its UI state under a dedicated [compare] section.
+_USER_CONF = Path.home() / ".logos_data_user.conf"
+
+
+def _load_compare_settings() -> dict:
+    """Return persisted compare UI settings, with fallbacks matching the
+    previous hardcoded defaults."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    current_year = pd.Timestamp.now().year
+    return {
+        "start_year":       cfg.getint("compare", "start_year", fallback=current_year - 2),
+        "end_year":         cfg.getint("compare", "end_year",   fallback=current_year),
+        "marker_size":      cfg.getint("compare", "marker_size", fallback=5),
+        "connect_lines":    cfg.getboolean("compare", "connect_lines", fallback=False),
+        "show_site_legend": cfg.getboolean("compare", "show_site_legend", fallback=True),
+    }
+
+
+def _save_compare_settings(settings: dict) -> None:
+    """Persist compare UI settings to the [compare] section, preserving the
+    other sections of the shared user config."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    if not cfg.has_section("compare"):
+        cfg.add_section("compare")
+    for key, value in settings.items():
+        cfg.set("compare", key, str(value))
+    with open(_USER_CONF, "w") as fh:
+        cfg.write(fh)
 
 
 @dataclass
@@ -235,6 +269,7 @@ class LogosCompareWindow(QMainWindow):
         self.current_plot_selections: list[ProgramSelection] = []
         self.site_visibility: dict[str, bool] = {}
         self.site_artist_map: dict[str, list[object]] = {}
+        self.point_artist_map: dict[object, dict[str, object]] = {}
         self.site_legend = None
 
         self._build_ui()
@@ -300,6 +335,8 @@ class LogosCompareWindow(QMainWindow):
         return self.loaders["m4"].instrument.doquery(sql, inst_nums)
 
     def _build_ui(self) -> None:
+        settings = _load_compare_settings()
+
         root = QSplitter(Qt.Horizontal)
         self.setCentralWidget(root)
 
@@ -308,14 +345,13 @@ class LogosCompareWindow(QMainWindow):
 
         date_group = QGroupBox("YEAR RANGE")
         date_layout = QGridLayout(date_group)
-        current_year = pd.Timestamp.now().year
         self.start_year = QSpinBox()
         self.start_year.setRange(1990, 2035)
-        self.start_year.setValue(current_year - 2)
+        self.start_year.setValue(settings["start_year"])
         self.start_year.valueChanged.connect(self._on_year_range_changed)
         self.end_year = QSpinBox()
         self.end_year.setRange(1990, 2035)
-        self.end_year.setValue(current_year)
+        self.end_year.setValue(settings["end_year"])
         self.end_year.valueChanged.connect(self._on_year_range_changed)
         date_layout.addWidget(QLabel("Start"), 0, 0)
         date_layout.addWidget(self.start_year, 0, 1)
@@ -425,23 +461,31 @@ class LogosCompareWindow(QMainWindow):
 
         self.marker_size_spin = QSpinBox()
         self.marker_size_spin.setRange(1, 20)
-        self.marker_size_spin.setValue(5)
+        self.marker_size_spin.setValue(settings["marker_size"])
         self.marker_size_spin.setSuffix(" pt")
         self.marker_size_spin.valueChanged.connect(self._redraw_current_plot)
         figure_layout.addWidget(QLabel("Marker size"), 0, 0)
         figure_layout.addWidget(self.marker_size_spin, 0, 1)
 
         self.connect_lines_check = QCheckBox("Connect monthly points")
-        self.connect_lines_check.setChecked(False)
+        self.connect_lines_check.setChecked(settings["connect_lines"])
         self.connect_lines_check.stateChanged.connect(self._redraw_current_plot)
         figure_layout.addWidget(self.connect_lines_check, 1, 0, 1, 2)
 
         self.show_site_legend_check = QCheckBox("Show site legend")
-        self.show_site_legend_check.setChecked(True)
+        self.show_site_legend_check.setChecked(settings["show_site_legend"])
         self.show_site_legend_check.stateChanged.connect(self._redraw_current_plot)
         figure_layout.addWidget(self.show_site_legend_check, 2, 0, 1, 2)
         controls_layout.addWidget(figure_group)
         controls_layout.addStretch()
+
+        # Persist year range + figure controls on change (after all five
+        # widgets exist, so no save fires mid-construction).
+        self.start_year.valueChanged.connect(self._persist_settings)
+        self.end_year.valueChanged.connect(self._persist_settings)
+        self.marker_size_spin.valueChanged.connect(self._persist_settings)
+        self.connect_lines_check.stateChanged.connect(self._persist_settings)
+        self.show_site_legend_check.stateChanged.connect(self._persist_settings)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -453,6 +497,7 @@ class LogosCompareWindow(QMainWindow):
         self.figure = Figure(figsize=(11, 8), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.mpl_connect("pick_event", self._on_pick_event)
+        self.canvas.mpl_connect("button_release_event", self._on_button_release)
         self.toolbar = NavigationToolbar(self.canvas, self)
         display_layout.addWidget(self.toolbar)
         display_layout.addWidget(self.canvas, stretch=1)
@@ -524,6 +569,16 @@ class LogosCompareWindow(QMainWindow):
 
     def _on_year_range_changed(self) -> None:
         self._refresh_program_checks(reset_checked=False)
+
+    def _persist_settings(self) -> None:
+        """Save the year range and figure controls to the user config."""
+        _save_compare_settings({
+            "start_year":       self.start_year.value(),
+            "end_year":         self.end_year.value(),
+            "marker_size":      self.marker_size_spin.value(),
+            "connect_lines":    self.connect_lines_check.isChecked(),
+            "show_site_legend": self.show_site_legend_check.isChecked(),
+        })
 
     def _refresh_program_checks(self, reset_checked: bool = False) -> None:
         parameter_key = self._current_parameter_key()
@@ -840,7 +895,9 @@ class LogosCompareWindow(QMainWindow):
     def _draw_comparison(self, df: pd.DataFrame, selections: list[ProgramSelection]) -> None:
         self.figure.clear()
         self.site_artist_map = {}
+        self.point_artist_map = {}
         self.site_legend = None
+        QToolTip.hideText()
         ax_diff, ax_data = self.figure.subplots(
             2, 1, sharex=True, gridspec_kw={"height_ratios": [1, 2]}
         )
@@ -870,6 +927,7 @@ class LogosCompareWindow(QMainWindow):
                 label=f"{site} {PROGRAMS[program]['label']}",
             )
             self._register_site_artists(site, container)
+            self._register_point_artist(site, program, group, container)
 
         ref_program = selections[0].key if selections else None
         if ref_program is not None and len(selections) > 1:
@@ -922,6 +980,26 @@ class LogosCompareWindow(QMainWindow):
     def _register_site_artists(self, site: str, container: object) -> None:
         self.site_artist_map.setdefault(site, []).extend(self._flatten_artists(container))
 
+    def _register_point_artist(
+        self,
+        site: str,
+        program: str,
+        group: pd.DataFrame,
+        container: object,
+    ) -> None:
+        """Make a group's data markers clickable, mapping the marker Line2D to
+        the group rows so _on_pick_event can report point details."""
+        lines = getattr(container, "lines", None)
+        marker_line = lines[0] if lines else None
+        if marker_line is None or not hasattr(marker_line, "set_picker"):
+            return
+        marker_line.set_picker(5)
+        self.point_artist_map[marker_line] = {
+            "site": site,
+            "program": program,
+            "rows": group.reset_index(drop=True),
+        }
+
     def _flatten_artists(self, item: object) -> list[object]:
         if item is None:
             return []
@@ -957,11 +1035,18 @@ class LogosCompareWindow(QMainWindow):
         return list(getattr(legend, "legend_handles", getattr(legend, "legendHandles", [])))
 
     def _on_pick_event(self, event) -> None:
+        artist = event.artist
+
+        # Data-marker pick: show details for the clicked monthly mean.
+        point_info = self.point_artist_map.get(artist)
+        if point_info is not None:
+            self._show_point_info(point_info, getattr(event, "ind", None))
+            return
+
         if self.site_legend is None:
             return
 
         site = None
-        artist = event.artist
         for text in self.site_legend.get_texts():
             if artist == text:
                 site = text.get_text()
@@ -978,6 +1063,46 @@ class LogosCompareWindow(QMainWindow):
         self.site_visibility[site] = not self.site_visibility.get(site, True)
         self._apply_site_visibility()
         self.canvas.draw_idle()
+
+    def _show_point_info(self, point_info: dict[str, object], ind) -> None:
+        """Show a press-and-hold infobox for the picked monthly-mean marker.
+
+        Mirrors logos_timeseries: a QToolTip appears at the cursor on the
+        click (pick fires on press) and is hidden on mouse release by
+        _on_button_release.
+        """
+        rows = point_info["rows"]
+        if ind is None or len(ind) == 0:
+            return
+        i = int(ind[0])
+        if i < 0 or i >= len(rows):
+            return
+        row = rows.iloc[i]
+
+        def fmt(value, places=3):
+            try:
+                if pd.isna(value):
+                    return "n/a"
+                return f"{float(value):.{places}f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        month = pd.to_datetime(row["month"])
+        n = row.get("n")
+        n_txt = "n/a" if pd.isna(n) else str(int(n))
+        lines = [
+            f"<b>Site:</b> {row['site']}",
+            f"<b>Program:</b> {PROGRAMS[point_info['program']]['label']}",
+            f"<b>Month:</b> {month:%Y-%m}",
+            f"<b>Mean:</b> {fmt(row['value'])}",
+            f"<b>Std:</b> {fmt(row.get('std'))}",
+            f"<b>N points:</b> {n_txt}",
+        ]
+        QToolTip.showText(QCursor.pos(), "<br>".join(lines), self.canvas)
+
+    def _on_button_release(self, event) -> None:
+        """Hide the press-and-hold point infobox when the mouse is released."""
+        QToolTip.hideText()
 
     def _site_colors(self) -> dict[str, object]:
         """Use the same full-network site color assignment as logos_timeseries."""
