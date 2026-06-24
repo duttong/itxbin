@@ -19,3 +19,5 @@ backup/
 unused/
 hatsdb.py
 hats_db.py
+
+tests/
