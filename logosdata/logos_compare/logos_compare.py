@@ -88,6 +88,26 @@ MARKER_EDGE_COLOR = "0.55"
 # M2 (predecessor mass-spec, prs tables) only has data 1994-2015; greys out
 # and tooltips when the selected year range doesn't overlap.
 PROGRAM_YEAR_LIMITS = {"m2": (1994, 2015)}
+# Approximate first/last data year per program, for the checkbox tooltip. A
+# None upper bound means the program is still active ("to Current"). Static
+# because a live MIN/MAX over these views is too slow for startup.
+PROGRAM_DATA_RANGES = {
+    "mstar": (1991, None),
+    "fecd":  (1994, None),
+    "ie3":   (2026, None),
+    "pr1":   (1994, None),
+    "m2":    (1994, 2015),
+}
+
+
+def _program_range_text(key: str) -> str:
+    """Human-readable data span for a program, e.g. '1991 to Current' or
+    '1994-2015'. Empty string if the program has no recorded range."""
+    span = PROGRAM_DATA_RANGES.get(key)
+    if span is None:
+        return ""
+    start, end = span
+    return f"{start} to Current" if end is None else f"{start}-{end}"
 ANALYTE_CATEGORIES = [
     "All",
     "CFCs",
@@ -417,9 +437,9 @@ class LogosCompareWindow(QMainWindow):
         self.program_checks: dict[str, QCheckBox] = {}
         for i, (key, meta) in enumerate(PROGRAMS.items()):
             cb = QCheckBox(meta["label"])
-            if key in PROGRAM_YEAR_LIMITS:
-                first, last = PROGRAM_YEAR_LIMITS[key]
-                cb.setToolTip(f"Available for selected ranges overlapping {first}-{last}.")
+            range_text = _program_range_text(key)
+            if range_text:
+                cb.setToolTip(f"Data: {range_text}")
             self.program_checks[key] = cb
             row, col = divmod(i, 2)
             program_layout.addWidget(cb, row, col)
@@ -592,19 +612,15 @@ class LogosCompareWindow(QMainWindow):
                 cb.setChecked(is_available)
             elif not is_available:
                 cb.setChecked(False)
+            range_text = _program_range_text(key)
+            tip = f"Data: {range_text}" if range_text else ""
             if has_analyte and not in_year_range:
-                first, last = PROGRAM_YEAR_LIMITS[key]
-                cb.setToolTip(
-                    f"No {PROGRAMS[key]['label']} data in selected years. "
-                    f"Available for ranges overlapping {first}-{last}."
-                )
-            elif key in PROGRAM_YEAR_LIMITS:
-                first, last = PROGRAM_YEAR_LIMITS[key]
-                cb.setToolTip(f"Available for selected ranges overlapping {first}-{last}.")
+                caveat = "No data in the selected year range."
             elif not has_analyte:
-                cb.setToolTip("This program does not measure the selected analyte.")
+                caveat = "Does not measure the selected analyte."
             else:
-                cb.setToolTip("")
+                caveat = ""
+            cb.setToolTip("\n".join(part for part in (tip, caveat) if part))
 
     def _program_available_in_year_range(self, program_key: str) -> bool:
         limits = PROGRAM_YEAR_LIMITS.get(program_key)
