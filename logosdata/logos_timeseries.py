@@ -1944,6 +1944,9 @@ class TimeseriesWidget(QWidget):
             if use_preferred_channel
             else (f"AND mf.channel = '{channel}'" if channel else "")
         )
+        # Hide the pre-production test window (IE3 only; None for CATS).
+        data_floor = getattr(self.instrument, "DATA_START_DATE", None)
+        floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
         sql = f"""
         SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel
         FROM hats.ng_insitu_analysis a
@@ -1961,6 +1964,7 @@ class TimeseriesWidget(QWidget):
           AND mf.parameter_num = {pnum}
           {ch_filter}
           AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
+          {floor_clause}
         ORDER BY a.analysis_time;
         """
         df = pd.DataFrame(self.instrument.doquery(sql))

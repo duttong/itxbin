@@ -2100,6 +2100,12 @@ class IE3_Instrument(HATS_DB_Functions):
     EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
     AUTOSCALE_STANDARD_PORTS = [1, 5, 9]  # ref tank + high/low standards
 
+    # IE3 ran pre-production test data before 2026; hide it from the GUI run
+    # list and timeseries. CATS (subclass) overrides this to None to keep its
+    # full record. load_data is intentionally not floored so batch/programmatic
+    # callers can still reach any date.
+    DATA_START_DATE = '2026-01-01'
+
     # mf_method_num values in hats.ng_insitu_mole_fractions; the calibration
     # method is recorded per-week per-analyte on the air rows themselves.
     MF_METHOD_REF = 1            # mf = normalized_resp * coef0(ref tank); no weekly fit
@@ -2181,12 +2187,16 @@ class IE3_Instrument(HATS_DB_Functions):
         if start_date is None:
             start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
 
+        # Hide the pre-production test window (IE3 only; None for CATS).
+        floor = f"AND run_time >= '{self.DATA_START_DATE}'" if self.DATA_START_DATE else ""
+
         sql = f"""
             SELECT DISTINCT run_time
             FROM hats.ng_insitu_analysis
             WHERE inst_num = {self.inst_num}
                 AND site_num = (SELECT num FROM gmd.site WHERE lower(code) = '{self.site}')
                 AND run_time BETWEEN '{start_date}' AND '{end_date}'
+                {floor}
             ORDER BY run_time;
         """
         df = pd.DataFrame(self.db.doquery(sql))
@@ -2882,6 +2892,8 @@ class CATS_Instrument(IE3_Instrument):
     # Exclude cal tank ports from air-only autoscale; keep air ports 4 & 8.
     EXCLUDE = [2, 6]
     AUTOSCALE_STANDARD_PORTS = [2, 6]
+    # CATS keeps its full multi-decade record (no pre-production test window).
+    DATA_START_DATE = None
 
     def __init__(self, site: str = "brw"):
         site = site.lower()
