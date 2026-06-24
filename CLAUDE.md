@@ -197,6 +197,9 @@ Audits archived sample sheets against `hats.Status_MetData`.
 
 - Archive root: `/hats/gc/sample_sheets/archived/{site}/`
 - Filename pattern matched: `logos_{site}_{pairid}_*`
+- Takes a single site argument, or `--all` to audit every archived site at
+  once (the two are mutually exclusive; one is required). `--all` joins DB
+  records to archive dirs per `Station`.
 - Default output: CSV (`pairid, sample_datetime, site`) of DB records with no
   archived PDF; sorted by pairid unless `--sort-datetime` is given
 - `--orphans`: instead report archived PDFs whose PairID has no DB record
