@@ -2226,6 +2226,108 @@ class TimeseriesWidget(QWidget):
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
+    def query_m2_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query M2 (inst_num=47) monthly means via hats.prs_data_view.
+
+        M2 is the predecessor mass-spec program stored in the prs tables.
+        Unlike PR1 (which uses sample_type 'HATS'), M2 air samples use
+        sample_type 'Flask'; PFP pseudo-sites use 'PFP'. Aggregation mirrors
+        query_pr1_monthly_mean_data: per-event on sample_datetime, then per
+        calendar month.
+        """
+        if self.instrument.inst_num != 47:
+            return pd.DataFrame()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        start = self.start_year.value()
+        end = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+
+        frames = []
+        regular_sites = [s for s in sites if s not in PFP_SITES]
+        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
+
+        if regular_sites:
+            sql = f"""
+            SELECT
+                event_data.site,
+                DATE_FORMAT(event_data.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(event_data.event_avg) AS monthly_avg,
+                STDDEV(event_data.event_avg) AS monthly_std,
+                COUNT(*) AS n
+            FROM (
+                SELECT
+                    UPPER(v.site) AS site,
+                    v.sample_datetime,
+                    v.event_num,
+                    AVG(v.value) AS event_avg
+                FROM hats.prs_data_view v
+                WHERE v.inst_num = 47
+                  AND v.parameter_num = %s
+                  AND v.sample_type = 'Flask'
+                  AND v.event_num > 0
+                  AND v.site_num > 0
+                  AND v.sample_datetime IS NOT NULL
+                  AND v.value IS NOT NULL
+                  AND v.value > -900
+                  AND v.rejected = 0
+                  AND UPPER(v.site) IN ({",".join(["%s"] * len(regular_sites))})
+                  AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+                GROUP BY site, v.sample_datetime, v.event_num
+            ) AS event_data
+            GROUP BY event_data.site, month_start
+            ORDER BY site, month_start;
+            """
+            params = [pnum] + regular_sites + [start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        for pfp_site in pfp_pseudo_sites:
+            base_site = PFP_SITES[pfp_site]
+            sql = """
+            SELECT
+                event_data.site,
+                DATE_FORMAT(event_data.sample_datetime, '%%Y-%%m-01') AS month_start,
+                AVG(event_data.event_avg) AS monthly_avg,
+                STDDEV(event_data.event_avg) AS monthly_std,
+                COUNT(*) AS n
+            FROM (
+                SELECT
+                    %s AS site,
+                    v.sample_datetime,
+                    v.event_num,
+                    AVG(v.value) AS event_avg
+                FROM hats.prs_data_view v
+                WHERE v.inst_num = 47
+                  AND v.parameter_num = %s
+                  AND v.sample_type = 'PFP'
+                  AND v.event_num > 0
+                  AND v.site_num > 0
+                  AND v.sample_datetime IS NOT NULL
+                  AND v.value IS NOT NULL
+                  AND v.value > -900
+                  AND v.rejected = 0
+                  AND UPPER(v.site) = %s
+                  AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+                GROUP BY v.sample_datetime, v.event_num
+            ) AS event_data
+            GROUP BY event_data.site, month_start
+            ORDER BY month_start;
+            """
+            params = [pfp_site, pnum, base_site, start, end]
+            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
+
+        non_empty = [f for f in frames if not f.empty]
+        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
     def query_mstar_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query M1+M3 individual pair rows from ng_pair_avg_view (M4 only)."""
         if self.instrument.inst_num != 192:

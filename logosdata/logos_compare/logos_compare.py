@@ -71,6 +71,7 @@ PROGRAMS = {
     "fecd": {"label": "fECD", "inst_id": "fe3", "inst_num": 193, "loader": "fe3"},
     "ie3": {"label": "IE3", "inst_id": "ie3", "inst_num": 236, "loader": "ie3"},
     "pr1": {"label": "PR1", "inst_id": "pr1", "inst_num": 58, "loader": "pr1"},
+    "m2": {"label": "M2", "inst_id": "m2", "inst_num": 47, "loader": "m2"},
 }
 
 DEFAULT_SITE_SELECTION = {"BRW", "MLO", "SMO", "SPO"}
@@ -79,9 +80,12 @@ PROGRAM_MARKERS = {
     "fecd": "s",
     "ie3": "^",
     "pr1": "D",
+    "m2": "v",
 }
 MARKER_EDGE_COLOR = "0.55"
-PROGRAM_YEAR_LIMITS = {}
+# M2 (predecessor mass-spec, prs tables) only has data 1994-2015; greys out
+# and tooltips when the selected year range doesn't overlap.
+PROGRAM_YEAR_LIMITS = {"m2": (1994, 2015)}
 ANALYTE_CATEGORIES = [
     "All",
     "CFCs",
@@ -243,6 +247,7 @@ class LogosCompareWindow(QMainWindow):
             "fe3": FE3_Instrument(),
             "ie3": IE3_Instrument(),
             "pr1": BasicInstrument("pr1"),
+            "m2": BasicInstrument("m2"),
         }
         return {key: CompareDataLoader(inst) for key, inst in instruments.items()}
 
@@ -695,6 +700,8 @@ class LogosCompareWindow(QMainWindow):
             return self._monthly_from_insitu(df, sites)
         elif selection.key == "pr1":
             df = loader.query_pr1_monthly_mean_data(selection.analyte_key)
+        elif selection.key == "m2":
+            df = loader.query_m2_monthly_mean_data(selection.analyte_key)
         else:
             df = loader.query_monthly_mean_data(selection.analyte_key)
 

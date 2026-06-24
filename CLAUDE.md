@@ -16,6 +16,7 @@
 | Instrument | inst_num | inst_id |
 |---|---|---|
 | M4 (mass spec) | 192 | `m4` |
+| M2 (predecessor mass spec) | 47 | `m2` |
 | FE3 (flask ECD) | 193 | `fe3` |
 | BLD1 | 220 | `bld1` |
 | PR1 (Perseus 1) | 58 | `pr1` |
@@ -86,6 +87,31 @@ using the Montzka two-equation deconvolution. Key points:
 - After any logos_data edits to CFC-113 or CFC-113a, run
   `m4_batch.py -p 32 -i` to write correct deconvolved values back to DB
 - Reference data and the Montzka email are in `cfc113a/`
+
+## M2 program (logos_compare)
+
+M2 (inst_num=47, inst_id `m2`) is the predecessor mass-spec program, stored
+in the `prs` tables alongside PR1/PR2 (`hats.prs_data_view`, `hats.analysis` ⋈
+`hats.mole_fractions`). It is wired into `logos_compare` as a selectable
+program. Key points:
+
+- Data spans **1994–2015** by sample date (analyzed 2007–2015; old archived
+  flasks were run later). `PROGRAM_YEAR_LIMITS["m2"] = (1994, 2015)` greys the
+  checkbox out when the selected range doesn't overlap.
+- Air samples use **`sample_type='Flask'`** (PFP pseudo-sites use `'PFP'`),
+  unlike PR1 which uses `'HATS'`. The data path is
+  `TimeseriesWidget.query_m2_monthly_mean_data()` — a near-copy of the PR1
+  method with `inst_num=47` and the Flask/PFP filters.
+- M2 shares most `parameter_num`s with PR1/M4, so those compare on the same
+  panels automatically. **Exception (resolved by a one-time DB edit):** M2's
+  CFC-11 was originally pnum **28** (`CFC11_A`) while M4/PR1 use 29 and FE3
+  uses 114. `hats.mole_fractions.parameter_num` was updated **28→29 scoped to
+  inst_num=47 only** (inst 46/54 still use 28) so M2 CFC-11 unifies on pnum 29.
+  This relabels the quantitation (`_A`→`_B`) without re-quantifying values, so
+  watch for a CFC-11 offset vs other programs in the diff panel.
+- `hats.analyte_list` for inst_num=47 holds one row per data-param (CFC-11 as
+  pnum 29), mostly copied from PR1's rows; this is what gates M2's selectable
+  analytes in `logos_compare`.
 
 ## Class hierarchy
 

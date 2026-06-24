@@ -14,6 +14,7 @@ class LOGOS_Instruments:
         'm4': 192,
         'fe3': 193,
         'bld1': 220,
+        'm2': 47,
         'pr1': 58,
         'pr2': 238,
         'prs': 58,
