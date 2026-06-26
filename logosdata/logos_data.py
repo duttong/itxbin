@@ -2076,6 +2076,11 @@ class MainWindow(QMainWindow):
                     if "sample_loop_flow" in subset
                     else [""] * len(subset)
                 ),
+                "flask_port_numeric": (
+                    pd.to_numeric(subset["flask_port"], errors="coerce").notna().tolist()
+                    if "flask_port" in subset
+                    else [False] * len(subset)
+                ),
 
             }
             self._scatter_main.append(scatter)
@@ -2838,8 +2843,15 @@ class MainWindow(QMainWindow):
                 if pid and pid not in {"0", "000", "None", "nan"}:
                     parts.append(f"<b>Pair ID:</b> {pid}")
 
-            # Flask Type — not applicable for in-situ instruments
-            if run_type_num is not None and self.instrument.inst_num not in range(236, 245):
+            # Flask Type — only for true flask/PFP samples, not tank/cal runs.
+            # PFPs: flask_port is numeric. Regular flasks: sample_id is a real non-zero value.
+            # Tank/cal runs have flask_port=NULL and sample_id=0.
+            flask_port_numeric = meta.get("flask_port_numeric", [False])[nearest_idx]
+            has_real_sample_id = (
+                isinstance(sample_id, str)
+                and sample_id.strip() not in {"", "0", "000", "None", "nan"}
+            )
+            if run_type_num is not None and (flask_port_numeric or has_real_sample_id) and self.instrument.inst_num not in range(236, 245):
                 flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
                 parts.append(f"<b>Flask Type:</b> {flask_type}")
 
