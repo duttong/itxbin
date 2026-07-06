@@ -97,15 +97,22 @@ def sync_gspc(gspc_dir: Path, incoming: Path, threshold: datetime.date):
                 shutil.copy2(entry, dest)
 
 
-def run_commands(gcd: Path):
+def run_commands(gcd: Path, yymm: str):
     """
     Run the series of gcwerks and itxbin commands against the INCOMING directory.
+
+    yymm is GCwerks' YYMM form of last month (e.g. "2606"), passed as a bare
+    positional arg to gcupdate -- the same convention already used in
+    gcwerks_import.py for FE3/IE3/BLD1. gcupdate's own incremental default
+    doesn't reliably re-scan stragglers from the tail end of the previous
+    month (observed: an overnight run starting the evening of the last day
+    of the month was silently skipped), so it's passed explicitly here.
     """
     cmds = [
         ["/hats/gc/gcwerks-3/bin/gcimport",    "-gcdir", str(gcd)],
         ["/hats/gc/gcwerks-3/bin/run-index",   "-gcdir", str(gcd)],
         ["/hats/gc/itxbin/m4_samplogs.py",     "-i"],
-        ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd)],
+        ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd), yymm],
         ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
         ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x", "--flagged"],
         ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i"],
@@ -136,12 +143,18 @@ def main():
     today = datetime.date.today()
     threshold = today - datetime.timedelta(days=args.days)
 
+    # last calendar month in GCwerks YYMM form, e.g. "2606" -- always re-covers
+    # all of last month plus this month to date, regardless of --days
+    first_of_this_month = today.replace(day=1)
+    last_month_date = first_of_this_month - datetime.timedelta(days=1)
+    yymm = last_month_date.strftime('%y%m')
+
     # ensure incoming exists
     args.incoming.mkdir(parents=True, exist_ok=True)
 
     sync_raw(args.raw, args.incoming, threshold)
     sync_gspc(args.gspc, args.incoming, threshold)
-    run_commands('/hats/gc/m4')
+    run_commands('/hats/gc/m4', yymm)
     # remove older directories/files
     clean_incoming(args.incoming, threshold)
 
