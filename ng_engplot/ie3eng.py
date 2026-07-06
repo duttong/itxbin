@@ -21,6 +21,7 @@ SITE_ROOT = Path('/hats/gc')
 VALID_SITES = ['smo', 'mlo', 'spo', 'brw']
 GSV_COLS = {'GSV1', 'GSV2', 'GSV3'}
 LEGACY_HEADER_NAME = 'eng_header_smo_early.txt'
+MISSING_VALUE_SENTINEL = -999.0
 
 
 def load_legacy_header(site: str) -> list[str] | None:
@@ -54,6 +55,13 @@ def read_eng_file(path: Path, fallback_cols: list[str] | None) -> pd.DataFrame |
     except Exception as e:
         print(f'Warning: could not read {path}: {e}', file=sys.stderr)
         return None
+
+
+def mask_missing_sentinels(df: pd.DataFrame) -> pd.DataFrame:
+    """Mask IE3 engineering missing-value sentinels before any resampling."""
+    numeric_cols = df.select_dtypes(include='number').columns
+    df[numeric_cols] = df[numeric_cols].mask(df[numeric_cols] <= MISSING_VALUE_SENTINEL)
+    return df
 
 
 SSV_ODD_PORTS = [1, 3, 5, 7, 9]
@@ -239,6 +247,8 @@ class IE3EngWidget(EngPlotWidget):
 
         for col in df.select_dtypes(include='object').columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        df = mask_missing_sentinels(df)
 
         if resample != '1s':
             df = df.resample(resample).mean()
