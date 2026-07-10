@@ -61,6 +61,7 @@ if str(ROOT) not in sys.path:
 
 from logos_timeseries import LOGOS_sites, PFP_SITES, TimeseriesWidget, build_site_colors  # noqa: E402
 from logos_instruments import (  # noqa: E402
+    CATS_Instrument,
     FE3_Instrument,
     HATS_DB_Functions,
     IE3_Instrument,
@@ -68,10 +69,17 @@ from logos_instruments import (  # noqa: E402
 )
 
 
+# CATS has one instrument per site; matches CATS_Instrument.INST_NUM_BY_SITE.
+CATS_SITES = ["brw", "sum", "nwr", "mlo", "smo", "spo"]
+
 PROGRAMS = {
     "mstar": {"label": "M*", "inst_id": "m4", "inst_num": 192, "loader": "m4"},
     "fecd": {"label": "fECD", "inst_id": "fe3", "inst_num": 193, "loader": "fe3"},
-    "ie3": {"label": "IE3", "inst_id": "ie3", "inst_num": 236, "loader": "ie3"},
+    "insitu": {
+        "label": "insitu",
+        "inst_nums": [236] + [CATS_Instrument.INST_NUM_BY_SITE[s] for s in CATS_SITES],
+        "loaders": ["ie3"] + [f"cats_{s}" for s in CATS_SITES],
+    },
     "pr1": {"label": "PR1", "inst_id": "pr1", "inst_num": 58, "loader": "pr1"},
     "m2": {"label": "M2", "inst_id": "m2", "inst_num": 47, "loader": "m2"},
 }
@@ -80,7 +88,7 @@ DEFAULT_SITE_SELECTION = {"BRW", "MLO", "SMO", "SPO"}
 PROGRAM_MARKERS = {
     "mstar": "o",
     "fecd": "s",
-    "ie3": "^",
+    "insitu": "^",
     "pr1": "D",
     "m2": "v",
 }
@@ -90,11 +98,11 @@ MARKER_EDGE_COLOR = "0.55"
 # constant regardless of program selection/order so a program's color never
 # shifts between plots.
 PROGRAM_COLORS = {
-    "mstar": "#1f77b4",  # blue
-    "fecd":  "#d62728",  # red
-    "ie3":   "#2ca02c",  # green
-    "pr1":   "#9467bd",  # purple
-    "m2":    "#ff7f0e",  # orange
+    "mstar":  "#1f77b4",  # blue
+    "fecd":   "#d62728",  # red
+    "insitu": "#2ca02c",  # green
+    "pr1":    "#9467bd",  # purple
+    "m2":     "#ff7f0e",  # orange
 }
 # M2 (predecessor mass-spec, prs tables) only has data 1994-2015; greys out
 # and tooltips when the selected year range doesn't overlap.
@@ -103,11 +111,11 @@ PROGRAM_YEAR_LIMITS = {"m2": (1994, 2015)}
 # None upper bound means the program is still active ("to Current"). Static
 # because a live MIN/MAX over these views is too slow for startup.
 PROGRAM_DATA_RANGES = {
-    "mstar": (1991, None),
-    "fecd":  (1994, None),
-    "ie3":   (2026, None),
-    "pr1":   (1994, None),
-    "m2":    (1994, 2015),
+    "mstar":  (1991, None),
+    "fecd":   (1994, None),
+    "insitu": (1998, None),
+    "pr1":    (1994, None),
+    "m2":     (1994, 2015),
 }
 
 
@@ -281,6 +289,16 @@ def parameter_group_name(pnum: int, fallback_name: object) -> str:
     return group[0] if group else str(fallback_name)
 
 
+def _program_inst_nums(meta: dict) -> list[int]:
+    """Instrument numbers backing a PROGRAMS entry (single- or multi-source)."""
+    return list(meta["inst_nums"]) if "inst_nums" in meta else [meta["inst_num"]]
+
+
+def _program_loaders(meta: dict) -> list[str]:
+    """Loader keys backing a PROGRAMS entry (single- or multi-source)."""
+    return list(meta["loaders"]) if "loaders" in meta else [meta["loader"]]
+
+
 class LogosCompareWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -316,6 +334,8 @@ class LogosCompareWindow(QMainWindow):
             "pr1": BasicInstrument("pr1"),
             "m2": BasicInstrument("m2"),
         }
+        for site in CATS_SITES:
+            instruments[f"cats_{site}"] = CATS_Instrument(site=site)
         return {key: CompareDataLoader(inst) for key, inst in instruments.items()}
 
     def _load_site_info(self) -> pd.DataFrame:
@@ -332,14 +352,14 @@ class LogosCompareWindow(QMainWindow):
         return ordered
 
     def _load_analyte_programs(self) -> dict[tuple[int, ...], dict[str, object]]:
-        inst_nums = sorted({meta["inst_num"] for meta in PROGRAMS.values()})
+        inst_nums = sorted({n for meta in PROGRAMS.values() for n in _program_inst_nums(meta)})
         rows = self._query_analyte_parameter_rows(inst_nums)
         mapping: dict[tuple[int, ...], dict[str, object]] = {}
         for row in rows:
             pnum = int(row["parameter_num"])
             inst_num = int(row["inst_num"])
             for key, meta in PROGRAMS.items():
-                if meta["inst_num"] == inst_num:
+                if inst_num in _program_inst_nums(meta):
                     name = parameter_group_name(pnum, row.get("analyte_name") or str(pnum))
                     group_key = parameter_group_key(pnum)
                     entry = mapping.setdefault(
@@ -670,11 +690,14 @@ class LogosCompareWindow(QMainWindow):
             return {}
         available: dict[str, tuple[str, int]] = {}
         for key, meta in PROGRAMS.items():
-            loader_params = self.loader_analytes_by_parameter[meta["loader"]]
-            for pnum in parameter_key:
-                analyte_key = loader_params.get(pnum)
-                if analyte_key is not None:
-                    available[key] = (analyte_key, pnum)
+            for loader_key in _program_loaders(meta):
+                loader_params = self.loader_analytes_by_parameter.get(loader_key, {})
+                for pnum in parameter_key:
+                    analyte_key = loader_params.get(pnum)
+                    if analyte_key is not None:
+                        available[key] = (analyte_key, pnum)
+                        break
+                if key in available:
                     break
         return available
 
@@ -772,6 +795,9 @@ class LogosCompareWindow(QMainWindow):
         if not self._program_available_in_year_range(selection.key):
             return pd.DataFrame(columns=["site", "month", "value", "std", "n"])
 
+        if selection.key == "insitu":
+            return self._query_insitu_combined_monthly_mean_data(selection, sites)
+
         meta = PROGRAMS[selection.key]
         loader = self.loaders[meta["loader"]]
         loader.configure(
@@ -785,9 +811,6 @@ class LogosCompareWindow(QMainWindow):
             df = self._query_mstar_monthly_mean_data(selection, sites)
         elif selection.key == "fecd":
             df = self._query_fecd_monthly_mean_data(selection, sites)
-        elif selection.key == "ie3":
-            df = loader.query_insitu_data(selection.analyte_key, force=True)
-            return self._monthly_from_insitu(df, sites)
         elif selection.key == "pr1":
             df = loader.query_pr1_monthly_mean_data(selection.analyte_key)
         elif selection.key == "m2":
@@ -926,6 +949,27 @@ class LogosCompareWindow(QMainWindow):
         )
         monthly["site"] = monthly["site"].astype(str).str.upper()
         return monthly[["site", "month", "value", "std", "n"]]
+
+    def _query_insitu_combined_monthly_mean_data(
+        self, selection: ProgramSelection, sites: list[str]
+    ) -> pd.DataFrame:
+        """Union IE3 with every CATS site loader for the "insitu" program,
+        each queried through its own instrument object since IE3 and CATS use
+        different inst_nums/air ports, then bin the combined rows monthly."""
+        meta = PROGRAMS[selection.key]
+        frames = []
+        for loader_key in meta["loaders"]:
+            loader_params = self.loader_analytes_by_parameter.get(loader_key, {})
+            analyte_key = loader_params.get(selection.parameter_num)
+            if analyte_key is None:
+                continue
+            loader = self.loaders[loader_key]
+            loader.configure(analyte_key, self.start_year.value(), self.end_year.value(), sites)
+            df = loader.query_insitu_data(analyte_key, force=True)
+            if not df.empty:
+                frames.append(df)
+        combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        return self._monthly_from_insitu(combined, sites)
 
     def _draw_comparison(self, df: pd.DataFrame, selections: list[ProgramSelection]) -> None:
         self.figure.clear()
