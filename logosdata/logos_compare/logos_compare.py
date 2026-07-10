@@ -85,6 +85,17 @@ PROGRAM_MARKERS = {
     "m2": "v",
 }
 MARKER_EDGE_COLOR = "0.55"
+# Fixed program color palette for "Color by program" mode. Deliberately
+# excludes yellow (poor contrast against the plot background) and stays
+# constant regardless of program selection/order so a program's color never
+# shifts between plots.
+PROGRAM_COLORS = {
+    "mstar": "#1f77b4",  # blue
+    "fecd":  "#d62728",  # red
+    "ie3":   "#2ca02c",  # green
+    "pr1":   "#9467bd",  # purple
+    "m2":    "#ff7f0e",  # orange
+}
 # M2 (predecessor mass-spec, prs tables) only has data 1994-2015; greys out
 # and tooltips when the selected year range doesn't overlap.
 PROGRAM_YEAR_LIMITS = {"m2": (1994, 2015)}
@@ -167,6 +178,7 @@ def _load_compare_settings() -> dict:
         "marker_size":      cfg.getint("compare", "marker_size", fallback=5),
         "connect_lines":    cfg.getboolean("compare", "connect_lines", fallback=False),
         "show_site_legend": cfg.getboolean("compare", "show_site_legend", fallback=True),
+        "color_by_program": cfg.getboolean("compare", "color_by_program", fallback=False),
     }
 
 
@@ -273,7 +285,7 @@ class LogosCompareWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LOGOS Program Compare")
-        self.resize(1400, 900)
+        self.resize(1400, 960)
 
         self.loaders = self._build_loaders()
         self.loader_analytes_by_parameter = {
@@ -496,16 +508,22 @@ class LogosCompareWindow(QMainWindow):
         self.show_site_legend_check.setChecked(settings["show_site_legend"])
         self.show_site_legend_check.stateChanged.connect(self._redraw_current_plot)
         figure_layout.addWidget(self.show_site_legend_check, 2, 0, 1, 2)
+
+        self.color_by_program_check = QCheckBox("Color by program")
+        self.color_by_program_check.setChecked(settings["color_by_program"])
+        self.color_by_program_check.stateChanged.connect(self._redraw_current_plot)
+        figure_layout.addWidget(self.color_by_program_check, 3, 0, 1, 2)
         controls_layout.addWidget(figure_group)
         controls_layout.addStretch()
 
-        # Persist year range + figure controls on change (after all five
+        # Persist year range + figure controls on change (after all six
         # widgets exist, so no save fires mid-construction).
         self.start_year.valueChanged.connect(self._persist_settings)
         self.end_year.valueChanged.connect(self._persist_settings)
         self.marker_size_spin.valueChanged.connect(self._persist_settings)
         self.connect_lines_check.stateChanged.connect(self._persist_settings)
         self.show_site_legend_check.stateChanged.connect(self._persist_settings)
+        self.color_by_program_check.stateChanged.connect(self._persist_settings)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -598,6 +616,7 @@ class LogosCompareWindow(QMainWindow):
             "marker_size":      self.marker_size_spin.value(),
             "connect_lines":    self.connect_lines_check.isChecked(),
             "show_site_legend": self.show_site_legend_check.isChecked(),
+            "color_by_program": self.color_by_program_check.isChecked(),
         })
 
     def _refresh_program_checks(self, reset_checked: bool = False) -> None:
@@ -922,12 +941,14 @@ class LogosCompareWindow(QMainWindow):
         for site in selected_sites:
             self.site_visibility.setdefault(site, True)
         colors = self._site_colors()
+        color_by_program = self.color_by_program_check.isChecked()
         marker_size = self.marker_size_spin.value()
         line_style = "-" if self.connect_lines_check.isChecked() else ""
 
         for (site, program), group in df.groupby(["site", "program"], sort=False):
             yerr = group["std"].to_numpy(dtype=float)
             yerr = None if not np.isfinite(yerr).any() else yerr
+            point_color = PROGRAM_COLORS.get(program, "gray") if color_by_program else colors.get(site, "gray")
             container = ax_data.errorbar(
                 group["month"],
                 group["value"],
@@ -937,7 +958,7 @@ class LogosCompareWindow(QMainWindow):
                 markersize=marker_size,
                 capsize=2,
                 alpha=0.85,
-                color=colors.get(site, "gray"),
+                color=point_color,
                 markeredgecolor=MARKER_EDGE_COLOR,
                 markeredgewidth=0.7,
                 label=f"{site} {PROGRAMS[program]['label']}",
@@ -952,6 +973,7 @@ class LogosCompareWindow(QMainWindow):
                 yerr = group["diff_std"].to_numpy(dtype=float)
                 yerr = None if not np.isfinite(yerr).any() else yerr
                 ax_diff.axhline(0, color="0.6", linewidth=0.8, zorder=0)
+                diff_color = PROGRAM_COLORS.get(program, "gray") if color_by_program else colors.get(site, "gray")
                 container = ax_diff.errorbar(
                     group["month"],
                     group["diff"],
@@ -961,7 +983,7 @@ class LogosCompareWindow(QMainWindow):
                     markersize=marker_size,
                     capsize=2,
                     alpha=0.9,
-                    color=colors.get(site, "gray"),
+                    color=diff_color,
                     markeredgecolor=MARKER_EDGE_COLOR,
                     markeredgewidth=0.7,
                 )
@@ -988,8 +1010,8 @@ class LogosCompareWindow(QMainWindow):
         ax_data.grid(True, alpha=0.3)
 
         if ref_program is not None and len(selections) > 1:
-            self._add_difference_legend(ax_diff, diff_df, ref_program, selections, line_style)
-        self._add_legends(ax_data, selected_sites, selections, colors, line_style)
+            self._add_difference_legend(ax_diff, diff_df, ref_program, selections, line_style, color_by_program)
+        self._add_legends(ax_data, selected_sites, selections, colors, line_style, color_by_program)
         self._apply_site_visibility()
         self.canvas.draw_idle()
 
@@ -1144,6 +1166,7 @@ class LogosCompareWindow(QMainWindow):
         ref_program: str,
         selections: list[ProgramSelection],
         line_style: str,
+        color_by_program: bool = False,
     ) -> None:
         handles = []
         for selection in selections:
@@ -1162,11 +1185,12 @@ class LogosCompareWindow(QMainWindow):
                 f"{PROGRAMS[ref_program]['label']} - {PROGRAMS[selection.key]['label']} "
                 f"({stats})"
             )
+            handle_color = PROGRAM_COLORS.get(selection.key, "gray") if color_by_program else "black"
             handles.append(
                 mlines.Line2D(
                     [],
                     [],
-                    color="black",
+                    color=handle_color,
                     marker=PROGRAM_MARKERS.get(selection.key, "o"),
                     linestyle=line_style,
                     label=label,
@@ -1191,16 +1215,20 @@ class LogosCompareWindow(QMainWindow):
         selections: list[ProgramSelection],
         colors: dict[str, tuple],
         line_style: str,
+        color_by_program: bool = False,
     ) -> None:
+        site_color = "0.35" if color_by_program else None
         site_handles = [
-            mlines.Line2D([], [], color=colors.get(site, "gray"), marker="o", linestyle=line_style, label=site)
+            mlines.Line2D(
+                [], [], color=site_color or colors.get(site, "gray"), marker="o", linestyle=line_style, label=site
+            )
             for site in sites
         ]
         program_handles = [
             mlines.Line2D(
                 [],
                 [],
-                color="black",
+                color=PROGRAM_COLORS.get(selection.key, "gray") if color_by_program else "black",
                 marker=PROGRAM_MARKERS.get(selection.key, "o"),
                 linestyle=line_style,
                 label=PROGRAMS[selection.key]["label"],
