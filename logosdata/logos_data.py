@@ -3377,9 +3377,9 @@ class MainWindow(QMainWindow):
         )
 
     def _ie3_cal_tooltip_click(self, event):
-        """Show 'Assigned MF' / 'Diff from assigned' tooltips on left-click
-        for the cal2/ref/cal1 assigned-value points and the calculated-ref
-        point of _ie3_cal_plot."""
+        """Show 'Assigned' / 'Predicted' / 'Diff from assigned' tooltips on
+        left-click for the cal2/ref/cal1 assigned-value points and the
+        calculated-ref point of _ie3_cal_plot."""
         if not self.figure.axes:
             return
         ax = self.figure.axes[0]
@@ -3390,15 +3390,19 @@ class MainWindow(QMainWindow):
             cont, _ind = artist.contains(event)
             if not cont:
                 continue
-            val = point.get('val')
-            if val is None:
+            lines = []
+            for line in point.get('lines', []):
+                val = line.get('val')
+                if val is None:
+                    continue
+                unc = line.get('unc')
+                if unc is not None:
+                    lines.append(f"{line['title']}: {val:.3f} ± {unc:.3f}")
+                else:
+                    lines.append(f"{line['title']}: {val:.3f} (unc n/a)")
+            if not lines:
                 continue
-            unc = point.get('unc')
-            if unc is not None:
-                text = f"{point['title']}: {val:.5g} ± {unc:.3g}"
-            else:
-                text = f"{point['title']}: {val:.5g} (unc n/a)"
-            QToolTip.showText(QCursor.pos(), text)
+            QToolTip.showText(QCursor.pos(), "<br>".join(lines))
             return
 
     def _ie3_cal_plot(self):
@@ -3475,9 +3479,7 @@ class MainWindow(QMainWindow):
                             ms=7, capsize=3, zorder=3, label=label)
                 self._ie3_cal_tooltip_points.append({
                     'artist': eb.lines[0],
-                    'title': 'Assigned MF',
-                    'val': assigned,
-                    'unc': unc,
+                    'lines': [{'title': 'Assigned', 'val': assigned, 'unc': unc}],
                 })
                 xvals.append(mean)
 
@@ -3519,12 +3521,13 @@ class MainWindow(QMainWindow):
                 ref_x = ref_grp['normalized_resp'].mean()
                 ref_y = slope * ref_x + intercept
 
+                force_zero, _single_port = self.instrument.fit_params_for_method(method)
+                pred_unc = self._ie3_ref_pred_unc(fit_row, ref_x, force_zero)
+
                 ref_assigned = self.instrument.ref_tank_coef0(pnum)
                 diff_unc = None
                 if ref_assigned is not None:
                     ref_assigned_unc = self.instrument.ref_tank_unc_c0(pnum)
-                    force_zero, _single_port = self.instrument.fit_params_for_method(method)
-                    pred_unc = self._ie3_ref_pred_unc(fit_row, ref_x, force_zero)
                     if pred_unc is not None or ref_assigned_unc is not None:
                         diff_unc = float(np.hypot(pred_unc or 0.0, ref_assigned_unc or 0.0))
 
@@ -3534,13 +3537,17 @@ class MainWindow(QMainWindow):
                     fmt='D', color='crimson', ms=8, capsize=3, zorder=4,
                     label=f'ref predicted = {ref_y:.5g}')
 
+                tooltip_lines = [{'title': 'Predicted', 'val': ref_y, 'unc': pred_unc}]
                 if ref_assigned is not None:
-                    self._ie3_cal_tooltip_points.append({
-                        'artist': eb.lines[0],
+                    tooltip_lines.append({
                         'title': 'Diff from assigned',
                         'val': ref_y - ref_assigned,
                         'unc': diff_unc,
                     })
+                self._ie3_cal_tooltip_points.append({
+                    'artist': eb.lines[0],
+                    'lines': tooltip_lines,
+                })
 
             # "Other Curves": overlay the 5 nearest-in-time stored weekly
             # fits (from hats.ng_response) to compare stability across
