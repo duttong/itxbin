@@ -731,6 +731,7 @@ class MainWindow(QMainWindow):
         self._pending_ylim = None
         self.madechanges = False
         self.smoothing_changed = False
+        self._ie3_mf_dirty = False      # True once a method save leaves mole fractions stale
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
@@ -1033,6 +1034,26 @@ class MainWindow(QMainWindow):
         self.plot_layout.addLayout(cal_row2)
         self.draw2zero_cb.clicked.connect(self.calibration_plot)
         self.oldcurves_cb.clicked.connect(self.calibration_plot)
+
+        # ── IE3 method/mole-fraction update button (IE3-only for now) ──
+        # Two-step workflow reusing a single button: "Update Method" saves
+        # the selected cal method + recomputes the week's ng_response fit;
+        # once that's done the button becomes "Update MF" to recompute and
+        # upsert the week's air-port mole fractions from that fit.
+        self.ie3_update_btn = QPushButton("Update Method")
+        self.ie3_update_btn.setEnabled(False)
+        self.ie3_update_btn.setVisible(self.instrument.inst_id == 'ie3')
+        self.ie3_update_btn.setToolTip(
+            "Save the selected calibration method for this week (updates "
+            "hats.ng_response), then recompute this week's air-port mole "
+            "fractions."
+        )
+        cal_row3 = QHBoxLayout()
+        cal_row3.addSpacing(24)
+        cal_row3.addWidget(self.ie3_update_btn)
+        cal_row3.addStretch(1)
+        self.plot_layout.addLayout(cal_row3)
+        self.ie3_update_btn.clicked.connect(self._on_ie3_update_button_clicked)
         # -----------------------------------------------
 
         self.plot_radio_group.addButton(self.resp_rb, id=0)
@@ -1795,6 +1816,7 @@ class MainWindow(QMainWindow):
                     and self.current_run_time
                     and '(Cal)' in self.current_run_time):
                 self._ie3_cal_plot()
+            self._refresh_ie3_update_button()
             return
 
         self.current_fit_degree = int(data)  # 1/2/3
@@ -3534,6 +3556,72 @@ class MainWindow(QMainWindow):
               f"-s {week_start} -e {week_end} -i' to recalculate this week's "
               "air-port mole fractions using the updated fit.")
 
+    def _refresh_ie3_update_button(self):
+        """Show/enable the IE3 "Update Method"/"Update MF" button based on
+        pending changes. IE3-only for now -- hidden for other instruments.
+        """
+        if self.instrument.inst_id != 'ie3':
+            return
+        is_cal_week = bool(self.current_run_time and '(Cal)' in self.current_run_time)
+        self.ie3_update_btn.setVisible(is_cal_week)
+        if not is_cal_week:
+            return
+        if self.madechanges:
+            self.ie3_update_btn.setText("Update Method")
+            self.ie3_update_btn.setEnabled(True)
+            self.ie3_update_btn.setStyleSheet("background-color: yellow;")
+        elif self._ie3_mf_dirty:
+            self.ie3_update_btn.setText("Update MF")
+            self.ie3_update_btn.setEnabled(True)
+            self.ie3_update_btn.setStyleSheet("background-color: lightgreen;")
+        else:
+            self.ie3_update_btn.setText("Update Method")
+            self.ie3_update_btn.setEnabled(False)
+            self.ie3_update_btn.setStyleSheet("")
+
+    def _on_ie3_update_button_clicked(self):
+        """Step 1 (button reads "Update Method"): save the selected cal
+        method for this week and recompute its ng_response fit -- this also
+        sets _ie3_mf_dirty and flips the button to "Update MF". Step 2
+        (button reads "Update MF"): recompute and upsert this week's
+        air-port mole fractions using that fit.
+        """
+        if self.madechanges:
+            self._perform_save_current_gas()
+        elif self._ie3_mf_dirty:
+            self._ie3_update_mole_fractions()
+            self._ie3_mf_dirty = False
+            self._refresh_ie3_update_button()
+
+    def _ie3_update_mole_fractions(self):
+        """Recompute and upsert this week's air-port mole fractions using
+        the calibration method/fit just saved via "Update Method". In-process
+        equivalent of running `ie3_batch.py -p <pnum> -c <channel> --site
+        <site> -s <week_start> -e <week_end> -i` for this single week.
+        """
+        pnum = self.current_pnum
+        channel = self.current_channel
+        week_start = self.current_run_time.split(' (')[0].strip()
+        week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+
+        df = self.instrument.load_data(
+            pnum=pnum, channel=channel,
+            start_date=week_start, end_date=week_end,
+        )
+        if df.empty:
+            print(f"No data found for pnum={pnum} channel={channel} week={week_start}.")
+            return
+        df = df.loc[df['port'].isin(self.instrument.AIR_PORTS)].copy()
+        if df.empty:
+            print(f"No air-port rows for pnum={pnum} channel={channel} week={week_start}.")
+            return
+        df = self.instrument.calc_mole_fraction(df)
+        df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
+        self.instrument.upsert_mole_fractions(df)
+        n_ok = df['mole_fraction'].notna().sum()
+        print(f"Updated {n_ok}/{len(df)} air-port mole fractions for pnum={pnum} "
+              f"channel={channel} week={week_start}.")
+
     def calibration_plot(self):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -4731,7 +4819,9 @@ class MainWindow(QMainWindow):
             self._ie3_cal_save()
             self.madechanges = False
             self.smoothing_changed = False
+            self._ie3_mf_dirty = True
             self._ie3_cal_plot()
+            self._refresh_ie3_update_button()
             return
 
         response_id = None
@@ -4878,6 +4968,8 @@ class MainWindow(QMainWindow):
         self._update_info_tagged()
 
         self.madechanges = False
+        self._ie3_mf_dirty = False
+        self._refresh_ie3_update_button()
 
     def _current_load_dates(self):
         """Return (start_date, end_date) to pass to instrument.load_data().
