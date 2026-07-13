@@ -3410,6 +3410,21 @@ class MainWindow(QMainWindow):
                 ax.plot([ref_x], [ref_y], 'D', color='crimson', ms=8, zorder=4,
                         label=f'ref predicted = {ref_y:.5g}')
 
+            # "Other Curves": overlay the 5 nearest-in-time stored weekly
+            # fits (from hats.ng_response) to compare stability across
+            # nearby weeks. Only meaningful for cal-fit methods -- ref has
+            # no stored weekly fit to compare against.
+            if self.oldcurves_cb.isChecked() and self.instrument.uses_ng_response_fit(method):
+                nearby = self.instrument.nearby_response_fits(
+                    pnum, self.current_channel, week_start, n=5
+                )
+                for _, r in nearby.iterrows():
+                    ax.plot(x_line, float(r['coef1']) * x_line + float(r['coef0']),
+                            '-', color='red', lw=0.9, alpha=0.6, zorder=1)
+                if not nearby.empty:
+                    ax.plot([], [], '-', color='red', lw=1.5, alpha=0.6,
+                            label=f'other fits (nearest {len(nearby)} weeks)')
+
         if stats_lines:
             fit_text += "\n\n" + "\n".join(stats_lines)
         ax.text(0.02, 0.98, fit_text, transform=ax.transAxes,

@@ -2576,6 +2576,44 @@ class IE3_Instrument(HATS_DB_Functions):
         out['ng_response_id'] = rid
         return out
 
+    def nearby_response_fits(self, pnum, channel, week_start, n=5):
+        """Return the n stored hats.ng_response weekly fits nearest in time to
+        week_start (excluding week_start itself) for this analyte/channel.
+
+        Used by the calibration view's "Other Curves" overlay to compare fit
+        stability across nearby weeks. Only meaningful for methods that store
+        an ng_response fit (cal12/cal1/cal2); returns an empty frame if no
+        scale or no other fits are found.
+        """
+        cols = ['run_date', 'coef0', 'coef1']
+        scale_rows = self.db.doquery(
+            f"SELECT idx FROM reftank.scales WHERE parameter_num={pnum} AND current=1"
+        )
+        if not scale_rows:
+            return pd.DataFrame(columns=cols)
+        scale_num = int(scale_rows[0]['idx'])
+
+        rows = self.db.doquery(f"""
+            SELECT run_date, coef0, coef1
+            FROM hats.ng_response
+            WHERE inst_num = {self.inst_num}
+              AND site = '{self.site}'
+              AND channel = '{channel}'
+              AND scale_num = {scale_num}
+            ORDER BY run_date
+        """)
+        if not rows:
+            return pd.DataFrame(columns=cols)
+
+        fits = pd.DataFrame(rows)
+        fits['run_date'] = pd.to_datetime(fits['run_date'])
+        target = pd.Timestamp(week_start)
+        fits = fits.loc[fits['run_date'] != target].copy()
+        if fits.empty:
+            return fits
+        fits['_dt'] = (fits['run_date'] - target).abs()
+        return fits.sort_values('_dt').head(n).drop(columns='_dt')
+
     def upsert_ng_response(self, inst_num, site, run_date, channel, scale_num,
                            coef0, coef1, unc_fit, sigma_ref, serial_number):
         """Insert or update a weekly cal fit row in hats.ng_response.
