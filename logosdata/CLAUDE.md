@@ -99,6 +99,8 @@ when their tab is disabled — guard before use.
 Save (`s` key or Save button) calls `upsert_mole_fractions(self.run)`.
 Mole fractions must be recomputed before saving. For M4 CFC-113/113a,
 run `m4_batch.py -p 32 -i` after any GUI edits for authoritative values.
+IE3 calibration weeks save differently — see Update Method / Update MF /
+Revert below, not this Save button.
 
 ## Tagging model (logos_data.py)
 
@@ -155,3 +157,57 @@ Drawn in `_gc_plot_impl` when "Hide Rejected Data" is unchecked:
 
 `auto_rejected` is True when all of a point's reject tags are in
 `AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324}`.
+
+## IE3 Calibration view (`_ie3_cal_plot`)
+
+Shown when the Calibration radio is selected and the loaded run is a weekly
+cal week (`current_run_time` contains `'(Cal)'`). Plots normalized_resp
+(weekly mean) vs. assigned mole fraction for the cal2/ref/cal1 tanks, the fit
+line for the selected method, and the fit's predicted value at the ref
+tank's response (crimson diamond).
+
+- **Assigned-value error bars**: y-error bars on the cal2/ref/cal1 points use
+  `unc_c0` from `hats.scale_assignments_view` (`_ie3_tank_unc()` for cal
+  tanks, `ref_tank_unc_c0()` for the ref tank).
+- **Predicted-point error bar**: the diamond's y-error bar comes from
+  `_ie3_ref_pred_unc()`, which propagates the cal tank(s)' `unc_c0` through
+  the fit — weighted linear interpolation for the two-tank fit, or
+  `|x|·unc_slope` for the single-tank-through-origin methods (cal1/cal2).
+- **Click tooltips**: left-click a point for `Assigned: val ± unc` (cal2/
+  ref/cal1) or `Predicted: val ± unc` + `Diff from assigned: val ± unc` (the
+  diamond). Routed through `_is_ie3_cal_plot_active()` inside
+  `_on_click_tooltip` — this plot's markers are Line2D artists (from
+  `errorbar`/`plot`), not the PathCollection scatter the main gc-plot tooltip
+  logic expects, so they're handled separately via `_ie3_cal_tooltip_click()`.
+  `self._ie3_cal_tooltip_points` holds `{'artist', 'lines': [{'title', 'val',
+  'unc'}, ...]}` per point, reset at the top of every `_ie3_cal_plot()` call.
+- **`hats.scale_assignments.coef1` (drift) is not applied anywhere in
+  logos_data.** `ref_tank_coef0()`/`ref_tank_unc_c0()` and `cal_tank_coefs()`
+  (in `ie3_cal_test.py`, imported by `logos_data.py`) only read `coef0`/
+  `unc_c0` and silently ignore `coef1`. Contrast with the M4/FE3/Perseus path
+  (`populate_cal_mf()`), which detects a non-zero `coef1` and raises a
+  `RuntimeWarning` but still uses flat `coef0` — no path applies drift yet.
+- **Don't confuse with `hats.ng_response`**: that table stores the weekly
+  cal-fit's own `coef0`/`coef1` (intercept/slope of the fit line, written by
+  `upsert_ng_response()` / `ie3_batch.py`) — a different quantity from
+  `scale_assignments.coef0`/`coef1` (tank assigned value / drift), despite
+  the same column names. Both flow through `_ie3_cal_plot`.
+
+### Update Method / Update MF / Revert buttons
+
+Below the Calibration view, IE3-only, visible only for cal weeks. State is
+managed together in `_refresh_ie3_update_button()`, called after any change
+to `self.madechanges` / `self._ie3_mf_dirty`:
+
+- **Update Method** (yellow when `self.madechanges`): saves the fit-method
+  combo selection to `hats.ng_response` and recomputes the week's fit. Sets
+  `_ie3_mf_dirty` and flips the button to...
+- **Update MF** (lightgreen, when `self._ie3_mf_dirty`): recomputes and
+  upserts the week's air-port mole fractions from the saved fit (in-GUI
+  equivalent of `ie3_batch.py -i` for this one week).
+- **Revert** (light red `#ffcdd2`, enabled only alongside "Update Method"):
+  discards unsaved local edits (fit-method selection, rejection toggles) by
+  calling `load_selected_run()` again and re-rendering the active plot — no
+  DB writes. Lets you try a method/rejection change and see the resulting
+  fit without committing it. Disabled once past "Update Method" — a change
+  already saved to `hats.ng_response` can't be undone by a local reload.
