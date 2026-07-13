@@ -9,7 +9,10 @@ numbers, and compound parameter numbers.
 ```
 logosdata/
   logos_data.py        # Main PyQt5 GUI — MainWindow, tabs, plotting
-  logos_instruments.py # Instrument class hierarchy and DB query methods
+  logos_instruments.py # Facade re-exporting the instrument classes below
+  logos_instruments_core.py   # LOGOS_Instruments, HATS_DB_Functions, Normalizing
+  logos_instruments_flask.py  # M4_Instrument, FE3_Instrument, Perseus_Instrument
+  logos_instruments_insitu.py # IE3_Instrument, CATS_Instrument, BLD1_Instrument
   logos_timeseries.py  # TimeseriesWidget and TimeseriesFigure
   logos_tanks.py       # TanksWidget — tank history and reference tank UI
   logos_ai_agent.py    # LOGOSChatAgent — free-form chat agent
@@ -21,6 +24,10 @@ logosdata/
 Root shims `logos_instruments.py` and `logos_agent_tools.py` exist so that
 batch scripts (`fe3_batch.py`, `m4_batch.py`, etc.) keep working without
 import changes.
+
+All instrument classes should be imported from `logos_instruments` (the
+facade), never from the `_core`/`_flask`/`_insitu` modules directly — the
+split is an internal layout detail.
 
 ## Launching
 
