@@ -732,6 +732,7 @@ class MainWindow(QMainWindow):
         self.madechanges = False
         self.smoothing_changed = False
         self._ie3_mf_dirty = False      # True once a method save leaves mole fractions stale
+        self._ie3_cal_tooltip_points = []  # click-tooltip metadata for _ie3_cal_plot markers
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
@@ -2812,6 +2813,10 @@ class MainWindow(QMainWindow):
         if (tb is not None and getattr(tb, "mode", None)) or self.tagging_enabled:
             return
 
+        if self._is_ie3_cal_plot_active():
+            self._ie3_cal_tooltip_click(event)
+            return
+
         # Find which artist was clicked
         for artist in self.figure.axes[0].collections:
             cont, ind = artist.contains(event)
@@ -3293,7 +3298,7 @@ class MainWindow(QMainWindow):
             weekly = _ie3_weekly_aggregate(unflagged)
         if coefs is None:
             serials = _ie3_cal_tank_serials(self.instrument)
-            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
+            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
         if not coefs:
             return None, coefs
         if force_zero:
@@ -3321,6 +3326,81 @@ class MainWindow(QMainWindow):
             return None
         return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'coef0')
 
+    def _ie3_tank_unc(self, port, pnum, coefs, week_start):
+        """Uncertainty (unc_c0) of the assigned mole fraction for a standard
+        port in this week. Mirrors _ie3_tank_assigned. Returns None if
+        unavailable."""
+        if port == self.instrument.STANDARD_PORT_NUM:
+            return self.instrument.ref_tank_unc_c0(pnum)
+        fills = (coefs or {}).get(port)
+        if not fills:
+            return None
+        return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'unc_c0')
+
+    @staticmethod
+    def _ie3_ref_pred_unc(fit_row, ref_x, force_zero):
+        """Propagated uncertainty of the cal-fit-predicted y-value at ref_x,
+        from the assigned-value uncertainties (uc0/uc1) of the cal tank(s)
+        used in the fit. Returns None if the needed uncertainties aren't
+        available.
+
+        force_zero (single-tank-through-origin, y = slope*x): the fit's
+        only uncertainty is unc_slope, so unc(y) = |ref_x| * unc_slope.
+
+        Two-tank fit (line through (x0,y0±uc0) and (x1,y1±uc1)): y(x) is a
+        linear interpolation between the two assigned values, so its
+        uncertainty is the weighted quadrature sum of uc0 and uc1 at ref_x.
+        """
+        if force_zero:
+            unc_slope = fit_row.get('unc_slope')
+            if unc_slope is None or pd.isna(unc_slope):
+                return None
+            return abs(ref_x) * float(unc_slope)
+
+        x0, x1 = fit_row.get('x0'), fit_row.get('x1')
+        uc0, uc1 = fit_row.get('uc0'), fit_row.get('uc1')
+        if any(v is None or pd.isna(v) for v in (x0, x1, uc0, uc1)):
+            return None
+        dx = x1 - x0
+        if dx == 0:
+            return None
+        return float(np.hypot(uc0 * (x1 - ref_x), uc1 * (ref_x - x0)) / abs(dx))
+
+    def _is_ie3_cal_plot_active(self):
+        """True when the Calibration view is showing the IE3 weekly cal-fit
+        plot (_ie3_cal_plot) rather than the standard polynomial cal plot."""
+        return bool(
+            self.instrument.inst_id == 'ie3'
+            and self.plot_radio_group.checkedId() == 3
+            and self.current_run_time
+            and '(Cal)' in self.current_run_time
+        )
+
+    def _ie3_cal_tooltip_click(self, event):
+        """Show 'Assigned MF' / 'Diff from assigned' tooltips on left-click
+        for the cal2/ref/cal1 assigned-value points and the calculated-ref
+        point of _ie3_cal_plot."""
+        if not self.figure.axes:
+            return
+        ax = self.figure.axes[0]
+        for point in self._ie3_cal_tooltip_points:
+            artist = point.get('artist')
+            if artist is None or artist.axes is not ax:
+                continue
+            cont, _ind = artist.contains(event)
+            if not cont:
+                continue
+            val = point.get('val')
+            if val is None:
+                continue
+            unc = point.get('unc')
+            if unc is not None:
+                text = f"{point['title']}: {val:.5g} ± {unc:.3g}"
+            else:
+                text = f"{point['title']}: {val:.5g} (unc n/a)"
+            QToolTip.showText(QCursor.pos(), text)
+            return
+
     def _ie3_cal_plot(self):
         """Calibration-curve view for IE3 weekly cal runs.
 
@@ -3331,6 +3411,7 @@ class MainWindow(QMainWindow):
         """
         self.figure.clear()
         ax = self.figure.add_subplot(1, 1, 1)
+        self._ie3_cal_tooltip_points = []
 
         if self.run.empty:
             ax.text(0.5, 0.5, 'No data loaded', transform=ax.transAxes,
@@ -3353,7 +3434,7 @@ class MainWindow(QMainWindow):
         if _IE3_CAL_AVAILABLE and not unflagged.empty:
             weekly = _ie3_weekly_aggregate(unflagged)
             serials = _ie3_cal_tank_serials(self.instrument)
-            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials) if serials else {}
+            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
         port_color = {
@@ -3386,10 +3467,18 @@ class MainWindow(QMainWindow):
             stats_lines.append(f"{label}: {mean:.5g} ± {std:.2g} (n={len(grp)})")
             assigned = self._ie3_tank_assigned(port, pnum, coefs, week_start)
             if assigned is not None and pd.notna(mean):
-                ax.errorbar([mean], [assigned],
+                unc = self._ie3_tank_unc(port, pnum, coefs, week_start)
+                eb = ax.errorbar([mean], [assigned],
                             xerr=[std if pd.notna(std) else 0.0],
+                            yerr=[unc] if unc is not None else None,
                             fmt='o', color=port_color.get(port, 'black'),
                             ms=7, capsize=3, zorder=3, label=label)
+                self._ie3_cal_tooltip_points.append({
+                    'artist': eb.lines[0],
+                    'title': 'Assigned MF',
+                    'val': assigned,
+                    'unc': unc,
+                })
                 xvals.append(mean)
 
         # Determine the fit line (slope/intercept) for the selected method.
@@ -3429,8 +3518,29 @@ class MainWindow(QMainWindow):
             if self.instrument.uses_ng_response_fit(method) and not ref_grp.empty:
                 ref_x = ref_grp['normalized_resp'].mean()
                 ref_y = slope * ref_x + intercept
-                ax.plot([ref_x], [ref_y], 'D', color='crimson', ms=8, zorder=4,
-                        label=f'ref predicted = {ref_y:.5g}')
+
+                ref_assigned = self.instrument.ref_tank_coef0(pnum)
+                diff_unc = None
+                if ref_assigned is not None:
+                    ref_assigned_unc = self.instrument.ref_tank_unc_c0(pnum)
+                    force_zero, _single_port = self.instrument.fit_params_for_method(method)
+                    pred_unc = self._ie3_ref_pred_unc(fit_row, ref_x, force_zero)
+                    if pred_unc is not None or ref_assigned_unc is not None:
+                        diff_unc = float(np.hypot(pred_unc or 0.0, ref_assigned_unc or 0.0))
+
+                eb = ax.errorbar(
+                    [ref_x], [ref_y],
+                    yerr=[diff_unc] if diff_unc is not None else None,
+                    fmt='D', color='crimson', ms=8, capsize=3, zorder=4,
+                    label=f'ref predicted = {ref_y:.5g}')
+
+                if ref_assigned is not None:
+                    self._ie3_cal_tooltip_points.append({
+                        'artist': eb.lines[0],
+                        'title': 'Diff from assigned',
+                        'val': ref_y - ref_assigned,
+                        'unc': diff_unc,
+                    })
 
             # "Other Curves": overlay the 5 nearest-in-time stored weekly
             # fits (from hats.ng_response) to compare stability across

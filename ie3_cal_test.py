@@ -169,7 +169,8 @@ def cal_tank_serials(instrument: IE3_Instrument) -> dict[int, str]:
 
 
 def cal_tank_coefs(
-    instrument: IE3_Instrument, pnum: int, serials: dict[int, str]
+    instrument: IE3_Instrument, pnum: int, serials: dict[int, str],
+    verbose: bool = True,
 ) -> dict[int, list[dict]]:
     """Return fill-aware coef0 timeline for each cal tank port.
 
@@ -179,6 +180,9 @@ def cal_tank_coefs(
 
     Returns {port: [{'fill_code', 'start_date', 'end_date', 'coef0'}, ...]},
     with fills sorted oldest-first. end_date is None for the current fill.
+
+    verbose=False suppresses the per-fill print (used when called from the
+    GUI, where this runs on every plot render).
     """
     coefs: dict[int, list[dict]] = {}
     for port, serial in serials.items():
@@ -192,7 +196,8 @@ def cal_tank_coefs(
         """
         rows = instrument.db.doquery(sql)
         if not rows:
-            print(f"  ⚠  No scale_assignments for tank {serial} (port {port}), pnum {pnum}")
+            if verbose:
+                print(f"  ⚠  No scale_assignments for tank {serial} (port {port}), pnum {pnum}")
             continue
         fills = []
         for row in rows:
@@ -205,10 +210,11 @@ def cal_tank_coefs(
                 'unc_c0': float(row['unc_c0']),
             }
             fills.append(entry)
-            end_str = str(end) if end else 'present'
-            print(f"  port {port} tank {serial} fill {row['fill_code']}: "
-                  f"{row['start_date']} → {end_str}  coef0={entry['coef0']:.5g}"
-                  f"  unc_c0={entry['unc_c0']:.5g}")
+            if verbose:
+                end_str = str(end) if end else 'present'
+                print(f"  port {port} tank {serial} fill {row['fill_code']}: "
+                      f"{row['start_date']} → {end_str}  coef0={entry['coef0']:.5g}"
+                      f"  unc_c0={entry['unc_c0']:.5g}")
         coefs[port] = fills
     return coefs
 

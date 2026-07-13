@@ -166,7 +166,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         sql = f"""
             SELECT start_date, end_date, fill_code, serial_number, level,
-                   coef0, coef1, coef2
+                   coef0, coef1, coef2, unc_c0
             FROM hats.scale_assignments_view
             where serial_number = '{tank}'
               and parameter_num = {pnum}

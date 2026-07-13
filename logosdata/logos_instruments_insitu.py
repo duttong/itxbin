@@ -674,6 +674,17 @@ class IE3_Instrument(HATS_DB_Functions):
             return None
         return float(coefs['coef0'])
 
+    def ref_tank_unc_c0(self, pnum):
+        """Reference-tank unc_c0 (uncertainty of the assigned coef0) for this
+        parameter, or None."""
+        serial = self.ref_tank_serial()
+        if serial is None:
+            return None
+        coefs = self.scale_assignments(serial, pnum)
+        if not coefs or coefs.get('unc_c0') is None:
+            return None
+        return float(coefs['unc_c0'])
+
     def _week_air_filter(self, pnum, channel, week_start):
         """Return SQL fragments (where, t0, t1) selecting this analyte's air
         rows within the week [week_start, week_start+7d)."""
