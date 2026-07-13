@@ -67,8 +67,18 @@ def ingest(
         typer.secho(f"Error running ie3_eng2db.py: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    # 5. Recalculate and write mole fractions for all analytes
-    batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i"]
+    # 5. Set the calibration method (cal12/cal1) on any newly-ingested rows
+    # before computing fits, so update_fits() builds the right kind of fit.
+    method_cmd = [str(bin_dir / "ie3_set_mf_method.py")]
+    typer.secho(f"Running: {' '.join(method_cmd)}", fg=typer.colors.BLUE)
+    try:
+        subprocess.run(method_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Error running ie3_set_mf_method.py: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    # 6. Recalculate and write mole fractions for all analytes
+    batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i", "--fits"]
     typer.secho(f"Running: {' '.join(batch_cmd)}", fg=typer.colors.BLUE)
     try:
         subprocess.run(batch_cmd, check=True)
