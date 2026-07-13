@@ -935,41 +935,36 @@ class LogosCompareWindow(QMainWindow):
             condition = condition[4:].strip()
         return condition
 
-    def _monthly_from_insitu(self, df: pd.DataFrame, sites: list[str]) -> pd.DataFrame:
-        if df.empty:
-            return pd.DataFrame(columns=["site", "month", "value", "std", "n"])
-        insitu = df[df["site"].isin(sites)].copy()
-        if insitu.empty:
-            return pd.DataFrame(columns=["site", "month", "value", "std", "n"])
-        insitu["month"] = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
-        monthly = (
-            insitu.groupby(["site", "month"])["mole_fraction"]
-            .agg(value="mean", std="std", n="count")
-            .reset_index()
-        )
-        monthly["site"] = monthly["site"].astype(str).str.upper()
-        return monthly[["site", "month", "value", "std", "n"]]
-
     def _query_insitu_combined_monthly_mean_data(
         self, selection: ProgramSelection, sites: list[str]
     ) -> pd.DataFrame:
         """Union IE3 with every CATS site loader for the "insitu" program,
         each queried through its own instrument object since IE3 and CATS use
-        different inst_nums/air ports, then bin the combined rows monthly."""
+        different inst_nums/air ports, with monthly aggregation pushed into
+        SQL per instrument (query_insitu_monthly_mean_data)."""
         meta = PROGRAMS[selection.key]
         frames = []
         for loader_key in meta["loaders"]:
+            if loader_key.startswith("cats_") and loader_key[len("cats_"):].upper() not in sites:
+                continue
             loader_params = self.loader_analytes_by_parameter.get(loader_key, {})
             analyte_key = loader_params.get(selection.parameter_num)
             if analyte_key is None:
                 continue
             loader = self.loaders[loader_key]
             loader.configure(analyte_key, self.start_year.value(), self.end_year.value(), sites)
-            df = loader.query_insitu_data(analyte_key, force=True)
+            df = loader.query_insitu_monthly_mean_data(analyte_key)
             if not df.empty:
                 frames.append(df)
-        combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        return self._monthly_from_insitu(combined, sites)
+        if not frames:
+            return pd.DataFrame(columns=["site", "month", "value", "std", "n"])
+        combined = pd.concat(frames, ignore_index=True)
+        out = combined.rename(
+            columns={"month_start": "month", "monthly_avg": "value", "monthly_std": "std"}
+        ).copy()
+        out["site"] = out["site"].astype(str).str.upper()
+        out["month"] = pd.to_datetime(out["month"])
+        return out[["site", "month", "value", "std", "n"]]
 
     def _draw_comparison(self, df: pd.DataFrame, selections: list[ProgramSelection]) -> None:
         self.figure.clear()

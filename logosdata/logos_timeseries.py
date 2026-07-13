@@ -1975,6 +1975,73 @@ class TimeseriesWidget(QWidget):
         self._last_insitu_params = query_params
         return df.copy() if not df.empty else df
 
+    def query_insitu_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """SQL-side monthly-mean equivalent of query_insitu_data(): same joins,
+        rejection/port/channel/parameter filters, but GROUP BY site, month is
+        computed server-side instead of transferring raw per-injection rows.
+        Always live (no caching) since staleness must never be a concern here."""
+        insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
+            if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
+        if self.instrument.inst_num not in insitu_inst_nums:
+            return pd.DataFrame()
+
+        start = self.start_year.value()
+        end = self.end_year.value()
+        sites = self.get_active_sites()
+        if not sites:
+            return pd.DataFrame()
+
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        if pnum is None:
+            return pd.DataFrame()
+
+        channel = None
+        if "(" in analyte and ")" in analyte:
+            channel = analyte.split("(", 1)[1].strip(") ")
+        use_preferred_channel = self._uses_forced_preferred_channel() or channel == 'pref'
+        if use_preferred_channel:
+            channel = None
+
+        ch_filter = (
+            self._preferred_channel_filter_sql("mf.channel", "mf.parameter_num", "a.analysis_time")
+            if use_preferred_channel
+            else (f"AND mf.channel = '{channel}'" if channel else "")
+        )
+        # Hide the pre-production test window (IE3 only; None for CATS).
+        data_floor = getattr(self.instrument, "DATA_START_DATE", None)
+        floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
+        sql = f"""
+        SELECT UPPER(s.code) AS site,
+            DATE_FORMAT(a.analysis_time, '%%Y-%%m-01') AS month_start,
+            AVG(mf.mole_fraction) AS monthly_avg,
+            STDDEV_SAMP(mf.mole_fraction) AS monthly_std,
+            COUNT(mf.mole_fraction) AS n
+        FROM hats.ng_insitu_analysis a
+        JOIN hats.ng_insitu_mole_fractions mf ON a.num = mf.analysis_num
+        JOIN gmd.site s ON a.site_num = s.num
+        WHERE a.inst_num = {self.instrument.inst_num}
+          AND a.port IN ({",".join(str(p) for p in getattr(self.instrument, "AIR_PORTS", [3, 7]))})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM hats.ng_insitu_mole_fraction_tags t
+              JOIN ccgg.tag_dictionary d ON d.num = t.tag_num
+              WHERE t.ng_insitu_mole_fraction_num = mf.num
+                AND d.reject = 1
+          )
+          AND mf.parameter_num = {pnum}
+          {ch_filter}
+          AND UPPER(s.code) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
+          {floor_clause}
+        GROUP BY site, month_start
+        ORDER BY site, month_start;
+        """
+        df = pd.DataFrame(self.instrument.doquery(sql, sites))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
