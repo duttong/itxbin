@@ -80,11 +80,14 @@ PROGRAMS = {
         "inst_nums": [236] + [CATS_Instrument.INST_NUM_BY_SITE[s] for s in CATS_SITES],
         "loaders": ["ie3"] + [f"cats_{s}" for s in CATS_SITES],
     },
-    "pr1": {"label": "PR1", "inst_id": "pr1", "inst_num": 58, "loader": "pr1"},
+    "pr1": {"label": "PRS", "inst_id": "pr1", "inst_num": 58, "loader": "pr1"},
     "m2": {"label": "M2", "inst_id": "m2", "inst_num": 47, "loader": "m2"},
 }
 
 DEFAULT_SITE_SELECTION = {"BRW", "MLO", "SMO", "SPO"}
+# Checkbox layout in the PROGRAMS box: mass-spec/flask programs in the
+# left column, ECD/in-situ programs in the right column.
+PROGRAM_CHECK_COLUMNS = [["mstar", "m2", "pr1"], ["fecd", "insitu"]]
 PROGRAM_MARKERS = {
     "mstar": "o",
     "fecd": "s",
@@ -467,14 +470,14 @@ class LogosCompareWindow(QMainWindow):
         program_layout.setHorizontalSpacing(12)
         program_layout.setVerticalSpacing(6)
         self.program_checks: dict[str, QCheckBox] = {}
-        for i, (key, meta) in enumerate(PROGRAMS.items()):
-            cb = QCheckBox(meta["label"])
-            range_text = _program_range_text(key)
-            if range_text:
-                cb.setToolTip(f"Data: {range_text}")
-            self.program_checks[key] = cb
-            row, col = divmod(i, 2)
-            program_layout.addWidget(cb, row, col)
+        for col, keys in enumerate(PROGRAM_CHECK_COLUMNS):
+            for row, key in enumerate(keys):
+                cb = QCheckBox(PROGRAMS[key]["label"])
+                range_text = _program_range_text(key)
+                if range_text:
+                    cb.setToolTip(f"Data: {range_text}")
+                self.program_checks[key] = cb
+                program_layout.addWidget(cb, row, col)
         controls_layout.addWidget(program_group)
 
         site_group = QGroupBox("SITES")
