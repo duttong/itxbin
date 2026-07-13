@@ -3339,6 +3339,11 @@ class MainWindow(QMainWindow):
             self.instrument.STANDARD_PORT_NUM: 'tab:purple',
             self.instrument.CAL1_PORT: 'tab:gray',
         }
+        port_abbr = {
+            self.instrument.CAL2_PORT: 'cal2',
+            self.instrument.STANDARD_PORT_NUM: 'ref',
+            self.instrument.CAL1_PORT: 'cal1',
+        }
         stats_lines = []
         xvals = []
         for port in (self.instrument.CAL2_PORT,
@@ -3347,7 +3352,13 @@ class MainWindow(QMainWindow):
             grp = unflagged[unflagged['port'] == port]
             if grp.empty:
                 continue
-            label = grp['port_label'].iat[0] if 'port_label' in grp.columns else f'Port {port}'
+            raw_label = grp['port_label'].iat[0] if 'port_label' in grp.columns else f'Port {port}'
+            abbr = port_abbr.get(port)
+            if abbr:
+                serial = raw_label.split(' (')[0]
+                label = f"{serial} ({abbr}, {port})"
+            else:
+                label = raw_label
             mean = grp['normalized_resp'].mean()
             std = grp['normalized_resp'].std()
             stats_lines.append(f"{label}: {mean:.5g} ± {std:.2g} (n={len(grp)})")
