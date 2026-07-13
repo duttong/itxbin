@@ -1049,12 +1049,25 @@ class MainWindow(QMainWindow):
             "hats.ng_response), then recompute this week's air-port mole "
             "fractions."
         )
+        # "Revert" discards unsaved local edits (fit-method selection,
+        # rejection toggles) for this cal week by reloading from the DB --
+        # lets you try a method/rejection change and see the fit without
+        # committing it.
+        self.ie3_revert_btn = QPushButton("Revert")
+        self.ie3_revert_btn.setEnabled(False)
+        self.ie3_revert_btn.setVisible(self.instrument.inst_id == 'ie3')
+        self.ie3_revert_btn.setToolTip(
+            "Discard unsaved changes (method selection, rejections) for "
+            "this week and reload from the database."
+        )
         cal_row3 = QHBoxLayout()
         cal_row3.addSpacing(24)
         cal_row3.addWidget(self.ie3_update_btn)
+        cal_row3.addWidget(self.ie3_revert_btn)
         cal_row3.addStretch(1)
         self.plot_layout.addLayout(cal_row3)
         self.ie3_update_btn.clicked.connect(self._on_ie3_update_button_clicked)
+        self.ie3_revert_btn.clicked.connect(self._on_ie3_revert_button_clicked)
         # -----------------------------------------------
 
         self.plot_radio_group.addButton(self.resp_rb, id=0)
@@ -3674,27 +3687,50 @@ class MainWindow(QMainWindow):
               "air-port mole fractions using the updated fit.")
 
     def _refresh_ie3_update_button(self):
-        """Show/enable the IE3 "Update Method"/"Update MF" button based on
-        pending changes. IE3-only for now -- hidden for other instruments.
+        """Show/enable the IE3 "Update Method"/"Update MF" (and "Revert")
+        buttons based on pending changes. IE3-only for now -- hidden for
+        other instruments.
         """
         if self.instrument.inst_id != 'ie3':
             return
         is_cal_week = bool(self.current_run_time and '(Cal)' in self.current_run_time)
         self.ie3_update_btn.setVisible(is_cal_week)
+        self.ie3_revert_btn.setVisible(is_cal_week)
         if not is_cal_week:
             return
         if self.madechanges:
             self.ie3_update_btn.setText("Update Method")
             self.ie3_update_btn.setEnabled(True)
             self.ie3_update_btn.setStyleSheet("background-color: yellow;")
+            self.ie3_revert_btn.setEnabled(True)
+            self.ie3_revert_btn.setStyleSheet("background-color: #ffcdd2;")
         elif self._ie3_mf_dirty:
             self.ie3_update_btn.setText("Update MF")
             self.ie3_update_btn.setEnabled(True)
             self.ie3_update_btn.setStyleSheet("background-color: lightgreen;")
+            self.ie3_revert_btn.setEnabled(False)
+            self.ie3_revert_btn.setStyleSheet("")
         else:
             self.ie3_update_btn.setText("Update Method")
             self.ie3_update_btn.setEnabled(False)
             self.ie3_update_btn.setStyleSheet("")
+            self.ie3_revert_btn.setEnabled(False)
+            self.ie3_revert_btn.setStyleSheet("")
+
+    def _on_ie3_revert_button_clicked(self):
+        """Discard unsaved local edits (fit-method selection, rejection
+        toggles) for the current IE3 cal week and reload this week's data
+        from the database -- no writes, so you can try a method/rejection
+        change, see the resulting fit, and back out without committing it.
+        """
+        if not (self.instrument.inst_id == 'ie3'
+                and self.current_run_time and '(Cal)' in self.current_run_time):
+            return
+        self._clear_highlight()
+        if self._multi_tag_panel is not None and self._multi_tag_panel.isVisible():
+            self._multi_tag_panel.clear_selection()
+        self.load_selected_run()
+        self.on_plot_type_changed(self.current_plot_type)
 
     def _on_ie3_update_button_clicked(self):
         """Step 1 (button reads "Update Method"): save the selected cal
