@@ -241,7 +241,7 @@ class IE3_Instrument(HATS_DB_Functions):
 
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
-        df['mf_method_num'] = df['mf_method_num'].fillna(1).astype(int)
+        df['mf_method_num'] = df['mf_method_num'].fillna(self.default_mf_method(pnum)).astype(int)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
 
@@ -302,7 +302,11 @@ class IE3_Instrument(HATS_DB_Functions):
             .round(5)
         )
         if 'mf_method_num' not in df.columns:
-            df['mf_method_num'] = 1
+            df['mf_method_num'] = df['parameter_num'].map(self.default_mf_method)
+        else:
+            missing = df['mf_method_num'].isna()
+            if missing.any():
+                df.loc[missing, 'mf_method_num'] = df.loc[missing, 'parameter_num'].map(self.default_mf_method)
         if 'unc' not in df.columns:
             df['unc'] = np.nan
         if 'ng_response_id' not in df.columns:
@@ -400,23 +404,31 @@ class IE3_Instrument(HATS_DB_Functions):
         return out
 
     def calc_mole_fraction(self, df):
-        """Route by mf_method_num: method 1 → scale_simple; 2/3/4 → cal_fit."""
+        """Route by mf_method_num: method 1 → scale_simple; 2/3/4 → cal_fit.
+
+        Rows with a NULL mf_method_num (never recorded) default per-row to
+        default_mf_method(parameter_num) -- cal12 for most analytes, not a
+        flat 1/ref -- so an unset method doesn't silently mean "ref".
+        """
         if df.empty:
             out = df.copy()
             out['mole_fraction'] = pd.Series(dtype='float64')
             return out
 
+        df = df.copy()
         if 'mf_method_num' not in df.columns:
-            df = df.copy()
-            df['mf_method_num'] = 1
+            df['mf_method_num'] = np.nan
+        missing = df['mf_method_num'].isna()
+        if missing.any():
+            df.loc[missing, 'mf_method_num'] = df.loc[missing, 'parameter_num'].map(self.default_mf_method)
+        df['mf_method_num'] = df['mf_method_num'].astype(int)
 
-        method_nums = df['mf_method_num'].fillna(1).astype(int).unique()
-
+        method_nums = df['mf_method_num'].unique()
         if len(method_nums) == 1 and method_nums[0] == 1:
             return self.calc_mole_fraction_scale_simple(df)
 
         parts = []
-        for method, grp in df.groupby(df['mf_method_num'].fillna(1).astype(int)):
+        for method, grp in df.groupby('mf_method_num'):
             if method == 1:
                 parts.append(self.calc_mole_fraction_scale_simple(grp))
             else:
@@ -801,7 +813,7 @@ class IE3_Instrument(HATS_DB_Functions):
         df['retention_time'] = df['retention_time'].astype(float)
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
-        df['mf_method_num'] = df['mf_method_num'].fillna(1).astype(int)
+        df['mf_method_num'] = df['mf_method_num'].fillna(self.default_mf_method(pnum)).astype(int)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
         return df.sort_values('analysis_datetime')
