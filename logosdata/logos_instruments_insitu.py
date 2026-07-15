@@ -220,7 +220,7 @@ class IE3_Instrument(HATS_DB_Functions):
                 AND parameter_num = {pnum}
                 {channel_str}
                 {site_str}
-                AND height <> -999
+                AND (height IS NULL OR height <> -999)
                 {time_filter}
             ORDER BY analysis_time;
         """
@@ -795,7 +795,7 @@ class IE3_Instrument(HATS_DB_Functions):
               {channel_str}
               AND site_num = {self.site_num}
               AND port IN ({port_in})
-              AND height <> -999
+              AND (height IS NULL OR height <> -999)
               AND analysis_time BETWEEN '{t0}' AND '{t1}'
             ORDER BY analysis_time;
         """
@@ -1079,7 +1079,7 @@ class BLD1_Instrument(HATS_DB_Functions):
                 AND parameter_num = {pnum}
                 {channel_str}
                 {run_type_filter}
-                AND height <> -999
+                AND (height IS NULL OR height <> -999)
                 #AND detrend_method_num != 3
                 AND run_time BETWEEN '{start_date}' AND '{end_date}'
             ORDER BY analysis_datetime;
