@@ -336,12 +336,21 @@ class TanksWidget(QWidget):
         category_bar.addWidget(self.show_archive_cb)
         category_bar.addWidget(self.show_other_cb)
         category_bar.addStretch()
+        sort_bar = QHBoxLayout()
+        self.sort_recent_cb = QCheckBox("Sort by Recent Analysis")
+        self.sort_recent_cb.setToolTip(
+            "List tanks with the most recent hats.calibrations analysis first."
+        )
+        self.sort_recent_cb.toggled.connect(self._on_sort_recent_toggled)
+        sort_bar.addWidget(self.sort_recent_cb)
+        sort_bar.addStretch()
         self.tank_grid = QGridLayout()
         self.tank_grid.setContentsMargins(0, 0, 0, 0)
         self.tank_grid.setHorizontalSpacing(8)
         self.tank_grid.setVerticalSpacing(4)
         analyte_layout.addWidget(self.tanks_status)
         analyte_layout.addLayout(category_bar)
+        analyte_layout.addLayout(sort_bar)
         analyte_layout.addLayout(self.tank_grid)
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel("Search for tank in list"))
@@ -646,11 +655,19 @@ class TanksWidget(QWidget):
             )
 
         self._annotate_next_fill_dates()
+        self._annotate_recent_analysis()
 
-        tanks_list = sorted(
-            tanks_list,
-            key=lambda t: (t.get("serial") or "", str(t.get("fill_date") or t.get("fill_idx") or "")),
-        )
+        if getattr(self, "sort_recent_cb", None) is not None and self.sort_recent_cb.isChecked():
+            def _recent_sort_key(t):
+                meta = self._tank_metadata.get(t.get("fill_key"), {})
+                recent = meta.get("recent_analysis")
+                return recent if pd.notnull(recent) else pd.Timestamp.min
+            tanks_list = sorted(tanks_list, key=_recent_sort_key, reverse=True)
+        else:
+            tanks_list = sorted(
+                tanks_list,
+                key=lambda t: (t.get("serial") or "", str(t.get("fill_date") or t.get("fill_idx") or "")),
+            )
         tanks_list = self._filter_tanks_by_category(tanks_list)
         empty_msg = None
         if not tanks_list and self._reload_dirty and self._tank_cache_range:
@@ -1096,6 +1113,12 @@ class TanksWidget(QWidget):
         """Refresh tank view when category filters change."""
         self.refresh_tanks()
 
+    def _on_sort_recent_toggled(self, _checked: bool):
+        """Refresh tank view when the recent-analysis sort toggle changes."""
+        if not getattr(self, "_ready", False):
+            return
+        self.refresh_tanks()
+
     def _update_set_button_styles(self):
         for idx, btn in enumerate(self.set_buttons):
             btn.blockSignals(True)
@@ -1133,6 +1156,70 @@ class TanksWidget(QWidget):
                 if key in self._tank_metadata:
                     self._tank_metadata[key]["next_fill_date"] = next_dt
 
+    def _annotate_recent_analysis(self):
+        """Add recent_analysis (most recent hats.calibrations timestamp within
+        each tank's fill window, for the currently selected analyte) to metadata.
+        Used by the tank tooltip and the "Sort by Recent Analysis" toggle."""
+        for meta in self._tank_metadata.values():
+            meta["recent_analysis"] = None
+        if not self.instrument or not getattr(self.instrument, "db", None):
+            return
+        selections = self._selected_analytes()
+        if not selections:
+            return
+        _, pnum, _channel = selections[0]
+        inst_id = self._resolve_inst_id()
+        if not inst_id or pnum is None or not self._tank_metadata:
+            return
+
+        serials = sorted({
+            str(meta.get("serial_number") or meta.get("tank_serial_num") or key.split("::")[0])
+            for key, meta in self._tank_metadata.items()
+        })
+        if not serials:
+            return
+        serial_list = ",".join("'{}'".format(s.replace("'", "''")) for s in serials)
+        inst_filter = self._calibration_inst_filter(inst_id)
+        sql = f"""
+            SELECT c.serial_number, CONCAT(c.date, ' ', c.time) AS run_time
+            FROM hats.calibrations c
+            WHERE c.serial_number IN ({serial_list})
+              AND {inst_filter}
+              AND c.parameter_num = {int(pnum)}
+              AND c.mixratio IS NOT NULL
+              AND c.mixratio > -99
+              AND c.mixratio != 0
+              AND c.num >= 3
+              AND c.flag = '.'
+            ORDER BY c.serial_number, run_time;
+        """
+        try:
+            rows = self.instrument.db.doquery(sql)
+        except Exception:
+            return
+
+        by_serial: dict[str, list[pd.Timestamp]] = defaultdict(list)
+        for row in rows or []:
+            serial = row.get("serial_number")
+            dt = pd.to_datetime(row.get("run_time"), errors="coerce")
+            if serial is not None and pd.notnull(dt):
+                by_serial[str(serial)].append(dt)
+
+        for key, meta in self._tank_metadata.items():
+            serial = str(meta.get("serial_number") or meta.get("tank_serial_num") or key.split("::")[0])
+            times = by_serial.get(serial)
+            if not times:
+                continue
+            fill_dt = pd.to_datetime(meta.get("fill_date") or meta.get("date"), errors="coerce")
+            next_dt = meta.get("next_fill_date")
+            candidates = times
+            if pd.notnull(fill_dt):
+                candidates = [t for t in candidates if t >= fill_dt]
+            if next_dt is not None and pd.notnull(next_dt):
+                candidates = [t for t in candidates if t < next_dt]
+            if candidates:
+                meta["recent_analysis"] = max(candidates)
+
     def _build_tank_tooltip(self, meta: dict, serial_fallback: str) -> str:
         """Build an HTML tooltip with tank metadata."""
         parts = []
@@ -1159,6 +1246,12 @@ class TanksWidget(QWidget):
         fill_date = meta.get("fill_date")
         if fill_date:
             parts.append(f"<b>Fill date:</b> {fill_date}")
+        recent_analysis = meta.get("recent_analysis")
+        recent_str = (
+            recent_analysis.strftime("%Y-%m-%d %H:%M")
+            if pd.notnull(recent_analysis) else "(no data)"
+        )
+        parts.append(f"<b>Recent Analysis:</b> {recent_str}")
         fill_note = meta.get("fill_notes")
         if fill_note:
             parts.append(f"<b>Fill Note:</b> {fill_note}")
@@ -1224,6 +1317,19 @@ class TanksWidget(QWidget):
                     return str(key)
         return None
 
+    def _calibration_inst_filter(self, inst_id: str) -> str:
+        """Return a SQL WHERE fragment (against alias c) filtering hats.calibrations by instrument."""
+        calibration_inst_ids = getattr(self.instrument, "calibration_inst_ids", None)
+        if calibration_inst_ids:
+            return "c.inst IN ({})".format(
+                ",".join(
+                    f"'{str(inst).upper().replace(chr(39), chr(39) + chr(39))}'"
+                    for inst in calibration_inst_ids
+                )
+            )
+        inst_upper = str(inst_id).upper().replace("'", "''")
+        return f"c.inst = '{inst_upper}'"
+
     def _fetch_calibration_df(
         self,
         serial: str,
@@ -1232,17 +1338,7 @@ class TanksWidget(QWidget):
     ) -> pd.DataFrame:
         """Query calibration mole fractions for a tank/parameter from hats.calibrations."""
         serial_safe = str(serial).replace("'", "''")
-        calibration_inst_ids = getattr(self.instrument, "calibration_inst_ids", None)
-        if calibration_inst_ids:
-            inst_filter = "c.inst IN ({})".format(
-                ",".join(
-                    f"'{str(inst).upper().replace(chr(39), chr(39) + chr(39))}'"
-                    for inst in calibration_inst_ids
-                )
-            )
-        else:
-            inst_upper = str(inst_id).upper().replace("'", "''")
-            inst_filter = f"c.inst = '{inst_upper}'"
+        inst_filter = self._calibration_inst_filter(inst_id)
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
