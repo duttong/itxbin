@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
     QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut,
-    QLineEdit
+    QLineEdit, QRadioButton, QButtonGroup
 )
 from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
@@ -309,6 +309,11 @@ class TanksWidget(QWidget):
         analyte_layout.addWidget(analyte_container)
         self.tanks_status = QLabel("Select a year range and gas to load tanks.")
         self.tanks_status.setWordWrap(True)
+        analyte_layout.addWidget(self.tanks_status)
+
+        # --- Filter / sort / search box ---
+        filter_group = QGroupBox("FILTER / SORT")
+        filter_layout = QVBoxLayout()
         category_bar = QHBoxLayout()
         self.show_grav_cb = QCheckBox("Gravimetric")
         self.show_grav_cb.setChecked(True)
@@ -336,22 +341,22 @@ class TanksWidget(QWidget):
         category_bar.addWidget(self.show_archive_cb)
         category_bar.addWidget(self.show_other_cb)
         category_bar.addStretch()
+        filter_layout.addLayout(category_bar)
         sort_bar = QHBoxLayout()
-        self.sort_recent_cb = QCheckBox("Sort by Recent Analysis")
-        self.sort_recent_cb.setToolTip(
+        self.sort_alpha_rb = QRadioButton("Alphabetical Sort")
+        self.sort_alpha_rb.setChecked(True)
+        self.sort_recent_rb = QRadioButton("Analysis Date Sort")
+        self.sort_recent_rb.setToolTip(
             "List tanks with the most recent hats.calibrations analysis first."
         )
-        self.sort_recent_cb.toggled.connect(self._on_sort_recent_toggled)
-        sort_bar.addWidget(self.sort_recent_cb)
+        self.sort_button_group = QButtonGroup(self)
+        self.sort_button_group.addButton(self.sort_alpha_rb)
+        self.sort_button_group.addButton(self.sort_recent_rb)
+        self.sort_button_group.buttonToggled.connect(self._on_sort_mode_changed)
+        sort_bar.addWidget(self.sort_alpha_rb)
+        sort_bar.addWidget(self.sort_recent_rb)
         sort_bar.addStretch()
-        self.tank_grid = QGridLayout()
-        self.tank_grid.setContentsMargins(0, 0, 0, 0)
-        self.tank_grid.setHorizontalSpacing(8)
-        self.tank_grid.setVerticalSpacing(4)
-        analyte_layout.addWidget(self.tanks_status)
-        analyte_layout.addLayout(category_bar)
-        analyte_layout.addLayout(sort_bar)
-        analyte_layout.addLayout(self.tank_grid)
+        filter_layout.addLayout(sort_bar)
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel("Search for tank in list"))
         self.tank_search = QLineEdit()
@@ -362,7 +367,21 @@ class TanksWidget(QWidget):
         self.clear_search_btn = QPushButton("Clear")
         self.clear_search_btn.clicked.connect(self._on_clear_tank_search)
         search_bar.addWidget(self.clear_search_btn)
-        analyte_layout.addLayout(search_bar)
+        filter_layout.addLayout(search_bar)
+        filter_group.setLayout(filter_layout)
+        analyte_layout.addWidget(filter_group)
+
+        # --- Tank checkbox grid box ---
+        tanks_group = QGroupBox("TANKS")
+        tanks_group_layout = QVBoxLayout()
+        self.tank_grid = QGridLayout()
+        self.tank_grid.setContentsMargins(0, 0, 0, 0)
+        self.tank_grid.setHorizontalSpacing(8)
+        self.tank_grid.setVerticalSpacing(4)
+        tanks_group_layout.addLayout(self.tank_grid)
+        tanks_group.setLayout(tanks_group_layout)
+        analyte_layout.addWidget(tanks_group)
+
         selection_bar = QHBoxLayout()
         self.deselect_btn = QPushButton("Deselect All")
         self.deselect_btn.clicked.connect(self._on_deselect_all)
@@ -657,7 +676,7 @@ class TanksWidget(QWidget):
         self._annotate_next_fill_dates()
         self._annotate_recent_analysis()
 
-        if getattr(self, "sort_recent_cb", None) is not None and self.sort_recent_cb.isChecked():
+        if getattr(self, "sort_recent_rb", None) is not None and self.sort_recent_rb.isChecked():
             def _recent_sort_key(t):
                 meta = self._tank_metadata.get(t.get("fill_key"), {})
                 recent = meta.get("recent_analysis")
@@ -1113,9 +1132,11 @@ class TanksWidget(QWidget):
         """Refresh tank view when category filters change."""
         self.refresh_tanks()
 
-    def _on_sort_recent_toggled(self, _checked: bool):
-        """Refresh tank view when the recent-analysis sort toggle changes."""
+    def _on_sort_mode_changed(self, _button, checked: bool):
+        """Refresh tank view when the sort-mode radio selection changes."""
         if not getattr(self, "_ready", False):
+            return
+        if not checked:
             return
         self.refresh_tanks()
 
@@ -1159,7 +1180,7 @@ class TanksWidget(QWidget):
     def _annotate_recent_analysis(self):
         """Add recent_analysis (most recent hats.calibrations timestamp within
         each tank's fill window, for the currently selected analyte) to metadata.
-        Used by the tank tooltip and the "Sort by Recent Analysis" toggle."""
+        Used by the tank tooltip and the "Analysis Date Sort" toggle."""
         for meta in self._tank_metadata.values():
             meta["recent_analysis"] = None
         if not self.instrument or not getattr(self.instrument, "db", None):
