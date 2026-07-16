@@ -758,7 +758,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 rows = self.instrument.db.doquery(
-                    f"SELECT MAX(analysis_datetime) AS rt FROM hats.ng_data_processing_view "
+                    f"SELECT MAX(analysis_time) AS rt FROM hats.ng_analysis "
                     f"WHERE inst_num = {inst_num};"
                 )
             if rows and rows[0]['rt'] is not None:

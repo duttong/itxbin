@@ -21,3 +21,8 @@ hatsdb.py
 hats_db.py
 
 tests/
+
+# Nuitka build output (compiled binaries, not source)
+logosdata/dist/
+logosdata/*.build/
+logosdata/*.dist/
