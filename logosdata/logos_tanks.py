@@ -1243,8 +1243,6 @@ class TanksWidget(QWidget):
         else:
             inst_upper = str(inst_id).upper().replace("'", "''")
             inst_filter = f"c.inst = '{inst_upper}'"
-        start_yr = self.start_year.value()
-        end_yr   = self.end_year.value()
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
@@ -1257,8 +1255,6 @@ class TanksWidget(QWidget):
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
               AND c.parameter_num = {int(parameter_num)}
-              AND c.date >= '{start_yr}-01-01'
-              AND c.date <  '{end_yr + 1}-01-01'
               AND c.mixratio IS NOT NULL
               AND c.mixratio > -99
               AND c.mixratio != 0
