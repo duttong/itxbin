@@ -1980,11 +1980,23 @@ class MainWindow(QMainWindow):
         self.gc_plot(self._current_yparam, sub_info="Smoothing changed")
         
     def on_plot_type_changed(self, id: int):
+        # Captured before dispatch: a nested call (e.g. calibration_plot's
+        # no-data fallback) may legitimately override current_plot_type
+        # while this call is still on the stack. That later write must win,
+        # so don't compare against self.current_plot_type again afterward.
+        changed_type = id != self.current_plot_type
         self.current_plot_type = id
+        # Keep the radio button in sync even when this is invoked
+        # programmatically rather than from a user click on the button
+        # group (idClicked only fires for real clicks, so setChecked here
+        # never re-enters this method).
+        btn = self.plot_radio_group.button(id)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
         self.set_calibration_enabled(False)
         self.calcurve_label.setVisible(False)
         self.calcurve_combo.setVisible(False)
-        
+
         if id == 0:
             self.gc_plot('resp')
         elif id == 1:
@@ -1994,9 +2006,8 @@ class MainWindow(QMainWindow):
         else:
             self.set_calibration_enabled(True)
             self.calibration_plot()
-        
-        if id != self.current_plot_type:
-            self.current_plot_type = id
+
+        if changed_type:
             self.lock_y_axis_cb.setChecked(False)
 
         self.set_runtype_combo()
@@ -3915,6 +3926,17 @@ class MainWindow(QMainWindow):
         mask = self.run['port'].eq(self.instrument.STANDARD_PORT_NUM)
         if not mask.any():  # no rows match
             print(f"No STANDARD_PORT rows for run_time: {self.current_run_time}")
+            # Bail out to Response and keep the radio button + calibration
+            # controls in sync. Set state directly rather than recursing
+            # into on_plot_type_changed -- this runs inside its id==3
+            # branch, and on_plot_type_changed has a trailing check that
+            # would stomp current_plot_type back to 3 if it changed
+            # mid-call.
+            self.current_plot_type = 0
+            self.resp_rb.setChecked(True)
+            self.set_calibration_enabled(False)
+            self.calcurve_label.setVisible(False)
+            self.calcurve_combo.setVisible(False)
             self.gc_plot('resp')
             return
         
@@ -4836,9 +4858,12 @@ class MainWindow(QMainWindow):
         
         self.load_selected_run()
         self._update_notes_button_style()
-        self.gc_plot('resp')
+        # Respect whichever plot type is currently selected instead of
+        # always forcing Response -- on_plot_type_changed also keeps the
+        # radio button in sync.
+        self.on_plot_type_changed(self.current_plot_type)
         self._update_calibration_button_state()
-            
+
     def populate_analyte_controls(self):
         """
         If there are ≤ 12 analytes → show radio buttons in two columns,
