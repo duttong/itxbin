@@ -35,9 +35,15 @@ class LOGOS_Instruments:
         
 
 class HATS_DB_Functions(LOGOS_Instruments):
-    """ Class for accessing HATS database functions related to instruments. 
+    """ Class for accessing HATS database functions related to instruments.
         Tailored to works on 'next generation' or 'ng_' tables."""
-        
+
+    # Minimum unrejected injections a (run_time, tank) group must have for
+    # upsert_calibrations() to write it to hats.calibrations. Default 1 keeps
+    # every aggregated group (historical behavior). Instruments override this
+    # to drop statistically meaningless low-n groups (see FE3_Instrument).
+    MIN_CAL_INJECTIONS = 1
+
     def __init__(self, inst_id=None):
         super().__init__()
         self.inst_id = inst_id or 'fe3'  # Default to 'fe3' if no inst_id is provided
@@ -377,6 +383,29 @@ class HATS_DB_Functions(LOGOS_Instruments):
         agg = agg[agg['num'] > 0]
         agg = agg.replace([float('inf'), float('-inf')], float('nan'))
         agg = agg.dropna(subset=['mixratio'])
+
+        # Drop low-injection groups (instrument-specific threshold). A group
+        # with fewer than MIN_CAL_INJECTIONS unrejected injections (e.g. FE3
+        # single-injection "Other" test runs) has stddev=0 and is not a usable
+        # calibration. Delete any stale row for such groups — mirroring the
+        # fully-rejected handling above — so re-batching also cleans previously
+        # written low-n rows. Skipped when the threshold is 1 (M4, BLD1, ...).
+        min_inj = getattr(self, 'MIN_CAL_INJECTIONS', 1)
+        if min_inj > 1 and not agg.empty:
+            below = agg[agg['num'] < min_inj]
+            agg = agg[agg['num'] >= min_inj]
+            if not below.empty:
+                sql_del_lown = """
+                    DELETE FROM hats.calibrations
+                    WHERE serial_number = %s AND date = %s AND time = %s
+                      AND species = %s AND inst = %s AND parameter_num = %s
+                """
+                for _, row in below.iterrows():
+                    rt = pd.Timestamp(row['run_time'])
+                    self.db.doquery(sql_del_lown, (
+                        row['tank_serial_num'], rt.date(), rt.time(),
+                        species, inst_str, parameter_num,
+                    ))
 
         sql_upsert = """
             INSERT INTO hats.calibrations (

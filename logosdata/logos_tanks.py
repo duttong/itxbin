@@ -9,6 +9,7 @@ del _here, _sys, _os
 import json
 import os
 import math
+import warnings
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -34,6 +35,31 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
 MAX_SAVED_SETS = 5
+
+# Directory holding the shared CCG calibration/fit modules that `caldrift`
+# uses (ccg_cal_db.Calibrations + ccg_calfit.fitCalibrations). We import and
+# reuse the fit engine directly rather than shelling out to or editing
+# caldrift itself. Matches the path in the /ccg/bin/caldrift wrapper.
+_CCG_NEXTGEN = "/ccg/src/python3/nextgen"
+
+
+def _import_ccg_fit():
+    """Lazily import the CCG cal/fit modules from the nextgen dir.
+
+    Returns a (ccg_cal_db, ccg_calfit, ccg_dates) tuple, or None if the
+    modules are unavailable (keeps logos_tanks usable without them).
+    """
+    import importlib
+    if _CCG_NEXTGEN not in sys.path:
+        sys.path.append(_CCG_NEXTGEN)
+    try:
+        return (
+            importlib.import_module("ccg_cal_db"),
+            importlib.import_module("ccg_calfit"),
+            importlib.import_module("ccg_dates"),
+        )
+    except Exception:
+        return None
 
 
 def _read_config() -> dict:
@@ -1367,7 +1393,8 @@ class TanksWidget(QWidget):
                 c.stddev,
                 c.num,
                 c.run_number,
-                c.inst
+                c.inst,
+                c.species
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
@@ -1385,6 +1412,121 @@ class TanksWidget(QWidget):
         except Exception as exc:
             self._toast(f"DB error for tank {serial}: {exc}")
             return pd.DataFrame()
+
+    def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df):
+        """Overlay caldrift's auto drift fit (curve + legend entry) for one tank.
+
+        Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
+        ccg_calfit.fitCalibrations (the fit engine caldrift calls); it does not
+        shell out to or modify caldrift. Reproduces the default `caldrift --plot`
+        behaviour: all unflagged cals for the fill, auto fit type. Called only
+        when a single tank/fill is plotted.
+        """
+        if not species or not fillcode:
+            return
+        mods = _import_ccg_fit()
+        if mods is None:
+            return
+        ccg_cal_db, ccg_calfit, ccg_dates = mods
+
+        try:
+            cals = ccg_cal_db.Calibrations(
+                tank=str(serial),
+                gas=str(species),
+                fillingcode=str(fillcode),
+                database="hats",
+                quiet=True,
+            )
+        except Exception as exc:
+            self._toast(f"caldrift fit: DB error for {serial}: {exc}")
+            return
+
+        # Match `caldrift --plot` default: include only unflagged cals ('.'),
+        # drop 9'd/None values. These are the cals caldrift itself would fit.
+        candidates = [
+            d for d in cals.cals
+            if d.get("flag") == "."
+            and d.get("mixratio") is not None
+            and d.get("mixratio") > -800
+        ]
+        # Guard the shared ccg_calfit engine: it weights points by 1/unc**2,
+        # so a cal with zero/blank uncertainty (single-injection num=1 rows,
+        # degenerate 0.0 values) yields an infinite weight -> NaN -> a LAPACK
+        # failure that crashes even the standalone caldrift. Drop those here
+        # (rather than editing caldrift) and report how many so the plot can
+        # tell the user the fit used fewer points than caldrift's full set.
+        fit_data = [
+            d for d in candidates
+            if d.get("episode_unc") is not None and d.get("episode_unc") > 0
+        ]
+        n_excluded = len(candidates) - len(fit_data)
+        if not fit_data:
+            return
+        try:
+            # Suppress numeric RuntimeWarnings from the third-party fit engine
+            # (we can't edit it); genuine failures still raise and are caught.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                fit = ccg_calfit.fitCalibrations(fit_data, degree="auto")
+        except Exception as exc:
+            self._toast(f"caldrift fit failed for {serial}: {exc}")
+            return
+        if fit is None or fit.n < 1 or fit.coef0 <= -800:
+            return
+
+        # Build a smooth fit curve across the plotted datetime span. Work in
+        # decimal-date space (as caldrift does) so we don't round-trip the
+        # interpolated points through datetime (avoids nanosecond warnings).
+        dts = plot_df["datetime"].dropna()
+        if dts.empty:
+            return
+        dd_min = ccg_dates.decimalDateFromDatetime(dts.min().to_pydatetime())
+        dd_max = ccg_dates.decimalDateFromDatetime(dts.max().to_pydatetime())
+        if dd_max <= dd_min:
+            dd_max = dd_min + 1e-6
+        steps = 200
+        line_dd = [dd_min + i * (dd_max - dd_min) / (steps - 1) for i in range(steps)]
+        x_dates = [ccg_dates.datetimeFromDecimalDate(dd) for dd in line_dd]
+        ys = [
+            fit.coef0 + fit.coef1 * (dd - fit.tzero) + fit.coef2 * (dd - fit.tzero) ** 2
+            for dd in line_dd
+        ]
+
+        # Auto fit collapses to the highest significant degree; report which.
+        excl = f", {n_excluded} excl." if n_excluded else ""
+        if fit.coef2 != 0.0:
+            label = (
+                f"caldrift (quad): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}, "
+                f"c2={fit.coef2:.6f}  (rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+            )
+        elif fit.coef1 != 0.0:
+            label = (
+                f"caldrift (linear): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}  "
+                f"(rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+            )
+        else:
+            label = (
+                f"caldrift (mean): {fit.coef0:.3f}  "
+                f"(rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+            )
+
+        ax.plot(
+            x_dates, ys,
+            color="red", linestyle="--", linewidth=1.5, zorder=1, label=label,
+        )
+
+        # When degenerate cals were dropped, surface it as a legend entry (an
+        # invisible proxy line, ordered/tinted by the caller): the fit used
+        # fewer points than caldrift's full unflagged set, and caldrift would
+        # have errored on those points rather than skipping them.
+        if n_excluded:
+            ax.plot(
+                [], [], linestyle="none", marker="none",
+                label=(
+                    f"⚠ {n_excluded} cal(s) with zero uncertainty excluded "
+                    f"from fit (caldrift would error)"
+                ),
+            )
 
     def _on_plot_tanks(self):
         """Pop up a matplotlib figure with mole fraction history for selected tanks."""
@@ -1448,6 +1590,9 @@ class TanksWidget(QWidget):
                 pick_map = {}
                 any_data = False
                 all_inst_dts: list[tuple] = []   # (datetime, inst) across all tanks
+                # When exactly one tank/fill is plotted, remember what we need
+                # to overlay caldrift's drift fit after the loop.
+                single_ctx = None
 
                 for fill_key in tank_keys:
                     meta = self._tank_metadata.get(str(fill_key), {})
@@ -1508,6 +1653,17 @@ class TanksWidget(QWidget):
                         }
                     any_data = True
 
+                    if len(tank_keys) == 1:
+                        cal_species = None
+                        if "species" in df.columns and not df["species"].dropna().empty:
+                            cal_species = str(df["species"].dropna().iloc[0])
+                        single_ctx = {
+                            "serial": serial,
+                            "species": cal_species,
+                            "fillcode": fill_code,
+                            "df": df,
+                        }
+
                 state["pick_map"] = pick_map
 
                 # Draw instrument-transition vertical lines when the calibration
@@ -1565,7 +1721,35 @@ class TanksWidget(QWidget):
                     return False
 
                 ax.set_title(f"Calibrations for {param_name} ({inst_id.upper()})")
-                ax.legend()
+                if single_ctx is not None:
+                    self._overlay_caldrift_fit(
+                        ax,
+                        single_ctx["serial"],
+                        single_ctx["species"],
+                        single_ctx["fillcode"],
+                        single_ctx["df"],
+                    )
+
+                # Legend order: tank series first, then the caldrift fit, then
+                # the zero-uncertainty warning (if _overlay_caldrift_fit added
+                # one). Stable within each rank, so multi-tank order is kept.
+                handles, labels = ax.get_legend_handles_labels()
+
+                def _legend_rank(lbl):
+                    if lbl.startswith("caldrift"):
+                        return 1
+                    if lbl.startswith("⚠"):
+                        return 2
+                    return 0
+
+                order = sorted(range(len(labels)), key=lambda i: _legend_rank(labels[i]))
+                legend = ax.legend(
+                    [handles[i] for i in order],
+                    [labels[i] for i in order],
+                )
+                for text in legend.get_texts():
+                    if text.get_text().startswith("⚠"):
+                        text.set_color("darkorange")
                 fig.autofmt_xdate()
                 fig.tight_layout()
 

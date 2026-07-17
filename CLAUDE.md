@@ -56,6 +56,17 @@
   Groups where **all** injections are rejected are **deleted** from this table
   by `upsert_calibrations()` rather than left stale — re-run the batch script
   after rejections to keep this table current.
+  **Minimum injections:** `upsert_calibrations()` only writes groups with at
+  least `self.MIN_CAL_INJECTIONS` unrejected injections (base default `1`;
+  `FE3_Instrument` overrides to `3`). FE3's "Other" (run_type 4) cal category
+  also carries single-injection test runs that aggregate to `num=1`, `stddev=0`
+  rows — meaningless as calibrations and they break drift fitting (caldrift).
+  Below-threshold groups are deleted like fully-rejected ones. The gate is a
+  no-op for instruments left at `1` (M4, BLD1, Perseus). Note it only cleans
+  groups re-encountered with a valid mole fraction; single-injection runs whose
+  mole fraction recomputes to NaN are already dropped before the gate, so a
+  historical bulk `DELETE ... WHERE inst='FE3' AND num<3` was used once to clear
+  the pre-gate residue.
   `hats.calibrations_view` re-derives the same data live from `ng_data_view` /
   `prs_data_view` (always reflects current rejection state, but ~100× slower);
   note: PR2 is currently absent from `calibrations_view` due to a `level`

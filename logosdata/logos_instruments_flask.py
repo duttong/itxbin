@@ -407,6 +407,11 @@ class FE3_Instrument(HATS_DB_Functions):
     }
     STANDARD_PORT_NUM = 1       # port number the standard is run on.
     CAL_RUN_TYPES = {2, 4}      # run_type_num values written to hats.calibrations
+    # Require >=3 unrejected injections for a calibration row. FE3's "Other"
+    # (run_type 4) cal category also carries single-injection test runs (e.g.
+    # multi-tank screening runs in 2022); those aggregate to num=1 rows with
+    # stddev=0 that are meaningless as calibrations and break drift fitting.
+    MIN_CAL_INJECTIONS = 3
     WARMUP_RUN_TYPE = 3         # run type num warmup runs are on.
     EXCLUDE = [9]               # push port - exclude from autoscaling
 
