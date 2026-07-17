@@ -40,6 +40,7 @@ from matplotlib.lines import Line2D
 import matplotlib.dates as mdates
 import matplotlib.text as mtext
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.backend_tools import Cursors as MplCursors
 from matplotlib.widgets import RectangleSelector
 
 
@@ -213,6 +214,39 @@ class FastNavigationToolbar(NavigationToolbar):
 
         self.on_flag_toggle = on_flag_toggle
 
+        # The base toolbar resets the cursor to a pointer on every mouse move;
+        # keep the tagging crosshair when no nav tool is engaged.
+        self._canvas_set_cursor = canvas.set_cursor
+        canvas.set_cursor = self._set_cursor_keep_crosshair
+
+    def _tag_mode_active(self) -> bool:
+        mw = self.main_window
+        if mw is None:
+            return False
+        panel = getattr(mw, '_multi_tag_panel', None)
+        return bool(getattr(mw, 'tagging_enabled', False)
+                    or (panel is not None and panel.isVisible()))
+
+    def _set_cursor_keep_crosshair(self, cursor):
+        if (cursor == MplCursors.POINTER and not self.mode
+                and self._tag_mode_active()):
+            self.canvas.setCursor(QtCore.Qt.CrossCursor)
+            return
+        self._canvas_set_cursor(cursor)
+
+    def _restore_crosshair(self):
+        """Re-apply the tagging crosshair right after a nav tool is toggled off."""
+        if not self.mode and self._tag_mode_active():
+            self.canvas.setCursor(QtCore.Qt.CrossCursor)
+
+    def pan(self, *args):
+        super().pan(*args)
+        self._restore_crosshair()
+
+    def zoom(self, *args):
+        super().zoom(*args)
+        self._restore_crosshair()
+
     def home(self, *args, **kwargs):
         """Override home to always look at the data's ranges."""
         if hasattr(self, "main_window") and self.main_window:
@@ -368,8 +402,9 @@ class MultiTagPanel(QWidget):
         instructions = QLabel(
             "<b>How to tag:</b>"
             "<ul style='-qt-list-indent:0; margin-left:8px; margin-top:2px; margin-bottom:0px;'>"
-            "<li>Click a point, or turn on <b>Select Region</b> and drag a box, to select.</li>"
+            "<li>Click a point, or drag a box on the plot, to select.</li>"
             "<li><b>SHIFT+click</b> adds/removes single points; <b>SHIFT+drag</b> adds a region.</li>"
+            "<li>Toolbar Pan/Zoom take the mouse while engaged; selection resumes when toggled off.</li>"
             "<li>Check <b>R</b> to reject, <b>I</b> for an info tag &mdash; applied immediately to this analyte.</li>"
             "<li><b>Copy Tags to all Analytes</b> copies the tags and recalculates all mole fractions. "
             "Saving in the main window keeps tags on this analyte only.</li>"
@@ -382,31 +417,6 @@ class MultiTagPanel(QWidget):
             "border-radius: 6px; padding: 4px 6px; font-size: 11px; color: #1a2a4a;"
         )
         layout.addWidget(instructions)
-
-        self._select_btn = QPushButton("Select Region")
-        self._select_btn.setCheckable(True)
-        self._select_btn.setToolTip(
-            "Drag a rectangle on the plot to select multiple points.\n"
-            "SHIFT+drag adds a region to the current selection;\n"
-            "SHIFT+click toggles individual points in and out."
-        )
-        self._select_btn.setStyleSheet("""
-            QPushButton {
-                padding: 2px 8px;
-                border: 1px solid #aaa;
-                border-radius: 6px;
-                background-color: #f0f0f0;
-            }
-            QPushButton:hover:!checked { background-color: #e0e0e0; }
-            QPushButton:checked {
-                background-color: #2e7d32;
-                color: white;
-                font-weight: 600;
-                border: 1px solid #1b5e20;
-            }
-        """)
-        self._select_btn.toggled.connect(self._on_select_btn_toggled)
-        layout.addWidget(self._select_btn)
 
         self._info_label = QLabel("No point selected")
         self._info_label.setStyleSheet("color: gray; font-style: italic; font-size: 11px;")
@@ -556,9 +566,6 @@ class MultiTagPanel(QWidget):
         rows_h = sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
         self._table.setFixedHeight(header_h + rows_h + 4)
         self.adjustSize()
-
-    def _on_select_btn_toggled(self, checked: bool):
-        self.mw._set_multi_tag_select(checked)
 
     def _save_comment(self):
         if not self._mf_nums:
@@ -1457,22 +1464,11 @@ class MainWindow(QMainWindow):
             self._tagging_btn.setChecked(True)
 
     def on_flag_mode_toggled(self, checked: bool):
+        # Pan/Zoom stay available: while a nav tool is engaged it holds the
+        # canvas widgetlock (selectors go dormant) and _on_pick_point_inner
+        # skips tag actions, so the toolbar and tagging modes coexist.
         self.tagging_enabled = checked
         self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
-
-        tb = getattr(self.canvas, "toolbar", None)
-        if tb is not None:
-            # Always turn off zoom/pan modes first
-            if tb.mode == "zoom rect":
-                tb.zoom()
-            elif tb.mode == "pan/zoom":
-                tb.pan()
-            tb.mode = ""
-
-            # Disable/enable the buttons themselves
-            if "pan" in tb._actions and "zoom" in tb._actions:
-                tb._actions["pan"].setEnabled(not checked)
-                tb._actions["zoom"].setEnabled(not checked)
 
         if checked:
             #print("Enabling rectangle selector")
@@ -1772,14 +1768,13 @@ class MainWindow(QMainWindow):
             self._multi_tag_panel.clear_selection()
             self._multi_tag_panel.show()
             self._multi_tag_panel.raise_()
+            # Region select is always active while the panel is open.
+            self._set_multi_tag_select(True)
             self.tag_select_cb.setEnabled(False)
             self._tagging_btn.setEnabled(False)
         else:
             self._set_multi_tag_select(False)
             if self._multi_tag_panel is not None:
-                self._multi_tag_panel._select_btn.blockSignals(True)
-                self._multi_tag_panel._select_btn.setChecked(False)
-                self._multi_tag_panel._select_btn.blockSignals(False)
                 self._multi_tag_panel.hide()
             self._clear_highlight()
             self.tag_select_cb.setEnabled(True)
@@ -1832,7 +1827,7 @@ class MainWindow(QMainWindow):
             )
             self._multi_tag_rect_selector.set_active(True)
             self.canvas.setCursor(Qt.CrossCursor)
-        else:
+        elif not self.tagging_enabled:
             self.canvas.setCursor(Qt.ArrowCursor)
 
     def _on_multi_tag_box_select(self, eclick, erelease):
@@ -2674,14 +2669,12 @@ class MainWindow(QMainWindow):
             )
             self._rect_selector.set_active(True)
 
-        # Rebuild multi-tag region selector on the new axes if it was active.
-        multi_select_active = (
-            self._multi_tag_rect_selector is not None
-            or (self._multi_tag_panel is not None
-                and self._multi_tag_panel.isVisible()
-                and self._multi_tag_panel._select_btn.isChecked())
+        # Rebuild the multi-tag region selector on the new axes; it is active
+        # whenever the Multi-Tag panel is open.
+        self._set_multi_tag_select(
+            self._multi_tag_panel is not None
+            and self._multi_tag_panel.isVisible()
         )
-        self._set_multi_tag_select(multi_select_active)
                     
     def _style_gc_buttons(self):
         """

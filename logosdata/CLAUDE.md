@@ -135,16 +135,27 @@ sections. Opened via the **Multi-Tag** button or the `G` key cycle.
   reapplied by the batch loader after manual removal).
 - **Save/Update Comment** button is disabled unless the selected point(s)
   carry at least one tag.
-- **Selection gestures**: plain click selects one point; "Select Region" +
-  drag selects a box (both replace the selection). **SHIFT+click** toggles a
-  point in/out of the current selection; **SHIFT+drag** adds the box contents
-  (union, never removes). SHIFT+click on empty space is a no-op (a plain
-  empty-space click clears the selection). All shift paths funnel through
+- **Selection gestures**: plain click selects one point; dragging a box
+  selects a region (both replace the selection). Region select is **always
+  active while the panel is open** — there is no Select Region toggle; the
+  RectangleSelector is (re)built on panel open and after every `gc_plot`,
+  keyed on panel visibility. **SHIFT+click** toggles a point in/out of the
+  current selection; **SHIFT+drag** adds the box contents (union, never
+  removes). SHIFT+click on empty space is a no-op (a plain empty-space click
+  clears the selection). All shift paths funnel through
   `MainWindow._apply_multi_tag_selection()`, which dedupes, drops stale index
   labels, and re-highlights. SHIFT detection uses Qt keyboard modifiers
   (`_shift_held()`), not matplotlib key events (canvas focus is unreliable);
   the RectangleSelector is built with `state_modifier_keys=dict(square='')`
   to unbind matplotlib's default shift→square-box behavior.
+- **Toolbar coexistence**: Pan/Zoom are no longer disabled by the tagging
+  modes. An engaged nav tool holds the canvas widgetlock (selectors go
+  dormant automatically), `_on_pick_point_inner` returns early while
+  `toolbar.mode` is set, and `_on_click_tooltip` already guards likewise —
+  so drags pan/zoom while a tool is engaged and go back to selecting when
+  it's toggled off. `FastNavigationToolbar` wraps `canvas.set_cursor` to
+  keep the tagging crosshair (the base toolbar resets to a pointer on every
+  mouse move) and restores it in its `pan()`/`zoom()` overrides.
 
 ### Copy Tags to all Analytes
 
