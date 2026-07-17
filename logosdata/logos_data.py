@@ -473,6 +473,14 @@ class MultiTagPanel(QWidget):
             "Note: a Save finalizes tags for the current analyte only and\n"
             "removes them from this queue."
         )
+        self._copy_tags_btn_default_style = (
+            "QPushButton { padding: 4px 8px; border: 1px solid #aaa; border-radius: 4px; }"
+        )
+        self._copy_tags_btn_busy_style = (
+            "QPushButton { padding: 4px 8px; border: 1px solid #c9b458; "
+            "border-radius: 4px; background-color: #fff59d; }"
+        )
+        self._copy_tags_btn.setStyleSheet(self._copy_tags_btn_default_style)
         self._copy_tags_btn.clicked.connect(self._copy_tags_to_all)
         copy_layout.addWidget(self._copy_tags_btn)
         layout.addWidget(copy_row)
@@ -576,10 +584,24 @@ class MultiTagPanel(QWidget):
             print(f"MultiTagPanel save comment error: {exc}")
 
     def _copy_tags_to_all(self):
+        # Flash the button yellow immediately, then defer the (slow, blocking)
+        # recalc work to the next event-loop tick so the repaint lands first —
+        # same pattern as the plot-legend "Save flags to all gases" button.
+        self._copy_tags_btn.setText("Recalculating…")
+        self._copy_tags_btn.setEnabled(False)
+        self._copy_tags_btn.setStyleSheet(self._copy_tags_btn_busy_style)
+        QApplication.processEvents()
+        QTimer.singleShot(0, self._run_copy_tags_to_all)
+
+    def _run_copy_tags_to_all(self):
         try:
             self.mw.update_all_analytes()
         except Exception as exc:
             print(f"Copy tags error: {exc}")
+        finally:
+            self._copy_tags_btn.setText("Copy Tags to all Analytes")
+            self._copy_tags_btn.setEnabled(True)
+            self._copy_tags_btn.setStyleSheet(self._copy_tags_btn_default_style)
 
     def populate_tags(self, all_tags_ordered: list):
         pass  # layout is static; kept for API compatibility
