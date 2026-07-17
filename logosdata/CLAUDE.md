@@ -135,6 +135,16 @@ sections. Opened via the **Multi-Tag** button or the `G` key cycle.
   reapplied by the batch loader after manual removal).
 - **Save/Update Comment** button is disabled unless the selected point(s)
   carry at least one tag.
+- **Selection gestures**: plain click selects one point; "Select Region" +
+  drag selects a box (both replace the selection). **SHIFT+click** toggles a
+  point in/out of the current selection; **SHIFT+drag** adds the box contents
+  (union, never removes). SHIFT+click on empty space is a no-op (a plain
+  empty-space click clears the selection). All shift paths funnel through
+  `MainWindow._apply_multi_tag_selection()`, which dedupes, drops stale index
+  labels, and re-highlights. SHIFT detection uses Qt keyboard modifiers
+  (`_shift_held()`), not matplotlib key events (canvas focus is unreliable);
+  the RectangleSelector is built with `state_modifier_keys=dict(square='')`
+  to unbind matplotlib's default shift→square-box behavior.
 
 ### Copy Tags to all Analytes
 

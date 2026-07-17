@@ -365,9 +365,31 @@ class MultiTagPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
+        instructions = QLabel(
+            "<b>How to tag:</b>"
+            "<ul style='margin-left:12px; margin-top:2px; margin-bottom:0px;'>"
+            "<li>Click a point, or turn on <b>Select Region</b> and drag a box, to select.</li>"
+            "<li><b>SHIFT+click</b> adds/removes single points; <b>SHIFT+drag</b> adds a region.</li>"
+            "<li>Check <b>R</b> to reject, <b>I</b> for an info tag &mdash; applied immediately to this analyte.</li>"
+            "<li><b>Copy Tags to all Analytes</b> copies the tags and recalculates all mole fractions. "
+            "Saving in the main window keeps tags on this analyte only.</li>"
+            "<li>Add a note with <b>Save/Update Comment</b> (needs at least one tag).</li>"
+            "</ul>"
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet(
+            "background-color: #eef3fb; border: 1px solid #c8d4e8; "
+            "border-radius: 6px; padding: 4px 6px; font-size: 11px; color: #1a2a4a;"
+        )
+        layout.addWidget(instructions)
+
         self._select_btn = QPushButton("Select Region")
         self._select_btn.setCheckable(True)
-        self._select_btn.setToolTip("Drag a rectangle on the plot to select multiple points")
+        self._select_btn.setToolTip(
+            "Drag a rectangle on the plot to select multiple points.\n"
+            "SHIFT+drag adds a region to the current selection;\n"
+            "SHIFT+click toggles individual points in and out."
+        )
         self._select_btn.setStyleSheet("""
             QPushButton {
                 padding: 2px 8px;
@@ -1763,6 +1785,31 @@ class MainWindow(QMainWindow):
             self.tag_select_cb.setEnabled(True)
             self._tagging_btn.setEnabled(True)
 
+    def _shift_held(self) -> bool:
+        """True while SHIFT is down. Qt modifiers are used instead of the
+        matplotlib event key because the canvas only sees key events when it
+        has keyboard focus, which is unreliable in this app."""
+        return bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
+    def _apply_multi_tag_selection(self, row_idxs):
+        """Refresh the Multi-Tag panel and highlight for an arbitrary selection.
+        Dedupes, drops index labels no longer in self.run (stale after a
+        reload), and keeps dataframe order."""
+        if self._multi_tag_panel is None:
+            return
+        pos = self.run.index.get_indexer(list(row_idxs)) if len(self.run) else np.array([], dtype=int)
+        pos = np.unique(pos[pos >= 0])
+        if pos.size == 0:
+            self._clear_highlight()
+            self._multi_tag_panel.clear_selection()
+            return
+        row_idxs = list(self.run.index[pos])
+        mf_nums = self._mole_fraction_nums_for_indices(row_idxs)
+        tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
+        self._multi_tag_panel.update_for_point(row_idxs, mf_nums, tag_counts,
+                                               total=len(mf_nums) or 1)
+        self._highlight_region(row_idxs, self._x_num[pos])
+
     def _set_multi_tag_select(self, enabled: bool):
         """Activate or deactivate the multi-tag window-select RectangleSelector."""
         if self._multi_tag_rect_selector is not None:
@@ -1779,6 +1826,9 @@ class MainWindow(QMainWindow):
                 spancoords="pixels",
                 drag_from_anywhere=True,
                 ignore_event_outside=False,
+                # SHIFT extends the selection here; unbind matplotlib's
+                # default shift->force-square-box behavior.
+                state_modifier_keys=dict(square=''),
             )
             self._multi_tag_rect_selector.set_active(True)
             self.canvas.setCursor(Qt.CrossCursor)
@@ -1802,10 +1852,10 @@ class MainWindow(QMainWindow):
         if not row_idxs:
             return
 
-        mf_nums = self._mole_fraction_nums_for_indices(row_idxs)
-        tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
-        self._multi_tag_panel.update_for_point(row_idxs, mf_nums, tag_counts, total=len(mf_nums))
-        self._highlight_region(row_idxs, self._x_num[mask])
+        # SHIFT+drag adds the box contents to the current selection.
+        if self._shift_held():
+            row_idxs = list(self._multi_tag_panel._row_idxs) + row_idxs
+        self._apply_multi_tag_selection(row_idxs)
 
     def set_calibration_enabled(self, enabled: bool):
         # enable or disable the other checkboxes associated with calibration_rb
@@ -2821,12 +2871,21 @@ class MainWindow(QMainWindow):
 
         # Update multi-tag panel for any scatter click (tagging mode not required).
         if (self._multi_tag_panel is not None and self._multi_tag_panel.isVisible()):
-            mf_nums = self._mole_fraction_nums_for_indices([row_idx])
-            tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
-            self._multi_tag_panel.update_for_point(
-                [row_idx], mf_nums, tag_counts, total=len(mf_nums) or 1
-            )
-            self._highlight_point(scatter, i, row_idx)
+            if self._shift_held():
+                # SHIFT+click toggles the point in/out of the current selection.
+                current = list(self._multi_tag_panel._row_idxs)
+                if row_idx in current:
+                    current.remove(row_idx)
+                else:
+                    current.append(row_idx)
+                self._apply_multi_tag_selection(current)
+            else:
+                mf_nums = self._mole_fraction_nums_for_indices([row_idx])
+                tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
+                self._multi_tag_panel.update_for_point(
+                    [row_idx], mf_nums, tag_counts, total=len(mf_nums) or 1
+                )
+                self._highlight_point(scatter, i, row_idx)
 
         if self.tagging_enabled:
             self._toggle_flags([row_idx])
@@ -2992,9 +3051,11 @@ class MainWindow(QMainWindow):
             QToolTip.showText(QCursor.pos(), text)
             break
         else:
-            # Click landed on empty space — deselect multi-tag selection if open.
+            # Click landed on empty space — deselect multi-tag selection if
+            # open. A missed SHIFT+click keeps the selection intact.
             if (self._multi_tag_panel is not None
-                    and self._multi_tag_panel.isVisible()):
+                    and self._multi_tag_panel.isVisible()
+                    and not self._shift_held()):
                 self._clear_highlight()
                 self._multi_tag_panel.clear_selection()
 
