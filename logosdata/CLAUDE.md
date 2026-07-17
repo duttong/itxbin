@@ -214,6 +214,30 @@ Drawn in `_gc_plot_impl` when "Hide Rejected Data" is unchecked:
 `auto_rejected` is True when all of a point's reject tags are in
 `AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324}`.
 
+### Port legend toggle (declutter)
+
+Clicking a port entry in the right-side sample legend (the marker or its
+text) hides/shows all of that port's data in the GC plot — main scatter,
+rejection overlays, and info-tag overlays together — like a per-port version
+of "Hide Rejected Data". Used to uncover a point obscured by other ports.
+
+- State lives in `self._hidden_ports` (a set of `port_idx`), honored by
+  `_gc_plot_impl` when drawing. The plot fully rebuilds each `gc_plot()`, so
+  this persistent set — not matplotlib `set_visible` — is what survives redraws.
+- Hidden ports stay in the legend, dimmed (`alpha=0.35`), so they can be
+  toggled back on. Their mean/std/count stats are still computed from full
+  data (hiding is purely visual; it does not change other ports' stats).
+- `_gc_plot_impl` builds `label_to_port` while making the legend handles;
+  after `ax.legend()` it maps each legend Text + handle artist to its port in
+  `self._port_legend_artists` and marks them pickable. `_on_legend_pick`
+  checks that dict first (before its `Text`-only guard, since handle markers
+  are `Line2D`), toggles `_hidden_ports`, preserves the current x/y view via
+  `_pending_xlim/ylim`, and redraws.
+- `_hidden_ports` is reset in `load_selected_run()` (fresh per loaded run) and
+  pruned to `ports_in_run` on each draw. `_port_legend_artists` is cleared in
+  `clear_plot()` and at the top of `calibration_plot()` so stale artist refs
+  can't match a pick on a non-GC plot.
+
 ## IE3 Calibration view (`_ie3_cal_plot`)
 
 Shown when the Calibration radio is selected and the loaded run is a weekly

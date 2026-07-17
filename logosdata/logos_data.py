@@ -788,6 +788,8 @@ class MainWindow(QMainWindow):
         self._ie3_exact_run_time = None  # pd.Timestamp for full IE3 carry-in run loads
         self._all_run_times = []  # sorted run_times in the loaded chunk, for nav arrows
         self._scatter_main = []
+        self._hidden_ports = set()      # port_idx values toggled off via the legend
+        self._port_legend_artists = {}  # legend Text/handle artist -> port_idx
         self._current_yparam = None
         self._current_yvar = None
         self._pick_refresh = False
@@ -2128,6 +2130,9 @@ class MainWindow(QMainWindow):
 
         legend_handles = []
         ports_in_run = sorted(self.run['port_idx'].dropna().unique())
+        # Drop any hidden-port state for ports no longer present in this run.
+        self._hidden_ports &= set(ports_in_run)
+        label_to_port = {}  # legend label text -> port_idx, for click-to-toggle
 
         for port in ports_in_run:
             color = self.run.loc[self.run['port_idx'] == port, 'port_color'].iloc[0]
@@ -2162,7 +2167,8 @@ class MainWindow(QMainWindow):
                 markersize=8,
                 label=label
             ))
-            
+            label_to_port[label] = port
+
         # Sort legend handles alphabetically by their label
         legend_handles = sorted(legend_handles, key=lambda h: h.get_label())
 
@@ -2172,6 +2178,8 @@ class MainWindow(QMainWindow):
         rejected = self.run['rejected'].fillna(0).astype(int)
         plot_df = self.run.loc[rejected == 0] if hide_flagged else self.run
         for port, subset in plot_df.groupby('port_idx'):
+            if port in self._hidden_ports:
+                continue
             marker = subset['port_marker'].iloc[0]
             color = subset['port_color']
             scatter = ax.scatter(
@@ -2244,8 +2252,10 @@ class MainWindow(QMainWindow):
             }
             self._scatter_main.append(scatter)
         
-        # overlay: show rejected points — auto-only with circle+X, manual with open circle
-        flags = rejected != 0
+        # overlay: show rejected points — auto-only with circle+X, manual with open circle.
+        # Rejected/tagged overlays for a hidden port hide with it.
+        visible_port = ~self.run['port_idx'].isin(self._hidden_ports)
+        flags = (rejected != 0) & visible_port
         auto_rej = flags & self.run.get("auto_rejected", pd.Series(False, index=self.run.index)).fillna(False)
         manual_rej = flags & ~auto_rej
         marker_size = self.instrument.BASE_MARKER_SIZE * 1.1
@@ -2282,7 +2292,7 @@ class MainWindow(QMainWindow):
 
         # overlay: informational-tag marker (steelblue +)
         if self.show_info_cb.isChecked() and 'has_info_tag' in self.run.columns:
-            info_mask = self.run['has_info_tag'].fillna(False).astype(bool)
+            info_mask = self.run['has_info_tag'].fillna(False).astype(bool) & visible_port
             info_grp = self.run.loc[info_mask]
             if not info_grp.empty:
                 ax.scatter(
@@ -2556,6 +2566,26 @@ class MainWindow(QMainWindow):
                     alpha=0.9,
                 ))
 
+        # ---- Make port legend entries clickable to toggle their data on/off ----
+        # leg.legendHandles and leg.get_texts() are parallel; match each to its
+        # port via the label recorded while building the handles. Hidden ports
+        # stay in the legend but are dimmed so they can be toggled back on.
+        self._port_legend_artists = {}
+        # legend_handles is the current name (mpl 3.7+); legendHandles is the
+        # 3.6 spelling (deprecated later). Prefer the new name when present.
+        legend_handles_out = getattr(leg, 'legend_handles', None)
+        if legend_handles_out is None:
+            legend_handles_out = leg.legendHandles
+        for handle, txt in zip(legend_handles_out, leg.get_texts()):
+            port = label_to_port.get(txt.get_text())
+            if port is None:
+                continue
+            dim = port in self._hidden_ports
+            for art in (txt, handle):
+                art.set_picker(True)
+                art.set_alpha(0.35 if dim else 1.0)
+                self._port_legend_artists[art] = port
+
         # ---- Run-time navigation arrows ----
         arrow_kw = dict(
             transform=ax.transAxes, va='top', fontsize=12,
@@ -2771,6 +2801,7 @@ class MainWindow(QMainWindow):
 
         # Reset internal state for legend and buttons
         self._scatter_main = []
+        self._port_legend_artists = {}
         self._save2db_text = None
         self._save2dball_text = None
         self._revert_text = None
@@ -3909,6 +3940,8 @@ class MainWindow(QMainWindow):
         Plot data with the legend sorted by analysis_datetime.
         Adds a residuals (diff_y) panel above the main plot that shares the x-axis.
         """
+        # The calibration legend has no port-toggle entries; drop stale refs.
+        self._port_legend_artists = {}
         if self.run.empty:
             self.clear_plot()
             return
@@ -4566,6 +4599,22 @@ class MainWindow(QMainWindow):
           
     def _on_legend_pick(self, event):
         art = event.artist
+
+        # Port legend entry clicked → toggle that port's data on/off.
+        port = self._port_legend_artists.get(art)
+        if port is not None:
+            if port in self._hidden_ports:
+                self._hidden_ports.discard(port)
+            else:
+                self._hidden_ports.add(port)
+            # Preserve the current view so the point you're inspecting stays put.
+            ax = self.figure.axes[0] if self.figure.axes else None
+            if ax is not None:
+                self._pending_xlim = ax.get_xlim()
+                self._pending_ylim = ax.get_ylim()
+            self.gc_plot(self._current_yparam)
+            return
+
         if not isinstance(art, mtext.Text):
             return
 
@@ -5254,6 +5303,8 @@ class MainWindow(QMainWindow):
         
     def load_selected_run(self):
         self._clear_highlight()
+        # A freshly loaded run starts with all ports visible.
+        self._hidden_ports = set()
         # IE3 cal run: load cal+ref port data for the selected week
         if (self.instrument.inst_id == 'ie3'
                 and self.current_run_time
