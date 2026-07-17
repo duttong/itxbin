@@ -646,6 +646,11 @@ class MultiTagPanel(QWidget):
             self.mw._record_pending_tag(self._row_idxs, tag_num, applied=False)
             self.mw._sync_rejected_state(self._row_idxs)
 
+        # Tag rows just changed — refresh the comment-button state, which was
+        # computed at selection time and goes stale after an add/remove.
+        tag_counts = self.mw._fetch_tag_counts_for_mf_nums(self._mf_nums)
+        self._save_comment_btn.setEnabled(bool(self._mf_nums) and bool(tag_counts))
+
         self.mw.madechanges = True
         self.mw._style_gc_buttons()
         ax = self.mw.figure.axes[0] if self.mw.figure.axes else None
