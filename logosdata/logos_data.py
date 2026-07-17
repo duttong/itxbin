@@ -367,7 +367,7 @@ class MultiTagPanel(QWidget):
 
         instructions = QLabel(
             "<b>How to tag:</b>"
-            "<ul style='margin-left:12px; margin-top:2px; margin-bottom:0px;'>"
+            "<ul style='-qt-list-indent:0; margin-left:8px; margin-top:2px; margin-bottom:0px;'>"
             "<li>Click a point, or turn on <b>Select Region</b> and drag a box, to select.</li>"
             "<li><b>SHIFT+click</b> adds/removes single points; <b>SHIFT+drag</b> adds a region.</li>"
             "<li>Check <b>R</b> to reject, <b>I</b> for an info tag &mdash; applied immediately to this analyte.</li>"
