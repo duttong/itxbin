@@ -92,7 +92,14 @@ when their tab is disabled — guard before use.
 | `rejected` | int 0/1 | view + `_sync_rejected_state()` |
 | `auto_rejected` | bool | `_update_auto_rejected()` |
 | `has_info_tag` | bool | `_update_info_tagged()` |
-| `_pending_tag_num` | nullable int | tag toggle helpers |
+
+Pending "copy to all analytes" state is **not** stored in `self.run` (a reload
+would wipe it). It lives in two MainWindow dicts keyed by `analysis_num`:
+`self._pending_tag_adds` / `self._pending_tag_removes`, each mapping
+`analysis_num -> set(tag_nums)` of tags (reject **and** info) applied/removed
+this session (recorded by `_record_pending_tag()`; multiple tags per injection
+supported). A single-analyte Save clears both dicts — saved tags are final for
+that analyte and can no longer be copied to the others.
 
 ## Save workflow
 
@@ -128,6 +135,34 @@ sections. Opened via the **Multi-Tag** button or the `G` key cycle.
   reapplied by the batch loader after manual removal).
 - **Save/Update Comment** button is disabled unless the selected point(s)
   carry at least one tag.
+
+### Copy Tags to all Analytes
+
+Tag clicks (MultiTagPanel checkboxes or G-mode `_toggle_flags`, reject and
+info alike) write the tag to the DB for the **current analyte only** and
+record the change in `_pending_tag_adds` / `_pending_tag_removes`. The
+**Copy Tags to all Analytes** button (and the plot-legend "Save flags to all
+gases" button) call `update_all_analytes()`, which:
+
+1. Propagates pending adds **and removals** to every analyte's mole-fraction
+   rows sharing each `analysis_num`, via
+   `instrument.update_flags_all_analytes(adds, removes)` (core version for
+   M4/FE3/BLD1; insitu override for IE3/CATS tables). Only injections present
+   in the currently loaded window are propagated — pending entries from runs
+   the user navigated away from are dropped with a console note, so tags are
+   never copied without the matching recalc.
+2. Reloads every analyte for the current window, recalculates mole fractions
+   (fresh smoothing/normalization now excludes newly rejected points), and
+   upserts `ng_mole_fractions` + `calibrations`.
+3. Clears the pending dicts.
+
+**Save vs. Copy-to-all are mutually exclusive intents**: a single-analyte
+Save (`S` key, Save legend button, IE3 "Update Method") finalizes the tags
+for that analyte and clears the pending dicts, so a later copy-to-all cannot
+accidentally drag previously saved tags along. Use Copy-to-all *instead of*
+Save when tags should reach every analyte (it saves all analytes itself,
+including the current one). Pending state does survive analyte/run switching
+— only Save and copy-to-all clear it.
 
 ### Informational tag overlay
 

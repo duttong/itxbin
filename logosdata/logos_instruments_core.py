@@ -477,20 +477,23 @@ class HATS_DB_Functions(LOGOS_Instruments):
         if params:
             self.db.doMultiInsert(sql_insert, params, all=True)
         
-    def update_flags_all_analytes(self, df):
-        """Propagate newly applied tags to all rows with the same analysis_num."""
+    @staticmethod
+    def _pending_tags_by_tag(pending: dict[int, set[int]] | None) -> dict[int, list[int]]:
+        """Invert {analysis_num: {tag_num, ...}} to {tag_num: [analysis_num, ...]}."""
+        by_tag: dict[int, set[int]] = {}
+        for analysis_num, tag_nums in (pending or {}).items():
+            for tag_num in tag_nums:
+                by_tag.setdefault(int(tag_num), set()).add(int(analysis_num))
+        return {t: sorted(a) for t, a in by_tag.items()}
 
-        if df.empty or '_pending_tag_num' not in df.columns:
-            return
+    def update_flags_all_analytes(self, pending_adds, pending_removes=None):
+        """Propagate reject-tag changes to every analyte sharing each analysis_num.
 
-        tagged = df.loc[df['_pending_tag_num'].notna(), ['analysis_num', '_pending_tag_num']]
-        if tagged.empty:
-            return
-
-        for tag_num, group in tagged.groupby('_pending_tag_num'):
-            analysis_nums = group['analysis_num'].dropna().astype(int).unique().tolist()
-            if not analysis_nums:
-                continue
+        Both arguments map analysis_num -> set of tag_nums: tags the user
+        applied (pending_adds) or removed (pending_removes) on the current
+        analyte that should be mirrored onto all other analytes' rows.
+        """
+        for tag_num, analysis_nums in self._pending_tags_by_tag(pending_adds).items():
             sql_set = f"""
                 INSERT IGNORE INTO hats.ng_mole_fraction_tags (
                     ng_mole_fraction_num,
@@ -502,7 +505,18 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 WHERE a.inst_num = {self.inst_num}
                 AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
             """
-            self.db.doquery(sql_set, [int(tag_num), *analysis_nums])
+            self.db.doquery(sql_set, [tag_num, *analysis_nums])
+
+        for tag_num, analysis_nums in self._pending_tags_by_tag(pending_removes).items():
+            sql_del = f"""
+                DELETE t FROM hats.ng_mole_fraction_tags t
+                JOIN hats.ng_mole_fractions mf ON t.ng_mole_fraction_num = mf.num
+                JOIN hats.ng_analysis a ON mf.analysis_num = a.num
+                WHERE a.inst_num = {self.inst_num}
+                AND t.tag_num = %s
+                AND mf.analysis_num IN ({','.join(['%s'] * len(analysis_nums))});
+            """
+            self.db.doquery(sql_del, [tag_num, *analysis_nums])
             
     def scale_values(self, tank, pnum, run_date=None):
         """

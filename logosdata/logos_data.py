@@ -435,8 +435,11 @@ class MultiTagPanel(QWidget):
         copy_layout.addStretch()
         self._copy_tags_btn = QPushButton("Copy Tags to all Analytes")
         self._copy_tags_btn.setToolTip(
-            "Propagate pending reject tags to all analytes for the same injection,\n"
-            "then recalculate and save mole fractions for all analytes."
+            "Propagate pending tag changes (reject and info, adds and removals)\n"
+            "to all analytes for the same injection, then recalculate and save\n"
+            "mole fractions for all analytes.\n"
+            "Note: a Save finalizes tags for the current analyte only and\n"
+            "removes them from this queue."
         )
         self._copy_tags_btn.clicked.connect(self._copy_tags_to_all)
         copy_layout.addWidget(self._copy_tags_btn)
@@ -631,15 +634,16 @@ class MultiTagPanel(QWidget):
 
         if apply:
             self.mw._insert_tag_for_mf_nums(self._mf_nums, tag_num)
+            self.mw._record_pending_tag(self._row_idxs, tag_num, applied=True)
             if is_reject:
                 for idx in self._row_idxs:
-                    self.mw.run.at[idx, "_pending_tag_num"] = tag_num
                     self.mw.run.at[idx, "rejected"] = 1
             elif tag_num in _INFO_TAG_NUMS:
                 for idx in self._row_idxs:
                     self.mw.run.at[idx, 'has_info_tag'] = True
         else:
             self.mw._delete_tag_for_mf_nums(self._mf_nums, tag_num)
+            self.mw._record_pending_tag(self._row_idxs, tag_num, applied=False)
             self.mw._sync_rejected_state(self._row_idxs)
 
         self.mw.madechanges = True
@@ -717,6 +721,10 @@ class MainWindow(QMainWindow):
         self._highlighted_point = {}
         self.tag_select_cb = QComboBox()
         self._multi_tag_panel: MultiTagPanel | None = None
+        # Reject-tag changes not yet copied to the other analytes, keyed by
+        # analysis_num so they survive run/analyte reloads of self.run.
+        self._pending_tag_adds: dict[int, set[int]] = {}
+        self._pending_tag_removes: dict[int, set[int]] = {}
         self._rect_selector = None
         self._multi_tag_rect_selector = None
         self._pick_cid = None
@@ -1618,6 +1626,38 @@ class MainWindow(QMainWindow):
         params = [(num, int(tag_num)) for num in mf_nums]
         self.instrument.db.doMultiInsert(sql, params, all=True)
         return len(mf_nums)
+
+    def _has_pending_tag_changes(self) -> bool:
+        return (any(self._pending_tag_adds.values())
+                or any(self._pending_tag_removes.values()))
+
+    def _clear_pending_tag_changes(self):
+        """Forget un-copied tag changes. Called after a copy-to-all, and after
+        a single-analyte Save so finalized tags can't be propagated later by
+        accident."""
+        self._pending_tag_adds = {}
+        self._pending_tag_removes = {}
+
+    def _record_pending_tag(self, idxs, tag_num: int, applied: bool):
+        """Track a tag add/remove (reject or info) per analysis_num so
+        Copy-to-all-Analytes can propagate it even after self.run has been
+        reloaded."""
+        if 'analysis_num' not in self.run.columns:
+            return
+        tag_num = int(tag_num)
+        for idx in idxs:
+            an = self.run.at[idx, 'analysis_num']
+            if pd.isna(an):
+                continue
+            an = int(an)
+            adds = self._pending_tag_adds.setdefault(an, set())
+            removes = self._pending_tag_removes.setdefault(an, set())
+            if applied:
+                adds.add(tag_num)
+                removes.discard(tag_num)
+            else:
+                removes.add(tag_num)
+                adds.discard(tag_num)
 
     def _insert_tag_for_mf_nums(self, mf_nums: list[int], tag_num: int):
         """Insert a tag directly given mole-fraction primary keys."""
@@ -3192,10 +3232,9 @@ class MainWindow(QMainWindow):
 
         if "rejected" not in self.run.columns:
             self.run["rejected"] = 0
-        if "_pending_tag_num" not in self.run.columns:
-            self.run["_pending_tag_num"] = pd.NA
 
         tag_num = int(self.selected_tag["tag_num"])
+        is_reject = int(self.selected_tag.get("reject") or 0) == 1
         mf_nums = self._mole_fraction_nums_for_indices(idxs)
         if not mf_nums:
             QMessageBox.warning(self, "Tag Not Applied",
@@ -3206,14 +3245,12 @@ class MainWindow(QMainWindow):
         already = self._fetch_tag_nums_for_mf_nums(mf_nums)
         if tag_num in already:
             self._delete_tag_for_mf_nums(mf_nums, tag_num)
-            for row_idx in idxs:
-                self.run.at[row_idx, "_pending_tag_num"] = pd.NA
+            self._record_pending_tag(idxs, tag_num, applied=False)
             self._sync_rejected_state(idxs)
         else:
             self._insert_tag_for_mf_nums(mf_nums, tag_num)
-            is_reject = int(self.selected_tag.get("reject") or 0) == 1
+            self._record_pending_tag(idxs, tag_num, applied=True)
             for row_idx in idxs:
-                self.run.at[row_idx, "_pending_tag_num"] = tag_num
                 if is_reject:
                     self.run.at[row_idx, "rejected"] = 1
                 elif tag_num in _INFO_TAG_NUMS:
@@ -4437,7 +4474,8 @@ class MainWindow(QMainWindow):
         elif art is self._save2db_text:
             self._save_current_gas_action()
         elif art is self._save2dball_text:
-            if not self.madechanges:
+            # Pending tag copies remain valid after a Save clears madechanges.
+            if not self.madechanges and not self._has_pending_tag_changes():
                 return
             # the button is disabled for all gases while smoothing is changing. Use only one gas at a time.
             if self.smoothing_changed:
@@ -4465,7 +4503,29 @@ class MainWindow(QMainWindow):
     def update_all_analytes(self):
             pnum = self.current_pnum
             ch = self.current_channel
-            self.instrument.update_flags_all_analytes(self.run)
+
+            # Propagate pending reject-tag adds/removes for injections in the
+            # currently loaded window. Entries from runs the user has since
+            # navigated away from are dropped (their current-analyte tags are
+            # already in the DB) so tags are never copied without the matching
+            # mole-fraction recalculation below.
+            current_ans = set()
+            if 'analysis_num' in self.run.columns:
+                current_ans = {int(a) for a in self.run['analysis_num'].dropna().unique()}
+            adds = {a: t for a, t in self._pending_tag_adds.items() if t and a in current_ans}
+            removes = {a: t for a, t in self._pending_tag_removes.items() if t and a in current_ans}
+            dropped = (
+                {a for a, t in self._pending_tag_adds.items() if t}
+                | {a for a, t in self._pending_tag_removes.items() if t}
+            ) - current_ans
+            if dropped:
+                print(f"Copy tags: {len(dropped)} tagged injection(s) outside the "
+                      "current run were not propagated to other analytes.")
+            if not adds and not removes:
+                print("Copy tags: no pending tag changes (a Save finalizes tags "
+                      "for the current analyte only); recalculating all analytes.")
+            self.instrument.update_flags_all_analytes(adds, removes)
+            self._clear_pending_tag_changes()
 
             start, end = self._current_load_dates()
 
@@ -4500,6 +4560,8 @@ class MainWindow(QMainWindow):
                     verbose=False
             )
             self.update_smoothing_combobox()
+            self._update_auto_rejected()
+            self._update_info_tagged()
 
             self.madechanges = False
             self.gc_plot(self._current_yparam, sub_info='SAVED ALL FLAGS')
@@ -4972,6 +5034,7 @@ class MainWindow(QMainWindow):
             self._ie3_cal_save()
             self.madechanges = False
             self.smoothing_changed = False
+            self._clear_pending_tag_changes()
             self._ie3_mf_dirty = True
             self._ie3_cal_plot()
             self._refresh_ie3_update_button()
@@ -5007,6 +5070,9 @@ class MainWindow(QMainWindow):
 
         self.madechanges = False
         self.smoothing_changed = False
+        # Save finalizes tags for this analyte only — drop them from the
+        # copy-to-all queue so they can't be propagated later by accident.
+        self._clear_pending_tag_changes()
         # gc_plot rebuilds the legend, so the yellow styling is replaced with
         # the standard idle/changed colors as a side effect.
         self.gc_plot(self._current_yparam, sub_info='SAVED')

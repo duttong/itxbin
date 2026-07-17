@@ -326,22 +326,13 @@ class IE3_Instrument(HATS_DB_Functions):
                 row['channel'],
             ])
 
-    def update_flags_all_analytes(self, df):
+    def update_flags_all_analytes(self, pending_adds, pending_removes=None):
         """
-        Propagate newly applied tags from df to all parameter rows sharing the same analysis_num.
+        Propagate reject-tag changes to all parameter rows sharing the same analysis_num.
         Overrides the base class which joins on ng_mole_fractions/ng_analysis (wrong tables for IE3).
+        Both arguments map analysis_num -> set of tag_nums (adds / removals).
         """
-        if df.empty or '_pending_tag_num' not in df.columns:
-            return
-
-        tagged = df.loc[df['_pending_tag_num'].notna(), ['analysis_num', '_pending_tag_num']]
-        if tagged.empty:
-            return
-
-        for tag_num, group in tagged.groupby('_pending_tag_num'):
-            analysis_nums = group['analysis_num'].dropna().astype(int).unique().tolist()
-            if not analysis_nums:
-                continue
+        for tag_num, analysis_nums in self._pending_tags_by_tag(pending_adds).items():
             placeholders = ','.join(['%s'] * len(analysis_nums))
             sql_set = f"""
                 INSERT IGNORE INTO hats.ng_insitu_mole_fraction_tags (
@@ -352,7 +343,17 @@ class IE3_Instrument(HATS_DB_Functions):
                 FROM hats.ng_insitu_mole_fractions
                 WHERE analysis_num IN ({placeholders});
             """
-            self.db.doquery(sql_set, [int(tag_num), *analysis_nums])
+            self.db.doquery(sql_set, [tag_num, *analysis_nums])
+
+        for tag_num, analysis_nums in self._pending_tags_by_tag(pending_removes).items():
+            placeholders = ','.join(['%s'] * len(analysis_nums))
+            sql_del = f"""
+                DELETE t FROM hats.ng_insitu_mole_fraction_tags t
+                JOIN hats.ng_insitu_mole_fractions mf ON t.ng_insitu_mole_fraction_num = mf.num
+                WHERE t.tag_num = %s
+                AND mf.analysis_num IN ({placeholders});
+            """
+            self.db.doquery(sql_del, [tag_num, *analysis_nums])
 
     def calc_mole_fraction_scale_simple(self, df):
         """Compute mole_fraction = normalized_resp * coef0 from hats.scale_assignments.
