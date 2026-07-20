@@ -1635,9 +1635,9 @@ class TanksWidget(QWidget):
 
         Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
         ccg_calfit.fitCalibrations (the fit engine caldrift calls); it does not
-        shell out to or modify caldrift. Reproduces the default `caldrift --plot`
-        behaviour: all unflagged cals for the fill, auto fit type. Called only
-        when a single tank/fill is plotted.
+        shell out to or modify caldrift. The fit is restricted to this panel's
+        calibration-instrument family, so it uses the same system history as
+        the visible series. Called only when a single tank/fill is plotted.
 
         exclude_flagged: when True (default, matching caldrift) only unflagged
         ('.') cals feed the fit; when False, manually flagged ('M') episodes are
@@ -1650,11 +1650,23 @@ class TanksWidget(QWidget):
             return
         ccg_cal_db, ccg_calfit, ccg_dates = mods
 
+        # Calibrations() otherwise includes every instrument that measured the
+        # tank.  That made an M4 plot's red fit include PR1/PR2 results which
+        # were not blue points on the figure.  Keep the source selection in
+        # lockstep with _fetch_calibration_df().
+        calibration_inst_ids = getattr(self.instrument, "calibration_inst_ids", None)
+        if calibration_inst_ids:
+            syslist = ",".join(str(inst) for inst in calibration_inst_ids)
+        else:
+            inst_id = self._resolve_inst_id()
+            syslist = str(inst_id) if inst_id else None
+
         try:
             cals = ccg_cal_db.Calibrations(
                 tank=str(serial),
                 gas=str(species),
                 fillingcode=str(fillcode),
+                syslist=syslist,
                 database="hats",
                 quiet=True,
             )
@@ -1662,9 +1674,9 @@ class TanksWidget(QWidget):
             self._toast(f"caldrift fit: DB error for {serial}: {exc}")
             return
 
-        # Match `caldrift --plot` default: include unflagged cals ('.') — plus
-        # flagged ('M') episodes when the panel asks to include them — and drop
-        # 9'd/None values. These are the cals caldrift itself would fit.
+        # Include unflagged cals ('.') — plus flagged ('M') episodes when the
+        # panel asks to include them — and drop 9'd/None values.  The selected
+        # system list above keeps these candidates aligned with the plot.
         allowed_flags = (".",) if exclude_flagged else (".", "M")
         candidates = [
             d for d in cals.cals
@@ -1720,17 +1732,17 @@ class TanksWidget(QWidget):
         if fit.coef2 != 0.0:
             label = (
                 f"caldrift (quad): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}, "
-                f"c2={fit.coef2:.6f}  (rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+                f"c2={fit.coef2:.6f}  (sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
             )
         elif fit.coef1 != 0.0:
             label = (
                 f"caldrift (linear): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}  "
-                f"(rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+                f"(sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
             )
         else:
             label = (
                 f"caldrift (mean): {fit.coef0:.3f}  "
-                f"(rsd={fit.sd_resid:.3f}, n={fit.n}{excl})"
+                f"(sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
             )
 
         ax.plot(
