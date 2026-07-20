@@ -237,6 +237,100 @@ class TanksPlotter:
         return self._filter_active_tanks(df, parameter_num)
     
 
+class CaldriftPanel(QWidget):
+    """Floating panel for the single-tank caldrift figure.
+
+    Flag/unflag calibration episodes (hats.calibrations.flag = 'M' / '.'),
+    toggle whether flagged episodes feed the fit, and refresh the fit. Styled
+    to match the logos_data Multi-Tag panel. All actions call back into the
+    owning TanksWidget (``controller``).
+    """
+
+    def __init__(self, controller):
+        super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.controller = controller
+        self.setWindowTitle("Caldrift")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        instructions = QLabel(
+            "<b>Flag episodes:</b>"
+            "<ul style='-qt-list-indent:0; margin-left:8px; margin-top:2px; margin-bottom:0px;'>"
+            "<li>Click a calibration point to select it; <b>SHIFT+click</b> adds/removes more.</li>"
+            "<li><b>Flag Selected</b> sets <tt>flag='M'</tt>; flagged points show as open circles.</li>"
+            "<li>With <b>Exclude Flagged</b> checked, the caldrift fit ignores flagged episodes.</li>"
+            "<li><b>Refresh Fit</b> re-reads the flags and re-runs the fit.</li>"
+            "</ul>"
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet(
+            "background-color: #eef3fb; border: 1px solid #c8d4e8; "
+            "border-radius: 6px; padding: 4px 6px; font-size: 11px; color: #1a2a4a;"
+        )
+        layout.addWidget(instructions)
+
+        self._info_label = QLabel("No episode selected")
+        self._info_label.setStyleSheet("color: gray; font-style: italic; font-size: 11px;")
+        layout.addWidget(self._info_label)
+
+        _btn_style = "QPushButton { padding: 4px 8px; border: 1px solid #aaa; border-radius: 4px; }"
+        flag_row = QHBoxLayout()
+        self._flag_btn = QPushButton("Flag Selected (M)")
+        self._flag_btn.setStyleSheet(_btn_style)
+        self._flag_btn.clicked.connect(lambda: self.controller._caldrift_flag_selected("M"))
+        self._unflag_btn = QPushButton("Unflag Selected")
+        self._unflag_btn.setStyleSheet(_btn_style)
+        self._unflag_btn.clicked.connect(lambda: self.controller._caldrift_flag_selected("."))
+        flag_row.addWidget(self._flag_btn)
+        flag_row.addWidget(self._unflag_btn)
+        layout.addLayout(flag_row)
+
+        self._clear_btn = QPushButton("Clear Selection")
+        self._clear_btn.setStyleSheet(_btn_style)
+        self._clear_btn.clicked.connect(self.controller._caldrift_clear_selection)
+        layout.addWidget(self._clear_btn)
+
+        self._exclude_cb = QCheckBox("Exclude Flagged")
+        self._exclude_cb.setToolTip("Leave flagged episodes out of the caldrift fit.")
+        self._exclude_cb.setChecked(True)
+        self._exclude_cb.toggled.connect(self.controller._caldrift_set_exclude)
+        layout.addWidget(self._exclude_cb)
+
+        self._hide_cb = QCheckBox("Hide Flagged")
+        self._hide_cb.setToolTip(
+            "Remove flagged points from the figure so autoscale uses only unflagged data."
+        )
+        self._hide_cb.toggled.connect(self.controller._caldrift_set_hide)
+        layout.addWidget(self._hide_cb)
+
+        self._refresh_btn = QPushButton("Refresh Fit")
+        self._refresh_btn.setStyleSheet(
+            "QPushButton { padding: 4px 8px; border: 1px solid #8bbf8b; "
+            "border-radius: 4px; background-color: #e7f6e7; }"
+        )
+        self._refresh_btn.clicked.connect(self.controller._caldrift_refresh_fit)
+        layout.addWidget(self._refresh_btn)
+
+        self.setMinimumWidth(300)
+        self.set_selected_count(0)
+
+    def set_selected_count(self, n: int):
+        self._info_label.setText("No episode selected" if n == 0 else f"{n} episode(s) selected")
+        has = n > 0
+        self._flag_btn.setEnabled(has)
+        self._unflag_btn.setEnabled(has)
+        self._clear_btn.setEnabled(has)
+
+    def closeEvent(self, event):
+        try:
+            self.controller._caldrift_on_panel_closed()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
 class TanksWidget(QWidget):
     """
     Simple control pane for selecting a year range + gas and showing tanks
@@ -265,6 +359,13 @@ class TanksWidget(QWidget):
         self._tank_metadata: dict[str, dict] = {}
         self._tank_cache: dict[str, list[dict]] = {}
         self._tank_cache_range: tuple[int, int] | None = None
+        # --- caldrift panel state (single-tank figure) ---
+        self._caldrift_panel = None            # CaldriftPanel | None
+        self._caldrift_ctx: dict | None = None  # live single-tank figure context
+        self._caldrift_refresh = None           # callable: re-run _plot_for for current analyte
+        self._caldrift_selected: set[int] = set()   # df row indices selected for flagging
+        self._caldrift_exclude_flagged: bool = True  # flagged episodes omitted from the fit
+        self._caldrift_hide_flagged: bool = False    # flagged episodes removed from the figure
         self.analytes = self.instrument.analytes or {} if self.instrument else {}
         self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
         self._preferred_channels = self._load_preferred_channels()
@@ -1382,10 +1483,17 @@ class TanksWidget(QWidget):
         serial: str,
         parameter_num: int,
         inst_id: str,
+        include_flagged: bool = False,
     ) -> pd.DataFrame:
-        """Query calibration mole fractions for a tank/parameter from hats.calibrations."""
+        """Query calibration mole fractions for a tank/parameter from hats.calibrations.
+
+        include_flagged: when True, also return manually flagged episodes
+        (flag='M') alongside the flag column, so the caller can render them as
+        flagged points. The caldrift single-tank figure uses this.
+        """
         serial_safe = str(serial).replace("'", "''")
         inst_filter = self._calibration_inst_filter(inst_id)
+        flag_filter = "c.flag IN ('.', 'M')" if include_flagged else "c.flag = '.'"
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
@@ -1394,7 +1502,8 @@ class TanksWidget(QWidget):
                 c.num,
                 c.run_number,
                 c.inst,
-                c.species
+                c.species,
+                c.flag
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
@@ -1403,7 +1512,7 @@ class TanksWidget(QWidget):
               AND c.mixratio > -99
               AND c.mixratio != 0
               AND c.num >= 3
-              AND c.flag = '.'
+              AND {flag_filter}
             ORDER BY c.date, c.time;
         """
         try:
@@ -1413,7 +1522,8 @@ class TanksWidget(QWidget):
             self._toast(f"DB error for tank {serial}: {exc}")
             return pd.DataFrame()
 
-    def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df):
+    def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df,
+                              exclude_flagged: bool = True):
         """Overlay caldrift's auto drift fit (curve + legend entry) for one tank.
 
         Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
@@ -1421,6 +1531,10 @@ class TanksWidget(QWidget):
         shell out to or modify caldrift. Reproduces the default `caldrift --plot`
         behaviour: all unflagged cals for the fill, auto fit type. Called only
         when a single tank/fill is plotted.
+
+        exclude_flagged: when True (default, matching caldrift) only unflagged
+        ('.') cals feed the fit; when False, manually flagged ('M') episodes are
+        included too. Driven by the caldrift panel's "Exclude Flagged" checkbox.
         """
         if not species or not fillcode:
             return
@@ -1441,11 +1555,13 @@ class TanksWidget(QWidget):
             self._toast(f"caldrift fit: DB error for {serial}: {exc}")
             return
 
-        # Match `caldrift --plot` default: include only unflagged cals ('.'),
-        # drop 9'd/None values. These are the cals caldrift itself would fit.
+        # Match `caldrift --plot` default: include unflagged cals ('.') — plus
+        # flagged ('M') episodes when the panel asks to include them — and drop
+        # 9'd/None values. These are the cals caldrift itself would fit.
+        allowed_flags = (".",) if exclude_flagged else (".", "M")
         candidates = [
             d for d in cals.cals
-            if d.get("flag") == "."
+            if d.get("flag") in allowed_flags
             and d.get("mixratio") is not None
             and d.get("mixratio") > -800
         ]
@@ -1528,6 +1644,131 @@ class TanksWidget(QWidget):
                 ),
             )
 
+    # --- Caldrift flag panel (single-tank figure) ---
+    def _open_caldrift_panel(self):
+        """Open (or raise) the caldrift flag panel for the current figure."""
+        if self._caldrift_ctx is None:
+            self._toast("Plot a single tank to use caldrift flagging.")
+            return
+        if self._caldrift_panel is None:
+            self._caldrift_panel = CaldriftPanel(self)
+        cb = self._caldrift_panel._exclude_cb
+        cb.blockSignals(True)
+        cb.setChecked(self._caldrift_exclude_flagged)
+        cb.blockSignals(False)
+        hb = self._caldrift_panel._hide_cb
+        hb.blockSignals(True)
+        hb.setChecked(self._caldrift_hide_flagged)
+        hb.blockSignals(False)
+        self._caldrift_update_panel_info()
+        self._caldrift_panel.show()
+        self._caldrift_panel.raise_()
+        self._caldrift_panel.activateWindow()
+
+    def _caldrift_panel_open(self) -> bool:
+        return self._caldrift_panel is not None and self._caldrift_panel.isVisible()
+
+    def _caldrift_update_panel_info(self):
+        if self._caldrift_panel is not None:
+            self._caldrift_panel.set_selected_count(len(self._caldrift_selected))
+
+    def _caldrift_toggle_selection(self, idx: int, additive: bool):
+        """Add/remove a plotted episode (df row index) in the flag selection."""
+        if self._caldrift_ctx is None:
+            return
+        if additive:
+            self._caldrift_selected.symmetric_difference_update({idx})
+        else:
+            # plain click selects only this point, or clears if re-clicked
+            self._caldrift_selected = set() if self._caldrift_selected == {idx} else {idx}
+        self._caldrift_redraw_highlight()
+        self._caldrift_update_panel_info()
+
+    def _caldrift_clear_selection(self):
+        self._caldrift_selected = set()
+        self._caldrift_redraw_highlight()
+        self._caldrift_update_panel_info()
+
+    def _caldrift_redraw_highlight(self):
+        """Draw a gold ring around currently selected episodes (no full replot)."""
+        ctx = self._caldrift_ctx
+        if not ctx:
+            return
+        old = ctx.get("highlight")
+        if old is not None:
+            try:
+                old.remove()
+            except Exception:
+                pass
+            ctx["highlight"] = None
+        ax = ctx.get("ax")
+        df = ctx.get("df")
+        if ax is not None and df is not None and self._caldrift_selected:
+            idxs = [i for i in self._caldrift_selected if 0 <= i < len(df)]
+            if idxs:
+                sub = df.iloc[idxs]
+                ctx["highlight"] = ax.scatter(
+                    sub["datetime"], sub["mixratio"],
+                    marker="o", facecolors="none", edgecolors="gold",
+                    linewidths=2.0, s=140, zorder=6,
+                )
+        fig = ctx.get("fig")
+        if fig is not None:
+            fig.canvas.draw_idle()
+
+    def _caldrift_flag_selected(self, flag_value: str):
+        """Write hats.calibrations.flag for the selected episodes, then refresh."""
+        ctx = self._caldrift_ctx
+        if not ctx or not self._caldrift_selected:
+            self._toast("Select one or more episodes first.")
+            return
+        df = ctx.get("df")
+        if df is None:
+            return
+        sql = (
+            "UPDATE hats.calibrations SET flag=%s "
+            "WHERE serial_number=%s AND date=%s AND time=%s "
+            "AND species=%s AND inst=%s AND parameter_num=%s"
+        )
+        n = 0
+        for idx in sorted(self._caldrift_selected):
+            if idx < 0 or idx >= len(df):
+                continue
+            row = df.iloc[idx]
+            rt = pd.Timestamp(row["datetime"])
+            species = row.get("species") or ctx.get("species")
+            inst = row.get("inst") or str(ctx.get("inst_id", "")).upper()
+            try:
+                self.instrument.db.doquery(sql, (
+                    flag_value, ctx.get("serial"), rt.date(), rt.time(),
+                    species, inst, int(ctx.get("param_num")),
+                ))
+                n += 1
+            except Exception as exc:
+                self._toast(f"Flag write failed: {exc}")
+                return
+        self._caldrift_selected = set()
+        self._toast(f"{'Flagged' if flag_value == 'M' else 'Unflagged'} {n} episode(s).")
+        self._caldrift_refresh_fit()
+
+    def _caldrift_set_exclude(self, checked: bool):
+        self._caldrift_exclude_flagged = bool(checked)
+        self._caldrift_refresh_fit()
+
+    def _caldrift_set_hide(self, checked: bool):
+        self._caldrift_hide_flagged = bool(checked)
+        self._caldrift_refresh_fit()
+
+    def _caldrift_refresh_fit(self):
+        """Re-fetch data (picking up flag changes) and re-run the fit/redraw."""
+        if self._caldrift_refresh is not None:
+            self._caldrift_refresh()
+
+    def _caldrift_on_panel_closed(self):
+        """Panel closed: drop selection + highlight."""
+        self._caldrift_selected = set()
+        self._caldrift_redraw_highlight()
+
     def _on_plot_tanks(self):
         """Pop up a matplotlib figure with mole fraction history for selected tanks."""
         if not self.instrument:
@@ -1549,6 +1790,16 @@ class TanksWidget(QWidget):
         if not inst_id:
             self._toast("Instrument id unavailable; cannot query calibrations.")
             return
+
+        # A previous caldrift figure's panel/context is now stale.
+        if self._caldrift_panel is not None:
+            try:
+                self._caldrift_panel.close()
+            except Exception:
+                pass
+            self._caldrift_panel = None
+        self._caldrift_ctx = None
+        self._caldrift_selected = set()
 
         btn = getattr(self, "plot_tanks_btn", None)
         if btn:
@@ -1593,6 +1844,10 @@ class TanksWidget(QWidget):
                 # When exactly one tank/fill is plotted, remember what we need
                 # to overlay caldrift's drift fit after the loop.
                 single_ctx = None
+                if len(tank_keys) == 1:
+                    # Reset per-replot caldrift state; repopulated below.
+                    self._caldrift_ctx = None
+                    self._caldrift_selected = set()
 
                 for fill_key in tank_keys:
                     meta = self._tank_metadata.get(str(fill_key), {})
@@ -1601,7 +1856,10 @@ class TanksWidget(QWidget):
                         or meta.get("tank_serial_num")
                         or str(fill_key).split("::")[0]
                     )
-                    df = self._fetch_calibration_df(serial, param_num, inst_id)
+                    df = self._fetch_calibration_df(
+                        serial, param_num, inst_id,
+                        include_flagged=(len(tank_keys) == 1),
+                    )
                     fill_date = meta.get("fill_date") or meta.get("date")
                     fill_code = meta.get("code") or meta.get("fill_code")
                     next_fill_date = meta.get("next_fill_date")
@@ -1630,6 +1888,14 @@ class TanksWidget(QWidget):
                         continue
                     df = df.reset_index(drop=True)
 
+                    # Hide-flagged: drop flagged episodes entirely so the line,
+                    # legend, selection and autoscale reflect only unflagged data.
+                    if (len(tank_keys) == 1 and self._caldrift_hide_flagged
+                            and "flag" in df.columns):
+                        df = df[df["flag"] == "."].reset_index(drop=True)
+                        if df.empty:
+                            continue
+
                     if "inst" in df.columns:
                         all_inst_dts.extend(zip(df["datetime"], df["inst"]))
 
@@ -1644,6 +1910,7 @@ class TanksWidget(QWidget):
                         label=f"{serial} ({fill_code})" if fill_code else str(serial),
                     )
                     line = err_container.lines[0] if err_container.lines else None
+                    line_color = line.get_color() if line is not None else "C0"
                     if line is not None:
                         line.set_picker(5)
                         pick_map[line] = {
@@ -1654,6 +1921,18 @@ class TanksWidget(QWidget):
                     any_data = True
 
                     if len(tank_keys) == 1:
+                        # Overlay manually flagged (flag='M') episodes as
+                        # logos_data-style rejected points (hollow whitesmoke
+                        # circle, coloured edge). Hidden from the legend.
+                        if "flag" in df.columns:
+                            flagged = df[df["flag"] == "M"]
+                            if not flagged.empty:
+                                ax.scatter(
+                                    flagged["datetime"], flagged["mixratio"],
+                                    marker="o", facecolors="whitesmoke",
+                                    edgecolors=line_color, linewidths=1.5,
+                                    s=55, zorder=4, label="_flagged",
+                                )
                         cal_species = None
                         if "species" in df.columns and not df["species"].dropna().empty:
                             cal_species = str(df["species"].dropna().iloc[0])
@@ -1662,6 +1941,14 @@ class TanksWidget(QWidget):
                             "species": cal_species,
                             "fillcode": fill_code,
                             "df": df,
+                        }
+                        # Publish live context for the caldrift panel.
+                        self._caldrift_ctx = {
+                            "fig": fig, "ax": ax, "df": df,
+                            "serial": serial, "species": cal_species,
+                            "fillcode": fill_code, "param_num": param_num,
+                            "channel": param_channel, "inst_id": inst_id,
+                            "highlight": None,
                         }
 
                 state["pick_map"] = pick_map
@@ -1728,6 +2015,7 @@ class TanksWidget(QWidget):
                         single_ctx["species"],
                         single_ctx["fillcode"],
                         single_ctx["df"],
+                        exclude_flagged=self._caldrift_exclude_flagged,
                     )
 
                 # Legend order: tank series first, then the caldrift fit, then
@@ -1853,6 +2141,15 @@ class TanksWidget(QWidget):
             combo_layout.setSpacing(4)
             combo_layout.addWidget(analyte_combo)
             combo_layout.addWidget(reload_button)
+            # Caldrift flag-panel button, to the left of the analyte combo
+            # (single-tank figures only — that's where caldrift results exist).
+            if len(tank_keys) == 1:
+                caldrift_btn = QPushButton("caldrift")
+                caldrift_btn.setToolTip("Open the caldrift panel to flag/exclude episodes.")
+                caldrift_btn.clicked.connect(self._open_caldrift_panel)
+                combo_layout.insertWidget(0, caldrift_btn)
+                fig._caldrift_button = caldrift_btn
+                self._caldrift_refresh = lambda: _do_plot_for_analyte(analyte_combo.currentText())
             combo_container.setLayout(combo_layout)
 
             toolbar = getattr(getattr(fig.canvas, "manager", None), "toolbar", None)
@@ -1984,6 +2281,19 @@ class TanksWidget(QWidget):
                         best_dist = dist
                         best_line = line
                         best_idx = idx
+
+                # Caldrift flag-selection mode: while the panel is open, a
+                # left-click selects/toggles episodes for flagging (SHIFT adds
+                # more) instead of showing a tooltip. Right-click still navigates.
+                if event.button == 1 and len(tank_keys) == 1 and self._caldrift_panel_open():
+                    additive = bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+                    if best_idx is None:
+                        if not additive:
+                            self._caldrift_clear_selection()
+                        return
+                    self._caldrift_toggle_selection(best_idx, additive)
+                    return
+
                 if best_line is None or best_idx is None:
                     QToolTip.hideText()
                     return
@@ -2065,8 +2375,20 @@ class TanksWidget(QWidget):
                 if event.button == 1:
                     QToolTip.hideText()
 
+            def _on_fig_close(_evt):
+                # Closing the figure dismisses its caldrift panel + context.
+                if self._caldrift_panel is not None:
+                    try:
+                        self._caldrift_panel.close()
+                    except Exception:
+                        pass
+                    self._caldrift_panel = None
+                self._caldrift_ctx = None
+                self._caldrift_selected = set()
+
             fig.canvas.mpl_connect("button_press_event", _on_press)
             fig.canvas.mpl_connect("button_release_event", _on_release)
+            fig.canvas.mpl_connect("close_event", _on_fig_close)
             fig.show()
         finally:
             if btn:
