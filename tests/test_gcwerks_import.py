@@ -130,5 +130,102 @@ class IE3ImportTests(unittest.TestCase):
         self.assertFalse(importer.should_skip_itx(itx))
 
 
+class CalibrationFakeDB:
+    def __init__(self):
+        self.query_calls = []
+        self.multi_insert_calls = []
+
+    def doquery(self, sql, params=None):
+        self.query_calls.append((sql, params))
+        if "SELECT formula FROM gmd.parameter" in sql:
+            return [{"formula": "CH2I2"}]
+        return []
+
+    def doMultiInsert(self, sql, params, all=False):
+        self.multi_insert_calls.append((sql, list(params), all))
+        return False
+
+
+class CalibrationCleanupTests(unittest.TestCase):
+    @staticmethod
+    def make_instrument():
+        from logos_instruments import HATS_DB_Functions
+
+        instrument = object.__new__(HATS_DB_Functions)
+        instrument.inst_id = "m4"
+        instrument.CAL_RUN_TYPES = {7}
+        instrument.MIN_CAL_INJECTIONS = 1
+        instrument.norm = type(
+            "Norm",
+            (),
+            {"run_type_column": "run_type_num", "standard_run_type": 8},
+        )()
+        instrument.db = CalibrationFakeDB()
+        instrument.qurey_return_scale_num = lambda parameter_num: 110
+        return instrument
+
+    @staticmethod
+    def make_row(**overrides):
+        import pandas as pd
+
+        row = {
+            "run_time": pd.Timestamp("2024-07-15 08:51:00"),
+            "tank_serial_num": "SX-3582",
+            "run_type_num": 7,
+            "rejected": 0,
+            "mole_fraction": float("nan"),
+            "analysis_num": 293241,
+            "channel": "",
+        }
+        row.update(overrides)
+        return row
+
+    def test_null_only_group_deletes_stale_calibration(self):
+        import pandas as pd
+
+        instrument = self.make_instrument()
+        df = pd.DataFrame([self.make_row()])
+
+        instrument.upsert_calibrations(df, parameter_num=100)
+
+        delete_calls = [
+            (sql, params)
+            for sql, params in instrument.db.query_calls
+            if "DELETE FROM hats.calibrations" in sql
+        ]
+        self.assertEqual(len(delete_calls), 1)
+        self.assertEqual(delete_calls[0][1][0], "SX-3582")
+        self.assertEqual(delete_calls[0][1][3:], ("CH2I2", "M4", 100))
+        self.assertEqual(instrument.db.multi_insert_calls, [])
+
+    def test_group_with_valid_and_null_values_aggregates_valid_value(self):
+        import pandas as pd
+
+        instrument = self.make_instrument()
+        df = pd.DataFrame(
+            [
+                self.make_row(),
+                self.make_row(analysis_num=293242, mole_fraction=1.234),
+            ]
+        )
+
+        instrument.upsert_calibrations(df, parameter_num=100)
+
+        delete_calls = [
+            sql
+            for sql, _ in instrument.db.query_calls
+            if "DELETE FROM hats.calibrations" in sql
+        ]
+        self.assertEqual(delete_calls, [])
+        final_inserts = [
+            call for call in instrument.db.multi_insert_calls if call[2]
+        ]
+        self.assertEqual(len(final_inserts), 1)
+        _, params, all_rows = final_inserts[0]
+        self.assertTrue(all_rows)
+        self.assertEqual(len(params), 1)
+        self.assertEqual(params[0][4:7], (1.234, 0.0, 1))
+        self.assertEqual(params[0][10], 293242)
+
 if __name__ == '__main__':
     unittest.main()

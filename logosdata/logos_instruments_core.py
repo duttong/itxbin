@@ -262,6 +262,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
           - excludes the normalizing/reference tank (identified via self.norm)
           - for FE3/IE3: restricts to the preferred channel per ng_preferred_channel,
             regardless of which channel was passed to load_data by the caller
+          - mole_fraction must be finite
 
         Aggregation is per (run_time, tank_serial_num):
           - mixratio  = mean(mole_fraction)
@@ -269,7 +270,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
           - num       = count of injections
           - run_number = min(analysis_num)
 
-        Rows where mixratio is NaN or inf are dropped before insert.
+        Existing calibration rows are deleted when a tank group has no valid
+        mole fractions after filtering.
 
         Unique key on hats.calibrations:
           (serial_number, date, time, species, inst, parameter_num)
@@ -319,7 +321,8 @@ class HATS_DB_Functions(LOGOS_Instruments):
             (df[std_col] != std_val)
         )
 
-        # Track all tank groups before rejection filter to detect fully-rejected runs.
+        # Track all eligible tank groups before filtering so stale results can
+        # be removed when rejection/channel/value filters leave no valid data.
         all_tank_groups = {
             (row.run_time, row.tank_serial_num)
             for row in df[base_mask][['run_time', 'tank_serial_num']]
@@ -330,30 +333,14 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         inst_str = self.inst_id.upper()
 
-        # Groups where all injections are rejected — delete stale calibrations rows.
-        unrejected_groups = {
-            (row.run_time, row.tank_serial_num)
-            for row in tank_df[['run_time', 'tank_serial_num']]
-            .drop_duplicates().itertuples(index=False)
-        } if not tank_df.empty else set()
-        fully_rejected = all_tank_groups - unrejected_groups
-        if fully_rejected:
-            sql_del = """
-                DELETE FROM hats.calibrations
-                WHERE serial_number = %s AND date = %s AND time = %s
-                  AND species = %s AND inst = %s AND parameter_num = %s
-            """
-            for run_time, serial in fully_rejected:
-                rt = pd.Timestamp(run_time)
-                self.db.doquery(sql_del, (serial, rt.date(), rt.time(), species, inst_str, parameter_num))
-
-        if tank_df.empty:
-            return
-
         # For instruments with preferred channel assignments (FE3, IE3), restrict
         # calibration rows to the preferred channel regardless of what channel the
         # caller loaded. Uses a backwards merge_asof to apply the windowed assignment.
-        if hasattr(self, 'return_preferred_channel') and 'channel' in tank_df.columns:
+        if (
+            not tank_df.empty
+            and hasattr(self, 'return_preferred_channel')
+            and 'channel' in tank_df.columns
+        ):
             pc_df = self.return_preferred_channel()
             if not pc_df.empty:
                 pc = (
@@ -377,8 +364,39 @@ class HATS_DB_Functions(LOGOS_Instruments):
                     tank_df = merged[merged['channel'] == merged['preferred_channel']].drop(
                         columns=['preferred_channel']
                     )
-                    if tank_df.empty:
-                        return
+
+        # Keep only finite values. A group that has analysis rows but no valid
+        # mole fractions must actively delete any previously aggregated result;
+        # silently dropping it here would leave a stale hats.calibrations row.
+        if not tank_df.empty:
+            mole_fraction = (
+                pd.to_numeric(tank_df['mole_fraction'], errors='coerce')
+                .replace([np.inf, -np.inf], np.nan)
+            )
+            tank_df = tank_df[mole_fraction.notna()].copy()
+            tank_df['mole_fraction'] = mole_fraction.loc[tank_df.index]
+
+        valid_groups = {
+            (row.run_time, row.tank_serial_num)
+            for row in tank_df[['run_time', 'tank_serial_num']]
+            .drop_duplicates().itertuples(index=False)
+        } if not tank_df.empty else set()
+        stale_groups = all_tank_groups - valid_groups
+        if stale_groups:
+            sql_del = """
+                DELETE FROM hats.calibrations
+                WHERE serial_number = %s AND date = %s AND time = %s
+                  AND species = %s AND inst = %s AND parameter_num = %s
+            """
+            for run_time, serial in stale_groups:
+                rt = pd.Timestamp(run_time)
+                self.db.doquery(
+                    sql_del,
+                    (serial, rt.date(), rt.time(), species, inst_str, parameter_num),
+                )
+
+        if tank_df.empty:
+            return
 
         # Aggregate per (run_time, tank); ddof=0 matches MySQL STDDEV (population)
         agg = tank_df.groupby(['run_time', 'tank_serial_num']).agg(
@@ -395,7 +413,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         # with fewer than MIN_CAL_INJECTIONS unrejected injections (e.g. FE3
         # single-injection "Other" test runs) has stddev=0 and is not a usable
         # calibration. Delete any stale row for such groups — mirroring the
-        # fully-rejected handling above — so re-batching also cleans previously
+        # no-valid-data handling above — so re-batching also cleans previously
         # written low-n rows. Skipped when the threshold is 1 (M4, BLD1, ...).
         min_inj = getattr(self, 'MIN_CAL_INJECTIONS', 1)
         if min_inj > 1 and not agg.empty:
