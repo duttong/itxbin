@@ -451,7 +451,8 @@ class TanksWidget(QWidget):
                     default_analyte = name
                     break
         for idx, name in enumerate(self._analyte_names):
-            cb = QCheckBox(name)
+            cb = QCheckBox(self._display_label(name))
+            cb.setProperty("analyte_name", name)
             if default_analyte is not None:
                 if name == default_analyte:
                     cb.setChecked(True)
@@ -643,7 +644,7 @@ class TanksWidget(QWidget):
         for cb in self.analyte_checks:
             if not cb.isChecked():
                 continue
-            name = cb.text()
+            name = self._cb_analyte_name(cb)
             pnum = (self.instrument.analytes or {}).get(name)
             channel = self._analyte_channel(name)
             if pnum is not None:
@@ -663,7 +664,7 @@ class TanksWidget(QWidget):
         if self.alpha_sort_cb.isChecked():
             ordered = sorted(self.analyte_checks, key=lambda cb: cb.text().lower())
         else:
-            name_to_cb = {cb.text(): cb for cb in self.analyte_checks}
+            name_to_cb = {self._cb_analyte_name(cb): cb for cb in self.analyte_checks}
             ordered = []
             for name in self._analyte_names:
                 cb = name_to_cb.get(name)
@@ -693,6 +694,20 @@ class TanksWidget(QWidget):
             _, ch = name.split("(", 1)
             return ch.strip(") ").strip()
         return None
+
+    def _display_label(self, name: str) -> str:
+        """Analyte name with any trailing channel suffix dropped for display
+        ('CFC11 (c)' -> 'CFC11'; 'N2O' -> 'N2O'). Tank calibrations are already
+        keyed on the preferred channel, so the suffix is redundant on screen;
+        the full name is kept internally for parameter/channel lookups."""
+        if name and self._analyte_channel(name):
+            return name.split("(", 1)[0].strip()
+        return name
+
+    def _cb_analyte_name(self, cb) -> str:
+        """Full analyte name (channel preserved) backing a checkbox, falling
+        back to the visible text."""
+        return cb.property("analyte_name") or cb.text()
 
     def _load_preferred_channels(self) -> dict[int, set[str]]:
         """Return parameter_num -> preferred channels mapping."""
@@ -1156,7 +1171,7 @@ class TanksWidget(QWidget):
         target_num = saved.get("parameter_num")
         target_channel = saved.get("channel")
         for cb in self.analyte_checks:
-            name = cb.text()
+            name = self._cb_analyte_name(cb)
             pnum = (self.instrument.analytes or {}).get(name) if self.instrument else None
             channel = self._analyte_channel(name)
             if target_name and name == target_name:
@@ -1550,8 +1565,72 @@ class TanksWidget(QWidget):
             self._toast(f"DB error for tank {serial}: {exc}")
             return pd.DataFrame()
 
+    def _inst_abbr(self, inst_num) -> str:
+        """Map an instrument number to its abbreviation (193 -> 'FE3'); cached."""
+        if inst_num is None:
+            return "?"
+        if not hasattr(self, "_inst_abbr_cache"):
+            self._inst_abbr_cache = {}
+        if inst_num in self._inst_abbr_cache:
+            return self._inst_abbr_cache[inst_num]
+        abbr = str(inst_num)
+        try:
+            rows = self.instrument.db.doquery(
+                "SELECT abbr, id FROM ccgg.inst_description WHERE num=%s LIMIT 1",
+                (int(inst_num),),
+            )
+            if rows:
+                abbr = rows[0].get("abbr") or rows[0].get("id") or str(inst_num)
+        except Exception:
+            pass
+        self._inst_abbr_cache[inst_num] = abbr
+        return abbr
+
+    def _fetch_scale_assignment(self, serial, parameter_num, fillcode):
+        """Return the current scale assignment for a tank/parameter/fill, or None.
+
+        Joins scale_assignments_view (coefs, uncertainties, fill code, current
+        flag) to the base scale_assignments table for the assigning inst_num.
+        """
+        if not serial or parameter_num is None or not fillcode:
+            return None
+        sql = """
+            SELECT v.coef0, v.coef1, v.coef2, v.unc_c0, v.unc_c1, v.unc_c2,
+                   v.tzero, v.scale, v.n, sa.inst_num
+            FROM hats.scale_assignments_view v
+            JOIN hats.scale_assignments sa ON sa.num = v.scale_assignment_num
+            WHERE v.serial_number=%s AND v.parameter_num=%s
+              AND v.fill_code=%s AND v.current_assignment=1
+            ORDER BY v.assign_date DESC
+            LIMIT 1
+        """
+        try:
+            rows = self.instrument.db.doquery(
+                sql, (str(serial), int(parameter_num), str(fillcode))
+            )
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _assignment_matches_fit(assign, fit) -> bool:
+        """True if the stored assignment equals the current caldrift fit — same
+        tzero and coefficients within tolerance (i.e. the assignment is up to
+        date with the data). Tolerances are heuristic and easily tuned."""
+        try:
+            def close(a, b, tol):
+                return abs(float(a or 0) - float(b or 0)) <= tol
+            return (
+                close(assign.get("tzero"), fit.tzero, 0.02)
+                and close(assign.get("coef0"), fit.coef0, max(0.01, 0.001 * abs(fit.coef0)))
+                and close(assign.get("coef1"), fit.coef1, 1e-3)
+                and close(assign.get("coef2"), fit.coef2, 1e-4)
+            )
+        except Exception:
+            return False
+
     def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df,
-                              exclude_flagged: bool = True):
+                              exclude_flagged: bool = True, parameter_num=None):
         """Overlay caldrift's auto drift fit (curve + legend entry) for one tank.
 
         Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
@@ -1670,6 +1749,38 @@ class TanksWidget(QWidget):
                     f"⚠ {n_excluded} cal(s) with zero uncertainty excluded "
                     f"from fit (caldrift would error)"
                 ),
+            )
+
+        # Existing scale assignment (if any) for this tank/fill/parameter,
+        # shown under the caldrift result. A green ✓ (tinted by the caller)
+        # marks an assignment that matches this fit; otherwise it's out of date.
+        assign = self._fetch_scale_assignment(serial, parameter_num, fillcode)
+        if assign is not None:
+            abbr = self._inst_abbr(assign.get("inst_num"))
+            parts = [
+                f"c0={float(assign['coef0']):.3f}±{float(assign.get('unc_c0') or 0):.3f}"
+            ]
+            if assign.get("coef1"):
+                parts.append(
+                    f"c1={float(assign['coef1']):.5f}±{float(assign.get('unc_c1') or 0):.5f}"
+                )
+            if assign.get("coef2"):
+                parts.append(
+                    f"c2={float(assign['coef2']):.6f}±{float(assign.get('unc_c2') or 0):.6f}"
+                )
+            n_assign = assign.get("n")
+            n_str = f"(n={int(n_assign)})" if n_assign is not None else "(n=?)"
+            # DejaVu Sans (matplotlib's font) has no colour-emoji glyphs, so use
+            # the heavy check / heavy X and tint them green / red in the caller.
+            mark = " ✔" if self._assignment_matches_fit(assign, fit) else ""
+            ax.plot(
+                [], [], linestyle="none", marker="none",
+                label=f"scale_assignment: {', '.join(parts)}  {n_str} [{abbr}]{mark}",
+            )
+        else:
+            ax.plot(
+                [], [], linestyle="none", marker="none",
+                label="scale_assignment: none on file  ✖",
             )
 
     # --- Caldrift flag panel (single-tank figure) ---
@@ -2030,14 +2141,16 @@ class TanksWidget(QWidget):
                     species = getattr(self.instrument, "analytes_inv", {}).get(pnum_int)
                 except Exception:
                     species = None
-                label_species = species or param_name or "Species"
+                # Channel-stripped labels for on-screen text.
+                disp_name = self._display_label(param_name)
+                label_species = self._display_label(species or param_name or "Species")
                 ax.set_xlabel("Datetime")
                 ax.set_ylabel(f"Mole Fraction ({label_species})")
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
                 ax.grid(True, alpha=0.3)
 
                 if not any_data:
-                    ax.set_title(f"No calibration data for {param_name} ({inst_id.upper()})")
+                    ax.set_title(f"No calibration data for {disp_name} ({inst_id.upper()})")
                     ax.text(
                         0.5,
                         0.5,
@@ -2052,7 +2165,7 @@ class TanksWidget(QWidget):
                         plt.close(fig)
                     return False
 
-                ax.set_title(f"Calibrations for {param_name} ({inst_id.upper()})")
+                ax.set_title(f"Calibrations for {disp_name} ({inst_id.upper()})")
                 if single_ctx is not None:
                     self._overlay_caldrift_fit(
                         ax,
@@ -2061,6 +2174,7 @@ class TanksWidget(QWidget):
                         single_ctx["fillcode"],
                         single_ctx["df"],
                         exclude_flagged=self._caldrift_exclude_flagged,
+                        parameter_num=param_num,
                     )
 
                 # Legend order: tank series first, then the caldrift fit, then
@@ -2071,8 +2185,10 @@ class TanksWidget(QWidget):
                 def _legend_rank(lbl):
                     if lbl.startswith("caldrift"):
                         return 1
-                    if lbl.startswith("⚠"):
+                    if lbl.startswith("scale_assignment"):
                         return 2
+                    if lbl.startswith("⚠"):
+                        return 3
                     return 0
 
                 order = sorted(range(len(labels)), key=lambda i: _legend_rank(labels[i]))
@@ -2082,8 +2198,14 @@ class TanksWidget(QWidget):
                 )
                 fig._legend_serials = {}
                 for text in legend.get_texts():
-                    if text.get_text().startswith("⚠"):
+                    t = text.get_text()
+                    if t.startswith("⚠"):
                         text.set_color("darkorange")
+                    elif t.startswith("scale_assignment"):
+                        if "✔" in t:
+                            text.set_color("green")
+                        elif "✖" in t:
+                            text.set_color("red")
                     # Make tank legend entries clickable to copy their serial.
                     s = label_to_serial.get(text.get_text())
                     if s:
@@ -2120,12 +2242,17 @@ class TanksWidget(QWidget):
                 self._toast("No calibration data found for the selected tanks/parameter.")
                 return
 
-            analyte_names = list((self.instrument.analytes or {}).keys())
-            if not analyte_names:
-                analyte_names = [parameter_name]
+            # Use the preferred-channel-filtered analyte list (same as the
+            # checkbox grid) so a species measured on two channels isn't listed
+            # twice; show the channel-stripped label but keep the full name as
+            # item data for parameter/channel lookups.
+            analyte_full_names = list(self._analyte_names) if self._analyte_names else [parameter_name]
             analyte_combo = QComboBox()
-            analyte_combo.addItems(analyte_names)
-            idx = analyte_combo.findText(parameter_name, Qt.MatchExactly)
+            for full in analyte_full_names:
+                analyte_combo.addItem(self._display_label(full), full)
+            idx = analyte_combo.findData(parameter_name)
+            if idx < 0:
+                idx = analyte_combo.findText(self._display_label(parameter_name), Qt.MatchExactly)
             if idx >= 0:
                 analyte_combo.setCurrentIndex(idx)
 
@@ -2176,11 +2303,12 @@ class TanksWidget(QWidget):
                     reload_button.setStyleSheet("")
                     reload_button.setEnabled(True)
 
-            def _on_combo_changed(name: str):
-                _do_plot_for_analyte(name)
+            def _on_combo_changed(_text=None):
+                # Use item data (full name incl. channel), not the shown text.
+                _do_plot_for_analyte(analyte_combo.currentData())
 
             def _on_reload_clicked():
-                _do_plot_for_analyte(analyte_combo.currentText())
+                _do_plot_for_analyte(analyte_combo.currentData())
 
             analyte_combo.currentTextChanged.connect(_on_combo_changed)
             reload_button.clicked.connect(_on_reload_clicked)
@@ -2200,7 +2328,7 @@ class TanksWidget(QWidget):
                 caldrift_btn.clicked.connect(self._open_caldrift_panel)
                 combo_layout.insertWidget(0, caldrift_btn)
                 fig._caldrift_button = caldrift_btn
-                self._caldrift_refresh = lambda: _do_plot_for_analyte(analyte_combo.currentText())
+                self._caldrift_refresh = lambda: _do_plot_for_analyte(analyte_combo.currentData())
             combo_container.setLayout(combo_layout)
 
             toolbar = getattr(getattr(fig.canvas, "manager", None), "toolbar", None)

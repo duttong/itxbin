@@ -65,8 +65,15 @@ class HATS_DB_Functions(LOGOS_Instruments):
         return site_dict
 
     def query_analytes(self):
-        """Returns a dictionary of analytes and parameter numbers. """
-        sql = f"SELECT param_num, channel, display_name FROM hats.analyte_list WHERE inst_num = {self.inst_num};"
+        """Returns a dictionary of analytes and parameter numbers, ordered by
+        hats.analyte_list.disp_order (curated display order) where set, falling
+        back to param_num for instruments that haven't been curated yet."""
+        sql = f"""
+            SELECT param_num, channel, display_name
+            FROM hats.analyte_list
+            WHERE inst_num = {self.inst_num}
+            ORDER BY (disp_order IS NULL), disp_order, param_num;
+        """
         df = pd.DataFrame(self.doquery(sql))
         analytes_dict = dict(zip(df['display_name'], df['param_num']))
         return analytes_dict

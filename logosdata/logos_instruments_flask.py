@@ -703,11 +703,13 @@ class Perseus_Instrument(HATS_DB_Functions):
         self.analytes_inv = {v: k for k, v in self.analytes.items()}
 
     def query_analytes(self):
-        """Use the PR1 analyte list for the combined Perseus system."""
+        """Use the PR1 analyte list for the combined Perseus system, ordered by
+        disp_order (falling back to param_num where disp_order is unset)."""
         sql = f"""
             SELECT param_num, channel, display_name
             FROM hats.analyte_list
-            WHERE inst_num = {self.INSTRUMENTS['pr1']};
+            WHERE inst_num = {self.INSTRUMENTS['pr1']}
+            ORDER BY (disp_order IS NULL), disp_order, param_num;
         """
         df = pd.DataFrame(self.doquery(sql))
         if df.empty:
