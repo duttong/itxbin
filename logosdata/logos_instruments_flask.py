@@ -389,6 +389,21 @@ class M4_Instrument(HATS_DB_Functions):
         df_b['channel']            = df_b['channel_178']
         self.upsert_mole_fractions(df_b, response_id=response_id)
 
+    def upsert_cfc113a_calibrations(self, df):
+        """Write deconvolved CFC-113 and CFC-113a tank calibrations.
+
+        ``df`` retains the generic ``mole_fraction`` column from the pnum-32
+        source frame.  Select each compound's deconvolved result explicitly
+        before invoking the shared calibration aggregator.
+        """
+        for parameter_num, mole_fraction_col in (
+            (32, 'mole_fraction_cfc113'),
+            (178, 'mole_fraction_cfc113a'),
+        ):
+            df_cal = df.copy()
+            df_cal['mole_fraction'] = df_cal[mole_fraction_col]
+            self.upsert_calibrations(df_cal, parameter_num)
+
     def load_calcurves(self, df):
         """ Calcurves are not stored in ng_response for M4. """
         pass

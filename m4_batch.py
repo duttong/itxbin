@@ -90,8 +90,7 @@ def main():
             df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
             if args.insert:
                 m4.upsert_cfc113a_pair(df_pair)
-                for pnum_pair in CFC113_PAIR:
-                    m4.upsert_calibrations(df_pair, pnum_pair)
+                m4.upsert_cfc113a_calibrations(df_pair)
 
         print(f"Processing complete for all analytes. Total time: {time.time() - t0:.2f} seconds")
         return
@@ -110,8 +109,7 @@ def main():
             df_pair = m4.calc_mole_fraction_cfc113a(df_pair)
             if args.insert:
                 m4.upsert_cfc113a_pair(df_pair)
-                for pnum_pair in CFC113_PAIR:
-                    m4.upsert_calibrations(df_pair, pnum_pair)
+                m4.upsert_cfc113a_calibrations(df_pair)
             print(f"Done. Total time: {time.time() - t0:.2f} seconds")
             return
 

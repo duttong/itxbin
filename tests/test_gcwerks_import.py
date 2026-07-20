@@ -227,5 +227,28 @@ class CalibrationCleanupTests(unittest.TestCase):
         self.assertEqual(params[0][4:7], (1.234, 0.0, 1))
         self.assertEqual(params[0][10], 293242)
 
+class CFC113aCalibrationTests(unittest.TestCase):
+    def test_deconvolved_values_are_sent_to_matching_parameters(self):
+        import pandas as pd
+        from logos_instruments import M4_Instrument
+
+        instrument = object.__new__(M4_Instrument)
+        calls = []
+        instrument.upsert_calibrations = lambda df, pnum: calls.append((pnum, df.copy()))
+        source = pd.DataFrame(
+            {
+                "mole_fraction": [99.0],
+                "mole_fraction_cfc113": [77.0],
+                "mole_fraction_cfc113a": [0.12],
+            }
+        )
+
+        instrument.upsert_cfc113a_calibrations(source)
+
+        self.assertEqual([pnum for pnum, _ in calls], [32, 178])
+        self.assertEqual(calls[0][1]["mole_fraction"].tolist(), [77.0])
+        self.assertEqual(calls[1][1]["mole_fraction"].tolist(), [0.12])
+        self.assertEqual(source["mole_fraction"].tolist(), [99.0])
+
 if __name__ == '__main__':
     unittest.main()
