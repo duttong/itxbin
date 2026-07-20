@@ -250,10 +250,27 @@ class CaldriftPanel(QWidget):
         super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.controller = controller
         self.setWindowTitle("Caldrift")
+        self._serial = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
+
+        # Tank identity + copy-to-clipboard.
+        header_row = QHBoxLayout()
+        self._tank_label = QLabel("Tank: —")
+        self._tank_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self._tank_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._copy_serial_btn = QPushButton("Copy")
+        self._copy_serial_btn.setToolTip("Copy this tank's serial number to the clipboard.")
+        self._copy_serial_btn.setStyleSheet(
+            "QPushButton { padding: 2px 8px; border: 1px solid #aaa; border-radius: 4px; }"
+        )
+        self._copy_serial_btn.clicked.connect(self.controller._caldrift_copy_serial)
+        header_row.addWidget(self._tank_label)
+        header_row.addStretch()
+        header_row.addWidget(self._copy_serial_btn)
+        layout.addLayout(header_row)
 
         instructions = QLabel(
             "<b>Flag episodes:</b>"
@@ -315,6 +332,17 @@ class CaldriftPanel(QWidget):
 
         self.setMinimumWidth(300)
         self.set_selected_count(0)
+
+    def set_tank(self, serial, fillcode=None):
+        """Update the tank-identity header (serial + optional fill code)."""
+        self._serial = str(serial) if serial else None
+        if serial and fillcode:
+            self._tank_label.setText(f"Tank: {serial} (fill {fillcode})")
+        elif serial:
+            self._tank_label.setText(f"Tank: {serial}")
+        else:
+            self._tank_label.setText("Tank: —")
+        self._copy_serial_btn.setEnabled(bool(serial))
 
     def set_selected_count(self, n: int):
         self._info_label.setText("No episode selected" if n == 0 else f"{n} episode(s) selected")
@@ -1660,6 +1688,8 @@ class TanksWidget(QWidget):
         hb.blockSignals(True)
         hb.setChecked(self._caldrift_hide_flagged)
         hb.blockSignals(False)
+        ctx = self._caldrift_ctx or {}
+        self._caldrift_panel.set_tank(ctx.get("serial"), ctx.get("fillcode"))
         self._caldrift_update_panel_info()
         self._caldrift_panel.show()
         self._caldrift_panel.raise_()
@@ -1667,6 +1697,18 @@ class TanksWidget(QWidget):
 
     def _caldrift_panel_open(self) -> bool:
         return self._caldrift_panel is not None and self._caldrift_panel.isVisible()
+
+    def _caldrift_copy_serial(self):
+        """Copy the current single-tank serial number to the clipboard."""
+        serial = (self._caldrift_ctx or {}).get("serial")
+        if not serial:
+            self._toast("No tank serial available.")
+            return
+        try:
+            QApplication.clipboard().setText(str(serial))
+            self._toast(f"Copied {serial}")
+        except Exception as exc:
+            self._toast(f"Copy failed: {exc}")
 
     def _caldrift_update_panel_info(self):
         if self._caldrift_panel is not None:
@@ -1841,6 +1883,7 @@ class TanksWidget(QWidget):
                 pick_map = {}
                 any_data = False
                 all_inst_dts: list[tuple] = []   # (datetime, inst) across all tanks
+                label_to_serial: dict = {}       # legend label -> serial (copy on click)
                 # When exactly one tank/fill is plotted, remember what we need
                 # to overlay caldrift's drift fit after the loop.
                 single_ctx = None
@@ -1899,6 +1942,8 @@ class TanksWidget(QWidget):
                     if "inst" in df.columns:
                         all_inst_dts.extend(zip(df["datetime"], df["inst"]))
 
+                    err_label = f"{serial} ({fill_code})" if fill_code else str(serial)
+                    label_to_serial[err_label] = serial
                     err_container = ax.errorbar(
                         df["datetime"],
                         df["mixratio"],
@@ -1907,7 +1952,7 @@ class TanksWidget(QWidget):
                         markersize=4,
                         linewidth=1,
                         capsize=3,
-                        label=f"{serial} ({fill_code})" if fill_code else str(serial),
+                        label=err_label,
                     )
                     line = err_container.lines[0] if err_container.lines else None
                     line_color = line.get_color() if line is not None else "C0"
@@ -2035,9 +2080,15 @@ class TanksWidget(QWidget):
                     [handles[i] for i in order],
                     [labels[i] for i in order],
                 )
+                fig._legend_serials = {}
                 for text in legend.get_texts():
                     if text.get_text().startswith("⚠"):
                         text.set_color("darkorange")
+                    # Make tank legend entries clickable to copy their serial.
+                    s = label_to_serial.get(text.get_text())
+                    if s:
+                        text.set_picker(True)
+                        fig._legend_serials[text.get_text()] = s
                 fig.autofmt_xdate()
                 fig.tight_layout()
 
@@ -2375,6 +2426,20 @@ class TanksWidget(QWidget):
                 if event.button == 1:
                     QToolTip.hideText()
 
+            def _on_legend_pick(event):
+                # Click a tank's legend entry to copy its serial to the clipboard.
+                artist = event.artist
+                if not hasattr(artist, "get_text"):
+                    return
+                serial = getattr(fig, "_legend_serials", {}).get(artist.get_text())
+                if not serial:
+                    return
+                try:
+                    QApplication.clipboard().setText(str(serial))
+                    self._toast(f"Copied {serial}")
+                except Exception:
+                    pass
+
             def _on_fig_close(_evt):
                 # Closing the figure dismisses its caldrift panel + context.
                 if self._caldrift_panel is not None:
@@ -2389,6 +2454,7 @@ class TanksWidget(QWidget):
             fig.canvas.mpl_connect("button_press_event", _on_press)
             fig.canvas.mpl_connect("button_release_event", _on_release)
             fig.canvas.mpl_connect("close_event", _on_fig_close)
+            fig.canvas.mpl_connect("pick_event", _on_legend_pick)
             fig.show()
         finally:
             if btn:
