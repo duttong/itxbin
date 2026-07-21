@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
     QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut,
-    QLineEdit, QRadioButton, QButtonGroup
+    QLineEdit, QRadioButton, QButtonGroup, QMessageBox
 )
 from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtCore import Qt
@@ -37,17 +37,21 @@ CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
 MAX_SAVED_SETS = 5
 
 # Directory holding the shared CCG calibration/fit modules that `caldrift`
-# uses (ccg_cal_db.Calibrations + ccg_calfit.fitCalibrations). We import and
-# reuse the fit engine directly rather than shelling out to or editing
-# caldrift itself. Matches the path in the /ccg/bin/caldrift wrapper.
+# uses (ccg_cal_db.Calibrations + ccg_calfit.fitCalibrations + the
+# ccg_refgasdb.refgas.insertFromFit() write path used by caldrift's -u/
+# --update option). We import and reuse these directly rather than shelling
+# out to or editing caldrift itself. Matches the path in the /ccg/bin/caldrift
+# wrapper -- saving from the panel uses the exact same insert code caldrift's
+# CLI would call, not a hand-rolled INSERT.
 _CCG_NEXTGEN = "/ccg/src/python3/nextgen"
 
 
 def _import_ccg_fit():
-    """Lazily import the CCG cal/fit modules from the nextgen dir.
+    """Lazily import the CCG cal/fit/refgasdb modules from the nextgen dir.
 
-    Returns a (ccg_cal_db, ccg_calfit, ccg_dates) tuple, or None if the
-    modules are unavailable (keeps logos_tanks usable without them).
+    Returns a (ccg_cal_db, ccg_calfit, ccg_dates, ccg_refgasdb) tuple, or
+    None if the modules are unavailable (keeps logos_tanks usable without
+    them).
     """
     import importlib
     if _CCG_NEXTGEN not in sys.path:
@@ -57,6 +61,7 @@ def _import_ccg_fit():
             importlib.import_module("ccg_cal_db"),
             importlib.import_module("ccg_calfit"),
             importlib.import_module("ccg_dates"),
+            importlib.import_module("ccg_refgasdb"),
         )
     except Exception:
         return None
@@ -237,6 +242,28 @@ class TanksPlotter:
         return self._filter_active_tanks(df, parameter_num)
     
 
+# Explicit fit degrees selectable in the caldrift panel, passed straight
+# through to ccg_calfit.fitCalibrations(degree=...). "Auto" is caldrift's
+# own behavior: start at the highest degree the data supports and fall back
+# through a significance test on the top coefficient. The other three force
+# that exact degree and skip the significance test/fallback entirely (see
+# fitCalibrations() in ccg_calfit.py) -- e.g. "Linear" always draws a sloped
+# line even if the slope isn't statistically significant.
+CALDRIFT_FIT_DEGREES = [
+    ("Auto", "auto"),
+    ("Mean", "mean"),
+    ("Linear", "linear"),
+    ("Quadratic", "quadratic"),
+]
+
+# hats.scale_assignments.level enum values, in the order caldrift's own
+# --level CLI flag documents them. Only meaningful for a first-time
+# assignment -- an update to an existing assignment always carries the
+# existing row's level forward untouched (see update_assignment_db() in
+# caldrift.py, which refuses to change level on an existing assignment).
+CALDRIFT_LEVELS = ["Primary", "Secondary", "Tertiary", "Other"]
+
+
 class CaldriftPanel(QWidget):
     """Floating panel for the single-tank caldrift figure.
 
@@ -278,6 +305,8 @@ class CaldriftPanel(QWidget):
             "<li>Click a calibration point to select it; <b>SHIFT+click</b> adds/removes more.</li>"
             "<li><b>Flag Selected</b> sets <tt>flag='M'</tt>; flagged points show as open circles.</li>"
             "<li>With <b>Exclude Flagged</b> checked, the caldrift fit ignores flagged episodes.</li>"
+            "<li><b>Fit degree</b> forces Mean/Linear/Quadratic instead of caldrift's "
+            "auto significance test.</li>"
             "<li><b>Refresh Fit</b> re-reads the flags and re-runs the fit.</li>"
             "</ul>"
         )
@@ -322,6 +351,27 @@ class CaldriftPanel(QWidget):
         self._hide_cb.toggled.connect(self.controller._caldrift_set_hide)
         layout.addWidget(self._hide_cb)
 
+        fit_group_box = QGroupBox("FIT DEGREE")
+        fit_row = QHBoxLayout()
+        fit_tooltip = (
+            "Auto picks the highest-degree fit whose top coefficient is "
+            "statistically significant (caldrift's default). Mean/Linear/"
+            "Quadratic force that exact degree, skipping the significance test."
+        )
+        self._fit_buttons: dict[str, QRadioButton] = {}
+        self._fit_group = QButtonGroup(self)
+        for label, value in CALDRIFT_FIT_DEGREES:
+            rb = QRadioButton(label)
+            rb.setToolTip(fit_tooltip)
+            rb.setChecked(value == "auto")
+            self._fit_group.addButton(rb)
+            self._fit_buttons[value] = rb
+            fit_row.addWidget(rb)
+        fit_row.addStretch()
+        fit_group_box.setLayout(fit_row)
+        layout.addWidget(fit_group_box)
+        self._fit_group.buttonToggled.connect(self._on_fit_degree_toggled)
+
         self._refresh_btn = QPushButton("Refresh Fit")
         self._refresh_btn.setStyleSheet(
             "QPushButton { padding: 4px 8px; border: 1px solid #8bbf8b; "
@@ -330,8 +380,71 @@ class CaldriftPanel(QWidget):
         self._refresh_btn.clicked.connect(self.controller._caldrift_refresh_fit)
         layout.addWidget(self._refresh_btn)
 
+        self._level_group_box = QGroupBox("LEVEL (first-time assignments only)")
+        level_row = QHBoxLayout()
+        level_tooltip = (
+            "Level for a brand-new scale assignment. Disabled when the tank "
+            "already has one -- the existing level is always carried forward "
+            "on an update, matching caldrift's own behavior."
+        )
+        self._level_buttons: dict[str, QRadioButton] = {}
+        self._level_group = QButtonGroup(self)
+        for label in CALDRIFT_LEVELS:
+            rb = QRadioButton(label)
+            rb.setToolTip(level_tooltip)
+            rb.setChecked(label == "Tertiary")
+            self._level_group.addButton(rb)
+            self._level_buttons[label] = rb
+            level_row.addWidget(rb)
+        level_row.addStretch()
+        self._level_group_box.setLayout(level_row)
+        self._level_group_box.setToolTip(level_tooltip)
+        layout.addWidget(self._level_group_box)
+        self._level_group.buttonToggled.connect(self._on_level_toggled)
+
+        self._save_assignment_btn = QPushButton("Save to Scale Assignments")
+        self._save_assignment_btn.setToolTip(
+            "Write the currently plotted caldrift fit to hats.scale_assignments, "
+            "recorded under this panel's instrument."
+        )
+        self._save_assignment_btn.setStyleSheet(
+            "QPushButton { padding: 4px 8px; border: 1px solid #d9975a; "
+            "border-radius: 4px; background-color: #ffe0b2; }"
+        )
+        self._save_assignment_btn.clicked.connect(
+            self.controller._caldrift_save_scale_assignment
+        )
+        layout.addWidget(self._save_assignment_btn)
+
         self.setMinimumWidth(300)
         self.set_selected_count(0)
+
+    def _on_fit_degree_toggled(self, button, checked):
+        if not checked:
+            return
+        for value, rb in self._fit_buttons.items():
+            if rb is button:
+                self.controller._caldrift_set_fit_degree(value)
+                break
+
+    def _on_level_toggled(self, button, checked):
+        if not checked:
+            return
+        for value, rb in self._level_buttons.items():
+            if rb is button:
+                self.controller._caldrift_set_level(value)
+                break
+
+    def set_level_state(self, enabled: bool, level: str | None = None):
+        """Enable the level picker for a first-time assignment (showing the
+        user's last chosen level), or disable it and show the level being
+        carried forward from an existing assignment."""
+        self._level_group_box.setEnabled(enabled)
+        if level in self._level_buttons:
+            rb = self._level_buttons[level]
+            rb.blockSignals(True)
+            rb.setChecked(True)
+            rb.blockSignals(False)
 
     def set_tank(self, serial, fillcode=None):
         """Update the tank-identity header (serial + optional fill code)."""
@@ -390,10 +503,13 @@ class TanksWidget(QWidget):
         # --- caldrift panel state (single-tank figure) ---
         self._caldrift_panel = None            # CaldriftPanel | None
         self._caldrift_ctx: dict | None = None  # live single-tank figure context
+        self._caldrift_last_fit: dict | None = None  # last-plotted fit (for Save to Scale Assignments)
         self._caldrift_refresh = None           # callable: re-run _plot_for for current analyte
         self._caldrift_selected: set[int] = set()   # df row indices selected for flagging
         self._caldrift_exclude_flagged: bool = True  # flagged episodes omitted from the fit
         self._caldrift_hide_flagged: bool = False    # flagged episodes removed from the figure
+        self._caldrift_fit_degree: str = "auto"      # degree passed to ccg_calfit.fitCalibrations
+        self._caldrift_level: str = "Tertiary"       # level for a first-time scale assignment
         self.analytes = self.instrument.analytes or {} if self.instrument else {}
         self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
         self._preferred_channels = self._load_preferred_channels()
@@ -1596,7 +1712,7 @@ class TanksWidget(QWidget):
             return None
         sql = """
             SELECT v.coef0, v.coef1, v.coef2, v.unc_c0, v.unc_c1, v.unc_c2,
-                   v.tzero, v.scale, v.n, sa.inst_num
+                   v.tzero, v.scale, v.n, sa.inst_num, v.level, v.start_date
             FROM hats.scale_assignments_view v
             JOIN hats.scale_assignments sa ON sa.num = v.scale_assignment_num
             WHERE v.serial_number=%s AND v.parameter_num=%s
@@ -1630,8 +1746,9 @@ class TanksWidget(QWidget):
             return False
 
     def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df,
-                              exclude_flagged: bool = True, parameter_num=None):
-        """Overlay caldrift's auto drift fit (curve + legend entry) for one tank.
+                              exclude_flagged: bool = True, parameter_num=None,
+                              degree: str = "auto"):
+        """Overlay caldrift's drift fit (curve + legend entry) for one tank.
 
         Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
         ccg_calfit.fitCalibrations (the fit engine caldrift calls); it does not
@@ -1642,13 +1759,18 @@ class TanksWidget(QWidget):
         exclude_flagged: when True (default, matching caldrift) only unflagged
         ('.') cals feed the fit; when False, manually flagged ('M') episodes are
         included too. Driven by the caldrift panel's "Exclude Flagged" checkbox.
+
+        degree: passed straight to ccg_calfit.fitCalibrations(). "auto"
+        (default) matches standalone caldrift's significance-cascade
+        behavior; "mean"/"linear"/"quadratic" force that exact degree with
+        no fallback. Driven by the caldrift panel's "Fit degree" radio buttons.
         """
         if not species or not fillcode:
             return
         mods = _import_ccg_fit()
         if mods is None:
             return
-        ccg_cal_db, ccg_calfit, ccg_dates = mods
+        ccg_cal_db, ccg_calfit, ccg_dates, _ccg_refgasdb = mods
 
         # Calibrations() otherwise includes every instrument that measured the
         # tank.  That made an M4 plot's red fit include PR1/PR2 results which
@@ -1702,12 +1824,43 @@ class TanksWidget(QWidget):
             # (we can't edit it); genuine failures still raise and are caught.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
-                fit = ccg_calfit.fitCalibrations(fit_data, degree="auto")
+                fit = ccg_calfit.fitCalibrations(fit_data, degree=degree)
         except Exception as exc:
             self._toast(f"caldrift fit failed for {serial}: {exc}")
             return
         if fit is None or fit.n < 1 or fit.coef0 <= -800:
             return
+
+        # Existing scale assignment (if any) for this tank/fill/parameter --
+        # looked up once here and reused both for the legend overlay below
+        # and for "Save to Scale Assignments" (existing -> update, carrying
+        # its start_date/level forward; none -> first-time assignment).
+        assign = self._fetch_scale_assignment(serial, parameter_num, fillcode)
+
+        # Fill date for this fillcode, needed as start_date for a first-time
+        # assignment (no existing row to inherit start_date from). Mirrors
+        # caldrift.py's own lookup: scan cals.fill (all fills for the tank,
+        # sorted by date) for the matching code, keeping the last match if
+        # a code was reused across multiple fills.
+        fill_date = None
+        for line in cals.fill:
+            if line.get("code") == fillcode:
+                fill_date = line.get("date")
+
+        # Remember exactly what's plotted so "Save to Scale Assignments"
+        # writes the same fit the user is looking at, rather than
+        # recomputing (and possibly drifting from the visible curve).
+        self._caldrift_last_fit = {
+            "fit": fit,
+            "serial": serial,
+            "species": species,
+            "fillcode": fillcode,
+            "parameter_num": parameter_num,
+            "degree": degree,
+            "existing_assignment": assign,
+            "fill_date": fill_date,
+        }
+        self._caldrift_sync_level_control()
 
         # Build a smooth fit curve across the plotted datetime span. Work in
         # decimal-date space (as caldrift does) so we don't round-trip the
@@ -1763,10 +1916,9 @@ class TanksWidget(QWidget):
                 ),
             )
 
-        # Existing scale assignment (if any) for this tank/fill/parameter,
-        # shown under the caldrift result. A green ✓ (tinted by the caller)
-        # marks an assignment that matches this fit; otherwise it's out of date.
-        assign = self._fetch_scale_assignment(serial, parameter_num, fillcode)
+        # Existing scale assignment overlay, shown under the caldrift result
+        # (looked up once, above). A green ✓ (tinted by the caller) marks an
+        # assignment that matches this fit; otherwise it's out of date.
         if assign is not None:
             abbr = self._inst_abbr(assign.get("inst_num"))
             parts = [
@@ -1811,6 +1963,12 @@ class TanksWidget(QWidget):
         hb.blockSignals(True)
         hb.setChecked(self._caldrift_hide_flagged)
         hb.blockSignals(False)
+        fit_buttons = self._caldrift_panel._fit_buttons
+        target_rb = fit_buttons.get(self._caldrift_fit_degree) or fit_buttons["auto"]
+        target_rb.blockSignals(True)
+        target_rb.setChecked(True)
+        target_rb.blockSignals(False)
+        self._caldrift_sync_level_control()
         ctx = self._caldrift_ctx or {}
         self._caldrift_panel.set_tank(ctx.get("serial"), ctx.get("fillcode"))
         self._caldrift_update_panel_info()
@@ -1924,10 +2082,145 @@ class TanksWidget(QWidget):
         self._caldrift_hide_flagged = bool(checked)
         self._caldrift_refresh_fit()
 
+    def _caldrift_set_fit_degree(self, degree):
+        self._caldrift_fit_degree = degree or "auto"
+        self._caldrift_refresh_fit()
+
+    def _caldrift_set_level(self, level):
+        # Doesn't affect the plotted fit, so no refresh -- just remember the
+        # choice for the next "Save to Scale Assignments" on a new tank.
+        self._caldrift_level = level or "Tertiary"
+
+    def _caldrift_sync_level_control(self):
+        """Push first-time-vs-update level state to the panel, if open.
+
+        Enabled + the user's last-picked level when this tank/fill has no
+        existing assignment (a first-time save); disabled + the existing
+        assignment's own level when it does (an update always carries that
+        level forward, matching caldrift's own behavior).
+        """
+        if self._caldrift_panel is None:
+            return
+        existing = (self._caldrift_last_fit or {}).get("existing_assignment")
+        if existing is not None:
+            self._caldrift_panel.set_level_state(False, existing.get("level"))
+        else:
+            self._caldrift_panel.set_level_state(True, self._caldrift_level)
+
     def _caldrift_refresh_fit(self):
         """Re-fetch data (picking up flag changes) and re-run the fit/redraw."""
         if self._caldrift_refresh is not None:
             self._caldrift_refresh()
+
+    def _caldrift_save_scale_assignment(self):
+        """Write the currently plotted caldrift fit to hats.scale_assignments.
+
+        Reuses ccg_refgasdb.refgas.insertFromFit() -- the exact write path
+        caldrift's own -u/--update CLI option calls -- rather than a
+        hand-rolled INSERT. That call has no concept of inst_num (the
+        column defaults to 58/PR1 regardless of which system's calibration
+        history fed the fit), so we patch inst_num in with a follow-up
+        UPDATE on the same connection right after the insert, recording
+        which instrument this panel's fit actually came from.
+
+        For a first-time assignment (no existing row for this tank/fill),
+        start_date comes from the tank's fill record instead (cals.fill,
+        looked up in _overlay_caldrift_fit -- the same source caldrift.py's
+        CLI uses) and level comes from the panel's LEVEL picker, which is
+        only enabled in this case.
+        """
+        info = self._caldrift_last_fit
+        if not info:
+            self._toast("No caldrift fit to save. Plot a single tank first.")
+            return
+        fit = info["fit"]
+        serial = info["serial"]
+        species = info["species"]
+        fillcode = info["fillcode"]
+        degree = info["degree"]
+        existing = info.get("existing_assignment")
+
+        inst_num = getattr(self.instrument, "inst_num", None)
+        inst_abbr = self._inst_abbr(inst_num)
+
+        if existing is not None and existing.get("start_date"):
+            start_date = existing["start_date"]
+            level = existing.get("level") or "Tertiary"
+            kind = "Updating existing assignment"
+        else:
+            fill_date = info.get("fill_date")
+            if not fill_date:
+                QMessageBox.warning(
+                    self, "Save to Scale Assignments",
+                    f"No existing scale assignment AND no fill record found for "
+                    f"{serial} (fill {fillcode}), {species} -- can't determine a "
+                    "start date. Use the caldrift CLI (-u) instead.",
+                )
+                return
+            start_date = fill_date
+            level = self._caldrift_level
+            kind = "First-time assignment"
+
+        fit_type = "quad" if fit.coef2 != 0.0 else ("linear" if fit.coef1 != 0.0 else "mean")
+        parts = [f"c0={fit.coef0:.3f}±{fit.unc_c0:.3f}"]
+        if fit.coef1:
+            parts.append(f"c1={fit.coef1:.5f}±{fit.unc_c1:.5f}")
+        if fit.coef2:
+            parts.append(f"c2={fit.coef2:.6f}±{fit.unc_c2:.6f}")
+        summary = (
+            f"{kind}\n"
+            f"Tank: {serial}  (fill {fillcode})\n"
+            f"Species: {species}\n"
+            f"Fit ({fit_type}, degree={degree}):  {', '.join(parts)}\n"
+            f"n={fit.n}\n"
+            f"Level: {level}   Start date: {start_date}\n"
+            f"Instrument: {inst_abbr} (inst_num={inst_num})"
+        )
+        reply = QMessageBox.question(
+            self, "Save to Scale Assignments",
+            f"Save this caldrift fit as the new scale assignment?\n\n{summary}",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        mods = _import_ccg_fit()
+        if mods is None:
+            QMessageBox.critical(
+                self, "Save to Scale Assignments",
+                "CCG modules unavailable; cannot save.",
+            )
+            return
+        _ccg_cal_db, _ccg_calfit, _ccg_dates, ccg_refgasdb = mods
+
+        try:
+            ref = ccg_refgasdb.refgas(
+                sp=species, sn=[serial], database="hats", readonly=False,
+            )
+            comment = f"logos_tanks caldrift panel ({degree} fit, {inst_abbr})"
+            idx = ref.insertFromFit(
+                serial, start_date, fit, level=level, comment=comment
+            )
+            ref.db.doquery(
+                "UPDATE hats.scale_assignments SET inst_num=%s WHERE num=%s",
+                (inst_num, idx),
+            )
+        except (Exception, SystemExit) as exc:
+            # SystemExit is caught too: the CCG refgasdb/dbutils modules call
+            # sys.exit() on some lookup failures, which would otherwise take
+            # the whole logos_tanks process down with it.
+            QMessageBox.critical(
+                self, "Save to Scale Assignments",
+                f"Save failed for {serial}:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self, "Save to Scale Assignments",
+            f"Saved scale assignment #{idx} for {serial} (fill {fillcode}), {species}.\n"
+            f"Instrument: {inst_abbr}",
+        )
+        self._caldrift_refresh_fit()
 
     def _caldrift_on_panel_closed(self):
         """Panel closed: drop selection + highlight."""
@@ -1964,6 +2257,7 @@ class TanksWidget(QWidget):
                 pass
             self._caldrift_panel = None
         self._caldrift_ctx = None
+        self._caldrift_last_fit = None
         self._caldrift_selected = set()
 
         btn = getattr(self, "plot_tanks_btn", None)
@@ -2013,6 +2307,7 @@ class TanksWidget(QWidget):
                 if len(tank_keys) == 1:
                     # Reset per-replot caldrift state; repopulated below.
                     self._caldrift_ctx = None
+                    self._caldrift_last_fit = None
                     self._caldrift_selected = set()
 
                 for fill_key in tank_keys:
@@ -2187,6 +2482,7 @@ class TanksWidget(QWidget):
                         single_ctx["df"],
                         exclude_flagged=self._caldrift_exclude_flagged,
                         parameter_num=param_num,
+                        degree=self._caldrift_fit_degree,
                     )
 
                 # Legend order: tank series first, then the caldrift fit, then
@@ -2589,6 +2885,7 @@ class TanksWidget(QWidget):
                         pass
                     self._caldrift_panel = None
                 self._caldrift_ctx = None
+                self._caldrift_last_fit = None
                 self._caldrift_selected = set()
 
             fig.canvas.mpl_connect("button_press_event", _on_press)
