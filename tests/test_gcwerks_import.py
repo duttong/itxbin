@@ -227,6 +227,135 @@ class CalibrationCleanupTests(unittest.TestCase):
         self.assertEqual(params[0][4:7], (1.234, 0.0, 1))
         self.assertEqual(params[0][10], 293242)
 
+    def test_m4_reference_response_scatter_floors_calibration_stddev(self):
+        import pandas as pd
+
+        instrument = self.make_instrument()
+        run_time = pd.Timestamp("2026-03-06 10:13:00")
+        df = pd.DataFrame(
+            [
+                self.make_row(
+                    analysis_num=1,
+                    run_time=run_time,
+                    mole_fraction=1.0007,
+                    normalized_resp=1.0071,
+                ),
+                self.make_row(
+                    analysis_num=2,
+                    run_time=run_time,
+                    mole_fraction=1.0010,
+                    normalized_resp=1.0074,
+                ),
+                self.make_row(
+                    analysis_num=3,
+                    run_time=run_time,
+                    mole_fraction=1.0013,
+                    normalized_resp=1.0077,
+                ),
+                self.make_row(
+                    analysis_num=4,
+                    run_time=run_time,
+                    tank_serial_num="ESX-3608",
+                    run_type_num=8,
+                    mole_fraction=1.0,
+                    normalized_resp=0.9992,
+                ),
+                self.make_row(
+                    analysis_num=5,
+                    run_time=run_time,
+                    tank_serial_num="ESX-3608",
+                    run_type_num=8,
+                    mole_fraction=1.0,
+                    normalized_resp=1.0008,
+                ),
+            ]
+        )
+
+        instrument.upsert_calibrations(df, parameter_num=100)
+
+        final_inserts = [
+            call for call in instrument.db.multi_insert_calls if call[2]
+        ]
+        self.assertEqual(len(final_inserts), 1)
+        _, params, _ = final_inserts[0]
+        # The tank's observed SD is 0.000245, but the reference-normalized
+        # floor is about 0.00079 in mole-fraction units and rounds to 0.001.
+        self.assertEqual(params[0][4:7], (1.001, 0.001, 3))
+
+    def test_m4_method_one_uses_method_two_for_reference_floor(self):
+        import pandas as pd
+
+        class MethodOneNorm:
+            run_type_column = "run_type_num"
+            standard_run_type = 8
+
+            def __init__(self):
+                self.methods = []
+
+            def merge_smoothed_data(self, df, detrend_method_num=None):
+                self.methods.append(detrend_method_num)
+                out = df.copy()
+                ref = out["run_type_num"].eq(8)
+                out.loc[ref, "normalized_resp"] = [0.9992, 1.0008]
+                return out
+
+        instrument = self.make_instrument()
+        instrument.norm = MethodOneNorm()
+        run_time = pd.Timestamp("2026-03-06 10:13:00")
+        df = pd.DataFrame(
+            [
+                self.make_row(
+                    analysis_num=1,
+                    run_time=run_time,
+                    mole_fraction=1.0007,
+                    normalized_resp=1.0071,
+                    detrend_method_num=1,
+                ),
+                self.make_row(
+                    analysis_num=2,
+                    run_time=run_time,
+                    mole_fraction=1.0010,
+                    normalized_resp=1.0074,
+                    detrend_method_num=1,
+                ),
+                self.make_row(
+                    analysis_num=3,
+                    run_time=run_time,
+                    mole_fraction=1.0013,
+                    normalized_resp=1.0077,
+                    detrend_method_num=1,
+                ),
+                self.make_row(
+                    analysis_num=4,
+                    run_time=run_time,
+                    tank_serial_num="ESX-3608",
+                    run_type_num=8,
+                    mole_fraction=1.0,
+                    normalized_resp=1.0,
+                    detrend_method_num=1,
+                ),
+                self.make_row(
+                    analysis_num=5,
+                    run_time=run_time,
+                    tank_serial_num="ESX-3608",
+                    run_type_num=8,
+                    mole_fraction=1.0,
+                    normalized_resp=1.0,
+                    detrend_method_num=1,
+                ),
+            ]
+        )
+
+        instrument.upsert_calibrations(df, parameter_num=100)
+
+        self.assertEqual(instrument.norm.methods, [2])
+        final_inserts = [
+            call for call in instrument.db.multi_insert_calls if call[2]
+        ]
+        _, params, _ = final_inserts[0]
+        self.assertEqual(params[0][5], 0.001)
+
+
 class CFC113aCalibrationTests(unittest.TestCase):
     def test_deconvolved_values_are_sent_to_matching_parameters(self):
         import pandas as pd
@@ -240,6 +369,8 @@ class CFC113aCalibrationTests(unittest.TestCase):
                 "mole_fraction": [99.0],
                 "mole_fraction_cfc113": [77.0],
                 "mole_fraction_cfc113a": [0.12],
+                "normalized_resp_32": [1.002],
+                "normalized_resp_178": [0.998],
             }
         )
 
@@ -248,7 +379,10 @@ class CFC113aCalibrationTests(unittest.TestCase):
         self.assertEqual([pnum for pnum, _ in calls], [32, 178])
         self.assertEqual(calls[0][1]["mole_fraction"].tolist(), [77.0])
         self.assertEqual(calls[1][1]["mole_fraction"].tolist(), [0.12])
+        self.assertEqual(calls[0][1]["normalized_resp"].tolist(), [1.002])
+        self.assertEqual(calls[1][1]["normalized_resp"].tolist(), [0.998])
         self.assertEqual(source["mole_fraction"].tolist(), [99.0])
+
 
 if __name__ == '__main__':
     unittest.main()

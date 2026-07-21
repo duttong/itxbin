@@ -396,12 +396,17 @@ class M4_Instrument(HATS_DB_Functions):
         source frame.  Select each compound's deconvolved result explicitly
         before invoking the shared calibration aggregator.
         """
-        for parameter_num, mole_fraction_col in (
-            (32, 'mole_fraction_cfc113'),
-            (178, 'mole_fraction_cfc113a'),
+        for parameter_num, mole_fraction_col, normalized_resp_col in (
+            (32, 'mole_fraction_cfc113', 'normalized_resp_32'),
+            (178, 'mole_fraction_cfc113a', 'normalized_resp_178'),
         ):
             df_cal = df.copy()
             df_cal['mole_fraction'] = df_cal[mole_fraction_col]
+            # The shared M4 calibration aggregator applies its uncertainty
+            # floor in normalized-response space.  The deconvolution frame
+            # retains the two channels with explicit suffixes, so expose the
+            # channel corresponding to this calibration result.
+            df_cal['normalized_resp'] = df_cal[normalized_resp_col]
             self.upsert_calibrations(df_cal, parameter_num)
 
     def load_calcurves(self, df):

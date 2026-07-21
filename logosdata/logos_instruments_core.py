@@ -270,6 +270,11 @@ class HATS_DB_Functions(LOGOS_Instruments):
           - num       = count of injections
           - run_number = min(analysis_num)
 
+        For M4, stddev is floored at the reference tank's normalized-response
+        standard deviation, converted to mole-fraction units for each tank.
+        This prevents an artificially zero calibration uncertainty when tightly
+        clustered tank injections round to 0.000 in hats.calibrations.
+
         Existing calibration rows are deleted when a tank group has no valid
         mole fractions after filtering.
 
@@ -398,16 +403,74 @@ class HATS_DB_Functions(LOGOS_Instruments):
         if tank_df.empty:
             return
 
-        # Aggregate per (run_time, tank); ddof=0 matches MySQL STDDEV (population)
+        # Aggregate per (run_time, tank); ddof=0 matches MySQL STDDEV (population).
+        # M4 retains its mean normalized response below to convert the reference
+        # response-scatter floor into the same mole-fraction units as stddev.
+        agg_spec = {
+            'mixratio': ('mole_fraction', lambda x: x.mean()),
+            'stddev': ('mole_fraction', lambda x: x.std(ddof=0)),
+            'num': ('mole_fraction', 'count'),
+            'run_number': ('analysis_num', 'min'),
+        }
+        if self.inst_id == 'm4' and 'normalized_resp' in tank_df:
+            agg_spec['normalized_resp_mean'] = ('normalized_resp', 'mean')
         agg = tank_df.groupby(['run_time', 'tank_serial_num']).agg(
-            mixratio   =('mole_fraction', lambda x: x.mean()),
-            stddev     =('mole_fraction', lambda x: x.std(ddof=0)),
-            num        =('mole_fraction', 'count'),
-            run_number =('analysis_num',  'min'),
+            **agg_spec
         ).reset_index()
         agg = agg[agg['num'] > 0]
         agg = agg.replace([float('inf'), float('-inf')], float('nan'))
         agg = agg.dropna(subset=['mixratio'])
+
+        if self.inst_id == 'm4' and 'normalized_resp_mean' in agg:
+            # The reference standard deviation is dimensionless.  Use the
+            # active normalisation except for method 1, whose reference points
+            # are exactly 1 by construction; method 2 provides a meaningful
+            # repeatability estimate for those runs instead.
+            floor_df = df
+            if (
+                'detrend_method_num' in df
+                and hasattr(self.norm, 'merge_smoothed_data')
+            ):
+                method1_runs = set(
+                    df.loc[
+                        pd.to_numeric(df['detrend_method_num'], errors='coerce').eq(1),
+                        'run_time',
+                    ].dropna()
+                )
+                if method1_runs:
+                    fallback = self.norm.merge_smoothed_data(
+                        df[df['run_time'].isin(method1_runs)].copy(),
+                        detrend_method_num=2,
+                    )
+                    floor_df = pd.concat(
+                        [df[~df['run_time'].isin(method1_runs)], fallback],
+                        ignore_index=True,
+                    )
+
+            floor_rejected = (
+                floor_df['rejected'].fillna(0).astype(int)
+                if 'rejected' in floor_df.columns
+                else pd.Series(0, index=floor_df.index)
+            )
+            ref = floor_df.loc[
+                (floor_df[std_col] == std_val)
+                & floor_rejected.eq(0),
+                ['run_time', 'normalized_resp'],
+            ].copy()
+            ref['normalized_resp'] = pd.to_numeric(
+                ref['normalized_resp'], errors='coerce'
+            )
+            ref = ref.replace([np.inf, -np.inf], np.nan).dropna()
+            ref_sd = ref.groupby('run_time')['normalized_resp'].std(ddof=0)
+
+            agg['ref_normresp_sd'] = agg['run_time'].map(ref_sd)
+            scale = (agg['mixratio'] / agg['normalized_resp_mean']).abs()
+            floor_mf = scale * agg['ref_normresp_sd']
+            use_floor = floor_mf.notna() & (floor_mf > 0)
+            agg.loc[use_floor, 'stddev'] = np.maximum(
+                agg.loc[use_floor, 'stddev'], floor_mf[use_floor]
+            )
+            agg = agg.drop(columns=['normalized_resp_mean', 'ref_normresp_sd'])
 
         # Drop low-injection groups (instrument-specific threshold). A group
         # with fewer than MIN_CAL_INJECTIONS unrejected injections (e.g. FE3

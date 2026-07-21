@@ -1727,23 +1727,23 @@ class TanksWidget(QWidget):
             for dd in line_dd
         ]
 
-        # Auto fit collapses to the highest significant degree; report which.
+        # Auto fit collapses to the highest significant degree.  Format its
+        # coefficients exactly like the stored scale assignment below, so the
+        # two results can be compared directly in the legend.
         excl = f", {n_excluded} excl." if n_excluded else ""
+        parts = [f"c0={fit.coef0:.3f}±{fit.unc_c0:.3f}"]
         if fit.coef2 != 0.0:
-            label = (
-                f"caldrift (quad): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}, "
-                f"c2={fit.coef2:.6f}  (sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
-            )
+            fit_type = "quad"
+            parts.extend([
+                f"c1={fit.coef1:.5f}±{fit.unc_c1:.5f}",
+                f"c2={fit.coef2:.6f}±{fit.unc_c2:.6f}",
+            ])
         elif fit.coef1 != 0.0:
-            label = (
-                f"caldrift (linear): c0={fit.coef0:.3f}, c1={fit.coef1:.5f}  "
-                f"(sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
-            )
+            fit_type = "linear"
+            parts.append(f"c1={fit.coef1:.5f}±{fit.unc_c1:.5f}")
         else:
-            label = (
-                f"caldrift (mean): {fit.coef0:.3f}  "
-                f"(sd={fit.sd_resid:.3f}, n={fit.n}{excl})"
-            )
+            fit_type = "mean"
+        label = f"caldrift ({fit_type}): {', '.join(parts)}  (n={fit.n}{excl})"
 
         ax.plot(
             x_dates, ys,
