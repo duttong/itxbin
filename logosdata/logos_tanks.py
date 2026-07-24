@@ -303,7 +303,7 @@ class CaldriftPanel(QWidget):
             "<b>Flag episodes:</b>"
             "<ul style='-qt-list-indent:0; margin-left:8px; margin-top:2px; margin-bottom:0px;'>"
             "<li>Click a calibration point to select it; <b>SHIFT+click</b> adds/removes more.</li>"
-            "<li><b>Flag Selected</b> sets <tt>flag='M'</tt>; flagged points show as open circles.</li>"
+            "<li><b>Flag Selected</b> flagged points show as open circles.</li>"
             "<li>With <b>Exclude Flagged</b> checked, the caldrift fit ignores flagged episodes.</li>"
             "<li><b>Fit degree</b> forces Mean/Linear/Quadratic instead of caldrift's "
             "auto significance test.</li>"
@@ -511,6 +511,7 @@ class TanksWidget(QWidget):
         self._caldrift_hide_flagged: bool = False    # flagged episodes removed from the figure
         self._caldrift_fit_degree: str = "auto"      # degree passed to ccg_calfit.fitCalibrations
         self._caldrift_level: str = "Tertiary"       # level for a first-time scale assignment
+        self._caldrift_suppress_close_refresh = False  # True while tearing down the whole figure
         self.analytes = self.instrument.analytes or {} if self.instrument else {}
         self._analyte_names = list((self.instrument.analytes or {}).keys() if self.instrument else [])
         self._preferred_channels = self._load_preferred_channels()
@@ -2267,9 +2268,14 @@ class TanksWidget(QWidget):
         self._caldrift_refresh_fit()
 
     def _caldrift_on_panel_closed(self):
-        """Panel closed: drop selection + highlight."""
+        """Panel closed: drop selection + highlight, and revert to
+        caldrift's own auto fit -- overriding the fit degree is only in
+        effect while the panel is open."""
         self._caldrift_selected = set()
         self._caldrift_redraw_highlight()
+        self._caldrift_fit_degree = "auto"
+        if not self._caldrift_suppress_close_refresh:
+            self._caldrift_refresh_fit()
 
     def _on_plot_tanks(self):
         """Pop up a matplotlib figure with mole fraction history for selected tanks."""
@@ -2293,12 +2299,17 @@ class TanksWidget(QWidget):
             self._toast("Instrument id unavailable; cannot query calibrations.")
             return
 
-        # A previous caldrift figure's panel/context is now stale.
+        # A previous caldrift figure's panel/context is now stale. Suppress
+        # the close-triggered refresh -- a brand-new plot is about to replace
+        # it, so redrawing the old one first would just be wasted/glitchy.
         if self._caldrift_panel is not None:
+            self._caldrift_suppress_close_refresh = True
             try:
                 self._caldrift_panel.close()
             except Exception:
                 pass
+            finally:
+                self._caldrift_suppress_close_refresh = False
             self._caldrift_panel = None
         self._caldrift_ctx = None
         self._caldrift_last_fit = None
@@ -2922,11 +2933,16 @@ class TanksWidget(QWidget):
 
             def _on_fig_close(_evt):
                 # Closing the figure dismisses its caldrift panel + context.
+                # Suppress the close-triggered refresh -- the figure being
+                # closed is exactly what a refresh would try to redraw into.
                 if self._caldrift_panel is not None:
+                    self._caldrift_suppress_close_refresh = True
                     try:
                         self._caldrift_panel.close()
                     except Exception:
                         pass
+                    finally:
+                        self._caldrift_suppress_close_refresh = False
                     self._caldrift_panel = None
                 self._caldrift_ctx = None
                 self._caldrift_last_fit = None
