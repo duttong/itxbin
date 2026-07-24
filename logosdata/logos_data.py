@@ -1409,7 +1409,11 @@ class MainWindow(QMainWindow):
         current = self.tabs.currentWidget() if self.tabs else None
         if not current:
             return
-        if current is self.logos_ai_tab:
+        if current is self.logos_ai_tab or current is self.tanks_tab:
+            # Neither tab uses the shared plot canvas (Tanks pops its plots into
+            # their own floating matplotlib windows), so give the tab the full
+            # window width instead of confining it to left_container next to a
+            # blank right_spacer.
             self.left_container.setMinimumWidth(0)
             self.left_container.setMaximumWidth(16777215)
             self.left_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -6275,7 +6279,16 @@ def main():
         QToolTip { background-color: #fff59d; }
     """)
     w = MainWindow(instrument)
-    w.resize(1400, 800)
+    screen = app.primaryScreen()
+    avail = screen.availableGeometry() if screen else None
+    if avail is not None:
+        target_w = min(1400, avail.width())
+        target_h = min(800, avail.height())
+        w.resize(target_w, target_h)
+        w.move(avail.x() + (avail.width() - target_w) // 2,
+               avail.y() + (avail.height() - target_h) // 2)
+    else:
+        w.resize(1400, 800)
     w.show()
     sys.exit(app.exec_())
     

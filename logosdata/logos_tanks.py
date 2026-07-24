@@ -15,10 +15,10 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QGroupBox, QSpinBox, QGridLayout,
     QToolTip, QApplication, QInputDialog, QSizePolicy, QShortcut,
-    QLineEdit, QRadioButton, QButtonGroup, QMessageBox
+    QLineEdit, QRadioButton, QButtonGroup, QMessageBox, QScrollArea, QFrame
 )
 from PyQt5.QtGui import QCursor, QKeySequence
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 
 from matplotlib.widgets import Button
 import matplotlib.dates as mdates
@@ -500,6 +500,7 @@ class TanksWidget(QWidget):
         self._tank_metadata: dict[str, dict] = {}
         self._tank_cache: dict[str, list[dict]] = {}
         self._tank_cache_range: tuple[int, int] | None = None
+        self._resize_timer: QTimer | None = None
         # --- caldrift panel state (single-tank figure) ---
         self._caldrift_panel = None            # CaldriftPanel | None
         self._caldrift_ctx: dict | None = None  # live single-tank figure context
@@ -578,7 +579,13 @@ class TanksWidget(QWidget):
             self.analyte_checks.append(cb)
         self._reflow_analyte_grid(cols_analyte)
         analyte_container.setLayout(analyte_checks_layout)
-        analyte_layout.addWidget(analyte_container)
+        analyte_scroll = QScrollArea()
+        analyte_scroll.setWidgetResizable(True)
+        analyte_scroll.setFrameShape(QFrame.NoFrame)
+        analyte_scroll.setMinimumHeight(160)
+        analyte_scroll.setMaximumHeight(360)
+        analyte_scroll.setWidget(analyte_container)
+        analyte_layout.addWidget(analyte_scroll)
         self.tanks_status = QLabel("Select a year range and gas to load tanks.")
         self.tanks_status.setWordWrap(True)
         analyte_layout.addWidget(self.tanks_status)
@@ -650,7 +657,15 @@ class TanksWidget(QWidget):
         self.tank_grid.setContentsMargins(0, 0, 0, 0)
         self.tank_grid.setHorizontalSpacing(8)
         self.tank_grid.setVerticalSpacing(4)
-        tanks_group_layout.addLayout(self.tank_grid)
+        tank_grid_container = QWidget()
+        tank_grid_container.setLayout(self.tank_grid)
+        tank_scroll = QScrollArea()
+        tank_scroll.setWidgetResizable(True)
+        tank_scroll.setFrameShape(QFrame.NoFrame)
+        tank_scroll.setMinimumHeight(160)
+        tank_scroll.setMaximumHeight(420)
+        tank_scroll.setWidget(tank_grid_container)
+        tanks_group_layout.addWidget(tank_scroll)
         tanks_group.setLayout(tanks_group_layout)
         analyte_layout.addWidget(tanks_group)
 
@@ -767,11 +782,28 @@ class TanksWidget(QWidget):
                 selected.append((name, pnum, channel))
         return selected
 
-    def _reflow_analyte_grid(self, cols: int = 5):
-        """Re-layout analyte checkboxes based on sort toggle."""
+    def _grid_col_count(self, checks: list[QCheckBox], default: int = 5,
+                         min_cols: int = 3, max_cols: int = 10) -> int:
+        """Pick a checkbox-grid column count from this widget's current
+        width, so a wider window (more screen reclaimed from the old fixed
+        left-column layout) shows fewer, more legible rows instead of
+        leaving the extra space unused. Falls back to ``default`` before
+        the widget has been laid out (width still 0)."""
+        width = self.width()
+        if width <= 0 or not checks:
+            return default
+        col_width = max((cb.sizeHint().width() for cb in checks), default=140) + 12
+        usable = max(width - 64, col_width)
+        cols = usable // col_width
+        return int(max(min_cols, min(max_cols, cols)))
+
+    def _reflow_analyte_grid(self, cols: int | None = None):
+        """Re-layout analyte checkboxes based on sort toggle and available width."""
         layout = getattr(self, "_analyte_checks_layout", None)
         if layout is None:
             return
+        if cols is None:
+            cols = self._grid_col_count(self.analyte_checks, default=5)
         while layout.count():
             item = layout.takeAt(0)
             w = item.widget()
@@ -1071,11 +1103,7 @@ class TanksWidget(QWidget):
                 cb.setVisible(False)
 
         num_visible = len(visible)
-        if num_visible > 60:
-            # Keep the number of tanks per row at 15 or less
-            cols = math.ceil(num_visible / 15)
-        else:
-            cols = 6
+        cols = self._grid_col_count(self.tank_checks, default=6)
         for idx, cb in enumerate(visible):
             row, col = divmod(idx, cols)
             # Reparent into the grid first; only then make visible. Calling
@@ -1095,6 +1123,22 @@ class TanksWidget(QWidget):
 
     def _on_tank_search_changed(self, _text: str):
         """Re-filter the displayed tank checkboxes as the user types."""
+        self._populate_tank_grid()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not getattr(self, "_ready", False):
+            return
+        if self._resize_timer is None:
+            self._resize_timer = QTimer(self)
+            self._resize_timer.setSingleShot(True)
+            self._resize_timer.timeout.connect(self._on_resize_settled)
+        # Debounce: only reflow once the resize (e.g. a window drag) settles,
+        # rather than rebuilding both grids on every intermediate event.
+        self._resize_timer.start(120)
+
+    def _on_resize_settled(self):
+        self._reflow_analyte_grid()
         self._populate_tank_grid()
 
     def _on_clear_tank_search(self):
