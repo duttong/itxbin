@@ -3061,7 +3061,19 @@ if __name__ == "__main__":
         sys.exit(1)
     widget = TanksWidget(instrument=instrument)
     widget.setWindowTitle(f"TanksWidget Test Harness ({inst_key.upper()})")
-    widget.resize(320, 420)
+    # 320x420 was cramped even before the responsive checkbox grids (which
+    # need real width to reflow into more than their 3-column floor). Size
+    # against the screen like logos_data's main window does.
+    screen = app.primaryScreen()
+    avail = screen.availableGeometry() if screen else None
+    if avail is not None:
+        target_w = min(1000, avail.width())
+        target_h = min(800, avail.height())
+        widget.resize(target_w, target_h)
+        widget.move(avail.x() + (avail.width() - target_w) // 2,
+                    avail.y() + (avail.height() - target_h) // 2)
+    else:
+        widget.resize(1000, 800)
     widget.show()
     sys.exit(app.exec_())
     
