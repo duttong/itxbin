@@ -500,6 +500,12 @@ class TanksWidget(QWidget):
         self._tank_metadata: dict[str, dict] = {}
         self._tank_cache: dict[str, list[dict]] = {}
         self._tank_cache_range: tuple[int, int] | None = None
+        # (tank_cache_range, pnum, serials) -> {serial: [timestamp, ...]}. A
+        # category-filter checkbox triggers refresh_tanks() without changing
+        # the analyte, year range, or tank set, so this key stays the same
+        # across those calls -- avoids reissuing the hats.calibrations query
+        # in _annotate_recent_analysis() on every filter click.
+        self._recent_analysis_cache: dict[tuple, dict[str, list]] = {}
         self._resize_timer: QTimer | None = None
         # --- caldrift panel state (single-tank figure) ---
         self._caldrift_panel = None            # CaldriftPanel | None
@@ -908,6 +914,11 @@ class TanksWidget(QWidget):
 
     def _build_tank_cache(self, start: int, end: int):
         """Populate cached tanks for all analytes for the given date range."""
+        # A new active-tanks fetch invalidates any cached recent-analysis
+        # results -- they're keyed on tank_cache_range, so stale entries
+        # would just go unused, but clearing avoids growing this unbounded
+        # across a long session of year-range changes.
+        self._recent_analysis_cache = {}
         if not self.instrument or not self.tanks_plotter:
             self._tank_cache = {}
             self._tank_cache_range = None
@@ -1530,32 +1541,37 @@ class TanksWidget(QWidget):
         })
         if not serials:
             return
-        serial_list = ",".join("'{}'".format(s.replace("'", "''")) for s in serials)
-        inst_filter = self._calibration_inst_filter(inst_id)
-        sql = f"""
-            SELECT c.serial_number, CONCAT(c.date, ' ', c.time) AS run_time
-            FROM hats.calibrations c
-            WHERE c.serial_number IN ({serial_list})
-              AND {inst_filter}
-              AND c.parameter_num = {int(pnum)}
-              AND c.mixratio IS NOT NULL
-              AND c.mixratio > -99
-              AND c.mixratio != 0
-              AND c.num >= 3
-              AND c.flag = '.'
-            ORDER BY c.serial_number, run_time;
-        """
-        try:
-            rows = self.instrument.db.doquery(sql)
-        except Exception:
-            return
 
-        by_serial: dict[str, list[pd.Timestamp]] = defaultdict(list)
-        for row in rows or []:
-            serial = row.get("serial_number")
-            dt = pd.to_datetime(row.get("run_time"), errors="coerce")
-            if serial is not None and pd.notnull(dt):
-                by_serial[str(serial)].append(dt)
+        cache_key = (self._tank_cache_range, int(pnum), tuple(serials))
+        by_serial = self._recent_analysis_cache.get(cache_key)
+        if by_serial is None:
+            serial_list = ",".join("'{}'".format(s.replace("'", "''")) for s in serials)
+            inst_filter = self._calibration_inst_filter(inst_id)
+            sql = f"""
+                SELECT c.serial_number, CONCAT(c.date, ' ', c.time) AS run_time
+                FROM hats.calibrations c
+                WHERE c.serial_number IN ({serial_list})
+                  AND {inst_filter}
+                  AND c.parameter_num = {int(pnum)}
+                  AND c.mixratio IS NOT NULL
+                  AND c.mixratio > -99
+                  AND c.mixratio != 0
+                  AND c.num >= 3
+                  AND c.flag = '.'
+                ORDER BY c.serial_number, run_time;
+            """
+            try:
+                rows = self.instrument.db.doquery(sql)
+            except Exception:
+                return
+
+            by_serial: dict[str, list[pd.Timestamp]] = defaultdict(list)
+            for row in rows or []:
+                serial = row.get("serial_number")
+                dt = pd.to_datetime(row.get("run_time"), errors="coerce")
+                if serial is not None and pd.notnull(dt):
+                    by_serial[str(serial)].append(dt)
+            self._recent_analysis_cache[cache_key] = by_serial
 
         for key, meta in self._tank_metadata.items():
             serial = str(meta.get("serial_number") or meta.get("tank_serial_num") or key.split("::")[0])
