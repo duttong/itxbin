@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingest CATS GC data: export from GCwerks, load into DB, import published mole fractions."""
+"""Ingest CATS GC data: export from GCwerks, load into DB, optionally import legacy published mole fractions."""
 
 import subprocess
 import sys
@@ -30,14 +30,16 @@ def ingest(
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
     flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
     skip_export: bool = typer.Option(False, "--skip-export", help="Skip GCwerks CSV export step"),
-    skip_aftp: bool = typer.Option(False, "--skip-aftp", help="Skip /aftp mole fraction import"),
+    run_aftp: bool = typer.Option(
+        False, "--run-aftp", help="Also import legacy published mole fractions from /aftp (one-time backfill; off by default)"
+    ),
 ):
     """Ingest CATS data for one site.
 
     Steps:
       1. Export GCwerks data to /hats/gc/cats_results/ (cats_export.py)
       2. Load GCwerks CSVs into ng_insitu_analysis / ng_insitu_mole_fractions
-      3. Import published mole fractions from /aftp/hats into ng_insitu_mole_fractions
+      3. (optional, --run-aftp) Import legacy published mole fractions from /aftp/hats
     """
     # 1. GCwerks export
     if not skip_export:
@@ -56,8 +58,8 @@ def ingest(
         gcwerks_cmd.extend(["--year", str(year)])
     _run(gcwerks_cmd)
 
-    # 3. Import published mole fractions from /aftp/hats
-    if not skip_aftp:
+    # 3. Import legacy published mole fractions from /aftp/hats (one-time backfill, opt-in)
+    if run_aftp:
         aftp_cmd = [sys.executable, str(BIN_DIR / "cats_aftp2db.py"), site]
         if all_data:
             aftp_cmd.append("--all")
