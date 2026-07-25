@@ -1064,7 +1064,7 @@ class MainWindow(QMainWindow):
         # IE3 (in-situ) offers the cal-fit methods cal12/cal1/cal2 (recorded as
         # mf_method_num); other instruments offer polynomial fit degrees.
         self.fit_method_cb = QComboBox()
-        if self.instrument.inst_id == 'ie3':
+        if self.instrument.inst_id in ('ie3', 'cats'):
             self.fit_method_cb.addItem("ref", self.instrument.MF_METHOD_REF)
             self.fit_method_cb.addItem("cal12", self.instrument.MF_METHOD_CAL12)
             self.fit_method_cb.addItem("cal1", self.instrument.MF_METHOD_CAL1)
@@ -1109,7 +1109,7 @@ class MainWindow(QMainWindow):
         # upsert the week's air-port mole fractions from that fit.
         self.ie3_update_btn = QPushButton("Update Method")
         self.ie3_update_btn.setEnabled(False)
-        self.ie3_update_btn.setVisible(self.instrument.inst_id == 'ie3')
+        self.ie3_update_btn.setVisible(self.instrument.inst_id in ('ie3', 'cats'))
         self.ie3_update_btn.setToolTip(
             "Save the selected calibration method for this week (updates "
             "hats.ng_response), then recompute this week's air-port mole "
@@ -1121,7 +1121,7 @@ class MainWindow(QMainWindow):
         # committing it.
         self.ie3_revert_btn = QPushButton("Revert")
         self.ie3_revert_btn.setEnabled(False)
-        self.ie3_revert_btn.setVisible(self.instrument.inst_id == 'ie3')
+        self.ie3_revert_btn.setVisible(self.instrument.inst_id in ('ie3', 'cats'))
         self.ie3_revert_btn.setToolTip(
             "Discard unsaved changes (method selection, rejections) for "
             "this week and reload from the database."
@@ -1940,7 +1940,7 @@ class MainWindow(QMainWindow):
         # IE3: the combo selects the cal-fit method (cal12/cal1/cal2/ref), not a
         # polynomial degree. Mark the run dirty so the change can be saved, and
         # re-render the cal-curve view live so the fit line reflects the choice.
-        if self.instrument.inst_id == 'ie3':
+        if self.instrument.inst_id in ('ie3', 'cats'):
             self._ie3_cal_method = int(data)
             if (self.current_run_time and '(Cal)' in self.current_run_time):
                 self.madechanges = True
@@ -3474,7 +3474,8 @@ class MainWindow(QMainWindow):
         if weekly is None:
             weekly = _ie3_weekly_aggregate(unflagged)
         if coefs is None:
-            serials = _ie3_cal_tank_serials(self.instrument)
+            cal_ports = (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT)
+            serials = _ie3_cal_tank_serials(self.instrument, cal_ports=cal_ports)
             coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
         if not coefs:
             return None, coefs
@@ -3547,7 +3548,7 @@ class MainWindow(QMainWindow):
         """True when the Calibration view is showing the IE3 weekly cal-fit
         plot (_ie3_cal_plot) rather than the standard polynomial cal plot."""
         return bool(
-            self.instrument.inst_id == 'ie3'
+            self.instrument.inst_id in ('ie3', 'cats')
             and self.plot_radio_group.checkedId() == 3
             and self.current_run_time
             and '(Cal)' in self.current_run_time
@@ -3614,7 +3615,8 @@ class MainWindow(QMainWindow):
         weekly = None
         if _IE3_CAL_AVAILABLE and not unflagged.empty:
             weekly = _ie3_weekly_aggregate(unflagged)
-            serials = _ie3_cal_tank_serials(self.instrument)
+            cal_ports = (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT)
+            serials = _ie3_cal_tank_serials(self.instrument, cal_ports=cal_ports)
             coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
@@ -3748,7 +3750,7 @@ class MainWindow(QMainWindow):
                 bbox=dict(boxstyle='round,pad=0.4', fc='white', ec='gray', alpha=0.9))
 
         ax.set_title(
-            f"IE3 @ {self.instrument.site.upper()} — {gas_name} "
+            f"{self.instrument.inst_id.upper()} @ {self.instrument.site.upper()} — {gas_name} "
             f"weekly cal run {week_start}  [{method_label}]"
         )
         ax.set_xlabel("normalized_resp (weekly mean per tank)")
@@ -3851,11 +3853,10 @@ class MainWindow(QMainWindow):
               "air-port mole fractions using the updated fit.")
 
     def _refresh_ie3_update_button(self):
-        """Show/enable the IE3 "Update Method"/"Update MF" (and "Revert")
-        buttons based on pending changes. IE3-only for now -- hidden for
-        other instruments.
+        """Show/enable the IE3/CATS "Update Method"/"Update MF" (and "Revert")
+        buttons based on pending changes. Hidden for other instruments.
         """
-        if self.instrument.inst_id != 'ie3':
+        if self.instrument.inst_id not in ('ie3', 'cats'):
             return
         is_cal_week = bool(self.current_run_time and '(Cal)' in self.current_run_time)
         self.ie3_update_btn.setVisible(is_cal_week)
@@ -3887,7 +3888,7 @@ class MainWindow(QMainWindow):
         from the database -- no writes, so you can try a method/rejection
         change, see the resulting fit, and back out without committing it.
         """
-        if not (self.instrument.inst_id == 'ie3'
+        if not (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time and '(Cal)' in self.current_run_time):
             return
         self._clear_highlight()
@@ -3951,7 +3952,7 @@ class MainWindow(QMainWindow):
             return
 
         # IE3 cal run: show weekly cal fit plot instead of polynomial cal plot
-        if (self.instrument.inst_id == 'ie3'
+        if (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time
                 and '(Cal)' in self.current_run_time):
             self._ie3_cal_plot()
@@ -4797,7 +4798,7 @@ class MainWindow(QMainWindow):
             chunk_labels = [
                 label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
             ]
-            if self.instrument.inst_id == 'ie3' and self.current_pnum is not None:
+            if self.instrument.inst_id in ('ie3', 'cats') and self.current_pnum is not None:
                 cal_dates = self.instrument.query_cal_run_dates(
                     self.current_pnum, self.current_channel, t0, t1
                 )
@@ -5163,7 +5164,7 @@ class MainWindow(QMainWindow):
             return
 
         # IE3 cal view has no save-legend button to flash; save directly.
-        if (self.instrument.inst_id == 'ie3'
+        if (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time
                 and '(Cal)' in self.current_run_time):
             self._perform_save_current_gas()
@@ -5187,7 +5188,7 @@ class MainWindow(QMainWindow):
         """Actual save work; called via QTimer so the yellow flash is visible."""
 
         # IE3 cal run: save flag changes + recompute and store the weekly fit
-        if (self.instrument.inst_id == 'ie3'
+        if (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time
                 and '(Cal)' in self.current_run_time):
             self._ie3_cal_save()
@@ -5310,7 +5311,7 @@ class MainWindow(QMainWindow):
         # A freshly loaded run starts with all ports visible.
         self._hidden_ports = set()
         # IE3 cal run: load cal+ref port data for the selected week
-        if (self.instrument.inst_id == 'ie3'
+        if (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time
                 and '(Cal)' in self.current_run_time):
             week_start = self.current_run_time.split(' (')[0].strip()

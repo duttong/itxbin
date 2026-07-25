@@ -71,9 +71,10 @@ def resolve_pnum(
     return pnum, display_name
 
 
-def filter_tanks(df: pd.DataFrame) -> pd.DataFrame:
-    tanks = df[df['port'].isin(PLOT_PORTS)].copy()
+def filter_tanks(df: pd.DataFrame, plot_ports: tuple = PLOT_PORTS) -> pd.DataFrame:
+    tanks = df[df['port'].isin(plot_ports)].copy()
     tanks = tanks[tanks['normalized_resp'].notna()]
+    tanks = tanks[np.isfinite(tanks['normalized_resp'])]
     return tanks[tanks['rejected'] == 0]
 
 
@@ -103,7 +104,7 @@ def drop_first_in_burst(df: pd.DataFrame, max_gap_minutes: int = 60) -> pd.DataF
 
 def weekly_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     """Mon-Sun week; week_start is the Monday of that week."""
-    df = df.copy()
+    df = df[df['normalized_resp'].notna()].copy()
     df['week_start'] = df['analysis_datetime'].dt.tz_localize(None).dt.to_period('W-SUN').dt.start_time
     return (
         df.groupby(['port', 'port_label', 'week_start'])['normalized_resp']
@@ -159,12 +160,12 @@ def plot_time_series(
         print(f"Saved plot → {savepath}")
 
 
-def cal_tank_serials(instrument: IE3_Instrument) -> dict[int, str]:
+def cal_tank_serials(instrument: IE3_Instrument, cal_ports: tuple = CAL_PORTS) -> dict[int, str]:
     """Return {port: serial_number} for the cal tanks at the current site."""
     pc = instrument.port_config
     if pc is None:
         return {}
-    mask = (pc['site_num'] == instrument.site_num) & (pc['port_num'].isin(CAL_PORTS))
+    mask = (pc['site_num'] == instrument.site_num) & (pc['port_num'].isin(cal_ports))
     return {int(p): s for p, s in zip(pc.loc[mask, 'port_num'], pc.loc[mask, 'label'])}
 
 

@@ -859,7 +859,9 @@ class CATS_Instrument(IE3_Instrument):
     CATS has one instrument per site, each with its own inst_num (239-244).
     Data lives in the same ng_insitu_* tables as IE3.  Port layout:
       port 2 = cal1 (Std),  port 4 = air1,  port 6 = cal2 (Ref),  port 8 = air2.
-    Mole fractions are computed via scale_simple: mf = normalized_resp * coef0.
+    Mole fractions are computed by the inherited IE3_Instrument.calc_mole_fraction,
+    which routes per-row on mf_method_num (ref / cal12 / cal1 / cal2) -- see
+    cats_batch.py for the weekly-fit batch pipeline.
     """
 
     INST_NUM_BY_SITE: dict[str, int] = {
@@ -971,9 +973,6 @@ class CATS_Instrument(IE3_Instrument):
         if df.empty:
             return {}
         return dict(zip(df['code'].str.lower(), df['num']))
-
-    def calc_mole_fraction(self, df):
-        return self.calc_mole_fraction_scale_simple(df)
 
 
 class BLD1_Instrument(HATS_DB_Functions):
