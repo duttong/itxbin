@@ -275,6 +275,43 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         return pd.DataFrame(self.db.doquery(sql, (self.inst_num,)))
 
+    def preferred_channels_for_range(self, pnum, start_date, end_date) -> set[str]:
+        """Return channels preferred at any time in an inclusive date range."""
+        history = getattr(self, 'preferred_channel_history', None)
+        if history is None:
+            history = self.return_preferred_channel()
+        if history.empty:
+            return set()
+
+        rows = history.loc[
+            pd.to_numeric(history['parameter_num'], errors='coerce').eq(int(pnum))
+        ].copy()
+        if rows.empty:
+            return set()
+
+        rows['start_date'] = pd.to_datetime(rows['start_date'], errors='coerce')
+        rows = rows.dropna(subset=['start_date']).sort_values('start_date')
+        if rows.empty:
+            return set()
+
+        start = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date)
+        if start.tzinfo is not None:
+            start = start.tz_localize(None)
+        if end.tzinfo is not None:
+            end = end.tz_localize(None)
+
+        # Queries use the earliest assignment before its start date, matching
+        # _preferred_channel_filter_sql's fallback behavior.
+        period_starts = [pd.Timestamp.min] + rows['start_date'].iloc[1:].tolist()
+        period_ends = rows['start_date'].iloc[1:].tolist() + [pd.Timestamp.max]
+        channels = set()
+        for channel, period_start, period_end in zip(
+                rows['channel'], period_starts, period_ends):
+            if period_start <= end and period_end > start:
+                channels.add(str(channel).strip().lower())
+        return channels
+
     def upsert_calibrations(self, df, parameter_num):
         """IE3 does not write to hats.calibrations."""
         return
@@ -936,30 +973,9 @@ class CATS_Instrument(IE3_Instrument):
         else:
             self.analytes = {}
 
-        # Add a "(pref)" entry for compounds that have ng_preferred_channel entries.
-        # Inserted immediately after the last channel variant of each compound.
-        pref_rows = self.db.doquery(
-            "SELECT DISTINCT parameter_num FROM hats.ng_preferred_channel "
-            f"WHERE inst_num = {self.inst_num};"
-        ) or []
-        pref_params = {int(r['parameter_num']) for r in pref_rows}
-        if pref_params:
-            augmented = {}
-            seen_pref = set()
-            # Track the last position of each compound name so we can insert after it.
-            for key, pnum in self.analytes.items():
-                augmented[key] = pnum
-                base = key.split(" (")[0]
-                pref_key = f"{base} (pref)"
-                if int(pnum) in pref_params and pref_key not in seen_pref:
-                    # Peek ahead: only insert after the LAST channel variant.
-                    remaining_bases = [k.split(" (")[0] for k in list(self.analytes)[
-                        list(self.analytes).index(key) + 1:
-                    ]]
-                    if base not in remaining_bases:
-                        augmented[pref_key] = pnum
-                        seen_pref.add(pref_key)
-            self.analytes = augmented
+        # Preferred-channel history is read-only UI/query metadata. Processing
+        # selectors retain only real analyte/channel pairs.
+        self.preferred_channel_history = self.return_preferred_channel()
 
         self.analytes_inv = {int(v): k for k, v in self.analytes.items()}
         self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME

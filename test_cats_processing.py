@@ -20,6 +20,7 @@ for module_dir in (str(REPO_DIR), str(LOGOSDATA_DIR)):
 from cats_batch import CATS_batch
 from logos_data import MainWindow
 from logos_instruments_insitu import CATS_Instrument
+from logos_timeseries import TimeseriesWidget
 
 
 class FakeButton:
@@ -77,6 +78,73 @@ class CalibrationButtonTests(unittest.TestCase):
 
         self.assertTrue(window.calibration_rb.enabled)
 
+
+class PreferredChannelDisplayTests(unittest.TestCase):
+    def test_preferred_channels_for_range_handles_transition(self):
+        instrument = object.__new__(CATS_Instrument)
+        instrument.preferred_channel_history = pd.DataFrame([
+            {"parameter_num": 22, "start_date": "2017-03-01", "channel": "a"},
+            {"parameter_num": 22, "start_date": "2021-05-20", "channel": "f"},
+        ])
+
+        before = instrument.preferred_channels_for_range(
+            22, "2021-05-01", "2021-05-19 23:59:59"
+        )
+        crossing = instrument.preferred_channels_for_range(
+            22, "2021-05-01", "2021-05-31 23:59:59"
+        )
+
+        self.assertEqual(before, {"a"})
+        self.assertEqual(crossing, {"a", "f"})
+
+    def test_processing_star_does_not_change_analyte_identity(self):
+        instrument = SimpleNamespace(
+            inst_id="cats",
+            preferred_channels_for_range=lambda _pnum, _start, _end: {"q"},
+        )
+        window = SimpleNamespace(
+            instrument=instrument,
+            analytes={"N2O (q)": 5, "N2O (a)": 5},
+        )
+
+        preferred, tooltip = MainWindow._preferred_analyte_label(
+            window, "N2O (q)", pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
+        )
+        other, _ = MainWindow._preferred_analyte_label(
+            window, "N2O (a)", pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
+        )
+
+        self.assertEqual(preferred, "N2O (q) ★")
+        self.assertEqual(other, "N2O (a)")
+        self.assertIn("final preferred-channel product", tooltip)
+
+    def test_plot_name_uses_the_selected_real_channel(self):
+        window = SimpleNamespace(
+            analytes={"N2O (q)": 5, "N2O (a)": 5},
+            current_pnum=5,
+            current_channel="q",
+            instrument=SimpleNamespace(analytes_inv={5: "N2O (a)"}),
+        )
+
+        name = MainWindow._current_analyte_name(window)
+
+        self.assertEqual(name, "N2O (q)")
+
+    def test_cats_timeseries_preferred_filter_is_date_aware(self):
+        class FakeTimeseries:
+            _uses_forced_preferred_channel = TimeseriesWidget._uses_forced_preferred_channel
+
+        widget = FakeTimeseries()
+        widget.force_preferred_channel = True
+        widget.instrument = SimpleNamespace(inst_num=239, return_preferred_channel=lambda: None)
+
+        sql = TimeseriesWidget._preferred_channel_filter_sql(
+            widget,
+            "mf.channel", "mf.parameter_num", "a.analysis_time"
+        )
+
+        self.assertIn("pc.start_date <= a.analysis_time", sql)
+        self.assertIn("pc.inst_num = 239", sql)
 
 class CATSBatchPortTests(unittest.TestCase):
     def test_update_runs_calculates_air_and_tank_ports_with_week_method(self):

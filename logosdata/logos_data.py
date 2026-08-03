@@ -2026,6 +2026,19 @@ class MainWindow(QMainWindow):
     def _fmt_cal_plot(self, x, y):
         return f"x={x:0.3g}  y={y:0.3g}"
 
+    def _current_analyte_name(self):
+        """Return the real analyte label matching current parameter and channel."""
+        for name, pnum in self.analytes.items():
+            if int(pnum) != int(self.current_pnum):
+                continue
+            match = re.search(r'\(([^()]*)\)\s*$', name)
+            channel = match.group(1).strip() if match else None
+            if channel == self.current_channel:
+                return name
+        return self.instrument.analytes_inv.get(
+            self.current_pnum, str(self.current_pnum)
+        )
+
     def _fill_missing_insitu_mole_fractions(self) -> int:
         """Compute missing IE3/CATS mole fractions in memory for display."""
         if self.run.empty or self.instrument.inst_id not in ('ie3', 'cats'):
@@ -2375,7 +2388,7 @@ class MainWindow(QMainWindow):
             top_line = f"{self.current_run_time}"
         main_title = "\n".join([
             top_line,
-            f"{tlabel}: {self.instrument.analytes_inv[self.current_pnum]} ({self.current_pnum})",
+            f"{tlabel}: {self._current_analyte_name()} ({self.current_pnum})",
         ])
         ax.set_title(main_title, pad=16)
         if sub_info:
@@ -3652,7 +3665,7 @@ class MainWindow(QMainWindow):
             return
 
         week_start = self.current_run_time.split(' (')[0].strip()
-        gas_name = self.instrument.analytes_inv.get(self.current_pnum, str(self.current_pnum))
+        gas_name = self._current_analyte_name()
         pnum = self.current_pnum
         method = self._ie3_cal_method_selected(week_start)
         method_label = self.instrument.MF_METHOD_LABELS.get(method, str(method))
@@ -4358,7 +4371,7 @@ class MainWindow(QMainWindow):
 
         # Titles/labels
         title = (f"{self.current_run_time} - {tlabel}: "
-                f"{self.instrument.analytes_inv[int(self.current_pnum)]} ({self.current_pnum})")
+                f"{self._current_analyte_name()} ({self.current_pnum})")
         self.figure.suptitle(title, y=0.98)  # sits above both axes
         ax_resid.set_title("Residuals")
         units = '(ppb)' if int(self.current_pnum) == 5 else '(ppt)'  # ppb for N2O
@@ -4959,7 +4972,8 @@ class MainWindow(QMainWindow):
                 self.current_run_time = None
 
         self.run_cb.blockSignals(False)
-        
+
+        self._refresh_preferred_channel_markers()
         self.load_selected_run()
         self._update_notes_button_style()
         # Respect whichever plot type is currently selected instead of
@@ -4995,6 +5009,7 @@ class MainWindow(QMainWindow):
                 row = index % row_count
                 column = index // row_count
                 rb = QRadioButton(name)
+                rb.setProperty("analyte_name", name)
                 self.analyte_layout.addWidget(rb, row, column)
                 self.radio_group.addButton(rb)
                 rb.toggled.connect(self.on_analyte_radio_toggled)
@@ -5003,8 +5018,8 @@ class MainWindow(QMainWindow):
             # Use a QComboBox
             self.analyte_combo = QComboBox()
             for name in names:
-                self.analyte_combo.addItem(name)
-            self.analyte_combo.currentTextChanged.connect(self.on_analyte_combo_changed)
+                self.analyte_combo.addItem(name, name)
+            self.analyte_combo.currentIndexChanged[int].connect(self.on_analyte_combo_changed)
 
             self.analyte_prev_btn = QPushButton("◀")
             self.analyte_next_btn = QPushButton("▶")
@@ -5024,7 +5039,64 @@ class MainWindow(QMainWindow):
             combo_container.setLayout(combo_row)
             self.analyte_layout.addWidget(combo_container, 0, 0, 1, 3)
 
+        self._refresh_preferred_channel_markers()
         self._setup_analyte_shortcuts()
+
+    def _preferred_marker_range(self):
+        """Return the processing period used to decorate preferred channels."""
+        if self.instrument.inst_id != 'cats':
+            return (None, None)
+        if self.current_run_time and '(Cal)' in self.current_run_time:
+            start = pd.Timestamp(self.current_run_time.split(' (')[0].strip())
+            return (start, start + pd.Timedelta(days=7) - pd.Timedelta(seconds=1))
+        if self.current_run_time:
+            start, end_excl = _ie3_parse_chunk_label(self.current_run_time)
+            if start is not None:
+                return (start, end_excl - pd.Timedelta(seconds=1))
+        start, end = self.get_load_range()
+        return (pd.Timestamp(start), pd.Timestamp(end))
+
+    def _preferred_analyte_label(self, name, start, end):
+        """Decorate a real CATS channel when it feeds the final data product."""
+        if self.instrument.inst_id != 'cats' or start is None or end is None:
+            return name, ''
+        match = re.search(r'\(([^()]*)\)\s*$', name)
+        if match is None:
+            return name, ''
+        channel = match.group(1).strip().lower()
+        pnum = self.analytes.get(name)
+        preferred = self.instrument.preferred_channels_for_range(pnum, start, end)
+        if channel not in preferred:
+            return name, ''
+        period = f"{pd.Timestamp(start):%Y-%m-%d} through {pd.Timestamp(end):%Y-%m-%d}"
+        tooltip = f"★ Used in the final preferred-channel product during {period}."
+        if len(preferred) > 1:
+            tooltip += " The preferred channel changes within this period."
+        return f"{name} ★", tooltip
+
+    def _refresh_preferred_channel_markers(self):
+        """Refresh display-only preferred-channel stars in Processing."""
+        if self.instrument.inst_id != 'cats':
+            return
+        start, end = self._preferred_marker_range()
+
+        if getattr(self, 'analyte_combo', None) is not None:
+            for index in range(self.analyte_combo.count()):
+                name = self.analyte_combo.itemData(index, Qt.UserRole)
+                if not name:
+                    continue
+                label, tooltip = self._preferred_analyte_label(name, start, end)
+                self.analyte_combo.setItemText(index, label)
+                self.analyte_combo.setItemData(index, tooltip, Qt.ToolTipRole)
+
+        if getattr(self, 'radio_group', None) is not None:
+            for button in self.radio_group.buttons():
+                name = button.property("analyte_name")
+                if not name:
+                    continue
+                label, tooltip = self._preferred_analyte_label(name, start, end)
+                button.setText(label)
+                button.setToolTip(tooltip)
 
     def on_analyte_radio_toggled(self):
         """
@@ -5033,7 +5105,7 @@ class MainWindow(QMainWindow):
         """
         rb = self.sender()
         if rb.isChecked():
-            name = rb.text()
+            name = rb.property("analyte_name") or rb.text()
             # Extract channel if present in analyte_name
             if '(' in name and ')' in name:
                 self.current_channel = name.split('(')[1].split(')')[0].strip()
@@ -5048,7 +5120,9 @@ class MainWindow(QMainWindow):
         if getattr(self, 'analyte_combo', None) is not None:
             previous = self.analyte_combo.blockSignals(True)
             try:
-                self.analyte_combo.setCurrentText(name)
+                idx = self.analyte_combo.findData(name, role=Qt.UserRole)
+                if idx >= 0:
+                    self.analyte_combo.setCurrentIndex(idx)
             finally:
                 self.analyte_combo.blockSignals(previous)
 
@@ -5057,17 +5131,20 @@ class MainWindow(QMainWindow):
             previous_states = [(button, button.blockSignals(True)) for button in buttons]
             try:
                 for button in buttons:
-                    if button.text() == name:
+                    if (button.property("analyte_name") or button.text()) == name:
                         button.setChecked(True)
                         break
             finally:
                 for button, previous in previous_states:
                     button.blockSignals(previous)
 
-    def on_analyte_combo_changed(self, name):
+    def on_analyte_combo_changed(self, index):
         """
         Called whenever the QComboBox selection changes (for >12 analytes).
         """
+        name = self.analyte_combo.itemData(index, Qt.UserRole)
+        if not name:
+            return
         # Extract channel if present in analyte_name
         if '(' in name and ')' in name:
             self.current_channel = name.split('(')[1].split(')')[0].strip()
@@ -5091,7 +5168,7 @@ class MainWindow(QMainWindow):
             idx = combo.currentIndex()
             if idx > 0:
                 combo.setCurrentIndex(idx - 1)
-                self.on_analyte_combo_changed(combo.currentText())
+                self.on_analyte_combo_changed(combo.currentIndex())
             combo.blockSignals(False)
             return
 
@@ -5118,7 +5195,7 @@ class MainWindow(QMainWindow):
             idx = combo.currentIndex()
             if idx < (combo.count() - 1):
                 combo.setCurrentIndex(idx + 1)
-                self.on_analyte_combo_changed(combo.currentText())
+                self.on_analyte_combo_changed(combo.currentIndex())
             combo.blockSignals(False)
             return
 
@@ -5508,6 +5585,7 @@ class MainWindow(QMainWindow):
         self.current_run_time = self.current_run_times[index]
         self._ie3_exact_run_time = None
         self._zoom_run_time = None
+        self._refresh_preferred_channel_markers()
 
         self._clear_highlight()
         if self._multi_tag_panel is not None and self._multi_tag_panel.isVisible():
@@ -6177,7 +6255,7 @@ class LOGOSAITab(QWidget):
         parent = self.main_window or self.parent()
         current_analyte = None
         if hasattr(parent, "analyte_combo") and parent.analyte_combo is not None:
-            current_analyte = parent.analyte_combo.currentText()
+            current_analyte = parent.analyte_combo.currentData(Qt.UserRole)
         return {
             "current_analyte": current_analyte,
             "current_run_time": getattr(parent, "current_run_time", None),

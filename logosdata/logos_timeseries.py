@@ -14,6 +14,7 @@ from matplotlib.collections import PathCollection
 import pandas as pd
 import numpy as np
 import colorsys
+import re
 import time
 
 from pathlib import Path
@@ -1342,7 +1343,19 @@ class TimeseriesWidget(QWidget):
         self._last_insitu_params = None
         self._dataset_visibility = {}
 
-        self.analytes = self.instrument.analytes if self.instrument else {}
+        instrument_analytes = self.instrument.analytes if self.instrument else {}
+        self.force_preferred_channel = bool(
+            self.instrument and self.instrument.inst_id == 'cats'
+        )
+        if self.force_preferred_channel:
+            # Processing exposes real channel pairs; time series exposes one
+            # date-aware preferred stream per compound.
+            self.analytes = {}
+            for name, pnum in instrument_analytes.items():
+                base_name = re.sub(r'\s+\([^()]+\)\s*$', '', name)
+                self.analytes.setdefault(base_name, pnum)
+        else:
+            self.analytes = instrument_analytes
         self.current_analyte = list(self.analytes.keys())[0] if self.analytes else None
         self.current_channel = None
 
@@ -1559,6 +1572,11 @@ class TimeseriesWidget(QWidget):
             self.current_analyte = None
             self.current_channel = None
             return
+
+        if self._uses_forced_preferred_channel():
+            base_name = re.sub(r'\s+\([^()]+\)\s*$', '', analyte_name)
+            if base_name in self.analytes:
+                analyte_name = base_name
 
         idx = self.analyte_combo.findText(analyte_name, Qt.MatchExactly)
         if idx >= 0:
@@ -1926,12 +1944,13 @@ class TimeseriesWidget(QWidget):
         if pnum is None:
             return pd.DataFrame()
 
-        # Extract channel from analyte name, e.g. "CFC12 (b)" -> "b"
-        # The sentinel "(pref)" activates the time-varying preferred-channel SQL.
+        # Extract a fixed channel only for instruments whose time-series
+        # selector exposes explicit channels. CATS uses the date-aware
+        # preferred-channel SQL instead.
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() or channel == 'pref'
+        use_preferred_channel = self._uses_forced_preferred_channel()
         if use_preferred_channel:
             channel = None
 
@@ -1999,7 +2018,7 @@ class TimeseriesWidget(QWidget):
         channel = None
         if "(" in analyte and ")" in analyte:
             channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() or channel == 'pref'
+        use_preferred_channel = self._uses_forced_preferred_channel()
         if use_preferred_channel:
             channel = None
 
@@ -2715,18 +2734,26 @@ class TimeseriesWidget(QWidget):
             self.main_window.current_run_time = str(effective_run_time)
             self.main_window.current_pnum = int(self.analytes.get(analyte))
             self.main_window.current_channel = channel
+            processing_analyte = analyte
+            if channel:
+                candidate = f"{analyte} ({channel})"
+                if candidate in self.main_window.analytes:
+                    processing_analyte = candidate
 
             # --- Update the analyte selection UI ---
             if hasattr(self.main_window, "radio_group") and self.main_window.radio_group:
                 # Handle radio buttons
                 for rb in self.main_window.radio_group.buttons():
-                    if rb.text() == analyte:
+                    name = rb.property("analyte_name") or rb.text()
+                    if name == processing_analyte:
                         rb.setChecked(True)
                         break
 
             elif hasattr(self.main_window, "analyte_combo"):
                 # Handle combo box
-                idx = self.main_window.analyte_combo.findText(analyte, Qt.MatchExactly)
+                idx = self.main_window.analyte_combo.findData(
+                    processing_analyte, role=Qt.UserRole
+                )
                 if idx >= 0:
                     self.main_window.analyte_combo.setCurrentIndex(idx)
 
