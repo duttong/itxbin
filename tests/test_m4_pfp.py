@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import pandas as pd
 
 
@@ -99,6 +100,88 @@ class M4PfpLabelTests(unittest.TestCase):
         self.assertNotEqual(second_color, first_color)
         self.assertTrue(all(b < a for a, b in zip(first_color[:3], second_color[:3])))
         self.assertEqual(result.loc[4, 'port_color'], first_color)
+
+
+class M4PfpRmsTests(unittest.TestCase):
+    def setUp(self):
+        from logos_instruments import Normalizing
+
+        self.normalizing = Normalizing('m4', 8, 'run_type_num', 'area')
+
+    @staticmethod
+    def pfp_run():
+        return pd.DataFrame(
+            [
+                # First PFP inlet: two complete pairs.
+                {'port': 1, 'flask_port': 3, 'normalized_resp': 0.98},
+                {'port': 1, 'flask_port': 1, 'normalized_resp': 1.00},
+                {'port': 1, 'flask_port': 4, 'normalized_resp': 0.99},
+                {'port': 1, 'flask_port': 2, 'normalized_resp': 1.02},
+                # A repeat injection is averaged before forming the pair.
+                {'port': 1, 'flask_port': 2, 'normalized_resp': 1.02},
+                # Second PFP inlet: one complete and one incomplete pair.
+                {'port': 12, 'flask_port': 1, 'normalized_resp': 1.10},
+                {'port': 12, 'flask_port': 2, 'normalized_resp': 1.13},
+                {'port': 12, 'flask_port': 3, 'normalized_resp': 1.01},
+            ]
+        ).assign(
+            run_time=pd.Timestamp('2026-07-31 11:02:00'),
+            run_type_num=5,
+            rejected=0,
+            sample_id='0',
+            pair_id_num=0,
+            port_info='',
+        )
+
+    def test_m4_pfp_uses_complete_odd_even_pairs_per_inlet(self):
+        rms, count = self.normalizing.sample_diffs(
+            self.pfp_run(), verbose=False
+        )
+
+        self.assertEqual(count, 3)
+        self.assertAlmostEqual(
+            rms,
+            np.sqrt((0.02**2 + 0.01**2 + 0.03**2) / 3),
+        )
+
+    def test_m4_pfp_outlier_rule_applies_to_pair_differences(self):
+        rms, count = self.normalizing.sample_diffs(
+            self.pfp_run(), verbose=False, drop_outlier=True
+        )
+
+        self.assertEqual(count, 2)
+        self.assertAlmostEqual(rms, np.sqrt((0.02**2 + 0.01**2) / 2))
+
+    def test_non_m4_pfp_rows_do_not_change_existing_flask_rms(self):
+        from logos_instruments import Normalizing
+
+        normalizing = Normalizing('fe3', 8, 'run_type_num', 'area')
+        df = self.pfp_run()
+        flask_rows = pd.DataFrame(
+            [
+                {
+                    'port': 1, 'flask_port': np.nan,
+                    'normalized_resp': 1.00, 'sample_id': '1001',
+                },
+                {
+                    'port': 2, 'flask_port': np.nan,
+                    'normalized_resp': 1.04, 'sample_id': '1002',
+                },
+            ]
+        ).assign(
+            run_time=pd.Timestamp('2026-07-31 11:02:00'),
+            run_type_num=1,
+            rejected=0,
+            pair_id_num=77,
+            port_info='',
+        )
+
+        rms, count = normalizing.sample_diffs(
+            pd.concat([df, flask_rows], ignore_index=True), verbose=False
+        )
+
+        self.assertEqual(count, 1)
+        self.assertAlmostEqual(rms, 0.04)
 
 
 class M4PfpEventResolverTests(unittest.TestCase):

@@ -1167,7 +1167,8 @@ class Normalizing():
     ) -> tuple[float, int]:
         """
         Compute sample pair RMS differences (normalized_resp) for flask (run_type_num == 1)
-        and tank (run_type_num == 7) data for a single run_time.
+        and tank (run_type_num == 7) data for a single run_time.  For M4, also
+        compare PFP flask ports 1/2, 3/4, etc. within each PFP inlet.
 
         Returns
         -------
@@ -1217,12 +1218,64 @@ class Normalizing():
                 columns=['port_info', 'normalized_resp', 'serial_num', 'resp_diff']
             )
 
-        # ---------- Combine flask + tank replicate diffs ----------
+        # ---------- M4 PFP pairs (run_type_num == 5) ----------
+        # A run can contain two PFP packages.  The M4 inlet port distinguishes
+        # the packages even when their event/site metadata is incomplete.
+        if (
+            self.inst_id == 'm4'
+            and {'port', 'flask_port'}.issubset(df.columns)
+        ):
+            pfp_df = df.loc[
+                df['run_type_num'] == 5,
+                ['port', 'flask_port', 'normalized_resp'],
+            ].copy()
+            pfp_df['port'] = pd.to_numeric(pfp_df['port'], errors='coerce')
+            pfp_df['flask_port'] = pd.to_numeric(
+                pfp_df['flask_port'], errors='coerce'
+            )
+            pfp_df['normalized_resp'] = pd.to_numeric(
+                pfp_df['normalized_resp'], errors='coerce'
+            )
+            pfp_df = pfp_df.dropna(
+                subset=['port', 'flask_port', 'normalized_resp']
+            )
+            pfp_df = pfp_df.loc[
+                pfp_df['flask_port'].ge(1)
+                & pfp_df['flask_port'].mod(1).eq(0)
+            ]
+
+            if not pfp_df.empty:
+                # Average repeat injections first, then compare complete
+                # odd/even flask pairs within each physical PFP inlet.
+                pfp_df['flask_port'] = pfp_df['flask_port'].astype(int)
+                pfp_avg = (
+                    pfp_df.groupby(['port', 'flask_port'], as_index=False)
+                    ['normalized_resp'].mean()
+                )
+                pfp_avg['pair_num'] = (pfp_avg['flask_port'] - 1) // 2
+                pfp_avg['even_port'] = pfp_avg['flask_port'].mod(2).eq(0)
+                pfp_pairs = pfp_avg.pivot(
+                    index=['port', 'pair_num'],
+                    columns='even_port',
+                    values='normalized_resp',
+                )
+                if False in pfp_pairs.columns and True in pfp_pairs.columns:
+                    pfp_resp_diff = pfp_pairs[True] - pfp_pairs[False]
+                else:
+                    pfp_resp_diff = pd.Series(dtype='float64')
+            else:
+                pfp_resp_diff = pd.Series(dtype='float64')
+        else:
+            pfp_resp_diff = pd.Series(dtype='float64')
+
+        # ---------- Combine flask + tank + M4 PFP replicate diffs ----------
         resp_pieces = []
         if not flask_df['resp_diff'].empty:
             resp_pieces.append(flask_df['resp_diff'])
         if not tank_df['resp_diff'].empty:
             resp_pieces.append(tank_df['resp_diff'])
+        if not pfp_resp_diff.empty:
+            resp_pieces.append(pfp_resp_diff)
 
         if resp_pieces:
             combined_resp_diff = pd.concat(resp_pieces, ignore_index=True)
