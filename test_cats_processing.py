@@ -19,6 +19,7 @@ for module_dir in (str(REPO_DIR), str(LOGOSDATA_DIR)):
 
 from cats_batch import CATS_batch
 from logos_data import MainWindow
+from logos_instruments_insitu import CATS_Instrument
 
 
 class FakeButton:
@@ -30,6 +31,16 @@ class FakeButton:
 
 
 class CalibrationButtonTests(unittest.TestCase):
+    def test_cats_offers_air_and_calibration_run_filters(self):
+        self.assertEqual(
+            CATS_Instrument.RUN_TYPE_MAP,
+            {
+                "All": None,
+                "Air Samples": "air",
+                "Calibrations": "cal",
+            },
+        )
+
     def test_cats_cal_chunk_enables_calibration_without_run_type_mapping(self):
         window = SimpleNamespace(
             instrument=SimpleNamespace(RUN_TYPE_MAP={"All": None}),

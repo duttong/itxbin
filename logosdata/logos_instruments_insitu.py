@@ -873,7 +873,14 @@ class CATS_Instrument(IE3_Instrument):
         'spo': 244,
     }
 
-    RUN_TYPE_MAP = {"All": None}
+    # These are processing-view filters, not ng_insitu_analysis run-type IDs.
+    # The GUI maps Air Samples to monthly chunks and Calibrations to weekly
+    # ng_response fit dates for the selected analyte/channel.
+    RUN_TYPE_MAP = {
+        "All": None,
+        "Air Samples": "air",
+        "Calibrations": "cal",
+    }
     DEFAULT_ANALYTE_NAME = "N2O"
     DEFAULT_ANALYTE_CHANNEL = "q"
 
