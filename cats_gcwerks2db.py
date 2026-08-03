@@ -292,6 +292,32 @@ class CATS_GCwerks2DB:
             )
         return analysis_map
 
+    @staticmethod
+    def _empty_measurement(*values) -> bool:
+        """True when every chromatogram metric is either NULL-like or zero."""
+        return all(value is None or pd.isna(value) or value == 0 for value in values)
+
+    def _delete_mole_fraction_keys(self, keys: set, batch_size: int = 1000) -> None:
+        """Delete tags, then mole-fraction rows, for invalid source records."""
+        sorted_keys = sorted(keys)
+        for i in range(0, len(sorted_keys), batch_size):
+            chunk = sorted_keys[i:i + batch_size]
+            where_terms = " OR ".join(
+                ["(m.analysis_num = %s AND m.parameter_num = %s AND m.channel = %s)"]
+                * len(chunk)
+            )
+            query_params = [value for key in chunk for value in key]
+            self.db.doquery(f"""
+                DELETE t FROM hats.ng_insitu_mole_fraction_tags t
+                JOIN hats.ng_insitu_mole_fractions m
+                  ON t.ng_insitu_mole_fraction_num = m.num
+                WHERE {where_terms}
+            """, query_params)
+            self.db.doquery(f"""
+                DELETE m FROM hats.ng_insitu_mole_fractions m
+                WHERE {where_terms}
+            """, query_params)
+
     def upsert_mole_fractions(self, df: pd.DataFrame, analysis_map: dict, batch_size: int = 1000):
         mole_sql = """
             INSERT INTO hats.ng_insitu_mole_fractions (
@@ -317,6 +343,7 @@ class CATS_GCwerks2DB:
         params = []
         all_keys: set = set()
         flagged_keys: set = set()
+        invalid_keys: set = set()
 
         for r in df.itertuples(index=False):
             analysis_num = analysis_map.get(r.analysis_time_str)
@@ -343,10 +370,14 @@ class CATS_GCwerks2DB:
                 if pd.isna(rt): rt = None
                 flag_val = getattr(r, flag_col, False)
                 flagged = flag_val is True
+                key = (analysis_num, param, channel)
+                if self._empty_measurement(ht, area, rt):
+                    invalid_keys.add(key)
+                    continue
                 params.append((analysis_num, param, channel, ht, area, rt))
-                all_keys.add((analysis_num, param, channel))
+                all_keys.add(key)
                 if flagged:
-                    flagged_keys.add((analysis_num, param, channel))
+                    flagged_keys.add(key)
 
             if len(params) >= batch_size:
                 self.db.doMultiInsert(mole_sql, params, all=True)
@@ -354,6 +385,14 @@ class CATS_GCwerks2DB:
 
         if params:
             self.db.doMultiInsert(mole_sql, params, all=True)
+
+        # Invalid exports mean that analyte/channel was not measured at this
+        # analysis time. Remove any previously imported value so reprocessing
+        # cannot leave either a zero row or a stale nonzero row behind. The
+        # shared ng_insitu_analysis row remains for other valid analytes.
+        if invalid_keys:
+            self._delete_mole_fraction_keys(invalid_keys, batch_size=batch_size)
+            print(f"  Removed/skipped {len(invalid_keys)} empty measurement rows.")
 
         # Sync GCwerks flag tags (tag_num=324): delete stale then reinsert current.
         if self.flagged and all_keys:
