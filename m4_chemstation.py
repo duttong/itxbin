@@ -84,8 +84,11 @@ def remove_samplelog_rows(log_path: Path, yymmdd: str):
 
 
 def run_commands(gcd: Path, yymm: str):
-    """Same pipeline as m4_ingest.py, using the reimported month's yymm and a
-    wide sample-log merge duration so historical directories are covered."""
+    """Same pipeline as m4_ingest.py, but bounded to the reimported month
+    (yymm) instead of the recency defaults m4_ingest.py relies on, since this
+    directory may be much older than 30 days: m4_samplogs.py uses --all
+    instead of its 2-month window, and m4_batch.py gets explicit -s/-e so it
+    doesn't fall back to "last 30 days"."""
     cmds = [
         ["/hats/gc/gcwerks-3/bin/gcimport",    "-gcdir", str(gcd)],
         ["/hats/gc/gcwerks-3/bin/run-index",   "-gcdir", str(gcd)],
@@ -93,7 +96,7 @@ def run_commands(gcd: Path, yymm: str):
         ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd), yymm],
         ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
         ["/hats/gc/itxbin/m4_gcwerks2db.py",   yymm, "-x", "--flagged"],
-        ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i"],
+        ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-s", yymm, "-e", yymm, "-i"],
     ]
     for cmd in cmds:
         logging.info(f"Running: {' '.join(cmd)}")
