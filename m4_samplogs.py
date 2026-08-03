@@ -436,6 +436,37 @@ class M4_SampleLogs(M4_Instrument):
                 return self._event_match(exact[0], 'site_date')
             if len(exact) > 1:
                 return None
+            if package.lower() != 'xxxx':
+                event_id = f"{package}-{flask_id}"
+                sql = f"""
+                    SELECT e.num, e.id, e.date, s.code AS site
+                    FROM ccgg.flask_event e
+                    JOIN gmd.site s ON s.num = e.site_num
+                    WHERE e.date = '{sample_date}'
+                      AND e.id = '{event_id}'
+                    ORDER BY e.num;
+                """
+                same_date_package = self.db.doquery(sql) or []
+                sql = f"""
+                    SELECT e.num, e.id, e.date, s.code AS site
+                    FROM ccgg.flask_event e
+                    JOIN gmd.site s ON s.num = e.site_num
+                    WHERE e.date = '{sample_date}'
+                      AND LOWER(s.code) = LOWER('{site}')
+                      AND e.id LIKE '%-{flask_id}'
+                    ORDER BY e.num;
+                """
+                same_site_flask = self.db.doquery(sql) or []
+                candidates = {
+                    int(row['num']): (row, 'site_date_package')
+                    for row in same_date_package
+                }
+                for row in same_site_flask:
+                    candidates[int(row['num'])] = (row, 'site_date_flask')
+                if len(candidates) == 1:
+                    row, method = next(iter(candidates.values()))
+                    return self._event_match(row, method)
+                return None
 
         if package.lower() == 'xxxx':
             return None

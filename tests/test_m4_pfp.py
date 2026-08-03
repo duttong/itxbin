@@ -103,15 +103,18 @@ class M4PfpLabelTests(unittest.TestCase):
 
 class M4PfpEventResolverTests(unittest.TestCase):
     class FakeDB:
-        def __init__(self, exact=None, recent=None):
+        def __init__(self, exact=None, recent=None, exact_sequence=None):
             self.exact = exact or []
             self.recent = recent or []
+            self.exact_sequence = list(exact_sequence) if exact_sequence is not None else None
             self.queries = []
 
         def doquery(self, sql):
             self.queries.append(sql)
             if 'DATE_SUB' in sql:
                 return self.recent
+            if self.exact_sequence is not None:
+                return self.exact_sequence.pop(0)
             return self.exact
 
     def make_instrument(self, db):
@@ -182,6 +185,101 @@ class M4PfpEventResolverTests(unittest.TestCase):
         self.assertEqual(match['method'], 'recent_package')
         self.assertIn("e.id = '3129-05'", db.queries[0])
         self.assertIn('INTERVAL 120 DAY', db.queries[0])
+
+    def test_numeric_package_typo_uses_unique_same_site_date_flask_match(self):
+        db = self.FakeDB(
+            exact_sequence=[
+                [],
+                [],
+                [
+                    {
+                        'num': 564963,
+                        'id': '3937-05',
+                        'date': '2026-05-25',
+                        'site': 'MKO',
+                    }
+                ],
+            ]
+        )
+        instrument = self.make_instrument(db)
+
+        match = instrument.resolve_pfp_event(
+            {
+                'samptype': 'pfp',
+                'tank': '5-3947',
+                'site': 'mko',
+                'sample_time': '260525',
+                'dt_run': '2026-06-26 20:26:00',
+            }
+        )
+
+        self.assertEqual(match['event_num'], 564963)
+        self.assertEqual(match['event_id'], '3937-05')
+        self.assertEqual(match['site'], 'MKO')
+        self.assertEqual(match['method'], 'site_date_flask')
+        self.assertEqual(len(db.queries), 3)
+        self.assertIn("e.id = '3947-05'", db.queries[0])
+        self.assertIn("e.id = '3947-05'", db.queries[1])
+        self.assertIn("e.id LIKE '%-05'", db.queries[2])
+
+    def test_numeric_site_typo_uses_unique_same_date_package_match(self):
+        db = self.FakeDB(
+            exact_sequence=[
+                [],
+                [
+                    {
+                        'num': 566747,
+                        'id': '3129-05',
+                        'date': '2026-07-12',
+                        'site': 'MLO',
+                    }
+                ],
+                [],
+            ]
+        )
+        instrument = self.make_instrument(db)
+
+        match = instrument.resolve_pfp_event(
+            {
+                'samptype': 'pfp',
+                'tank': '5-3129',
+                'site': 'mko',
+                'sample_time': '260712',
+                'dt_run': '2026-07-31 19:56:00',
+            }
+        )
+
+        self.assertEqual(match['event_num'], 566747)
+        self.assertEqual(match['event_id'], '3129-05')
+        self.assertEqual(match['site'], 'MLO')
+        self.assertEqual(match['method'], 'site_date_package')
+
+    def test_numeric_package_with_source_metadata_does_not_fall_back_to_other_site(self):
+        db = self.FakeDB(
+            exact_sequence=[[], [], []],
+            recent=[
+                {
+                    'num': 564552,
+                    'id': '3947-05',
+                    'date': '2026-05-07',
+                    'site': 'WKT',
+                }
+            ],
+        )
+        instrument = self.make_instrument(db)
+
+        match = instrument.resolve_pfp_event(
+            {
+                'samptype': 'pfp',
+                'tank': '5-3947',
+                'site': 'MKO',
+                'sample_time': '260525',
+                'dt_run': '2026-06-26 20:26:00',
+            }
+        )
+
+        self.assertIsNone(match)
+        self.assertFalse(any('DATE_SUB' in query for query in db.queries))
 
     def test_unknown_package_does_not_guess_without_exact_metadata_match(self):
         db = self.FakeDB()
