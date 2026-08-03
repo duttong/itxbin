@@ -5,7 +5,7 @@ Analogous to ie3_batch.py. Handles two sequential operations:
 
   update_fits  -- compute weekly 2-point (or single-point) cal fits and
                   upsert them into hats.ng_response.
-  update_runs  -- apply stored ng_response fits to CATS air-port rows and
+  update_runs  -- apply stored ng_response fits to CATS air and tank rows and
                   upsert mole fractions + unc + ng_response_id back to DB.
 
 Reuses the fill-aware, uncertainty-propagating fit math from ie3_cal_test.py
@@ -55,6 +55,38 @@ class CATS_batch(CATS_Instrument):
 
     def _plot_ports(self) -> tuple:
         return tuple(sorted(set((self.STANDARD_PORT_NUM,) + self._cal_ports())))
+
+    def _measurement_ports(self) -> tuple:
+        """CATS ports containing air or calibration/reference measurements."""
+        return tuple(sorted(set(self.AIR_PORTS + list(self._plot_ports()))))
+
+    def _apply_week_methods_to_tanks(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Use each week's air-row calibration method for its tank rows.
+
+        ``mf_method_num`` is selected and recorded on air rows. Tank rows may
+        still be NULL in the database (and therefore loaded with the default
+        method), so copy the modal air-row method for each week before applying
+        the response fit to every measurement port.
+        """
+        if df.empty:
+            return df.copy()
+
+        out = df.copy()
+        analysis_dt = pd.to_datetime(out['analysis_datetime'], utc=True)
+        out['_week_start'] = (
+            analysis_dt.dt.tz_localize(None).dt.to_period('W-SUN').dt.start_time
+        )
+
+        air = out.loc[out['port'].isin(self.AIR_PORTS)]
+        week_methods = (
+            air.groupby('_week_start')['mf_method_num']
+            .agg(lambda values: int(values.mode().iat[0]))
+        )
+        mapped_methods = out['_week_start'].map(week_methods)
+        has_week_method = mapped_methods.notna()
+        out.loc[has_week_method, 'mf_method_num'] = mapped_methods[has_week_method]
+        out['mf_method_num'] = out['mf_method_num'].astype(int)
+        return out.drop(columns='_week_start')
 
     def _resolve_scale_num(self, pnum: int):
         rows = self.db.doquery(
@@ -232,7 +264,7 @@ class CATS_batch(CATS_Instrument):
         end_date=None,
         verbose: bool = False,
     ) -> pd.DataFrame:
-        """Apply stored ng_response fits to CATS air-port rows.
+        """Apply stored ng_response fits to CATS air and tank rows.
 
         Returns df with mole_fraction, unc, and ng_response_id populated.
         """
@@ -250,12 +282,13 @@ class CATS_batch(CATS_Instrument):
         if df.empty:
             return pd.DataFrame()
 
-        df = df.loc[df['port'].isin(self.AIR_PORTS)].copy()
+        df = df.loc[df['port'].isin(self._measurement_ports())].copy()
         if df.empty:
             if verbose:
-                print("No air-port rows in loaded data.")
+                print("No air or tank measurement rows in loaded data.")
             return pd.DataFrame()
 
+        df = self._apply_week_methods_to_tanks(df)
         df = self.calc_mole_fraction(df)
         df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
 
@@ -363,7 +396,7 @@ class CATS_batch(CATS_Instrument):
             verbose=args.verbose,
         )
         if df.empty:
-            print(f"  No air-port rows for pnum={pnum}.")
+            print(f"  No air or tank measurement rows for pnum={pnum}.")
             return
 
         n_ok = df['mole_fraction'].notna().sum()

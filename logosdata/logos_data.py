@@ -2026,6 +2026,49 @@ class MainWindow(QMainWindow):
     def _fmt_cal_plot(self, x, y):
         return f"x={x:0.3g}  y={y:0.3g}"
 
+    def _fill_missing_insitu_mole_fractions(self) -> int:
+        """Compute missing IE3/CATS mole fractions in memory for display."""
+        if self.run.empty or self.instrument.inst_id not in ('ie3', 'cats'):
+            return 0
+        if 'normalized_resp' not in self.run.columns:
+            return 0
+
+        if 'mole_fraction' in self.run.columns:
+            mole_fraction = pd.to_numeric(self.run['mole_fraction'], errors='coerce')
+        else:
+            self.run['mole_fraction'] = np.nan
+            mole_fraction = self.run['mole_fraction']
+
+        normalized_resp = pd.to_numeric(self.run['normalized_resp'], errors='coerce')
+        mf_mask = mole_fraction.isna() & normalized_resp.notna()
+        if not mf_mask.any():
+            return 0
+
+        calculated = self.instrument.calc_mole_fraction(self.run.loc[mf_mask].copy())
+        if calculated.empty or 'mole_fraction' not in calculated.columns:
+            return 0
+
+        update_cols = [
+            col for col in ('mole_fraction', 'unc', 'ng_response_id', 'mf_method_num')
+            if col in calculated.columns
+        ]
+        for col in update_cols:
+            if col not in self.run.columns:
+                self.run[col] = np.nan
+            self.run.loc[calculated.index, col] = calculated[col]
+
+        if 'height' in self.run.columns:
+            zero_height = pd.to_numeric(self.run['height'], errors='coerce').eq(0)
+            self.run.loc[mf_mask & zero_height, 'mole_fraction'] = 0.0
+
+        filled = pd.to_numeric(
+            calculated['mole_fraction'], errors='coerce'
+        ).notna().sum()
+        if filled:
+            self.madechanges = True
+            self._style_gc_buttons()
+        return int(filled)
+
     def gc_plot(self, yparam='resp', sub_info=''):
         """
         Plot data with the legend sorted by analysis_datetime.
@@ -2095,7 +2138,12 @@ class MainWindow(QMainWindow):
             yvar = 'mole_fraction'
             tlabel = 'Mole Fraction'
             units = '(ppb)' if self.current_pnum == 5 else '(ppt)'  # ppb for N2O, ppt for others
-    
+
+            if self.instrument.inst_id in ('ie3', 'cats'):
+                n_filled = self._fill_missing_insitu_mole_fractions()
+                if n_filled:
+                    sub_info = "Mole Fraction computed"
+
             # potentially compute missing mole_fraction values for fe3
             if (self.instrument.inst_id == 'fe3') or (self.instrument.inst_id == 'bld1'):
                 current_curve_date = self.run['cal_date'].iat[0]
@@ -5734,17 +5782,11 @@ class MainWindow(QMainWindow):
     def _update_calibration_button_state(self):
         """Enable the calibration radio button if the current run is a calibration run."""
         cal_num = (getattr(self.instrument, "RUN_TYPE_MAP", {}) or {}).get("Calibrations")
-        if cal_num is None:
-            self.calibration_rb.setEnabled(False)
-            return
-
-        is_cal_type_selected = self.run_type_num == cal_num
-        is_cal_run_selected = self.current_run_time and "(Cal)" in self.current_run_time
-
-        if is_cal_type_selected or is_cal_run_selected:
-            self.calibration_rb.setEnabled(True)
-        else:
-            self.calibration_rb.setEnabled(False)
+        is_cal_type_selected = cal_num is not None and self.run_type_num == cal_num
+        is_cal_run_selected = bool(
+            self.current_run_time and "(Cal)" in self.current_run_time
+        )
+        self.calibration_rb.setEnabled(is_cal_type_selected or is_cal_run_selected)
                 
     def on_prev_run(self):
         """
