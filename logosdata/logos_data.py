@@ -2090,6 +2090,7 @@ class MainWindow(QMainWindow):
         (smoothing scope aside) keeps operating on the full DataFrame.
         """
         if self.run.empty:
+            self.clear_plot()
             return
 
         # Store ordered run_times from the full chunk for zoom navigation arrows.

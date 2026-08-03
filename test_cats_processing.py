@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
@@ -77,6 +77,18 @@ class CalibrationButtonTests(unittest.TestCase):
         MainWindow._update_calibration_button_state(window)
 
         self.assertTrue(window.calibration_rb.enabled)
+
+
+class EmptyPlotTests(unittest.TestCase):
+    def test_gc_plot_clears_previous_figure_when_analyte_has_no_data(self):
+        window = SimpleNamespace(
+            run=pd.DataFrame(),
+            clear_plot=Mock(),
+        )
+
+        MainWindow.gc_plot(window, "mole_fraction")
+
+        window.clear_plot.assert_called_once_with()
 
 
 class PreferredChannelDisplayTests(unittest.TestCase):
