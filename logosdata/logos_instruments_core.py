@@ -82,6 +82,46 @@ class HATS_DB_Functions(LOGOS_Instruments):
         """ Returns a list of analytes or molecules (no parameter number) """
         analytes = self.query_analytes()
         return analytes.keys()
+
+    def preferred_channels_for_range(self, pnum, start_date, end_date) -> set[str]:
+        """Return channels preferred at any time in an inclusive date range."""
+        if not hasattr(self, 'return_preferred_channel'):
+            return set()
+        history = getattr(self, 'preferred_channel_history', None)
+        if history is None:
+            history = self.return_preferred_channel()
+            self.preferred_channel_history = history
+        if history.empty:
+            return set()
+
+        rows = history.loc[
+            pd.to_numeric(history['parameter_num'], errors='coerce').eq(int(pnum))
+        ].copy()
+        if rows.empty:
+            return set()
+
+        rows['start_date'] = pd.to_datetime(rows['start_date'], errors='coerce')
+        rows = rows.dropna(subset=['start_date']).sort_values('start_date')
+        if rows.empty:
+            return set()
+
+        start = pd.Timestamp(start_date)
+        end = pd.Timestamp(end_date)
+        if start.tzinfo is not None:
+            start = start.tz_localize(None)
+        if end.tzinfo is not None:
+            end = end.tz_localize(None)
+
+        # Queries use the earliest assignment before its start date, matching
+        # the preferred-channel SQL fallback behavior.
+        period_starts = [pd.Timestamp.min] + rows['start_date'].iloc[1:].tolist()
+        period_ends = rows['start_date'].iloc[1:].tolist() + [pd.Timestamp.max]
+        channels = set()
+        for channel, period_start, period_end in zip(
+                rows['channel'], period_starts, period_ends):
+            if period_start <= end and period_end > start:
+                channels.add(str(channel).strip().lower())
+        return channels
     
     def run_type_num(self):
         """ Run types defined in the hats.ng_run_types table """

@@ -5044,21 +5044,28 @@ class MainWindow(QMainWindow):
 
     def _preferred_marker_range(self):
         """Return the processing period used to decorate preferred channels."""
-        if self.instrument.inst_id != 'cats':
+        inst_id = self.instrument.inst_id
+        if inst_id not in {'cats', 'ie3', 'fe3'}:
             return (None, None)
-        if self.current_run_time and '(Cal)' in self.current_run_time:
+        if (inst_id in {'cats', 'ie3'} and self.current_run_time
+                and '(Cal)' in self.current_run_time):
             start = pd.Timestamp(self.current_run_time.split(' (')[0].strip())
             return (start, start + pd.Timedelta(days=7) - pd.Timedelta(seconds=1))
-        if self.current_run_time:
+        if inst_id in {'cats', 'ie3'} and self.current_run_time:
             start, end_excl = _ie3_parse_chunk_label(self.current_run_time)
             if start is not None:
                 return (start, end_excl - pd.Timedelta(seconds=1))
+        if inst_id == 'fe3' and self.current_run_time:
+            run_time = self.current_run_time.split(' (')[0].strip()
+            selected = pd.Timestamp(run_time)
+            return (selected, selected)
         start, end = self.get_load_range()
         return (pd.Timestamp(start), pd.Timestamp(end))
 
     def _preferred_analyte_label(self, name, start, end):
-        """Decorate a real CATS channel when it feeds the final data product."""
-        if self.instrument.inst_id != 'cats' or start is None or end is None:
+        """Decorate a real channel when it feeds the final data product."""
+        if (self.instrument.inst_id not in {'cats', 'ie3', 'fe3'}
+                or start is None or end is None):
             return name, ''
         match = re.search(r'\(([^()]*)\)\s*$', name)
         if match is None:
@@ -5076,7 +5083,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_preferred_channel_markers(self):
         """Refresh display-only preferred-channel stars in Processing."""
-        if self.instrument.inst_id != 'cats':
+        if self.instrument.inst_id not in {'cats', 'ie3', 'fe3'}:
             return
         start, end = self._preferred_marker_range()
 

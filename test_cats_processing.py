@@ -98,25 +98,47 @@ class PreferredChannelDisplayTests(unittest.TestCase):
         self.assertEqual(crossing, {"a", "f"})
 
     def test_processing_star_does_not_change_analyte_identity(self):
-        instrument = SimpleNamespace(
-            inst_id="cats",
-            preferred_channels_for_range=lambda _pnum, _start, _end: {"q"},
+        for inst_id in ("cats", "ie3", "fe3"):
+            with self.subTest(inst_id=inst_id):
+                instrument = SimpleNamespace(
+                    inst_id=inst_id,
+                    preferred_channels_for_range=lambda _pnum, _start, _end: {"q"},
+                )
+                window = SimpleNamespace(
+                    instrument=instrument,
+                    analytes={"N2O (q)": 5, "N2O (a)": 5},
+                )
+
+                preferred, tooltip = MainWindow._preferred_analyte_label(
+                    window, "N2O (q)",
+                    pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
+                )
+                other, _ = MainWindow._preferred_analyte_label(
+                    window, "N2O (a)",
+                    pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
+                )
+
+                self.assertEqual(preferred, "N2O (q) ★")
+                self.assertEqual(other, "N2O (a)")
+                self.assertIn("final preferred-channel product", tooltip)
+
+    def test_preferred_marker_range_matches_instrument_run_selection(self):
+        ie3_window = SimpleNamespace(
+            instrument=SimpleNamespace(inst_id="ie3"),
+            current_run_time="2026-07",
         )
-        window = SimpleNamespace(
-            instrument=instrument,
-            analytes={"N2O (q)": 5, "N2O (a)": 5},
+        fe3_window = SimpleNamespace(
+            instrument=SimpleNamespace(inst_id="fe3"),
+            current_run_time="2026-07-20 12:34:56 (Cal)",
         )
 
-        preferred, tooltip = MainWindow._preferred_analyte_label(
-            window, "N2O (q)", pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
-        )
-        other, _ = MainWindow._preferred_analyte_label(
-            window, "N2O (a)", pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-31")
-        )
+        ie3_start, ie3_end = MainWindow._preferred_marker_range(ie3_window)
+        fe3_start, fe3_end = MainWindow._preferred_marker_range(fe3_window)
 
-        self.assertEqual(preferred, "N2O (q) ★")
-        self.assertEqual(other, "N2O (a)")
-        self.assertIn("final preferred-channel product", tooltip)
+        self.assertEqual(ie3_start, pd.Timestamp("2026-07-01"))
+        self.assertEqual(ie3_end, pd.Timestamp("2026-07-31 23:59:59"))
+        self.assertEqual(fe3_start, pd.Timestamp("2026-07-20 12:34:56"))
+        self.assertEqual(fe3_end, fe3_start)
 
     def test_plot_name_uses_the_selected_real_channel(self):
         window = SimpleNamespace(

@@ -275,43 +275,6 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         return pd.DataFrame(self.db.doquery(sql, (self.inst_num,)))
 
-    def preferred_channels_for_range(self, pnum, start_date, end_date) -> set[str]:
-        """Return channels preferred at any time in an inclusive date range."""
-        history = getattr(self, 'preferred_channel_history', None)
-        if history is None:
-            history = self.return_preferred_channel()
-        if history.empty:
-            return set()
-
-        rows = history.loc[
-            pd.to_numeric(history['parameter_num'], errors='coerce').eq(int(pnum))
-        ].copy()
-        if rows.empty:
-            return set()
-
-        rows['start_date'] = pd.to_datetime(rows['start_date'], errors='coerce')
-        rows = rows.dropna(subset=['start_date']).sort_values('start_date')
-        if rows.empty:
-            return set()
-
-        start = pd.Timestamp(start_date)
-        end = pd.Timestamp(end_date)
-        if start.tzinfo is not None:
-            start = start.tz_localize(None)
-        if end.tzinfo is not None:
-            end = end.tz_localize(None)
-
-        # Queries use the earliest assignment before its start date, matching
-        # _preferred_channel_filter_sql's fallback behavior.
-        period_starts = [pd.Timestamp.min] + rows['start_date'].iloc[1:].tolist()
-        period_ends = rows['start_date'].iloc[1:].tolist() + [pd.Timestamp.max]
-        channels = set()
-        for channel, period_start, period_end in zip(
-                rows['channel'], period_starts, period_ends):
-            if period_start <= end and period_end > start:
-                channels.add(str(channel).strip().lower())
-        return channels
-
     def upsert_calibrations(self, df, parameter_num):
         """IE3 does not write to hats.calibrations."""
         return
