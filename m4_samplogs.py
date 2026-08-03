@@ -66,6 +66,12 @@ import re
 from logos_instruments import M4_Instrument
 
 FLASK_PAIR_LABEL_RE = re.compile(r'^(?P<flask>\d+)_?-(?P<pair>\d+)$')
+PFP_TANK_RE = re.compile(r'^(?P<flask>\d{1,2})-(?P<package>\d{4}|x{4})$', re.IGNORECASE)
+RUN_INDEX_SAMPLE_INFO_RE = re.compile(
+    r'^(?P<site>[A-Za-z0-9]{3})_?'
+    r'(?P<sample_time>(?:\d{1,2}[-_])?[A-Za-z]{3}[-_][0-9]{2})_?'
+    r'#(?P<tank>[\w-]+)$'
+)
 
 
 def normalize_flask_pair_label(value):
@@ -89,10 +95,32 @@ def is_flask_pair_label(value):
     return FLASK_PAIR_LABEL_RE.fullmatch(str(value)) is not None
 
 
+def parse_run_index_sample_info(value):
+    """Parse site, sample date, and tank from an M4 run-index label."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+
+    match = RUN_INDEX_SAMPLE_INFO_RE.fullmatch(str(value).strip())
+    if not match:
+        return None
+
+    sample_time = pd.to_datetime(
+        match.group('sample_time').replace('_', '-'),
+        format='%d-%b-%y',
+        errors='coerce',
+    )
+    return {
+        'site': match.group('site'),
+        'sample_time': sample_time.strftime('%y%m%d') if pd.notna(sample_time) else None,
+        'tank': match.group('tank'),
+    }
+
+
 class M4_SampleLogs(M4_Instrument):
     
     TIME_OFFSET = 15.5   # minutes after the run starts and the press data is logged.
     RUN_TIME_GAP = 2.0   # hours. Minimum time between runs to be considered a new run.
+    PFP_EVENT_MAX_LAG_DAYS = 120
 
     def __init__(self):
         super().__init__()
@@ -285,13 +313,8 @@ class M4_SampleLogs(M4_Instrument):
         ).dropna(subset=['dt_sync'])
         
         # Extract site, sample_time, and tank info from the 'info' column
-        pattern = (
-            r'^(?P<site>[A-Za-z0-9]{3})_?'
-            r'(?P<sample_time>(?:\d{1,2}[-_])?[A-Za-z]{3}[-_][0-9]{2})_?'
-            r'#(?P<tank>[\w-]+)$'
-        )
         mask_valid = mm['info'].str.lower().str[:3].isin(valid_sites)
-        extracted = mm.loc[mask_valid, 'info'].str.extract(pattern)
+        extracted = mm.loc[mask_valid, 'info'].str.extract(RUN_INDEX_SAMPLE_INFO_RE)
         mm.loc[mask_valid, ['site', 'sample_time', 'tank']] = extracted[['site', 'sample_time', 'tank']]
         
         # Title-case and normalize everything to dashes:
@@ -347,39 +370,111 @@ class M4_SampleLogs(M4_Instrument):
             
         return mm
     
-    def fetch_ccgg_event_num(self, row):
-        """ Determine and return the ccgg_event number for a flask in a pfp """
+    @staticmethod
+    def _sample_date(value):
+        """Normalize YYMMDD or date-like input to YYYY-MM-DD."""
+        if value is None or pd.isna(value):
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {'nan', 'none', '<na>'}:
+            return None
+        if re.fullmatch(r'\d{6}', text):
+            parsed = pd.to_datetime(text, format='%y%m%d', errors='coerce')
+        else:
+            parsed = pd.to_datetime(text, errors='coerce')
+        return parsed.strftime('%Y-%m-%d') if pd.notna(parsed) else None
 
-        # Only need to work on these sites for M4 (so far)
-        site_map = {'mlo': 75, 'mko': 73}
-        
-        try:
-            if row['samptype'] != 'pfp':
-                return None
-            
-            flask, pfp = row['tank'].split('-')
-            flask_id = f"{int(flask):02d}"
-            site_id = site_map.get(row['site'])
+    @staticmethod
+    def _event_match(row, method):
+        """Return a consistent, small event-match record."""
+        return {
+            'event_num': int(row['num']),
+            'event_id': row['id'],
+            'sample_date': row['date'],
+            'site': row['site'],
+            'method': method,
+        }
 
-            if site_id is None:
-                return None
+    def resolve_pfp_event(self, row, max_lag_days=None):
+        """Resolve one PFP analysis to a CCGG flask event.
 
-            if 'x' in pfp:
-                id_filter = f"%-{flask_id}"
+        Prefer the explicit site/sample-date metadata.  Numeric PFP package
+        IDs also get a bounded fallback to the most recent exact package/flask
+        event before analysis.  The fallback is intentionally unavailable for
+        ``xxxx`` packages because their package identity is unknown.
+        """
+        if str(row.get('samptype', '')).lower() != 'pfp':
+            return None
+
+        tank_match = PFP_TANK_RE.fullmatch(str(row.get('tank', '')).strip())
+        if not tank_match:
+            return None
+
+        flask_id = f"{int(tank_match.group('flask')):02d}"
+        package = tank_match.group('package')
+        site = str(row.get('site', '')).strip()
+        sample_date = self._sample_date(row.get('sample_time'))
+
+        # Site codes come from gmd.site rather than a hard-coded two-site map.
+        # Require a single match; a wildcard PFP ID can otherwise be ambiguous.
+        if re.fullmatch(r'[A-Za-z0-9]{3}', site) and sample_date:
+            if package.lower() == 'xxxx':
+                event_filter = f"e.id LIKE '%-{flask_id}'"
             else:
-                id_filter = f"{pfp}-{flask_id}"
-
+                event_filter = f"e.id = '{package}-{flask_id}'"
             sql = f"""
-                SELECT num FROM ccgg.flask_event 
-                WHERE date = '{row['sample_time']}'
-                AND site_num = {site_id}
-                AND id LIKE '{id_filter}';
+                SELECT e.num, e.id, e.date, s.code AS site
+                FROM ccgg.flask_event e
+                JOIN gmd.site s ON s.num = e.site_num
+                WHERE e.date = '{sample_date}'
+                  AND LOWER(s.code) = LOWER('{site}')
+                  AND {event_filter}
+                ORDER BY e.num;
             """
-            result = self.db.doquery(sql)
-            return result[0]['num'] if result else None
+            exact = self.db.doquery(sql) or []
+            if len(exact) == 1:
+                return self._event_match(exact[0], 'site_date')
+            if len(exact) > 1:
+                return None
 
-        except Exception as e:
-            print(f"Error processing row: {e}")
+        if package.lower() == 'xxxx':
+            return None
+
+        analysis_time = pd.to_datetime(row.get('dt_run'), errors='coerce')
+        if pd.isna(analysis_time):
+            return None
+        analysis_date = analysis_time.strftime('%Y-%m-%d')
+        lag_days = int(
+            self.PFP_EVENT_MAX_LAG_DAYS
+            if max_lag_days is None else max_lag_days
+        )
+        if lag_days < 1:
+            raise ValueError('max_lag_days must be at least 1')
+        event_id = f"{package}-{flask_id}"
+        sql = f"""
+            SELECT e.num, e.id, e.date, s.code AS site
+            FROM ccgg.flask_event e
+            JOIN gmd.site s ON s.num = e.site_num
+            WHERE e.id = '{event_id}'
+              AND e.date <= '{analysis_date}'
+              AND e.date >= DATE_SUB('{analysis_date}', INTERVAL {lag_days} DAY)
+            ORDER BY e.date DESC, e.num DESC
+            LIMIT 2;
+        """
+        recent = self.db.doquery(sql) or []
+        if not recent:
+            return None
+        if len(recent) > 1 and recent[0]['date'] == recent[1]['date']:
+            return None
+        return self._event_match(recent[0], 'recent_package')
+
+    def fetch_ccgg_event_num(self, row):
+        """Determine and return the CCGG event number for one PFP flask."""
+        try:
+            match = self.resolve_pfp_event(row)
+            return match['event_num'] if match else None
+        except Exception as exc:
+            print(f"Error resolving PFP event for {row.get('tank')}: {exc}")
             return None
     
     def save_samplelogs(self, merged_df):

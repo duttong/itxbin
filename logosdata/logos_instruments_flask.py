@@ -3,6 +3,7 @@ Import public names through the logos_instruments facade."""
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 from functools import cached_property
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,8 @@ class M4_Instrument(HATS_DB_Functions):
         7: '^',   # Tank
         8: 'D',   # Standard
     }
+
+    _MISSING_LABEL_VALUES = {'', '0', 'nan', 'none', '<na>'}
     
     def __init__(self):
         super().__init__()
@@ -127,17 +130,93 @@ class M4_Instrument(HATS_DB_Functions):
         res.loc[mask] = pfp.loc[mask]          # explicit assignment avoids where/mask downcast warning
         df['port_idx'] = res.round().astype('Int64')   # final, intentional cast to nullable int
 
-        # Keep PFP packages distinct in the legend: make port_idx unique per (sample_id, flask_port)
+        # Keep PFP packages distinct in the legend.  sample_id/site can be
+        # missing for a second PFP, while port_info still contains e.g.
+        # ``5-3129`` (flask port 5, package 3129).
         if mask.any():
             flask_ports = pd.to_numeric(df.loc[mask, 'flask_port'], errors='coerce').fillna(-1).astype(int)
-            sample_ids = df.loc[mask, 'sample_id'].fillna('').astype(str).str.strip()
-            combos = pd.Series(list(zip(flask_ports, sample_ids)), index=df.index[mask])
+            pfp_ids = self._pfp_sample_identity(df.loc[mask])
+            combos = pd.Series(list(zip(flask_ports, pfp_ids)), index=df.index[mask])
             pfp_codes = pd.Series(pd.factorize(combos)[0] + 200, index=df.index[mask])  # offset to avoid collisions with real ports
             df.loc[mask, 'port_idx'] = pfp_codes.astype('Int64')
         
         df = self.add_port_labels(df)       # port labels, colors, and markers
         
         return df.sort_values('analysis_datetime')
+
+    @classmethod
+    def _clean_label_text(cls, values):
+        """Return stripped strings with database placeholder values as NA."""
+        cleaned = values.astype('string').str.strip()
+        return cleaned.mask(cleaned.str.lower().isin(cls._MISSING_LABEL_VALUES))
+
+    @classmethod
+    def _pfp_sample_identity(cls, pfp_df):
+        """Return ``package-flask`` IDs, falling back to M4 ``port_info``.
+
+        Fully associated PFP rows already carry sample_id values such as
+        ``3930-05``.  When event metadata is unavailable, M4 still records the
+        same information in the opposite order in port_info (``5-3129``).
+        """
+        sample_ids = cls._clean_label_text(pfp_df['sample_id'])
+        port_info = cls._clean_label_text(pfp_df['port_info'])
+        parsed = port_info.str.extract(
+            r'^(?P<flask_port>\d{1,2})-(?P<package>\d{4}|[xX]{4})$'
+        )
+        from_port_info = (
+            parsed['package'].str.upper() + '-' +
+            parsed['flask_port'].str.zfill(2)
+        )
+        return sample_ids.fillna(from_port_info).fillna(port_info).fillna('PFP')
+
+    @staticmethod
+    def _darken_color(color, step):
+        """Return a progressively darker variant while preserving opacity."""
+        rgba = np.asarray(to_rgba(color), dtype=float)
+        factor = max(0.55, 1.0 - (0.18 * step))
+        return tuple(np.append(rgba[:3] * factor, rgba[3]))
+
+    def _apply_pfp_package_colors(self, df, mask, site_colors):
+        """Shade later PFP packages within the same M4 run and site."""
+        if not mask.any():
+            return
+
+        pfp = df.loc[mask].copy()
+        identities = self._pfp_sample_identity(pfp)
+        pfp['_package'] = identities.str.extract(
+            r'^(?P<package>[^-]+)-\d{1,2}$', expand=False
+        )
+        pfp['_site'] = self._clean_label_text(pfp['site'])
+        if 'run_time' in pfp:
+            pfp['_run'] = pfp['run_time'].astype('string').fillna('__unknown_run__')
+        else:
+            pfp['_run'] = '__single_run__'
+        if 'analysis_datetime' in pfp:
+            pfp['_order'] = pd.to_datetime(
+                pfp['analysis_datetime'], errors='coerce', utc=True
+            )
+        else:
+            pfp['_order'] = pd.RangeIndex(len(pfp))
+        pfp['_row_order'] = np.arange(len(pfp))
+
+        for (_run, site), group in pfp.dropna(subset=['_site']).groupby(
+            ['_run', '_site'], sort=False
+        ):
+            package_order = (
+                group.sort_values(['_order', '_row_order'])['_package']
+                .dropna()
+                .drop_duplicates()
+                .tolist()
+            )
+            if len(package_order) < 2:
+                continue
+            base_color = site_colors.get(site, 'gray')
+            for shade_step, package in enumerate(package_order[1:], start=1):
+                indices = group.index[group['_package'].eq(package)]
+                color = self._darken_color(base_color, shade_step)
+                df.loc[indices, 'port_color'] = pd.Series(
+                    [color] * len(indices), index=indices
+                )
         
     def add_port_labels(self, df):
         """ Helper function to add port labels to the dataframe. """
@@ -159,11 +238,16 @@ class M4_Instrument(HATS_DB_Functions):
 
         # pfp label
         mask = (df['run_type_num'] == 5)
-        df.loc[mask, 'port_label'] = (
-            df.loc[mask, 'site'] + ' ' +
-            df.loc[mask, 'sample_id'].astype(str) + ' (' +
-            df.loc[mask, 'flask_port'].astype(int).astype(str) + ')'
-        )
+        if mask.any():
+            pfp_df = df.loc[mask]
+            sample_ids = self._pfp_sample_identity(pfp_df)
+            sites = self._clean_label_text(pfp_df['site'])
+            flask_ports = pd.to_numeric(
+                pfp_df['flask_port'], errors='coerce'
+            ).astype('Int64').astype('string')
+            labels = sample_ids.copy()
+            labels.loc[sites.notna()] = sites.loc[sites.notna()] + ' ' + labels.loc[sites.notna()]
+            df.loc[mask, 'port_label'] = labels + ' (' + flask_ports.fillna('?') + ')'
 
         # clean up any stray spaces
         df['port_label'] = df['port_label'] \
@@ -176,6 +260,11 @@ class M4_Instrument(HATS_DB_Functions):
 
         # Start with site-based colors
         df['port_color'] = df['site'].map(site_colors).fillna('gray')
+
+        # M4 can analyze multiple PFP packages from the same site in one run.
+        # Preserve the site's base color for the first package and shade later
+        # packages so their points and legend entries remain distinguishable.
+        self._apply_pfp_package_colors(df, mask, site_colors)
 
         # Override when port == 14 → gray
         df.loc[df['run_type_num'] == self.STANDARD_RUN_TYPE, 'port_color'] = 'red'
