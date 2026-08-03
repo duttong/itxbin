@@ -1024,7 +1024,8 @@ class MainWindow(QMainWindow):
 
         self.analyte_widget = QWidget()
         self.analyte_layout = QGridLayout()
-        self.analyte_layout.setSpacing(4)
+        self.analyte_layout.setHorizontalSpacing(8)
+        self.analyte_layout.setVerticalSpacing(2)
         self.analyte_widget.setLayout(self.analyte_layout)
         analyte_layout.addWidget(self.analyte_widget)
 
@@ -1147,7 +1148,7 @@ class MainWindow(QMainWindow):
         # Options GroupBox
         options_gb = QGroupBox("OPTIONS")
         options_layout = QVBoxLayout()
-        options_layout.setSpacing(6)
+        options_layout.setSpacing(3)
         options_gb.setLayout(options_layout)
 
         # --- Response smoothing combobox ---
@@ -1170,12 +1171,13 @@ class MainWindow(QMainWindow):
         self._setup_save_shortcuts()
 
         # --- Horizontal separator ---
-        options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space above
+        # Keep this compact: the processing pane deliberately does not scroll,
+        # so fixed-height padding here can force controls to overlap on shorter
+        # laptop displays.
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
         options_layout.addWidget(line)
-        options_layout.addSpacerItem(QSpacerItem(0, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))  # space below
 
         self.autoscale_label = QLabel("Autoscale (a):")
         options_layout.addWidget(self.autoscale_label)
@@ -4920,8 +4922,8 @@ class MainWindow(QMainWindow):
 
     def populate_analyte_controls(self):
         """
-        If there are ≤ 12 analytes → show radio buttons in two columns,
-        first 6 in the left, next 6 in the right.
+        If there are ≤ 12 analytes → show radio buttons in up to three
+        balanced columns.
         If > 12 analytes → show a QComboBox instead.
         """
         # Clear any existing widgets in analyte_layout
@@ -4935,28 +4937,19 @@ class MainWindow(QMainWindow):
         self.radio_group = None
 
         names = list(self.analytes.keys())
-        if len(names) <= 12:
-            # Use radio buttons in two columns: first 6 left, rest right
+        if 0 < len(names) <= 12:
+            # Fill columns from top to bottom, preserving the existing analyte
+            # order while reducing the vertical space needed on laptop screens.
             self.radio_group = QButtonGroup(self)
-            left = names[:6]
-            right = names[6:]
-
-            # Left column (column 0)
-            for row, name in enumerate(left):
+            column_count = min(3, len(names))
+            row_count = math.ceil(len(names) / column_count)
+            for index, name in enumerate(names):
+                row = index % row_count
+                column = index // row_count
                 rb = QRadioButton(name)
-                self.analyte_layout.addWidget(rb, row, 0)
+                self.analyte_layout.addWidget(rb, row, column)
                 self.radio_group.addButton(rb)
                 rb.toggled.connect(self.on_analyte_radio_toggled)
-
-            # Right column (column 1)
-            for row, name in enumerate(right):
-                rb = QRadioButton(name)
-                self.analyte_layout.addWidget(rb, row, 1)
-                self.radio_group.addButton(rb)
-                rb.toggled.connect(self.on_analyte_radio_toggled)
-
-            # Ensure the layout stretches properly to accommodate options_gb
-            self.analyte_layout.addWidget(QWidget(), len(left), 0, 1, 2)
 
         else:
             # Use a QComboBox
@@ -4981,7 +4974,7 @@ class MainWindow(QMainWindow):
 
             combo_container = QWidget()
             combo_container.setLayout(combo_row)
-            self.analyte_layout.addWidget(combo_container, 0, 0, 1, 2)
+            self.analyte_layout.addWidget(combo_container, 0, 0, 1, 3)
 
         self._setup_analyte_shortcuts()
 
