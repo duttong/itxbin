@@ -49,6 +49,11 @@ from logos_agent_tools import LOGOSDataAgentTools
 from logos_ai_agent import LOGOSChatAgent, api_key_available
 from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
+from gcwerks_chromatogram import (
+    find_gcwerks_chromatogram,
+    gcwerks_channel_number,
+    read_gcwerks_chromatogram,
+)
 
 import configparser as _configparser
 
@@ -259,7 +264,6 @@ class FastNavigationToolbar(NavigationToolbar):
             self.set_history_buttons()
         else:
             super().home(*args, **kwargs)
-                
     def zoom(self, *args, **kwargs):
         super().zoom(*args, **kwargs)
         if getattr(self, "mode", None):
@@ -316,7 +320,44 @@ class FastNavigationToolbar(NavigationToolbar):
         super().release_pan(event)
         rcParams["lines.antialiased"] = self._old_aa
         self._save_y_limits_if_locked("pan")
-        
+
+
+class ChromatogramWindow(QMainWindow):
+    """Small, independent window for one decoded GCWerks chromatogram."""
+
+    def __init__(self, chromatogram, site, channel_number, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.setWindowTitle(f"Chromatogram — {chromatogram.path.name}")
+
+        figure = Figure(figsize=(4, 4), dpi=100)
+        canvas = FigureCanvas(figure)
+        self.setCentralWidget(canvas)
+
+        if chromatogram.elapsed_seconds is not None:
+            elapsed_minutes = chromatogram.elapsed_seconds / 60.0
+        else:
+            elapsed_minutes = (
+                np.arange(chromatogram.signal.size) / chromatogram.sample_rate
+                + chromatogram.inject_time_offset
+            ) / 60.0
+        axes = figure.add_subplot(111)
+        axes.plot(elapsed_minutes, chromatogram.signal, color="#175a87", linewidth=0.8)
+        axes.set_title(
+            f"{str(site).upper()} channel {channel_number}\n"
+            f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
+            fontsize=10,
+        )
+        axes.set_xlabel("Time (minutes)", fontsize=9)
+        axes.set_ylabel("Detector signal (counts)", fontsize=9)
+        axes.tick_params(labelsize=8)
+        axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
+        axes.margins(x=0.01, y=0.06)
+        figure.tight_layout()
+        canvas.draw()
+        self.resize(600, 400)
+
+
 _TAG_LAYOUT = [
     ("Sampling/Collection Issues", [
         ("B", "Leaky flask valve",                                   168, 223),
@@ -799,6 +840,7 @@ class MainWindow(QMainWindow):
         self.smoothing_changed = False
         self._ie3_mf_dirty = False      # True once a method save leaves mole fractions stale
         self._ie3_cal_tooltip_points = []  # click-tooltip metadata for _ie3_cal_plot markers
+        self._chromatogram_windows = set()
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
@@ -1202,6 +1244,32 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
+        self.chromatogram_viewer_btn = QPushButton("Chromatogram Viewer")
+        self.chromatogram_viewer_btn.setCheckable(True)
+        self.chromatogram_viewer_btn.setToolTip(
+            "When enabled, left-click a plotted point to open its chromatogram"
+        )
+        self.chromatogram_viewer_btn.setStyleSheet("""
+            QPushButton {
+                padding: 3px 7px;
+                border: 1px solid #888;
+                border-radius: 5px;
+                background-color: #f0f0f0;
+            }
+            QPushButton:checked {
+                background-color: #175a87;
+                color: white;
+                font-weight: 600;
+            }
+        """)
+        self.chromatogram_viewer_btn.toggled.connect(
+            self._on_chromatogram_viewer_toggled
+        )
+        self.chromatogram_viewer_btn.setVisible(
+            self.instrument.inst_id in {"cats", "ie3", "fe3", "bld1"}
+        )
+        options_layout.addWidget(self.chromatogram_viewer_btn)
+
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("PLOT AND OPTIONS")
         combined_layout = QHBoxLayout()
@@ -1498,6 +1566,8 @@ class MainWindow(QMainWindow):
         # canvas widgetlock (selectors go dormant) and _on_pick_point_inner
         # skips tag actions, so the toolbar and tagging modes coexist.
         self.tagging_enabled = checked
+        if checked and self.chromatogram_viewer_btn.isChecked():
+            self.chromatogram_viewer_btn.setChecked(False)
         self.canvas.setCursor(Qt.CrossCursor if checked else Qt.ArrowCursor)
 
         if checked:
@@ -1517,6 +1587,58 @@ class MainWindow(QMainWindow):
         else:
             if self._rect_selector is not None:
                 self._rect_selector.set_active(False)
+
+    def _on_chromatogram_viewer_toggled(self, checked: bool):
+        """Keep chromatogram clicks separate from the two tagging modes."""
+        if checked:
+            if self._tagging_btn.isChecked():
+                self._tagging_btn.setChecked(False)
+            if self._multi_tag_btn.isChecked():
+                self._multi_tag_btn.setChecked(False)
+            self.canvas.setCursor(Qt.PointingHandCursor)
+        elif not self.tagging_enabled:
+            self.canvas.setCursor(Qt.ArrowCursor)
+
+    def _open_chromatogram_for_row(self, row_idx):
+        """Locate, decode, and show the chromatogram for one plotted row."""
+        row = self.run.loc[row_idx]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[0]
+
+        analysis_time = row.get("analysis_datetime", row.get("analysis_time"))
+        if _is_blank(analysis_time):
+            raise ValueError("This point has no analysis timestamp.")
+
+        data_channel = row.get("channel", self.current_channel)
+        if _is_blank(data_channel):
+            data_channel = self.current_channel
+        site = getattr(self.instrument, "site", "")
+        channel_number = gcwerks_channel_number(
+            self.instrument.inst_id,
+            data_channel,
+            site,
+        )
+        path = find_gcwerks_chromatogram(
+            self.instrument.gc_dir,
+            analysis_time,
+            channel_number,
+        )
+        chromatogram = read_gcwerks_chromatogram(path)
+        window = ChromatogramWindow(
+            chromatogram,
+            site or self.instrument.inst_id,
+            channel_number,
+            parent=self,
+        )
+        self._chromatogram_windows.add(window)
+
+        def _forget_window(_obj=None, opened_window=window):
+            self._chromatogram_windows.discard(opened_window)
+
+        window.destroyed.connect(_forget_window)
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def populate_tag_selector(self):
         """Load HATS NG tag options used by the point tagging tool."""
@@ -1783,6 +1905,8 @@ class MainWindow(QMainWindow):
             # If tagging (g) mode is active, turn it off before opening multi-tag.
             if self.tagging_enabled:
                 self._tagging_btn.setChecked(False)
+            if self.chromatogram_viewer_btn.isChecked():
+                self.chromatogram_viewer_btn.setChecked(False)
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
                 panel.populate_tags(self._all_tags_ordered)
@@ -2994,6 +3118,15 @@ class MainWindow(QMainWindow):
         df_index = getattr(scatter, "_df_index", None)
         row_idx = df_index[i] if df_index is not None else self.run.index[i]
 
+        if (self.chromatogram_viewer_btn.isChecked()
+                and event.mouseevent.button == 1
+                and not self.tagging_enabled):
+            try:
+                self._open_chromatogram_for_row(row_idx)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Chromatogram unavailable", str(exc))
+            return
+
         # Update multi-tag panel for any scatter click (tagging mode not required).
         if (self._multi_tag_panel is not None and self._multi_tag_panel.isVisible()):
             if self._shift_held():
@@ -3053,6 +3186,8 @@ class MainWindow(QMainWindow):
         # Skip if tagging or navigation tools are active
         tb = getattr(self.canvas, "toolbar", None)
         if (tb is not None and getattr(tb, "mode", None)) or self.tagging_enabled:
+            return
+        if self.chromatogram_viewer_btn.isChecked():
             return
 
         if self._is_ie3_cal_plot_active():

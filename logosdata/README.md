@@ -70,6 +70,13 @@ saves it as `default_inst` in `~/.logos-tanks.conf`.
 
 Tab visibility is controlled per instrument in `logos_data.conf`.
 
+On the Processing tab for CATS, IE3, FE3, and BLD1, enable
+**Chromatogram Viewer** and left-click a plotted point to open its GCWerks
+chromatogram. Each point opens in a separate 600 x 400 window, so multiple
+chromatograms can remain visible for comparison. Display levels are read
+directly from GCWerks' compressed files, including its run-length records for
+unchanged detector levels.
+
 ## Keyboard shortcuts
 
 | Key | Action |
