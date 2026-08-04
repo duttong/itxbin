@@ -75,7 +75,8 @@ On the Processing tab for CATS, IE3, FE3, and BLD1, enable
 chromatogram. Each point opens in a separate 600 x 400 window, so multiple
 chromatograms can remain visible for comparison. Display levels are read
 directly from GCWerks' compressed files, including its run-length records for
-unchanged detector levels.
+unchanged detector levels. Each chromatogram includes the same point metadata
+shown by the Processing plot's normal left-click tooltip.
 
 ## Keyboard shortcuts
 

@@ -325,7 +325,14 @@ class FastNavigationToolbar(NavigationToolbar):
 class ChromatogramWindow(QMainWindow):
     """Small, independent window for one decoded GCWerks chromatogram."""
 
-    def __init__(self, chromatogram, site, channel_number, parent=None):
+    def __init__(
+        self,
+        chromatogram,
+        site,
+        channel_number,
+        point_info_html="",
+        parent=None,
+    ):
         super().__init__(parent, Qt.Window)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle(f"Chromatogram — {chromatogram.path.name}")
@@ -333,6 +340,7 @@ class ChromatogramWindow(QMainWindow):
         figure = Figure(figsize=(4, 4), dpi=100)
         canvas = FigureCanvas(figure)
         self.setCentralWidget(canvas)
+        self.addToolBar(NavigationToolbar(canvas, self))
 
         if chromatogram.elapsed_seconds is not None:
             elapsed_minutes = chromatogram.elapsed_seconds / 60.0
@@ -353,6 +361,21 @@ class ChromatogramWindow(QMainWindow):
         axes.tick_params(labelsize=8)
         axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
         axes.margins(x=0.01, y=0.06)
+        if point_info_html:
+            point_info_text = re.sub(
+                r"<br\s*/?>", "\n", point_info_html, flags=re.IGNORECASE
+            )
+            point_info_text = html.unescape(re.sub(r"<[^>]+>", "", point_info_text))
+            axes.text(
+                0.985,
+                0.975,
+                point_info_text,
+                transform=axes.transAxes,
+                ha="right",
+                va="top",
+                fontsize=6.5,
+                linespacing=1.15,
+            )
         figure.tight_layout()
         canvas.draw()
         self.resize(600, 400)
@@ -1599,7 +1622,7 @@ class MainWindow(QMainWindow):
         elif not self.tagging_enabled:
             self.canvas.setCursor(Qt.ArrowCursor)
 
-    def _open_chromatogram_for_row(self, row_idx):
+    def _open_chromatogram_for_row(self, row_idx, point_info_html=""):
         """Locate, decode, and show the chromatogram for one plotted row."""
         row = self.run.loc[row_idx]
         if isinstance(row, pd.DataFrame):
@@ -1628,6 +1651,7 @@ class MainWindow(QMainWindow):
             chromatogram,
             site or self.instrument.inst_id,
             channel_number,
+            point_info_html=point_info_html,
             parent=self,
         )
         self._chromatogram_windows.add(window)
@@ -3122,7 +3146,11 @@ class MainWindow(QMainWindow):
                 and event.mouseevent.button == 1
                 and not self.tagging_enabled):
             try:
-                self._open_chromatogram_for_row(row_idx)
+                point_info_html = self._point_info_html(scatter, i, row_idx)
+                self._open_chromatogram_for_row(
+                    row_idx,
+                    point_info_html=point_info_html,
+                )
             except (OSError, ValueError) as exc:
                 QMessageBox.warning(self, "Chromatogram unavailable", str(exc))
             return
@@ -3177,6 +3205,102 @@ class MainWindow(QMainWindow):
             sub_info=f"loaded full run_time {rt:%Y-%m-%d %H:%M:%S}",
         )
 
+    def _point_info_html(self, artist, point_index, row_idx):
+        """Return the shared tooltip/chromatogram information for a point."""
+        meta = getattr(artist, "_meta", {})
+
+        site = meta.get("site", [None])[point_index]
+        analysis_time = meta.get("analysis_time", [None])[point_index]
+        sample_time = meta.get("sample_datetime", [None])[point_index]
+        resp = meta.get("response", [None])[point_index]
+        ratio = meta.get("ratio", [None])[point_index]
+        mf = meta.get("mole_fraction", [None])[point_index]
+        sample_id = meta.get("sample_id", [None])[point_index]
+        pair_id = meta.get("pair_id", [None])[point_index]
+        run_type_num = meta.get("run_type_num", [None])[point_index]
+        net_pressure = meta.get("net_pressure", [None])[point_index]
+        port_info = meta.get("port_info", [""])[point_index]
+        tank_serial = meta.get("tank_serial", [""])[point_index]
+        comments = meta.get("status_comments", [""])[point_index]
+        loop_temp = meta.get("sample_loop_temp", [""])[point_index]
+        loop_pressure = meta.get("sample_loop_pressure", [""])[point_index]
+        loop_flow = meta.get("sample_loop_flow", [""])[point_index]
+
+        parts = []
+        if site not in (None, "", "nan", "None"):
+            parts.append(f"<b>Site:</b> {site}")
+        if resp is not None:
+            analyte = re.sub(
+                r"\s*\([^()]*\)\s*$", "", self._current_analyte_name()
+            ).strip()
+            response_label = f"{analyte} Response" if analyte else "Response"
+            parts.append(f"<b>{response_label}:</b> {resp}")
+        if ratio is not None:
+            parts.append(f"<b>Ratio:</b> {ratio}")
+        if mf is not None:
+            parts.append(f"<b>Mole Fraction:</b> {mf}")
+
+        if isinstance(sample_id, str):
+            sid = sample_id.strip()
+            if sid and sid not in {"0", "000", "None", "nan"}:
+                parts.append(f"<b>Sample ID:</b> {sid}")
+
+        if isinstance(pair_id, str):
+            pid = pair_id.strip()
+            if pid and pid not in {"0", "000", "None", "nan"}:
+                parts.append(f"<b>Pair ID:</b> {pid}")
+
+        flask_port_numeric = meta.get("flask_port_numeric", [False])[point_index]
+        has_real_sample_id = (
+            isinstance(sample_id, str)
+            and sample_id.strip() not in {"", "0", "000", "None", "nan"}
+        )
+        if (run_type_num is not None
+                and (flask_port_numeric or has_real_sample_id)
+                and self.instrument.inst_num not in range(236, 245)):
+            flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
+            parts.append(f"<b>Flask Type:</b> {flask_type}")
+
+        if not _is_blank(port_info):
+            parts.append(f"<b>Port Info:</b> {port_info}")
+        if not _is_blank(tank_serial):
+            parts.append(f"<b>Tank Serial Num:</b> {tank_serial}")
+
+        if isinstance(net_pressure, str):
+            pressure = net_pressure.strip()
+            if pressure and pressure not in {"0", "000", "None", "nan"}:
+                parts.append(f"<b>Net Pressure:</b> {pressure} psi")
+
+        if not _is_blank(sample_time):
+            parts.append(f"<b>Sample time:</b> {sample_time}")
+        parts.append(f"<b>Analysis time:</b> {analysis_time}")
+
+        if not _is_blank(comments):
+            parts.append(f"<b>Comments:</b> {comments}")
+        if not _is_blank(loop_temp):
+            parts.append(f"<b>Loop Temp:</b> {loop_temp} °C")
+        if not _is_blank(loop_pressure):
+            parts.append(f"<b>Loop Pressure:</b> {loop_pressure} mbar")
+        if not _is_blank(loop_flow):
+            parts.append(f"<b>Loop Flow:</b> {loop_flow} cc/min")
+
+        try:
+            mf_nums = self._mole_fraction_nums_for_indices([row_idx])
+            applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
+            tag_names = getattr(self, "_all_tag_names", {})
+            for tag_num in sorted(applied):
+                if tag_num in _INFO_TAG_DESCRIPTIONS:
+                    short = " ".join(_INFO_TAG_DESCRIPTIONS[tag_num].split()[:5])
+                    parts.append(f"<b>Info Tag:</b> {short}")
+                else:
+                    desc = tag_names.get(tag_num, f"tag {tag_num}")
+                    short = " ".join(desc.split()[:5])
+                    parts.append(f"<b>Tag:</b> {short}")
+        except Exception:
+            pass
+
+        return "<br>".join(parts)
+
     def _on_click_tooltip(self, event):
         """Show tooltip on left-click when tagging and navigation are off."""
         # Left mouse only
@@ -3201,113 +3325,13 @@ class MainWindow(QMainWindow):
                 continue
 
             nearest_idx = ind["ind"][0]
-            meta = getattr(artist, "_meta", {})
-
-            site = meta.get("site", [None])[nearest_idx]
-            analysis_time = meta.get("analysis_time", [None])[nearest_idx]
-            sample_time = meta.get("sample_datetime", [None])[nearest_idx]
-            resp = meta.get("response", [None])[nearest_idx]
-            ratio = meta.get("ratio", [None])[nearest_idx]
-            mf = meta.get("mole_fraction", [None])[nearest_idx]
-            sample_id = meta.get("sample_id", [None])[nearest_idx]
-            pair_id = meta.get("pair_id", [None])[nearest_idx]
-            run_type_num = meta.get("run_type_num", [None])[nearest_idx]
-            net_pressure = meta.get("net_pressure", [None])[nearest_idx]
-            port_info = meta.get("port_info", [''])[nearest_idx]
-            tank_serial = meta.get("tank_serial", [''])[nearest_idx]
-            comments = meta.get("status_comments", [''])[nearest_idx]
-            loop_temp = meta.get("sample_loop_temp", [''])[nearest_idx]
-            loop_pressure = meta.get("sample_loop_pressure", [''])[nearest_idx]
-            loop_flow = meta.get("sample_loop_flow", [''])[nearest_idx]
-
-            parts = []
-
-            # Site — show if not blank/None
-            if site not in (None, "", "nan", "None"):
-                parts.append(f"<b>Site:</b> {site}")
-            
-            if resp is not None:
-                parts.append(f"<b>Response:</b> {resp}")
-                
-            if ratio is not None:
-                parts.append(f"<b>Ratio:</b> {ratio}")
-
-            if mf is not None:
-                parts.append(f"<b>Mole Fraction:</b> {mf}")
-
-            # Sample ID — show only if not "0" or blank
-            if isinstance(sample_id, str):
-                sid = sample_id.strip()
-                if sid and sid not in {"0", "000", "None", "nan"}:
-                    parts.append(f"<b>Sample ID:</b> {sid}")
-
-            # Pair ID — show only if not "0" or blank
-            if isinstance(sample_id, str):
-                pid = pair_id.strip()
-                if pid and pid not in {"0", "000", "None", "nan"}:
-                    parts.append(f"<b>Pair ID:</b> {pid}")
-
-            # Flask Type — only for true flask/PFP samples, not tank/cal runs.
-            # PFPs: flask_port is numeric. Regular flasks: sample_id is a real non-zero value.
-            # Tank/cal runs have flask_port=NULL and sample_id=0.
-            flask_port_numeric = meta.get("flask_port_numeric", [False])[nearest_idx]
-            has_real_sample_id = (
-                isinstance(sample_id, str)
-                and sample_id.strip() not in {"", "0", "000", "None", "nan"}
+            df_index = getattr(artist, "_df_index", None)
+            row_idx = (
+                df_index[nearest_idx]
+                if df_index is not None
+                else self.run.index[nearest_idx]
             )
-            if run_type_num is not None and (flask_port_numeric or has_real_sample_id) and self.instrument.inst_num not in range(236, 245):
-                flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
-                parts.append(f"<b>Flask Type:</b> {flask_type}")
-
-            if not _is_blank(port_info):
-                parts.append(f"<b>Port Info:</b> {port_info}")
-
-            if not _is_blank(tank_serial):
-                parts.append(f"<b>Tank Serial Num:</b> {tank_serial}")
-
-            # Pair ID — show only if not "0" or blank
-            if isinstance(net_pressure, str):
-                presss = net_pressure.strip()
-                if presss and presss not in {"0", "000", "None", "nan"}:
-                    parts.append(f"<b>Net Pressure:</b> {presss} psi")
-
-            # Sample time — show only if not blank
-            if not _is_blank(sample_time):
-                parts.append(f"<b>Sample time:</b> {sample_time}")
-
-            # Analysis time — always shown
-            parts.append(f"<b>Analysis time:</b> {analysis_time}")
-            
-            if not _is_blank(comments):
-                parts.append(f"<b>Comments:</b> {comments}")
-
-            if not _is_blank(loop_temp):
-                parts.append(f"<b>Loop Temp:</b> {loop_temp} °C")
-            if not _is_blank(loop_pressure):
-                parts.append(f"<b>Loop Pressure:</b> {loop_pressure} mbar")
-            if not _is_blank(loop_flow):
-                parts.append(f"<b>Loop Flow:</b> {loop_flow} cc/min")
-
-            # Applied tags — look up via DB
-            try:
-                df_index = getattr(artist, "_df_index", None)
-                row_idx = df_index[nearest_idx] if df_index is not None else self.run.index[nearest_idx]
-                mf_nums = self._mole_fraction_nums_for_indices([row_idx])
-                applied = self._fetch_tag_nums_for_mf_nums(mf_nums)
-                tag_names = getattr(self, "_all_tag_names", {})
-                for tnum in sorted(applied):
-                    if tnum in _INFO_TAG_DESCRIPTIONS:
-                        short = " ".join(_INFO_TAG_DESCRIPTIONS[tnum].split()[:5])
-                        parts.append(f"<b>Info Tag:</b> {short}")
-                    else:
-                        desc = tag_names.get(tnum, f"tag {tnum}")
-                        short = " ".join(desc.split()[:5])
-                        parts.append(f"<b>Tag:</b> {short}")
-            except Exception:
-                pass
-
-            # Combine for tooltip
-            text = "<br>".join(parts)
+            text = self._point_info_html(artist, nearest_idx, row_idx)
             QToolTip.showText(QCursor.pos(), text)
             break
         else:
