@@ -52,7 +52,9 @@ from logos_tanks import TanksWidget
 from gcwerks_chromatogram import (
     find_gcwerks_chromatogram,
     gcwerks_channel_number,
+    gcwerks_focus_limits,
     gcwerks_ms_quantitation_mass,
+    gcwerks_peak_window,
     read_gcwerks_chromatogram,
     read_gcwerks_ms_chromatogram,
 )
@@ -324,6 +326,33 @@ class FastNavigationToolbar(NavigationToolbar):
         self._save_y_limits_if_locked("pan")
 
 
+def _chromatogram_point_info_text(point_info_html):
+    """Convert tooltip HTML to plot text, omitting the potentially long comment."""
+    without_comments = re.sub(
+        r"<b>Comments?:</b>.*?(?=<br\s*/?>|$)",
+        "",
+        point_info_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    point_info_text = re.sub(
+        r"<br\s*/?>", "\n", without_comments, flags=re.IGNORECASE
+    )
+    point_info_text = html.unescape(re.sub(r"<[^>]+>", "", point_info_text))
+    return "\n".join(line for line in point_info_text.splitlines() if line.strip())
+
+
+def _show_full_chromatogram(axes, toolbar, canvas):
+    """Show the complete current trace while preserving toolbar navigation."""
+    toolbar.push_current()
+    axes.set_autoscalex_on(True)
+    axes.set_autoscaley_on(True)
+    axes.relim()
+    axes.autoscale_view()
+    axes.margins(x=0.01, y=0.06)
+    toolbar.push_current()
+    canvas.draw_idle()
+
+
 class ChromatogramWindow(QMainWindow):
     """Small, independent window for one decoded GCWerks chromatogram."""
 
@@ -333,6 +362,7 @@ class ChromatogramWindow(QMainWindow):
         site,
         channel_number,
         point_info_html="",
+        peak_window=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
@@ -342,15 +372,23 @@ class ChromatogramWindow(QMainWindow):
         figure = Figure(figsize=(4, 4), dpi=100)
         canvas = FigureCanvas(figure)
         self.setCentralWidget(canvas)
-        self.addToolBar(NavigationToolbar(canvas, self))
+        toolbar = NavigationToolbar(canvas, self)
+        self.addToolBar(toolbar)
+        toolbar.addSeparator()
+        full_action = toolbar.addAction("Full")
+        full_action.setToolTip("Show the complete chromatogram")
+        full_action.triggered.connect(
+            lambda _checked=False: _show_full_chromatogram(axes, toolbar, canvas)
+        )
 
         if chromatogram.elapsed_seconds is not None:
-            elapsed_minutes = chromatogram.elapsed_seconds / 60.0
+            elapsed_seconds = chromatogram.elapsed_seconds
         else:
-            elapsed_minutes = (
+            elapsed_seconds = (
                 np.arange(chromatogram.signal.size) / chromatogram.sample_rate
                 + chromatogram.inject_time_offset
-            ) / 60.0
+            )
+        elapsed_minutes = elapsed_seconds / 60.0
         axes = figure.add_subplot(111)
         axes.plot(elapsed_minutes, chromatogram.signal, color="#175a87", linewidth=0.8)
         axes.set_title(
@@ -363,11 +401,17 @@ class ChromatogramWindow(QMainWindow):
         axes.tick_params(labelsize=8)
         axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
         axes.margins(x=0.01, y=0.06)
+        focus_limits = gcwerks_focus_limits(
+            elapsed_seconds,
+            chromatogram.signal,
+            peak_window,
+        )
+        if focus_limits is not None:
+            x_limits, y_limits = focus_limits
+            axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
+            axes.set_ylim(*y_limits)
         if point_info_html:
-            point_info_text = re.sub(
-                r"<br\s*/?>", "\n", point_info_html, flags=re.IGNORECASE
-            )
-            point_info_text = html.unescape(re.sub(r"<[^>]+>", "", point_info_text))
+            point_info_text = _chromatogram_point_info_text(point_info_html)
             axes.text(
                 0.985,
                 0.975,
@@ -393,6 +437,7 @@ class MSChromatogramWindow(QMainWindow):
         channel_number,
         default_mass=0.0,
         point_info_html="",
+        peak_window=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
@@ -400,14 +445,8 @@ class MSChromatogramWindow(QMainWindow):
         self.chromatogram = chromatogram
         self.site = site
         self.channel_number = channel_number
-        self.point_info_text = ""
-        if point_info_html:
-            self.point_info_text = re.sub(
-                r"<br\s*/?>", "\n", point_info_html, flags=re.IGNORECASE
-            )
-            self.point_info_text = html.unescape(
-                re.sub(r"<[^>]+>", "", self.point_info_text)
-            )
+        self.peak_window = peak_window
+        self.point_info_text = _chromatogram_point_info_text(point_info_html)
 
         self.figure = Figure(figsize=(6, 4), dpi=100)
         self.canvas = FigureCanvas(self.figure)
@@ -416,6 +455,10 @@ class MSChromatogramWindow(QMainWindow):
 
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.addToolBar(self.toolbar)
+        self.toolbar.addSeparator()
+        full_action = self.toolbar.addAction("Full")
+        full_action.setToolTip("Show the complete chromatogram")
+        full_action.triggered.connect(self._show_full_chromatogram)
         self.toolbar.addSeparator()
         self.toolbar.addWidget(QLabel("Ion:"))
         self.mass_combo = QComboBox()
@@ -469,6 +512,15 @@ class MSChromatogramWindow(QMainWindow):
         self.axes.tick_params(labelsize=8)
         self.axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
         self.axes.margins(x=0.01, y=0.06)
+        focus_limits = gcwerks_focus_limits(
+            trace.elapsed_seconds,
+            trace.signal,
+            self.peak_window,
+        )
+        if focus_limits is not None:
+            x_limits, y_limits = focus_limits
+            self.axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
+            self.axes.set_ylim(*y_limits)
         if self.point_info_text:
             self.axes.text(
                 0.985,
@@ -483,6 +535,9 @@ class MSChromatogramWindow(QMainWindow):
         self.figure.tight_layout()
         self.toolbar.update()
         self.canvas.draw_idle()
+
+    def _show_full_chromatogram(self):
+        _show_full_chromatogram(self.axes, self.toolbar, self.canvas)
 
 
 _TAG_LAYOUT = [
@@ -1750,30 +1805,46 @@ class MainWindow(QMainWindow):
             analysis_time,
             channel_number,
         )
+        analyte = re.sub(
+            r"\s*\([^()]*\)\s*$", "", self._current_analyte_name()
+        ).strip()
         if self.instrument.inst_id == "m4":
             chromatogram = read_gcwerks_ms_chromatogram(path)
-            analyte = re.sub(
-                r"\s*\([^()]*\)\s*$", "", self._current_analyte_name()
-            ).strip()
-            default_mass = gcwerks_ms_quantitation_mass(
+            peak_window = gcwerks_peak_window(
                 self.instrument.gc_dir,
+                channel_number,
+                chromatogram.start_time,
                 analyte,
             )
+            default_mass = peak_window.mass if peak_window is not None else None
+            if default_mass is None:
+                default_mass = gcwerks_ms_quantitation_mass(
+                    self.instrument.gc_dir,
+                    analyte,
+                )
             window = MSChromatogramWindow(
                 chromatogram,
                 site or self.instrument.inst_id,
                 channel_number,
                 default_mass=default_mass if default_mass is not None else 0.0,
                 point_info_html=point_info_html,
+                peak_window=peak_window,
                 parent=self,
             )
         else:
             chromatogram = read_gcwerks_chromatogram(path)
+            peak_window = gcwerks_peak_window(
+                self.instrument.gc_dir,
+                channel_number,
+                chromatogram.start_time,
+                analyte,
+            )
             window = ChromatogramWindow(
                 chromatogram,
                 site or self.instrument.inst_id,
                 channel_number,
                 point_info_html=point_info_html,
+                peak_window=peak_window,
                 parent=self,
             )
         self._chromatogram_windows.add(window)

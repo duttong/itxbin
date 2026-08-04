@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import struct
 import subprocess
 
@@ -49,6 +50,17 @@ class GCWerksChromatogram:
     inject_time_offset: float
     signal: np.ndarray
     elapsed_seconds: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class GCWerksPeakWindow:
+    """An analyte identification window from a GCWerks peakid file."""
+
+    analyte: str
+    center_seconds: float
+    width_seconds: float
+    mass: float | None
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -361,6 +373,149 @@ def gcwerks_ms_quantitation_mass(
         if normalize(name) == wanted:
             return mass
     return None
+
+
+def _as_utc_datetime(value: object) -> datetime:
+    timestamp = value
+    if hasattr(timestamp, "to_pydatetime"):
+        timestamp = timestamp.to_pydatetime()
+    if not isinstance(timestamp, datetime):
+        timestamp = datetime.fromisoformat(str(timestamp))
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def find_gcwerks_peakid_file(
+    gc_dir: str | Path,
+    channel_number: int,
+    analysis_time: object,
+) -> Path | None:
+    """Find the dated peakid file applicable to one chromatogram."""
+    directory = (
+        Path(gc_dir)
+        / "integrator"
+        / f"channel{int(channel_number)}"
+        / "peakid"
+    )
+    if not directory.is_dir():
+        return None
+
+    target = _as_utc_datetime(analysis_time)
+    dated = []
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        match = re.fullmatch(r"(\d{6})(?:\.(\d{4}))?", path.name)
+        if not match:
+            continue
+        date_text, time_text = match.groups()
+        try:
+            effective_time = datetime.strptime(
+                date_text + (time_text or "0000"), "%y%m%d%H%M"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        dated.append((effective_time, path))
+
+    applicable = [item for item in dated if item[0] <= target]
+    if applicable:
+        return max(applicable, key=lambda item: (item[0], item[1].name))[1]
+
+    initial = directory / "initial"
+    if initial.is_file():
+        return initial
+    if dated:
+        return min(dated, key=lambda item: (item[0], item[1].name))[1]
+    return None
+
+
+def read_gcwerks_peak_windows(path: str | Path) -> tuple[GCWerksPeakWindow, ...]:
+    """Read analyte center, full window width, and optional quantitation mass."""
+    path = Path(path)
+    windows = []
+    for raw_line in path.read_text(encoding="ascii").splitlines():
+        fields = raw_line.split("#", 1)[0].split()
+        if len(fields) < 3:
+            continue
+        try:
+            center = float(fields[1])
+            width = float(fields[2])
+            mass = float(fields[3]) if len(fields) >= 4 else None
+        except ValueError:
+            continue
+        if not np.isfinite(center) or not np.isfinite(width) or width <= 0:
+            continue
+        if mass is not None and not np.isfinite(mass):
+            mass = None
+        windows.append(
+            GCWerksPeakWindow(
+                analyte=fields[0],
+                center_seconds=center,
+                width_seconds=width,
+                mass=mass,
+                path=path,
+            )
+        )
+    return tuple(windows)
+
+
+def _normalized_analyte_name(value: object) -> str:
+    name = str(value).strip().lower()
+    name = re.sub(r"\s*\([^()]*\)\s*$", "", name)
+    name = re.sub(r"_(?:q|a|b|c|d|f|cc)$", "", name)
+    return "".join(character for character in name if character.isalnum())
+
+
+def gcwerks_peak_window(
+    gc_dir: str | Path,
+    channel_number: int,
+    analysis_time: object,
+    analyte: str,
+) -> GCWerksPeakWindow | None:
+    """Return the applicable peak identification window for an analyte."""
+    path = find_gcwerks_peakid_file(gc_dir, channel_number, analysis_time)
+    if path is None:
+        return None
+    wanted = _normalized_analyte_name(analyte)
+    for window in read_gcwerks_peak_windows(path):
+        if _normalized_analyte_name(window.analyte) == wanted:
+            return window
+    return None
+
+
+def gcwerks_focus_limits(
+    elapsed_seconds: np.ndarray,
+    signal: np.ndarray,
+    peak_window: GCWerksPeakWindow | None,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Calculate focused x-seconds and padded y-limits for an analyte window."""
+    if peak_window is None:
+        return None
+    elapsed = np.asarray(elapsed_seconds, dtype=float)
+    levels = np.asarray(signal, dtype=float)
+    if elapsed.shape != levels.shape or elapsed.size == 0:
+        return None
+
+    x_min = peak_window.center_seconds - peak_window.width_seconds
+    x_max = peak_window.center_seconds + peak_window.width_seconds
+    visible = (
+        np.isfinite(elapsed)
+        & np.isfinite(levels)
+        & (elapsed >= x_min)
+        & (elapsed <= x_max)
+    )
+    if not visible.any():
+        return None
+
+    y_min = float(np.min(levels[visible]))
+    y_max = float(np.max(levels[visible]))
+    y_range = y_max - y_min
+    if y_range > 0:
+        padding = 0.1 * y_range
+    else:
+        padding = max(abs(y_min) * 0.1, 1.0)
+    return (x_min, x_max), (y_min - padding, y_max + padding)
 
 
 def export_gcwerks_chromatogram(

@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 
 LOGOSDATA_DIR = Path(__file__).resolve().parent / "logosdata"
 if str(LOGOSDATA_DIR) not in sys.path:
@@ -14,8 +16,11 @@ if str(LOGOSDATA_DIR) not in sys.path:
 from gcwerks_chromatogram import (  # noqa: E402
     export_gcwerks_chromatogram,
     find_gcwerks_chromatogram,
+    find_gcwerks_peakid_file,
     gcwerks_channel_number,
+    gcwerks_focus_limits,
     gcwerks_ms_quantitation_mass,
+    gcwerks_peak_window,
     read_gcwerks_chromatogram,
     read_gcwerks_ms_chromatogram,
 )
@@ -267,6 +272,64 @@ class GCWerksChromatogramTests(unittest.TestCase):
             self.assertEqual(gcwerks_ms_quantitation_mass(tmpdir, "HFC134a"), 83.0)
             self.assertEqual(gcwerks_ms_quantitation_mass(tmpdir, "CFC11b"), 103.0)
             self.assertIsNone(gcwerks_ms_quantitation_mass(tmpdir, "unknown"))
+
+    def test_selects_peakid_file_by_chromatogram_time(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            peakid = Path(tmpdir) / "integrator" / "channel0" / "peakid"
+            peakid.mkdir(parents=True)
+            (peakid / "initial").write_text("N2O_q 100.0 20.0\n")
+            (peakid / "260101").write_text("N2O_q 200.0 30.0\n")
+            (peakid / "260201.1200").write_text("N2O_q 300.0 40.0\n")
+
+            before_all = find_gcwerks_peakid_file(
+                tmpdir, 0, datetime(2025, 12, 1, tzinfo=timezone.utc)
+            )
+            before_noon = find_gcwerks_peakid_file(
+                tmpdir, 0, datetime(2026, 2, 1, 11, 59, tzinfo=timezone.utc)
+            )
+            after_noon = find_gcwerks_peakid_file(
+                tmpdir, 0, datetime(2026, 2, 1, 12, 1, tzinfo=timezone.utc)
+            )
+
+            self.assertEqual(before_all.name, "initial")
+            self.assertEqual(before_noon.name, "260101")
+            self.assertEqual(after_noon.name, "260201.1200")
+
+    def test_peak_window_matches_display_channel_and_reads_ms_mass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            peakid = Path(tmpdir) / "integrator" / "channel0" / "peakid"
+            peakid.mkdir(parents=True)
+            (peakid / "260101").write_text(
+                "N2O_q 427.0 35.0\n"
+                "HFC-134a 256.8 10.0 83.0 0.0 0.0\n"
+            )
+
+            n2o = gcwerks_peak_window(
+                tmpdir, 0, datetime(2026, 8, 1, tzinfo=timezone.utc), "N2O (q)"
+            )
+            hfc = gcwerks_peak_window(
+                tmpdir, 0, datetime(2026, 8, 1, tzinfo=timezone.utc), "HFC134a"
+            )
+
+            self.assertEqual((n2o.center_seconds, n2o.width_seconds), (427.0, 35.0))
+            self.assertEqual(hfc.mass, 83.0)
+
+    def test_focus_limits_use_twice_peakid_width_and_ten_percent_y_padding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            peakid = Path(tmpdir) / "integrator" / "channel0" / "peakid"
+            peakid.mkdir(parents=True)
+            (peakid / "initial").write_text("test 2.0 1.0\n")
+            window = gcwerks_peak_window(
+                tmpdir, 0, datetime(2026, 1, 1, tzinfo=timezone.utc), "test"
+            )
+
+            limits = gcwerks_focus_limits(
+                np.asarray([0, 1, 2, 3, 4], dtype=float),
+                np.asarray([5, 10, 20, 30, 100], dtype=float),
+                window,
+            )
+
+            self.assertEqual(limits, ((1.0, 3.0), (8.0, 32.0)))
 
 
 if __name__ == "__main__":
