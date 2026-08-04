@@ -15,13 +15,39 @@ from gcwerks_chromatogram import (  # noqa: E402
     export_gcwerks_chromatogram,
     find_gcwerks_chromatogram,
     gcwerks_channel_number,
+    gcwerks_ms_quantitation_mass,
     read_gcwerks_chromatogram,
+    read_gcwerks_ms_chromatogram,
 )
 
 
 def _write_chromatogram(path, timestamp, payload, sample_rate=4.0):
     header = struct.pack("<IIff4I", 1, timestamp, sample_rate, 0.0, 0, 0, 0, 0)
     path.write_bytes(header + payload)
+
+
+def _compressed_vector(values):
+    payload = [struct.pack("<i", values[0])]
+    payload.extend(
+        struct.pack("<i", current - previous)
+        for previous, current in zip(values, values[1:])
+    )
+    payload.append(struct.pack("<i", 2_000_000_300))
+    return b"".join(payload)
+
+
+def _write_ms_chromatogram(path, timestamp, traces):
+    master_count = len(traces[0][1])
+    header = struct.pack(
+        "<12I", 1, timestamp, 0, 1, 4, 0x447A0000, 0, 0, 0, 0,
+        len(traces), master_count,
+    )
+    payload = []
+    for mass, times_or_indexes, signals in traces:
+        payload.append(struct.pack("<fI", mass, len(signals)))
+        payload.append(_compressed_vector(times_or_indexes))
+        payload.append(_compressed_vector(signals))
+    path.write_bytes(header + b"".join(payload))
 
 
 class GCWerksChromatogramTests(unittest.TestCase):
@@ -168,6 +194,79 @@ class GCWerksChromatogramTests(unittest.TestCase):
             )
 
             self.assertEqual(found, late)
+
+    def test_decodes_ms_tic_and_indexed_ion_traces(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "260804.0413.zero_air"
+            _write_ms_chromatogram(
+                path,
+                1_775_449_580,
+                [
+                    (0.0, [245_250, 245_500, 245_750], [10, 12, 11]),
+                    (127.0, [0, 2], [1000, 1200]),
+                ],
+            )
+
+            chrom = read_gcwerks_ms_chromatogram(path)
+
+            self.assertEqual(chrom.masses, (0.0, 127.0))
+            self.assertEqual(chrom.traces[0].elapsed_seconds.tolist(), [245.25, 245.5, 245.75])
+            self.assertEqual(chrom.traces[0].signal.tolist(), [10, 12, 11])
+            ion = chrom.trace_for_mass(127)
+            self.assertEqual(ion.elapsed_seconds.tolist(), [245.25, 245.75])
+            self.assertEqual(ion.signal.tolist(), [1000, 1200])
+
+    def test_rejects_ms_trace_with_invalid_master_time_index(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "bad-ms"
+            _write_ms_chromatogram(
+                path,
+                1_775_449_580,
+                [
+                    (0.0, [1000, 1250], [10, 11]),
+                    (83.0, [0, 2], [20, 21]),
+                ],
+            )
+
+            with self.assertRaisesRegex(ValueError, "invalid time indexes"):
+                read_gcwerks_ms_chromatogram(path)
+
+    def test_ms_scan_combines_fractional_bins_into_nominal_ion(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "scan"
+            _write_ms_chromatogram(
+                path,
+                1_775_449_580,
+                [
+                    (0.0, [1000, 1250, 1500], [100, 110, 120]),
+                    (31.9, [0, 2], [10, 20]),
+                    (32.0, [0, 1], [100, 200]),
+                    (32.1, [1, 2], [1000, 2000]),
+                ],
+            )
+
+            chrom = read_gcwerks_ms_chromatogram(path)
+            ion = chrom.trace_for_mass(32)
+
+            self.assertTrue(chrom.is_profile_scan)
+            self.assertEqual(chrom.display_masses, (0.0, 32.0))
+            self.assertEqual(ion.elapsed_seconds.tolist(), [1.0, 1.25, 1.5])
+            self.assertEqual(ion.signal.tolist(), [110, 1200, 2020])
+
+    def test_reads_ms_quantitation_mass_with_name_normalization(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            peakid = (
+                Path(tmpdir) / "integrator" / "channel0" / "peakid" / "initial"
+            )
+            peakid.parent.mkdir(parents=True)
+            peakid.write_text(
+                "HFC-134a 256.8 10.0 83.00000 0.0 0.0\n"
+                "CFC-11b 599.6 6.0 103.00000 0.0 0.0\n"
+            )
+
+            self.assertEqual(gcwerks_ms_quantitation_mass(tmpdir, "HFC134a"), 83.0)
+            self.assertEqual(gcwerks_ms_quantitation_mass(tmpdir, "CFC11b"), 103.0)
+            self.assertIsNone(gcwerks_ms_quantitation_mass(tmpdir, "unknown"))
 
 
 if __name__ == "__main__":

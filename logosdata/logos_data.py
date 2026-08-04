@@ -52,7 +52,9 @@ from logos_tanks import TanksWidget
 from gcwerks_chromatogram import (
     find_gcwerks_chromatogram,
     gcwerks_channel_number,
+    gcwerks_ms_quantitation_mass,
     read_gcwerks_chromatogram,
+    read_gcwerks_ms_chromatogram,
 )
 
 import configparser as _configparser
@@ -379,6 +381,108 @@ class ChromatogramWindow(QMainWindow):
         figure.tight_layout()
         canvas.draw()
         self.resize(600, 400)
+
+
+class MSChromatogramWindow(QMainWindow):
+    """Independent M4/MSD chromatogram window with selectable ion traces."""
+
+    def __init__(
+        self,
+        chromatogram,
+        site,
+        channel_number,
+        default_mass=0.0,
+        point_info_html="",
+        parent=None,
+    ):
+        super().__init__(parent, Qt.Window)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.chromatogram = chromatogram
+        self.site = site
+        self.channel_number = channel_number
+        self.point_info_text = ""
+        if point_info_html:
+            self.point_info_text = re.sub(
+                r"<br\s*/?>", "\n", point_info_html, flags=re.IGNORECASE
+            )
+            self.point_info_text = html.unescape(
+                re.sub(r"<[^>]+>", "", self.point_info_text)
+            )
+
+        self.figure = Figure(figsize=(6, 4), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        self.axes = self.figure.add_subplot(111)
+        self.setCentralWidget(self.canvas)
+
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.addToolBar(self.toolbar)
+        self.toolbar.addSeparator()
+        self.toolbar.addWidget(QLabel("Ion:"))
+        self.mass_combo = QComboBox()
+        self.mass_combo.setToolTip("Select the total ion current or an individual m/z trace")
+        self.mass_combo.setMinimumWidth(105)
+        for mass in chromatogram.display_masses:
+            self.mass_combo.addItem(self._mass_label(mass), mass)
+        self.toolbar.addWidget(self.mass_combo)
+
+        masses = np.asarray(chromatogram.display_masses, dtype=float)
+        default_index = int(np.argmin(np.abs(masses - float(default_mass))))
+        self.mass_combo.setCurrentIndex(default_index)
+        self.mass_combo.currentIndexChanged.connect(self._plot_selected_trace)
+        self._plot_selected_trace(default_index)
+        self.resize(600, 400)
+
+    @staticmethod
+    def _mass_text(mass):
+        return f"{mass:.3f}".rstrip("0").rstrip(".")
+
+    @classmethod
+    def _mass_label(cls, mass):
+        if abs(mass) < 1e-6:
+            return "TIC (m/z 0)"
+        return f"m/z {cls._mass_text(mass)}"
+
+    def _plot_selected_trace(self, index):
+        if index < 0:
+            return
+        selected_mass = float(self.mass_combo.itemData(index))
+        trace = self.chromatogram.trace_for_mass(selected_mass)
+        trace_label = self._mass_label(selected_mass)
+        self.setWindowTitle(
+            f"Chromatogram — {self.chromatogram.path.name} — {trace_label}"
+        )
+
+        self.axes.clear()
+        self.axes.plot(
+            trace.elapsed_seconds / 60.0,
+            trace.signal,
+            color="#175a87",
+            linewidth=0.8,
+        )
+        self.axes.set_title(
+            f"{str(self.site).upper()} channel {self.channel_number} — {trace_label}\n"
+            f"{self.chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
+            fontsize=10,
+        )
+        self.axes.set_xlabel("Time (minutes)", fontsize=9)
+        self.axes.set_ylabel("Ion signal (counts)", fontsize=9)
+        self.axes.tick_params(labelsize=8)
+        self.axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
+        self.axes.margins(x=0.01, y=0.06)
+        if self.point_info_text:
+            self.axes.text(
+                0.985,
+                0.975,
+                self.point_info_text,
+                transform=self.axes.transAxes,
+                ha="right",
+                va="top",
+                fontsize=6.5,
+                linespacing=1.15,
+            )
+        self.figure.tight_layout()
+        self.toolbar.update()
+        self.canvas.draw_idle()
 
 
 _TAG_LAYOUT = [
@@ -1289,7 +1393,7 @@ class MainWindow(QMainWindow):
             self._on_chromatogram_viewer_toggled
         )
         self.chromatogram_viewer_btn.setVisible(
-            self.instrument.inst_id in {"cats", "ie3", "fe3", "bld1"}
+            self.instrument.inst_id in {"cats", "ie3", "fe3", "bld1", "m4"}
         )
         options_layout.addWidget(self.chromatogram_viewer_btn)
 
@@ -1646,14 +1750,32 @@ class MainWindow(QMainWindow):
             analysis_time,
             channel_number,
         )
-        chromatogram = read_gcwerks_chromatogram(path)
-        window = ChromatogramWindow(
-            chromatogram,
-            site or self.instrument.inst_id,
-            channel_number,
-            point_info_html=point_info_html,
-            parent=self,
-        )
+        if self.instrument.inst_id == "m4":
+            chromatogram = read_gcwerks_ms_chromatogram(path)
+            analyte = re.sub(
+                r"\s*\([^()]*\)\s*$", "", self._current_analyte_name()
+            ).strip()
+            default_mass = gcwerks_ms_quantitation_mass(
+                self.instrument.gc_dir,
+                analyte,
+            )
+            window = MSChromatogramWindow(
+                chromatogram,
+                site or self.instrument.inst_id,
+                channel_number,
+                default_mass=default_mass if default_mass is not None else 0.0,
+                point_info_html=point_info_html,
+                parent=self,
+            )
+        else:
+            chromatogram = read_gcwerks_chromatogram(path)
+            window = ChromatogramWindow(
+                chromatogram,
+                site or self.instrument.inst_id,
+                channel_number,
+                point_info_html=point_info_html,
+                parent=self,
+            )
         self._chromatogram_windows.add(window)
 
         def _forget_window(_obj=None, opened_window=window):
