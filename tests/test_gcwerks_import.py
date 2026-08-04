@@ -1,9 +1,12 @@
 import argparse
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pandas as pd
 
 from gcwerks_import import GCwerks_Import
 from ie3_import import IE3_import
@@ -130,6 +133,40 @@ class IE3ImportTests(unittest.TestCase):
         self.assertFalse(importer.should_skip_itx(itx))
 
 
+class IE3EngTests(unittest.TestCase):
+    def test_mask_missing_sentinels_before_resampling(self):
+        mpl_dir = Path(tempfile.gettempdir()) / 'matplotlib'
+        mpl_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault('MPLCONFIGDIR', str(mpl_dir))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'ng_engplot'))
+        from ie3eng import mask_missing_sentinels
+
+        df = pd.DataFrame(
+            {
+                'water_trap_2_temp': [-999.0, 4.0, 5.0],
+                'water_trap_2_sp': [-1000.0, 4.0, 4.0],
+                'flow_samp': [1.0, -999.0, 3.0],
+            },
+            index=pd.to_datetime(
+                [
+                    '2026-06-30 00:00:00',
+                    '2026-06-30 00:00:10',
+                    '2026-06-30 00:00:20',
+                ]
+            ),
+        )
+
+        masked = mask_missing_sentinels(df.copy())
+        resampled = masked.resample('1min').mean()
+
+        self.assertTrue(pd.isna(masked.loc[masked.index[0], 'water_trap_2_temp']))
+        self.assertTrue(pd.isna(masked.loc[masked.index[0], 'water_trap_2_sp']))
+        self.assertTrue(pd.isna(masked.loc[masked.index[1], 'flow_samp']))
+        self.assertEqual(resampled.loc[resampled.index[0], 'water_trap_2_temp'], 4.5)
+        self.assertEqual(resampled.loc[resampled.index[0], 'water_trap_2_sp'], 4.0)
+        self.assertEqual(resampled.loc[resampled.index[0], 'flow_samp'], 2.0)
+
+
 class CalibrationFakeDB:
     def __init__(self):
         self.query_calls = []
@@ -212,11 +249,18 @@ class CalibrationCleanupTests(unittest.TestCase):
         instrument.upsert_calibrations(df, parameter_num=100)
 
         delete_calls = [
-            sql
-            for sql, _ in instrument.db.query_calls
+            (sql, params)
+            for sql, params in instrument.db.query_calls
             if "DELETE FROM hats.calibrations" in sql
         ]
-        self.assertEqual(delete_calls, [])
+        # The upsert now removes any prior calibration with the same run
+        # number but a changed tank serial before inserting the aggregate.
+        self.assertEqual(len(delete_calls), 1)
+        self.assertEqual(delete_calls[0][1], (
+            pd.Timestamp("2024-07-15 08:51:00").date(),
+            pd.Timestamp("2024-07-15 08:51:00").time(),
+            "M4", 100, 293242, "SX-3582",
+        ))
         final_inserts = [
             call for call in instrument.db.multi_insert_calls if call[2]
         ]

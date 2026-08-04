@@ -535,6 +535,27 @@ class HATS_DB_Functions(LOGOS_Instruments):
                         species, inst_str, parameter_num,
                     ))
 
+        # A tank's serial can be corrected in ng_analysis after an earlier
+        # calibration batch has already been written.  The normal stale-group
+        # cleanup above cannot see that old identity because it only walks the
+        # current DataFrame groups.  run_number identifies the first injection
+        # of the tank group, so remove any prior calibration for the same run,
+        # analyte, and instrument whose serial no longer matches the current
+        # source row before inserting the corrected aggregate.
+        if not agg.empty:
+            sql_del_old_serial = """
+                DELETE FROM hats.calibrations
+                WHERE date = %s AND time = %s AND inst = %s
+                  AND parameter_num = %s AND run_number = %s
+                  AND serial_number <> %s
+            """
+            for _, row in agg.iterrows():
+                rt = pd.Timestamp(row['run_time'])
+                self.db.doquery(sql_del_old_serial, (
+                    rt.date(), rt.time(), inst_str, parameter_num,
+                    int(row['run_number']), row['tank_serial_num'],
+                ))
+
         sql_upsert = """
             INSERT INTO hats.calibrations (
                 serial_number, date, time, species,
