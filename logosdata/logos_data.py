@@ -1619,16 +1619,16 @@ class MainWindow(QMainWindow):
         self.lock_y_axis_cb.stateChanged.connect(self.on_lock_y_axis_toggled)
         options_layout.addWidget(self.lock_y_axis_cb)
 
-        self.chromatogram_viewer_btn = QPushButton("Chromatogram Viewer")
+        self.chromatogram_viewer_btn = QPushButton("Chrom View")
         self.chromatogram_viewer_btn.setCheckable(True)
         self.chromatogram_viewer_btn.setToolTip(
             "When enabled, left-click a plotted point to open its chromatogram"
         )
         self.chromatogram_viewer_btn.setStyleSheet("""
             QPushButton {
-                padding: 3px 7px;
+                padding: 2px 6px;
                 border: 1px solid #888;
-                border-radius: 5px;
+                border-radius: 4px;
                 background-color: #f0f0f0;
             }
             QPushButton:checked {
@@ -1640,10 +1640,12 @@ class MainWindow(QMainWindow):
         self.chromatogram_viewer_btn.toggled.connect(
             self._on_chromatogram_viewer_toggled
         )
-        self.chromatogram_viewer_btn.setVisible(
+        self._chromatogram_viewer_available = (
             self.instrument.inst_id in {"cats", "ie3", "fe3", "bld1", "m4"}
         )
-        options_layout.addWidget(self.chromatogram_viewer_btn)
+        self.chromatogram_viewer_btn.setVisible(
+            self._chromatogram_viewer_available
+        )
 
         # Combine plot_gb and options_gb into a single group box
         combined_gb = QGroupBox("PLOT AND OPTIONS")
@@ -1808,6 +1810,24 @@ class MainWindow(QMainWindow):
 
         # Add a NavigationToolbar for the figure
         self.toolbar = FastNavigationToolbar(self.canvas, self)
+        if self._chromatogram_viewer_available:
+            location_action = next(
+                (
+                    action
+                    for action in self.toolbar.actions()
+                    if self.toolbar.widgetForAction(action)
+                    is getattr(self.toolbar, "locLabel", None)
+                ),
+                None,
+            )
+            if location_action is not None:
+                self.toolbar.insertSeparator(location_action)
+                self.toolbar.insertWidget(
+                    location_action, self.chromatogram_viewer_btn
+                )
+            else:
+                self.toolbar.addSeparator()
+                self.toolbar.addWidget(self.chromatogram_viewer_btn)
         right_layout.addWidget(self.toolbar)
         self.right_placeholder = right_placeholder
 
