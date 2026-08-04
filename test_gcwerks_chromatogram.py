@@ -314,6 +314,26 @@ class GCWerksChromatogramTests(unittest.TestCase):
             self.assertEqual((n2o.center_seconds, n2o.width_seconds), (427.0, 35.0))
             self.assertEqual(hfc.mass, 83.0)
 
+    def test_peak_window_matches_concatenated_fe3_channel_suffix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            peakid = Path(tmpdir) / "integrator" / "channel0" / "peakid"
+            peakid.mkdir(parents=True)
+            (peakid / "260101").write_text(
+                "CFC11a 78.0 15.0\n"
+                "HFC-134a 256.8 10.0\n"
+            )
+
+            cfc11 = gcwerks_peak_window(
+                tmpdir, 0, datetime(2026, 8, 1, tzinfo=timezone.utc), "CFC11 (a)"
+            )
+            hfc134a = gcwerks_peak_window(
+                tmpdir, 0, datetime(2026, 8, 1, tzinfo=timezone.utc), "HFC-134a"
+            )
+
+            self.assertEqual(cfc11.analyte, "CFC11a")
+            self.assertEqual(cfc11.center_seconds, 78.0)
+            self.assertEqual(hfc134a.analyte, "HFC-134a")
+
     def test_focus_limits_use_twice_peakid_width_and_ten_percent_y_padding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             peakid = Path(tmpdir) / "integrator" / "channel0" / "peakid"

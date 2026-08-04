@@ -2054,9 +2054,7 @@ class MainWindow(QMainWindow):
             analysis_time,
             channel_number,
         )
-        analyte = re.sub(
-            r"\s*\([^()]*\)\s*$", "", self._current_analyte_name()
-        ).strip()
+        analyte = self._current_analyte_name()
         if self.instrument.inst_id == "m4":
             chromatogram = read_gcwerks_ms_chromatogram(path)
             peak_window = gcwerks_peak_window(

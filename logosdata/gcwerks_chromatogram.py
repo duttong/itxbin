@@ -460,11 +460,25 @@ def read_gcwerks_peak_windows(path: str | Path) -> tuple[GCWerksPeakWindow, ...]
     return tuple(windows)
 
 
-def _normalized_analyte_name(value: object) -> str:
+def _analyte_name_aliases(value: object) -> set[str]:
+    """Return aliases for GUI and peakid channel naming conventions."""
     name = str(value).strip().lower()
-    name = re.sub(r"\s*\([^()]*\)\s*$", "", name)
-    name = re.sub(r"_(?:q|a|b|c|d|f|cc)$", "", name)
-    return "".join(character for character in name if character.isalnum())
+    channel = None
+    display_match = re.search(r"\s*\((q|a|b|c|d|f|cc)\)\s*$", name)
+    if display_match:
+        channel = display_match.group(1)
+        name = name[:display_match.start()]
+
+    peakid_match = re.search(r"_(q|a|b|c|d|f|cc)$", name)
+    if peakid_match:
+        channel = peakid_match.group(1)
+        name = name[:peakid_match.start()]
+
+    base = "".join(character for character in name if character.isalnum())
+    aliases = {base}
+    if channel:
+        aliases.add(base + channel)
+    return aliases
 
 
 def gcwerks_peak_window(
@@ -477,9 +491,9 @@ def gcwerks_peak_window(
     path = find_gcwerks_peakid_file(gc_dir, channel_number, analysis_time)
     if path is None:
         return None
-    wanted = _normalized_analyte_name(analyte)
+    wanted = _analyte_name_aliases(analyte)
     for window in read_gcwerks_peak_windows(path):
-        if _normalized_analyte_name(window.analyte) == wanted:
+        if wanted.intersection(_analyte_name_aliases(window.analyte)):
             return window
     return None
 
