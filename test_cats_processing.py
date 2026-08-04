@@ -181,6 +181,133 @@ class PreferredChannelDisplayTests(unittest.TestCase):
         self.assertIn("pc.inst_num = 239", sql)
 
 class CATSBatchPortTests(unittest.TestCase):
+    @staticmethod
+    def _port_history():
+        return pd.DataFrame({
+            "start_datetime": pd.to_datetime([
+                "2023-01-01 00:00Z", "2023-01-01 00:00Z", "2026-03-24 01:15Z",
+            ]),
+            "site_num": [1, 1, 1],
+            "port_num": [2, 6, 6],
+            "label": ["CAL1", "OLD_REF", "NEW_REF"],
+        })
+
+    def test_tank_serial_resolution_uses_configuration_date(self):
+        instrument = object.__new__(CATS_Instrument)
+        instrument.site_num = 1
+        instrument.port_config_history = self._port_history()
+        instrument.port_config = pd.DataFrame({
+            "site_num": [1, 1], "port_num": [2, 6],
+            "label": ["CAL1", "NEW_REF"],
+        })
+
+        serials = instrument.tank_serials_for_dates(6, pd.Series(pd.to_datetime([
+            "2025-07-01 00:00Z", "2026-03-25 00:00Z",
+        ])))
+
+        self.assertEqual(serials.tolist(), ["OLD_REF", "NEW_REF"])
+        self.assertIsNone(instrument.tank_serial_for_port(6, "2022-01-01"))
+
+    def test_scale_simple_uses_reference_tank_installed_on_each_row(self):
+        instrument = object.__new__(CATS_Instrument)
+        instrument.site_num = 1
+        instrument.port_config_history = self._port_history()
+        instrument.port_config = pd.DataFrame({
+            "site_num": [1], "port_num": [6], "label": ["NEW_REF"],
+        })
+        histories = {
+            "OLD_REF": [{"start_date": pd.Timestamp("2023-01-01").date(),
+                         "end_date": None, "coef0": 336.0, "unc_c0": 0.1}],
+            "NEW_REF": [{"start_date": pd.Timestamp("2025-01-01").date(),
+                         "end_date": None, "coef0": 339.0, "unc_c0": 0.1}],
+        }
+        instrument.scale_assignment_history = Mock(
+            side_effect=lambda serial, _pnum: histories[serial]
+        )
+        data = pd.DataFrame({
+            "analysis_datetime": pd.to_datetime([
+                "2026-03-23 00:00Z", "2026-03-25 00:00Z",
+            ]),
+            "parameter_num": [5, 5],
+            "normalized_resp": [1.0, 1.0],
+        })
+
+        result = instrument.calc_mole_fraction_scale_simple(data)
+
+        self.assertEqual(result["mole_fraction"].tolist(), [336.0, 339.0])
+
+    def test_update_fits_uses_each_weeks_installed_reference_tank(self):
+        batch = object.__new__(CATS_batch)
+        batch.site = "spo"
+        batch.site_num = 1
+        batch.inst_num = 244
+        batch.port_config_history = self._port_history()
+        batch.port_config = pd.DataFrame({
+            "site_num": [1, 1], "port_num": [2, 6],
+            "label": ["CAL1", "NEW_REF"],
+        })
+        data = pd.DataFrame({
+            "analysis_datetime": pd.to_datetime([
+                "2026-03-16 01:00Z", "2026-03-16 02:00Z",
+                "2026-03-30 01:00Z", "2026-03-30 02:00Z",
+            ]),
+            "port": [2, 6, 2, 6],
+            "normalized_resp": [0.9, 1.0, 0.9, 1.0],
+            "rejected": [0, 0, 0, 0],
+        })
+        histories = {
+            "CAL1": [{"start_date": pd.Timestamp("2023-01-01").date(),
+                      "end_date": None, "coef0": 300.0, "unc_c0": 0.1}],
+            "OLD_REF": [{"start_date": pd.Timestamp("2023-01-01").date(),
+                         "end_date": None, "coef0": 336.0, "unc_c0": 0.1}],
+            "NEW_REF": [{"start_date": pd.Timestamp("2025-01-01").date(),
+                         "end_date": None, "coef0": 339.0, "unc_c0": 0.1}],
+        }
+        batch.load_data = Mock(return_value=data)
+        batch.get_week_mf_method = Mock(return_value=batch.MF_METHOD_CAL12)
+        batch.scale_assignment_history = Mock(
+            side_effect=lambda serial, _pnum: histories[serial]
+        )
+        batch._resolve_scale_num = Mock(return_value=7)
+
+        fits, scale_num, _ref_serial, channel = batch.update_fits(
+            5, channel="q", start_date="2026-03-01", end_date="2026-04-01"
+        )
+
+        self.assertEqual(scale_num, 7)
+        self.assertEqual(channel, "q")
+        self.assertEqual(fits["ref_serial"].tolist(), ["OLD_REF", "NEW_REF"])
+
+    def test_update_fits_skips_week_that_contains_a_tank_change(self):
+        batch = object.__new__(CATS_batch)
+        batch.site = "spo"
+        batch.site_num = 1
+        batch.inst_num = 244
+        batch.port_config_history = self._port_history()
+        batch.port_config = pd.DataFrame({
+            "site_num": [1, 1], "port_num": [2, 6],
+            "label": ["CAL1", "NEW_REF"],
+        })
+        batch.load_data = Mock(return_value=pd.DataFrame({
+            "analysis_datetime": pd.to_datetime([
+                "2026-03-23 00:30Z", "2026-03-23 01:00Z", "2026-03-25 01:00Z",
+            ]),
+            "port": [2, 6, 6],
+            "normalized_resp": [0.9, 1.0, 1.0],
+            "rejected": [0, 0, 0],
+        }))
+        batch.get_week_mf_method = Mock(return_value=batch.MF_METHOD_CAL12)
+        batch.scale_assignment_history = Mock(return_value=[{
+            "start_date": pd.Timestamp("2023-01-01").date(),
+            "end_date": None, "coef0": 300.0, "unc_c0": 0.1,
+        }])
+
+        fits, *_ = batch.update_fits(
+            5, channel="q", start_date="2026-03-23", end_date="2026-03-29"
+        )
+
+        self.assertTrue(fits.empty)
+
     def test_update_runs_calculates_air_and_tank_ports_with_week_method(self):
         batch = object.__new__(CATS_batch)
         batch.site = "brw"

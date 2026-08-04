@@ -90,24 +90,120 @@ class IE3_Instrument(HATS_DB_Functions):
         return dict(zip(df['code'].str.lower(), df['num']))
 
     def _load_port_config(self):
-        """ Load port configuration once from the database. 
-            If there was a tank change, in the period of data processing, this 
-            will not capture that. But for simplicity, we assume the port configuration is stable over time.
-            TODO: if needed, we could modify this to return a time-varying configuration.
-        """
+        """Load current port labels while retaining the dated configuration."""
         sql = """
             SELECT start_datetime, site_num, port_num, abbr, serial_number FROM ng_port_info pi 
             JOIN ng_port_inlet_types pt ON pi.port_type_num=pt.num;
         """
         df = pd.DataFrame(self.db.doquery(sql))
         if df.empty:
+            self.port_config_history = None
             return None
             
         df['start_datetime'] = pd.to_datetime(df['start_datetime'], errors='coerce', utc=True)
         df = df.sort_values('start_datetime')
         df['label'] = df['serial_number'].fillna(df['abbr'])
+        self.port_config_history = df[
+            ['start_datetime', 'site_num', 'port_num', 'label']
+        ].copy()
         config = df.drop_duplicates(subset=['site_num', 'port_num'], keep='last')
         return config[['site_num', 'port_num', 'label']]
+
+    def tank_serials_for_dates(self, port_num, dates):
+        """Return the tank/label installed on *port_num* at each timestamp."""
+        dates = pd.to_datetime(dates, errors='coerce', utc=True)
+        result = pd.Series(None, index=dates.index, dtype='object')
+        history = getattr(self, 'port_config_history', None)
+        if history is None or history.empty:
+            return result
+
+        rows = history.loc[
+            (history['site_num'] == self.site_num)
+            & (history['port_num'] == int(port_num))
+        ].dropna(subset=['start_datetime']).sort_values('start_datetime')
+        if rows.empty:
+            return result
+
+        valid = dates.notna()
+        if not valid.any():
+            return result
+        starts = rows['start_datetime'].astype('int64').to_numpy()
+        positions = np.searchsorted(
+            starts, dates.loc[valid].astype('int64').to_numpy(), side='right'
+        ) - 1
+        labels = rows['label'].to_numpy()
+        resolved = np.full(len(positions), None, dtype=object)
+        found = positions >= 0
+        resolved[found] = labels[positions[found]]
+        result.loc[valid] = resolved
+        return result
+
+    def tank_serial_for_port(self, port_num, when=None):
+        """Return the tank/label installed on a port at *when* (latest by default)."""
+        if when is not None:
+            dates = pd.Series([when])
+            return self.tank_serials_for_dates(port_num, dates).iat[0]
+
+        if self.port_config is None:
+            return None
+        rows = self.port_config.loc[
+            (self.port_config['site_num'] == self.site_num)
+            & (self.port_config['port_num'] == int(port_num)),
+            'label',
+        ]
+        return rows.iat[0] if not rows.empty else None
+
+    def scale_assignment_history(self, serial, pnum):
+        """Return current-scale assignment fills for one tank and parameter."""
+        if not serial:
+            return []
+        rows = self.db.doquery(f"""
+            SELECT fill_code, start_date, end_date, coef0, unc_c0
+            FROM hats.scale_assignments_view
+            WHERE serial_number = '{str(serial).replace(chr(39), chr(39) + chr(39))}'
+              AND parameter_num = {int(pnum)}
+              AND current_scale = 1
+              AND current_assignment = 1
+            ORDER BY start_date
+        """) or []
+        history = []
+        for row in rows:
+            end_date = row.get('end_date')
+            if str(end_date) == '9999-12-31':
+                end_date = None
+            history.append({
+                'fill_code': row.get('fill_code'),
+                'start_date': row.get('start_date'),
+                'end_date': end_date,
+                'coef0': float(row['coef0']),
+                'unc_c0': float(row.get('unc_c0') or 0.0),
+            })
+        return history
+
+    def scale_assignment_values_for_dates(self, serial, pnum, dates, key='coef0'):
+        """Resolve an assignment value for each date without repeated DB queries."""
+        dates = pd.to_datetime(dates, errors='coerce', utc=True)
+        result = pd.Series(np.nan, index=dates.index, dtype='float64')
+        history = self.scale_assignment_history(serial, pnum)
+        if not history:
+            return result
+
+        starts = pd.to_datetime(
+            [row['start_date'] for row in history], errors='coerce', utc=True
+        )
+        valid = dates.notna()
+        positions = np.searchsorted(
+            starts.astype('int64'), dates.loc[valid].astype('int64'), side='right'
+        ) - 1
+        for idx, pos in zip(dates.loc[valid].index, positions):
+            if pos < 0:
+                continue
+            row = history[int(pos)]
+            end_date = row.get('end_date')
+            if end_date is not None and dates.at[idx].date() > pd.Timestamp(end_date).date():
+                continue
+            result.at[idx] = float(row[key])
+        return result
 
     def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
         """Return run_time list for IE3 from ng_insitu_analysis."""
@@ -959,6 +1055,35 @@ class CATS_Instrument(IE3_Instrument):
         if df.empty:
             return {}
         return dict(zip(df['code'].str.lower(), df['num']))
+
+    def calc_mole_fraction_scale_simple(self, df):
+        """Scale CATS rows with the reference tank installed at each analysis."""
+        if df.empty:
+            out = df.copy()
+            out['mole_fraction'] = pd.Series(dtype='float64')
+            return out
+
+        out = df.copy()
+        out['mole_fraction'] = np.nan
+        pnum = int(out['parameter_num'].iat[0])
+        date_col = next(
+            (col for col in ('analysis_datetime', 'analysis_time', 'run_time')
+             if col in out.columns),
+            None,
+        )
+        if date_col is None:
+            return out
+
+        dates = pd.to_datetime(out[date_col], errors='coerce', utc=True)
+        serials = self.tank_serials_for_dates(self.STANDARD_PORT_NUM, dates)
+        normalized = pd.to_numeric(out['normalized_resp'], errors='coerce')
+        for serial in serials.dropna().unique():
+            mask = serials.eq(serial)
+            coef0 = self.scale_assignment_values_for_dates(
+                serial, pnum, dates.loc[mask], key='coef0'
+            )
+            out.loc[mask, 'mole_fraction'] = normalized.loc[mask] * coef0
+        return out
 
 
 class BLD1_Instrument(HATS_DB_Functions):
