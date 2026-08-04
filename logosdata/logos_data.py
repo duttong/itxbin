@@ -54,6 +54,7 @@ from gcwerks_chromatogram import (
     gcwerks_channel_number,
     gcwerks_focus_limits,
     gcwerks_ms_quantitation_mass,
+    gcwerks_peak_integration,
     gcwerks_peak_window,
     read_gcwerks_chromatogram,
     read_gcwerks_ms_chromatogram,
@@ -378,6 +379,22 @@ def _autoscale_visible_chromatogram_lines(axes):
     axes.set_ylim(y_min - padding, y_max + padding)
 
 
+def _plot_peak_integration(axes, integration):
+    """Draw a stored GCWerks peak baseline without adding a legend entry."""
+    if integration is None:
+        return
+    axes.plot(
+        [integration.start_time / 60.0, integration.end_time / 60.0],
+        [integration.start_level, integration.end_level],
+        color="red",
+        linewidth=0.8,
+        marker="o",
+        markersize=3,
+        zorder=4,
+        label="_nolegend_",
+    )
+
+
 class ChromatogramWindow(QMainWindow):
     """Small, independent window for one decoded GCWerks chromatogram."""
 
@@ -388,6 +405,7 @@ class ChromatogramWindow(QMainWindow):
         channel_number,
         point_info_html="",
         peak_window=None,
+        peak_integration=None,
         row_idx=None,
         navigator=None,
         parent=None,
@@ -401,6 +419,7 @@ class ChromatogramWindow(QMainWindow):
             "channel_number": channel_number,
             "point_info_html": point_info_html,
             "peak_window": peak_window,
+            "peak_integration": peak_integration,
             "row_idx": row_idx,
         }
         self.overlay_payloads = []
@@ -465,6 +484,7 @@ class ChromatogramWindow(QMainWindow):
                 linewidth=0.8,
                 label=trace.path.name if overlay else None,
             )
+        _plot_peak_integration(self.axes, payloads[0].get("peak_integration"))
         self.axes.set_title(
             f"{str(current['site']).upper()} channel {current['channel_number']}\n"
             f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
@@ -487,6 +507,7 @@ class ChromatogramWindow(QMainWindow):
                 base_elapsed,
                 base_chromatogram.signal,
                 base["peak_window"],
+                base.get("peak_integration"),
             )
             if focus_limits is not None:
                 x_limits, y_limits = focus_limits
@@ -554,6 +575,7 @@ class MSChromatogramWindow(QMainWindow):
         default_mass=0.0,
         point_info_html="",
         peak_window=None,
+        peak_integration=None,
         row_idx=None,
         navigator=None,
         parent=None,
@@ -567,6 +589,8 @@ class MSChromatogramWindow(QMainWindow):
             "channel_number": channel_number,
             "point_info_html": point_info_html,
             "peak_window": peak_window,
+            "peak_integration": peak_integration,
+            "default_mass": default_mass,
             "row_idx": row_idx,
         }
         self.overlay_payloads = []
@@ -657,6 +681,10 @@ class MSChromatogramWindow(QMainWindow):
                 linewidth=0.8,
                 label=source.path.name if overlay else None,
             )
+        base = payloads[0]
+        base_mass = base.get("default_mass")
+        if base_mass is None or np.isclose(selected_mass, float(base_mass)):
+            _plot_peak_integration(self.axes, base.get("peak_integration"))
         self.axes.set_title(
             f"{str(current['site']).upper()} channel {current['channel_number']} — {trace_label}\n"
             f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
@@ -667,7 +695,6 @@ class MSChromatogramWindow(QMainWindow):
         self.axes.tick_params(labelsize=8)
         self.axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
         self.axes.margins(x=0.01, y=0.06)
-        base = payloads[0]
         base_trace = base["chromatogram"].trace_for_mass(selected_mass)
         if previous_limits is not None:
             self.axes.set_xlim(*previous_limits[0])
@@ -677,6 +704,7 @@ class MSChromatogramWindow(QMainWindow):
                 base_trace.elapsed_seconds,
                 base_trace.signal,
                 base["peak_window"],
+                base.get("peak_integration"),
             )
             if focus_limits is not None:
                 x_limits, y_limits = focus_limits
@@ -2081,6 +2109,17 @@ class MainWindow(QMainWindow):
 
         if point_info_html is None:
             point_info_html = self._point_info_html_for_row(row_idx)
+        try:
+            peak_integration = gcwerks_peak_integration(
+                self.instrument.gc_dir,
+                path,
+                chromatogram.start_time,
+                analyte,
+            )
+        except (OSError, ValueError):
+            # Peak results are supplementary; an absent or older incompatible
+            # result table should not prevent the chromatogram itself opening.
+            peak_integration = None
         return {
             "chromatogram": chromatogram,
             "site": site or self.instrument.inst_id,
@@ -2088,6 +2127,7 @@ class MainWindow(QMainWindow):
             "default_mass": default_mass,
             "point_info_html": point_info_html,
             "peak_window": peak_window,
+            "peak_integration": peak_integration,
             "row_idx": row_idx,
         }
 
@@ -2123,6 +2163,7 @@ class MainWindow(QMainWindow):
                 default_mass=default_mass if default_mass is not None else 0.0,
                 point_info_html=payload["point_info_html"],
                 peak_window=payload["peak_window"],
+                peak_integration=payload["peak_integration"],
                 row_idx=row_idx,
                 navigator=navigator,
                 parent=self,
@@ -2134,6 +2175,7 @@ class MainWindow(QMainWindow):
                 payload["channel_number"],
                 point_info_html=payload["point_info_html"],
                 peak_window=payload["peak_window"],
+                peak_integration=payload["peak_integration"],
                 row_idx=row_idx,
                 navigator=navigator,
                 parent=self,

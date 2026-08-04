@@ -64,6 +64,18 @@ class GCWerksPeakWindow:
 
 
 @dataclass(frozen=True)
+class GCWerksPeakIntegration:
+    """GCWerks-selected integration baseline for one analyte and run."""
+
+    analyte: str
+    start_time: float
+    start_level: float
+    end_time: float
+    end_level: float
+    path: Path
+
+
+@dataclass(frozen=True)
 class GCWerksMSTrace:
     """One ion trace from a GCWerks mass-spectrometer chromatogram."""
 
@@ -460,8 +472,8 @@ def read_gcwerks_peak_windows(path: str | Path) -> tuple[GCWerksPeakWindow, ...]
     return tuple(windows)
 
 
-def _analyte_name_aliases(value: object) -> set[str]:
-    """Return aliases for GUI and peakid channel naming conventions."""
+def _analyte_name_parts(value: object) -> tuple[str, str | None]:
+    """Return a normalized analyte name and optional GC channel suffix."""
     name = str(value).strip().lower()
     channel = None
     display_match = re.search(r"\s*\((q|a|b|c|d|f|cc)\)\s*$", name)
@@ -475,10 +487,175 @@ def _analyte_name_aliases(value: object) -> set[str]:
         name = name[:peakid_match.start()]
 
     base = "".join(character for character in name if character.isalnum())
+    return base, channel
+
+
+def _analyte_name_aliases(value: object) -> set[str]:
+    """Return aliases for GUI and peakid channel naming conventions."""
+    base, channel = _analyte_name_parts(value)
     aliases = {base}
     if channel:
         aliases.add(base + channel)
     return aliases
+
+
+def _peak_result_analyte_prefix(
+    field_names: set[str], analyte: str
+) -> str | None:
+    """Match a display analyte to its GCWerks peak-result field prefix."""
+    wanted_base, wanted_channel = _analyte_name_parts(analyte)
+    candidates = []
+    suffix = "_start_time"
+    for field_name in field_names:
+        if not field_name.endswith(suffix):
+            continue
+        prefix = field_name[:-len(suffix)]
+        base, channel = _analyte_name_parts(prefix)
+        normalized_prefix = "".join(
+            character for character in prefix.lower() if character.isalnum()
+        )
+        attached_channel_match = (
+            wanted_channel is not None
+            and normalized_prefix == wanted_base + wanted_channel
+        )
+        if wanted_channel is not None and (
+            channel == wanted_channel or attached_channel_match
+        ):
+            priority = 0
+        elif base == wanted_base and channel is None:
+            priority = 1
+        elif base == wanted_base and wanted_channel is None:
+            priority = 2
+        else:
+            continue
+        candidates.append((priority, prefix))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _gcwerks_peak_result_layout(path: Path):
+    """Return physical fields and row length from a GCWerks data key."""
+    scalar_widths = {
+        "double": 8,
+        "float": 4,
+        "long": 4,
+        "short": 2,
+        "char": 1,
+        "date": 4,
+        "unixdate": 4,
+        "lat": 4,
+        "lon": 4,
+    }
+    fields = {}
+    offset = 0
+    for raw_line in path.read_text(encoding="ascii").splitlines():
+        tokens = raw_line.split("#", 1)[0].split()
+        if len(tokens) < 2:
+            continue
+        name, field_type = tokens[:2]
+        string_match = re.fullmatch(r"string(\d+)", field_type)
+        if string_match:
+            width = int(string_match.group(1))
+        else:
+            try:
+                width = scalar_widths[field_type]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Unsupported GCWerks peak-result field type {field_type!r}: {path}"
+                ) from exc
+        fields[name] = (offset, field_type, width)
+        offset += width
+    if not fields or offset <= 0:
+        raise ValueError(f"Empty GCWerks peak-result schema: {path}")
+    return fields, offset
+
+
+def gcwerks_peak_integration(
+    gc_dir: str | Path,
+    chromatogram_path: str | Path,
+    analysis_time: object,
+    analyte: str,
+) -> GCWerksPeakIntegration | None:
+    """Read one analyte's stored GCWerks integration start and end points.
+
+    Peak-result times are seconds from the start of the chromatogram.  Missing
+    tables, analytes, rows, and null integration results return ``None``.
+    """
+    chromatogram_path = Path(chromatogram_path)
+    name_parts = chromatogram_path.name.split(".", 2)
+    if len(name_parts) != 3:
+        return None
+    extension = name_parts[2]
+
+    target = _as_utc_datetime(analysis_time)
+    directory = Path(gc_dir) / "results" / "peaks" / target.strftime("%y")
+    table_path = directory / f"peaks.{target:%y%m}"
+    schema_path = directory / ".peaks"
+    if not table_path.is_file() or not schema_path.is_file():
+        return None
+
+    fields, row_length = _gcwerks_peak_result_layout(schema_path)
+    prefix = _peak_result_analyte_prefix(set(fields), analyte)
+    if prefix is None:
+        return None
+    required_names = (
+        "time",
+        "extension",
+        f"{prefix}_start_time",
+        f"{prefix}_start_level",
+        f"{prefix}_end_time",
+        f"{prefix}_end_level",
+    )
+    if any(name not in fields for name in required_names):
+        return None
+
+    data = table_path.read_bytes()
+    if len(data) % row_length:
+        raise ValueError(
+            f"GCWerks peak-result size is not a whole number of rows: {table_path}"
+        )
+
+    time_offset, time_type, _time_width = fields["time"]
+    extension_offset, extension_type, extension_width = fields["extension"]
+    if time_type not in {"long", "unixdate"} or not extension_type.startswith("string"):
+        raise ValueError(f"Unexpected GCWerks peak-result key fields: {schema_path}")
+
+    target_minute = int(target.timestamp()) // 60
+    for row_offset in range(0, len(data), row_length):
+        row_time = struct.unpack_from("<i", data, row_offset + time_offset)[0]
+        if row_time // 60 != target_minute:
+            continue
+        raw_extension = data[
+            row_offset + extension_offset:
+            row_offset + extension_offset + extension_width
+        ]
+        stored_extension = raw_extension.split(b"\0", 1)[0].decode(
+            "ascii", errors="replace"
+        )
+        extension_matches = stored_extension == extension
+        if (
+            not extension_matches
+            and len(stored_extension) == extension_width
+            and extension.startswith(stored_extension)
+        ):
+            extension_matches = True
+        if not extension_matches:
+            continue
+
+        values = []
+        for name in required_names[2:]:
+            field_offset, field_type, _field_width = fields[name]
+            if field_type != "float":
+                raise ValueError(
+                    f"Unexpected GCWerks integration field type {field_type!r}: "
+                    f"{schema_path}"
+                )
+            values.append(struct.unpack_from("<f", data, row_offset + field_offset)[0])
+        if not all(np.isfinite(value) for value in values):
+            return None
+        return GCWerksPeakIntegration(prefix, *values, table_path)
+    return None
 
 
 def gcwerks_peak_window(
@@ -502,17 +679,30 @@ def gcwerks_focus_limits(
     elapsed_seconds: np.ndarray,
     signal: np.ndarray,
     peak_window: GCWerksPeakWindow | None,
+    peak_integration: GCWerksPeakIntegration | None = None,
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """Calculate focused x-seconds and padded y-limits for an analyte window."""
-    if peak_window is None:
-        return None
+    """Calculate focused x-seconds and padded y-limits for an analyte peak."""
     elapsed = np.asarray(elapsed_seconds, dtype=float)
     levels = np.asarray(signal, dtype=float)
     if elapsed.shape != levels.shape or elapsed.size == 0:
         return None
 
-    x_min = peak_window.center_seconds - peak_window.width_seconds
-    x_max = peak_window.center_seconds + peak_window.width_seconds
+    if (
+        peak_integration is not None
+        and np.isfinite(peak_integration.start_time)
+        and np.isfinite(peak_integration.end_time)
+        and peak_integration.end_time > peak_integration.start_time
+    ):
+        integration_width = peak_integration.end_time - peak_integration.start_time
+        x_padding = 0.1 * integration_width
+        x_min = peak_integration.start_time - x_padding
+        x_max = peak_integration.end_time + x_padding
+    elif peak_window is not None:
+        x_min = peak_window.center_seconds - peak_window.width_seconds
+        x_max = peak_window.center_seconds + peak_window.width_seconds
+    else:
+        return None
+
     visible = (
         np.isfinite(elapsed)
         & np.isfinite(levels)
