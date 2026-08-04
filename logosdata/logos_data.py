@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
     QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QStyledItemDelegate, QStyleOptionViewItem,
+    QStyledItemDelegate, QStyleOptionViewItem, QToolBar,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
@@ -353,6 +353,31 @@ def _show_full_chromatogram(axes, toolbar, canvas):
     canvas.draw_idle()
 
 
+def _autoscale_visible_chromatogram_lines(axes):
+    """Pad y-limits around all line data inside the current x view."""
+    x_min, x_max = axes.get_xlim()
+    visible_levels = []
+    for line in axes.lines:
+        x_data = np.asarray(line.get_xdata(), dtype=float)
+        y_data = np.asarray(line.get_ydata(), dtype=float)
+        visible = (
+            np.isfinite(x_data)
+            & np.isfinite(y_data)
+            & (x_data >= x_min)
+            & (x_data <= x_max)
+        )
+        if visible.any():
+            visible_levels.append(y_data[visible])
+    if not visible_levels:
+        return
+    levels = np.concatenate(visible_levels)
+    y_min = float(levels.min())
+    y_max = float(levels.max())
+    y_range = y_max - y_min
+    padding = 0.1 * y_range if y_range > 0 else max(abs(y_min) * 0.1, 1.0)
+    axes.set_ylim(y_min - padding, y_max + padding)
+
+
 class ChromatogramWindow(QMainWindow):
     """Small, independent window for one decoded GCWerks chromatogram."""
 
@@ -363,68 +388,159 @@ class ChromatogramWindow(QMainWindow):
         channel_number,
         point_info_html="",
         peak_window=None,
+        row_idx=None,
+        navigator=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setWindowTitle(f"Chromatogram — {chromatogram.path.name}")
+        self.navigator = navigator
+        self.current_payload = {
+            "chromatogram": chromatogram,
+            "site": site,
+            "channel_number": channel_number,
+            "point_info_html": point_info_html,
+            "peak_window": peak_window,
+            "row_idx": row_idx,
+        }
+        self.overlay_payloads = []
 
-        figure = Figure(figsize=(4, 4), dpi=100)
-        canvas = FigureCanvas(figure)
-        self.setCentralWidget(canvas)
-        toolbar = NavigationToolbar(canvas, self)
-        self.addToolBar(toolbar)
-        toolbar.addSeparator()
-        full_action = toolbar.addAction("Full")
+        self.figure = Figure(figsize=(4, 4), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        self.axes = self.figure.add_subplot(111)
+        self.setCentralWidget(self.canvas)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.addToolBar(self.toolbar)
+        self.addToolBarBreak()
+        self.controls_toolbar = QToolBar("Chromatogram controls", self)
+        self.addToolBar(self.controls_toolbar)
+        full_action = self.controls_toolbar.addAction("Full")
         full_action.setToolTip("Show the complete chromatogram")
-        full_action.triggered.connect(
-            lambda _checked=False: _show_full_chromatogram(axes, toolbar, canvas)
+        full_action.triggered.connect(self._show_full_chromatogram)
+        self.controls_toolbar.addSeparator()
+        previous_action = self.controls_toolbar.addAction("←")
+        previous_action.setToolTip("Previous chromatogram")
+        previous_action.triggered.connect(lambda: self._navigate(-1))
+        next_action = self.controls_toolbar.addAction("→")
+        next_action.setToolTip("Next chromatogram")
+        next_action.triggered.connect(lambda: self._navigate(1))
+        previous_action.setEnabled(navigator is not None)
+        next_action.setEnabled(navigator is not None)
+        self.overlay_cb = QCheckBox("Overlay")
+        self.overlay_cb.setToolTip("Keep traces on screen while stepping through chromatograms")
+        self.overlay_cb.toggled.connect(self._overlay_toggled)
+        self.controls_toolbar.addWidget(self.overlay_cb)
+
+        self._render()
+        self.resize(600, 400)
+
+    @staticmethod
+    def _elapsed_seconds(chromatogram):
+        if chromatogram.elapsed_seconds is not None:
+            return chromatogram.elapsed_seconds
+        return (
+            np.arange(chromatogram.signal.size) / chromatogram.sample_rate
+            + chromatogram.inject_time_offset
         )
 
-        if chromatogram.elapsed_seconds is not None:
-            elapsed_seconds = chromatogram.elapsed_seconds
-        else:
-            elapsed_seconds = (
-                np.arange(chromatogram.signal.size) / chromatogram.sample_rate
-                + chromatogram.inject_time_offset
+    def _render(self):
+        previous_limits = None
+        if self.axes.lines:
+            previous_limits = (self.axes.get_xlim(), self.axes.get_ylim())
+        overlay = self.overlay_cb.isChecked()
+        payloads = self.overlay_payloads if overlay else [self.current_payload]
+        if not payloads:
+            payloads = [self.current_payload]
+        current = self.current_payload
+        chromatogram = current["chromatogram"]
+        self.setWindowTitle(f"Chromatogram — {chromatogram.path.name}")
+
+        self.axes.clear()
+        for payload in payloads:
+            trace = payload["chromatogram"]
+            elapsed_seconds = self._elapsed_seconds(trace)
+            self.axes.plot(
+                elapsed_seconds / 60.0,
+                trace.signal,
+                linewidth=0.8,
+                label=trace.path.name if overlay else None,
             )
-        elapsed_minutes = elapsed_seconds / 60.0
-        axes = figure.add_subplot(111)
-        axes.plot(elapsed_minutes, chromatogram.signal, color="#175a87", linewidth=0.8)
-        axes.set_title(
-            f"{str(site).upper()} channel {channel_number}\n"
+        self.axes.set_title(
+            f"{str(current['site']).upper()} channel {current['channel_number']}\n"
             f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
             fontsize=10,
         )
-        axes.set_xlabel("Time (minutes)", fontsize=9)
-        axes.set_ylabel("Detector signal (counts)", fontsize=9)
-        axes.tick_params(labelsize=8)
-        axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
-        axes.margins(x=0.01, y=0.06)
-        focus_limits = gcwerks_focus_limits(
-            elapsed_seconds,
-            chromatogram.signal,
-            peak_window,
-        )
-        if focus_limits is not None:
-            x_limits, y_limits = focus_limits
-            axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
-            axes.set_ylim(*y_limits)
-        if point_info_html:
-            point_info_text = _chromatogram_point_info_text(point_info_html)
-            axes.text(
+        self.axes.set_xlabel("Time (minutes)", fontsize=9)
+        self.axes.set_ylabel("Detector signal (counts)", fontsize=9)
+        self.axes.tick_params(labelsize=8)
+        self.axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
+        self.axes.margins(x=0.01, y=0.06)
+
+        base = payloads[0]
+        base_chromatogram = base["chromatogram"]
+        base_elapsed = self._elapsed_seconds(base_chromatogram)
+        if previous_limits is not None:
+            self.axes.set_xlim(*previous_limits[0])
+            self.axes.set_ylim(*previous_limits[1])
+        else:
+            focus_limits = gcwerks_focus_limits(
+                base_elapsed,
+                base_chromatogram.signal,
+                base["peak_window"],
+            )
+            if focus_limits is not None:
+                x_limits, y_limits = focus_limits
+                self.axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
+                self.axes.set_ylim(*y_limits)
+        if overlay:
+            if previous_limits is None:
+                _autoscale_visible_chromatogram_lines(self.axes)
+            self.axes.legend(frameon=False, fontsize=6.5)
+        else:
+            point_info_text = _chromatogram_point_info_text(
+                current["point_info_html"]
+            )
+            if point_info_text:
+                self.axes.text(
                 0.985,
                 0.975,
                 point_info_text,
-                transform=axes.transAxes,
+                transform=self.axes.transAxes,
                 ha="right",
                 va="top",
                 fontsize=6.5,
                 linespacing=1.15,
             )
-        figure.tight_layout()
-        canvas.draw()
-        self.resize(600, 400)
+        self.figure.tight_layout()
+        self.toolbar.update()
+        self.canvas.draw_idle()
+
+    def _navigate(self, direction):
+        if self.navigator is None:
+            return
+        payload = self.navigator(self.current_payload["row_idx"], direction)
+        if payload is None:
+            return
+        self.current_payload = payload
+        if self.overlay_cb.isChecked():
+            if not self.overlay_payloads:
+                self.overlay_payloads = [payload]
+            known_paths = {
+                item["chromatogram"].path for item in self.overlay_payloads
+            }
+            if payload["chromatogram"].path not in known_paths:
+                self.overlay_payloads.append(payload)
+        self._render()
+
+    def _overlay_toggled(self, checked):
+        if checked:
+            self.overlay_payloads = [self.current_payload]
+        else:
+            self.overlay_payloads = []
+        self._render()
+
+    def _show_full_chromatogram(self):
+        _show_full_chromatogram(self.axes, self.toolbar, self.canvas)
 
 
 class MSChromatogramWindow(QMainWindow):
@@ -438,15 +554,22 @@ class MSChromatogramWindow(QMainWindow):
         default_mass=0.0,
         point_info_html="",
         peak_window=None,
+        row_idx=None,
+        navigator=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.chromatogram = chromatogram
-        self.site = site
-        self.channel_number = channel_number
-        self.peak_window = peak_window
-        self.point_info_text = _chromatogram_point_info_text(point_info_html)
+        self.navigator = navigator
+        self.current_payload = {
+            "chromatogram": chromatogram,
+            "site": site,
+            "channel_number": channel_number,
+            "point_info_html": point_info_html,
+            "peak_window": peak_window,
+            "row_idx": row_idx,
+        }
+        self.overlay_payloads = []
 
         self.figure = Figure(figsize=(6, 4), dpi=100)
         self.canvas = FigureCanvas(self.figure)
@@ -455,18 +578,33 @@ class MSChromatogramWindow(QMainWindow):
 
         self.toolbar = NavigationToolbar(self.canvas, self)
         self.addToolBar(self.toolbar)
-        self.toolbar.addSeparator()
-        full_action = self.toolbar.addAction("Full")
+        self.addToolBarBreak()
+        self.controls_toolbar = QToolBar("Chromatogram controls", self)
+        self.addToolBar(self.controls_toolbar)
+        full_action = self.controls_toolbar.addAction("Full")
         full_action.setToolTip("Show the complete chromatogram")
         full_action.triggered.connect(self._show_full_chromatogram)
-        self.toolbar.addSeparator()
-        self.toolbar.addWidget(QLabel("Ion:"))
+        self.controls_toolbar.addSeparator()
+        previous_action = self.controls_toolbar.addAction("←")
+        previous_action.setToolTip("Previous chromatogram")
+        previous_action.triggered.connect(lambda: self._navigate(-1))
+        next_action = self.controls_toolbar.addAction("→")
+        next_action.setToolTip("Next chromatogram")
+        next_action.triggered.connect(lambda: self._navigate(1))
+        previous_action.setEnabled(navigator is not None)
+        next_action.setEnabled(navigator is not None)
+        self.overlay_cb = QCheckBox("Overlay")
+        self.overlay_cb.setToolTip("Keep traces on screen while stepping through chromatograms")
+        self.overlay_cb.toggled.connect(self._overlay_toggled)
+        self.controls_toolbar.addWidget(self.overlay_cb)
+        self.controls_toolbar.addSeparator()
+        self.controls_toolbar.addWidget(QLabel("Ion:"))
         self.mass_combo = QComboBox()
         self.mass_combo.setToolTip("Select the total ion current or an individual m/z trace")
         self.mass_combo.setMinimumWidth(105)
         for mass in chromatogram.display_masses:
             self.mass_combo.addItem(self._mass_label(mass), mass)
-        self.toolbar.addWidget(self.mass_combo)
+        self.controls_toolbar.addWidget(self.mass_combo)
 
         masses = np.asarray(chromatogram.display_masses, dtype=float)
         default_index = int(np.argmin(np.abs(masses - float(default_mass))))
@@ -488,23 +626,40 @@ class MSChromatogramWindow(QMainWindow):
     def _plot_selected_trace(self, index):
         if index < 0:
             return
+        self._render()
+
+    def _render(self):
+        previous_limits = None
+        if self.axes.lines:
+            previous_limits = (self.axes.get_xlim(), self.axes.get_ylim())
+        index = self.mass_combo.currentIndex()
+        if index < 0:
+            return
         selected_mass = float(self.mass_combo.itemData(index))
-        trace = self.chromatogram.trace_for_mass(selected_mass)
         trace_label = self._mass_label(selected_mass)
+        overlay = self.overlay_cb.isChecked()
+        payloads = self.overlay_payloads if overlay else [self.current_payload]
+        if not payloads:
+            payloads = [self.current_payload]
+        current = self.current_payload
+        chromatogram = current["chromatogram"]
         self.setWindowTitle(
-            f"Chromatogram — {self.chromatogram.path.name} — {trace_label}"
+            f"Chromatogram — {chromatogram.path.name} — {trace_label}"
         )
 
         self.axes.clear()
-        self.axes.plot(
-            trace.elapsed_seconds / 60.0,
-            trace.signal,
-            color="#175a87",
-            linewidth=0.8,
-        )
+        for payload in payloads:
+            source = payload["chromatogram"]
+            trace = source.trace_for_mass(selected_mass)
+            self.axes.plot(
+                trace.elapsed_seconds / 60.0,
+                trace.signal,
+                linewidth=0.8,
+                label=source.path.name if overlay else None,
+            )
         self.axes.set_title(
-            f"{str(self.site).upper()} channel {self.channel_number} — {trace_label}\n"
-            f"{self.chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
+            f"{str(current['site']).upper()} channel {current['channel_number']} — {trace_label}\n"
+            f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
             fontsize=10,
         )
         self.axes.set_xlabel("Time (minutes)", fontsize=9)
@@ -512,20 +667,34 @@ class MSChromatogramWindow(QMainWindow):
         self.axes.tick_params(labelsize=8)
         self.axes.grid(True, color="#d8dee4", linewidth=0.6, alpha=0.8)
         self.axes.margins(x=0.01, y=0.06)
-        focus_limits = gcwerks_focus_limits(
-            trace.elapsed_seconds,
-            trace.signal,
-            self.peak_window,
-        )
-        if focus_limits is not None:
-            x_limits, y_limits = focus_limits
-            self.axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
-            self.axes.set_ylim(*y_limits)
-        if self.point_info_text:
-            self.axes.text(
+        base = payloads[0]
+        base_trace = base["chromatogram"].trace_for_mass(selected_mass)
+        if previous_limits is not None:
+            self.axes.set_xlim(*previous_limits[0])
+            self.axes.set_ylim(*previous_limits[1])
+        else:
+            focus_limits = gcwerks_focus_limits(
+                base_trace.elapsed_seconds,
+                base_trace.signal,
+                base["peak_window"],
+            )
+            if focus_limits is not None:
+                x_limits, y_limits = focus_limits
+                self.axes.set_xlim(x_limits[0] / 60.0, x_limits[1] / 60.0)
+                self.axes.set_ylim(*y_limits)
+        if overlay:
+            if previous_limits is None:
+                _autoscale_visible_chromatogram_lines(self.axes)
+            self.axes.legend(frameon=False, fontsize=6.5)
+        else:
+            point_info_text = _chromatogram_point_info_text(
+                current["point_info_html"]
+            )
+            if point_info_text:
+                self.axes.text(
                 0.985,
                 0.975,
-                self.point_info_text,
+                point_info_text,
                 transform=self.axes.transAxes,
                 ha="right",
                 va="top",
@@ -535,6 +704,30 @@ class MSChromatogramWindow(QMainWindow):
         self.figure.tight_layout()
         self.toolbar.update()
         self.canvas.draw_idle()
+
+    def _navigate(self, direction):
+        if self.navigator is None:
+            return
+        payload = self.navigator(self.current_payload["row_idx"], direction)
+        if payload is None:
+            return
+        self.current_payload = payload
+        if self.overlay_cb.isChecked():
+            if not self.overlay_payloads:
+                self.overlay_payloads = [payload]
+            known_paths = {
+                item["chromatogram"].path for item in self.overlay_payloads
+            }
+            if payload["chromatogram"].path not in known_paths:
+                self.overlay_payloads.append(payload)
+        self._render()
+
+    def _overlay_toggled(self, checked):
+        if checked:
+            self.overlay_payloads = [self.current_payload]
+        else:
+            self.overlay_payloads = []
+        self._render()
 
     def _show_full_chromatogram(self):
         _show_full_chromatogram(self.axes, self.toolbar, self.canvas)
@@ -1781,8 +1974,44 @@ class MainWindow(QMainWindow):
         elif not self.tagging_enabled:
             self.canvas.setCursor(Qt.ArrowCursor)
 
-    def _open_chromatogram_for_row(self, row_idx, point_info_html=""):
-        """Locate, decode, and show the chromatogram for one plotted row."""
+    def _chromatogram_navigation_rows(self, current_row_idx):
+        """Return unique plotted rows in chronological analysis order."""
+        row_indices = []
+        seen = set()
+        for scatter in self._scatter_main:
+            for row_idx in getattr(scatter, "_df_index", []):
+                if row_idx not in seen:
+                    seen.add(row_idx)
+                    row_indices.append(row_idx)
+        if current_row_idx not in seen:
+            row_indices.append(current_row_idx)
+
+        def analysis_order(row_idx):
+            row = self.run.loc[row_idx]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            value = row.get("analysis_datetime", row.get("analysis_time"))
+            try:
+                timestamp = pd.to_datetime(value, utc=True)
+                numeric_time = timestamp.value if pd.notna(timestamp) else np.iinfo(np.int64).max
+            except (TypeError, ValueError, OverflowError):
+                numeric_time = np.iinfo(np.int64).max
+            return numeric_time, str(row_idx)
+
+        return sorted(row_indices, key=analysis_order)
+
+    def _point_info_html_for_row(self, row_idx):
+        for scatter in self._scatter_main:
+            df_index = list(getattr(scatter, "_df_index", []))
+            try:
+                point_index = df_index.index(row_idx)
+            except ValueError:
+                continue
+            return self._point_info_html(scatter, point_index, row_idx)
+        return ""
+
+    def _chromatogram_payload_for_row(self, row_idx, point_info_html=None):
+        """Locate and decode all view data for one plotted row."""
         row = self.run.loc[row_idx]
         if isinstance(row, pd.DataFrame):
             row = row.iloc[0]
@@ -1822,15 +2051,6 @@ class MainWindow(QMainWindow):
                     self.instrument.gc_dir,
                     analyte,
                 )
-            window = MSChromatogramWindow(
-                chromatogram,
-                site or self.instrument.inst_id,
-                channel_number,
-                default_mass=default_mass if default_mass is not None else 0.0,
-                point_info_html=point_info_html,
-                peak_window=peak_window,
-                parent=self,
-            )
         else:
             chromatogram = read_gcwerks_chromatogram(path)
             peak_window = gcwerks_peak_window(
@@ -1839,12 +2059,65 @@ class MainWindow(QMainWindow):
                 chromatogram.start_time,
                 analyte,
             )
+            default_mass = None
+
+        if point_info_html is None:
+            point_info_html = self._point_info_html_for_row(row_idx)
+        return {
+            "chromatogram": chromatogram,
+            "site": site or self.instrument.inst_id,
+            "channel_number": channel_number,
+            "default_mass": default_mass,
+            "point_info_html": point_info_html,
+            "peak_window": peak_window,
+            "row_idx": row_idx,
+        }
+
+    def _chromatogram_navigator(self, current_row_idx):
+        rows = self._chromatogram_navigation_rows(current_row_idx)
+
+        def load_neighbor(row_idx, direction):
+            try:
+                position = rows.index(row_idx)
+            except ValueError:
+                return None
+            position += -1 if direction < 0 else 1
+            while 0 <= position < len(rows):
+                candidate = rows[position]
+                try:
+                    return self._chromatogram_payload_for_row(candidate)
+                except (OSError, ValueError):
+                    position += -1 if direction < 0 else 1
+            return None
+
+        return load_neighbor
+
+    def _open_chromatogram_for_row(self, row_idx, point_info_html=""):
+        """Locate, decode, and show the chromatogram for one plotted row."""
+        payload = self._chromatogram_payload_for_row(row_idx, point_info_html)
+        navigator = self._chromatogram_navigator(row_idx)
+        if self.instrument.inst_id == "m4":
+            default_mass = payload["default_mass"]
+            window = MSChromatogramWindow(
+                payload["chromatogram"],
+                payload["site"],
+                payload["channel_number"],
+                default_mass=default_mass if default_mass is not None else 0.0,
+                point_info_html=payload["point_info_html"],
+                peak_window=payload["peak_window"],
+                row_idx=row_idx,
+                navigator=navigator,
+                parent=self,
+            )
+        else:
             window = ChromatogramWindow(
-                chromatogram,
-                site or self.instrument.inst_id,
-                channel_number,
-                point_info_html=point_info_html,
-                peak_window=peak_window,
+                payload["chromatogram"],
+                payload["site"],
+                payload["channel_number"],
+                point_info_html=payload["point_info_html"],
+                peak_window=payload["peak_window"],
+                row_idx=row_idx,
+                navigator=navigator,
                 parent=self,
             )
         self._chromatogram_windows.add(window)
