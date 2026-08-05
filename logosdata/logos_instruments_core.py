@@ -111,6 +111,34 @@ class HATS_DB_Functions(LOGOS_Instruments):
                 })
         return sorted(history, key=lambda row: row['start_date'])
 
+    def reference_scale_assignment_history(self, tank, pnum):
+        """Read assignments from the caldrift/reftank scale view."""
+        if not tank:
+            return []
+        escaped = str(tank).replace("'", "''")
+        rows = self.db.doquery(
+            f"SELECT fill_code, start_date, end_date, coef0, unc_c0 "
+            f"FROM reftank.scale_assignments_view "
+            f"WHERE serial_number='{escaped}' AND parameter_num={int(pnum)} "
+            "AND current_scale=1 AND current_assignment=1 ORDER BY start_date"
+        ) or []
+        history = []
+        for row in rows:
+            end_date = row.get('end_date')
+            if str(end_date) in ('9999-12-31', '9999-12-31 00:00:00'):
+                end_date = None
+            start_date = row.get('start_date')
+            if start_date is not None:
+                start_date = pd.Timestamp(start_date).date()
+            history.append({
+                'fill_code': row.get('fill_code'),
+                'start_date': start_date,
+                'end_date': end_date,
+                'coef0': float(row.get('coef0') or 0.0),
+                'unc_c0': float(row.get('unc_c0') or 0.0),
+            })
+        return history
+
     def __init__(self, inst_id=None):
         super().__init__()
         self.inst_id = inst_id or 'fe3'  # Default to 'fe3' if no inst_id is provided
@@ -301,6 +329,12 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         # N2O/SF6 have legacy gas-specific tables that are not represented in
         # hats.scale_assignments_view.
+        reference = self.reference_scale_assignment_history(tank, pnum)
+        if reference:
+            d = pd.Timestamp(run_date).date() if run_date is not None else None
+            eligible = [row for row in reference if d is None or row['start_date'] <= d]
+            if eligible:
+                return eligible[-1]
         legacy = self._legacy_scale_rows(tank, pnum, run_date=run_date)
         if legacy:
             row = legacy[0]

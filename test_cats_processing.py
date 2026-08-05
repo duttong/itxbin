@@ -20,6 +20,7 @@ for module_dir in (str(REPO_DIR), str(LOGOSDATA_DIR)):
 from cats_batch import CATS_batch
 from logos_data import MainWindow
 from logos_instruments_insitu import CATS_Instrument
+from logos_instruments_core import HATS_DB_Functions
 from logos_timeseries import TimeseriesWidget
 
 
@@ -78,6 +79,33 @@ class CalibrationButtonTests(unittest.TestCase):
 
         self.assertTrue(window.calibration_rb.enabled)
 
+
+class LegacyScaleAssignmentTests(unittest.TestCase):
+    def test_n2o_falls_back_to_gas_specific_reference_table(self):
+        instrument = object.__new__(HATS_DB_Functions)
+        instrument.db = SimpleNamespace(doquery=Mock(side_effect=[[], [], [
+            {'serial_number': 'ALM-033782', 'start_date': '1995-01-01',
+             'coef0': 311.42, 'coef1': 0, 'coef2': 0,
+             'standard_unc': 0.2, 'level': 'Primary'},
+        ]]))
+
+        result = instrument.scale_assignments('ALM-033782', 5, run_date='1998-01-01')
+
+        self.assertEqual(result['coef0'], 311.42)
+        self.assertEqual(instrument.db.doquery.call_args_list[2].args[0].split('FROM ')[1].split()[0],
+                         'reftank.N2O_X2006A')
+
+    def test_legacy_history_has_same_shape_as_view_history(self):
+        instrument = object.__new__(HATS_DB_Functions)
+        instrument.db = SimpleNamespace(doquery=Mock(return_value=[
+            {'serial_number': 'ALM-024307', 'start_date': '1999-05-11',
+             'coef0': 4.403, 'standard_unc': 0.01, 'level': 'Primary'},
+        ]))
+
+        result = instrument.legacy_scale_assignment_history('ALM-024307', 6)
+
+        self.assertEqual(result[0]['coef0'], 4.403)
+        self.assertIsNone(result[0]['fill_code'])
 
 class EmptyPlotTests(unittest.TestCase):
     def test_gc_plot_clears_previous_figure_when_analyte_has_no_data(self):

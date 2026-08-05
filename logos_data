@@ -5,15 +5,17 @@ Resolves the instrument from the command line or, if omitted,
 from the user config at ~/.logos_data_user.conf.
 
 Usage:
-    logos_data [instrument] [--site SITE]
+    logos_data [instrument] [--site SITE] [--start YYMM|YYYY-MM]
 
     instrument  One of: m4, fe3, bld1, ie3  (optional if set in user config)
-    --site      IE3 site code: smo, brw, spo, mlo
+    --site      IE3/CATS site code: smo, brw, spo, mlo
+    --start     Initial From month; To is set two months later
 
 Examples:
     logos_data m4
     logos_data fe3
     logos_data ie3 --site smo
+    logos_data cats --site brw --start 1999-11
     logos_data          # uses preferred_instrument from ~/.logos_data_user.conf
 """
 
@@ -89,7 +91,13 @@ def main() -> None:
         '--site',
         type=str,
         default=None,
-        help='IE3 site code (smo, brw, spo, mlo). Only used with ie3.',
+        help='IE3/CATS site code (smo, brw, spo, mlo).',
+    )
+    parser.add_argument(
+        '--start',
+        default=None,
+        metavar='YYMM|YYYY-MM',
+        help='Initial From month; To is set two months later.',
     )
     args = parser.parse_args()
 
@@ -103,6 +111,8 @@ def main() -> None:
     new_argv = [os.path.join(_logosdata, 'logos_data.py'), instrument]
     if args.site:
         new_argv += ['--site', args.site]
+    if args.start:
+        new_argv += ['--start', args.start]
     sys.argv = new_argv
 
     # Import and run

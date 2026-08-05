@@ -1180,10 +1180,11 @@ class MainWindow(QMainWindow):
 
     AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324}
 
-    def __init__(self, instrument):
+    def __init__(self, instrument, initial_start=None):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
         super().__init__()
         self.instrument = instrument   # e.g. an M4_Instrument("m4") instance
+        self.initial_start = initial_start
         self._inst_cfg = _inst_cfg(self.instrument.inst_id)
 
         self.setWindowTitle(f"{self.instrument.inst_id.upper()} Data Processing Application")
@@ -1314,6 +1315,11 @@ class MainWindow(QMainWindow):
         self.start_year_cb = QComboBox()
         self.start_month_cb = QComboBox()
         end_year, end_month, start_year, start_month = self._latest_data_month()
+        if self.initial_start is not None:
+            initial_start = pd.Timestamp(self.initial_start).replace(day=1)
+            initial_end = initial_start + pd.DateOffset(months=2)
+            start_year, start_month = initial_start.year, initial_start.month
+            end_year, end_month = initial_end.year, initial_end.month
         max_year = max(end_year, datetime.now().year)
         for y in range(int(self.instrument.start_date[0:4]), max_year + 1):
             self.start_year_cb.addItem(str(y))
@@ -3146,7 +3152,7 @@ class MainWindow(QMainWindow):
             ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
 
         # add cal curve date selector
-        if ((self.instrument.inst_id == 'fe3') or (self.instrument.inst_id == 'bld1')) and (yparam == 'mole_fraction'):
+        if (self.instrument.inst_id in ('fe3', 'bld1', 'ie3', 'cats')) and (yparam == 'mole_fraction'):
             self.calcurve_label.setVisible(True)
             self.calcurve_combo.setVisible(True)
             self.populate_calcurve_combo(current_curve_date)
@@ -3598,10 +3604,11 @@ class MainWindow(QMainWindow):
             label = row['run_date'].strftime('%Y-%m-%d %H:%M:%S')
             self.calcurve_combo.addItem(label, userData=row)
 
-        # Fix: only format if current_curve is not NaT
-        if pd.notna(current_curve):
-            #print(f'current curve = {current_curve}')
-            current_str = pd.to_datetime(current_curve).strftime('%Y-%m-%d %H:%M:%S')
+        # ``cal_date`` may be SQL NULL, pandas NaT, or the literal string
+        # "NaT".  Parse first, then only format a real timestamp.
+        curve_time = pd.to_datetime(current_curve, errors='coerce')
+        if pd.notna(curve_time):
+            current_str = curve_time.strftime('%Y-%m-%d %H:%M:%S')
             idx = self.calcurve_combo.findText(current_str)
             if idx != -1:
                 self.calcurve_combo.setCurrentIndex(idx)
@@ -4223,9 +4230,7 @@ class MainWindow(QMainWindow):
         if weekly is None:
             weekly = _ie3_weekly_aggregate(unflagged)
         if coefs is None:
-            cal_ports = (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT)
-            serials = _ie3_cal_tank_serials(self.instrument, cal_ports=cal_ports)
-            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
+            coefs = self._ie3_cal_tank_coefs_for_run(unflagged, pnum)
         if not coefs:
             return None, coefs
         if force_zero:
@@ -4241,6 +4246,28 @@ class MainWindow(QMainWindow):
         if fits.empty:
             return None, coefs
         return fits.iloc[-1], coefs
+
+    def _ie3_cal_tank_coefs_for_run(self, data, pnum):
+        """Resolve cal-tank assignment histories from the dated run itself.
+
+        CATS port labels change over decades, so the current ``port_config``
+        cannot identify a historical week's tanks.  A week spanning a tank
+        change is deliberately left without a fit.
+        """
+        coefs = {}
+        for port in (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT):
+            rows = data.loc[data['port'].eq(port)]
+            if rows.empty:
+                continue
+            serials = self.instrument.tank_serials_for_dates(
+                port, rows['analysis_datetime']
+            ).dropna().unique()
+            if len(serials) != 1:
+                continue
+            history = self.instrument.scale_assignment_history(serials[0], pnum)
+            if history:
+                coefs[port] = history
+        return coefs
 
     def _ie3_tank_assigned(self, port, pnum, coefs, week_start):
         """Assigned mole fraction (coef0) for a standard port in this week.
@@ -4364,9 +4391,7 @@ class MainWindow(QMainWindow):
         weekly = None
         if _IE3_CAL_AVAILABLE and not unflagged.empty:
             weekly = _ie3_weekly_aggregate(unflagged)
-            cal_ports = (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT)
-            serials = _ie3_cal_tank_serials(self.instrument, cal_ports=cal_ports)
-            coefs = _ie3_cal_tank_coefs(self.instrument, pnum, serials, verbose=False) if serials else {}
+            coefs = self._ie3_cal_tank_coefs_for_run(unflagged, pnum)
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
         port_color = {
@@ -4381,6 +4406,31 @@ class MainWindow(QMainWindow):
         }
         stats_lines = []
         xvals = []
+
+        # Show every raw normalized-response observation in the selected
+        # calibration week.  The y value is the assigned value for that
+        # tank/fill, so these points remain in the same coordinates as the
+        # weekly means and fit line.  Keep them small and behind the summary
+        # markers so the means/error bars remain readable.
+        raw_color = {
+            self.instrument.CAL2_PORT: 'tab:orange',
+            self.instrument.STANDARD_PORT_NUM: 'tab:purple',
+            self.instrument.CAL1_PORT: 'tab:gray',
+        }
+        raw = unflagged.copy()
+        raw = raw[pd.to_numeric(raw['normalized_resp'], errors='coerce').notna()]
+        for port, grp in raw.groupby('port'):
+            assigned = self._ie3_tank_assigned(port, pnum, coefs, week_start)
+            if assigned is None or grp.empty:
+                continue
+            color = raw_color.get(port, 'tab:blue')
+            ax.scatter(
+                pd.to_numeric(grp['normalized_resp'], errors='coerce'),
+                np.full(len(grp), assigned, dtype=float),
+                s=20, color=color, alpha=0.25, linewidths=0,
+                zorder=1,
+            )
+
         for port in (self.instrument.CAL2_PORT,
                      self.instrument.STANDARD_PORT_NUM,
                      self.instrument.CAL1_PORT):
@@ -4404,7 +4454,8 @@ class MainWindow(QMainWindow):
                             xerr=[std if pd.notna(std) else 0.0],
                             yerr=[unc] if unc is not None else None,
                             fmt='o', color=port_color.get(port, 'black'),
-                            ms=7, capsize=3, zorder=3, label=label)
+                            ecolor='black', ms=7, capsize=3, zorder=5,
+                            label=label)
                 self._ie3_cal_tooltip_points.append({
                     'artist': eb.lines[0],
                     'lines': [{'title': 'Assigned', 'val': assigned, 'unc': unc}],
@@ -4520,6 +4571,9 @@ class MainWindow(QMainWindow):
             print("ie3_cal_test not available; cannot recompute fit.")
             return
 
+        instrument_name = 'CATS' if self.instrument.inst_id == 'cats' else 'IE3'
+        batch_program = 'cats_batch.py' if self.instrument.inst_id == 'cats' else 'ie3_batch.py'
+
         # 1. Save flag changes for cal/ref port rows
         self.instrument.upsert_mole_fractions(self.run)
 
@@ -4537,9 +4591,9 @@ class MainWindow(QMainWindow):
         if not self.instrument.uses_ng_response_fit(method):
             week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
             ch_arg = f" -c {self.current_channel}" if self.current_channel else ""
-            print(f"Recorded IE3 cal method ({method_label}) for week={week_start}; "
+            print(f"Recorded {instrument_name} cal method ({method_label}) for week={week_start}; "
                   "no ng_response fit (ref-tank scaling).")
-            print(f"Run 'ie3_batch.py -p {pnum}{ch_arg} --site {self.instrument.site} "
+            print(f"Run '{batch_program} -p {pnum}{ch_arg} --site {self.instrument.site} "
                   f"-s {week_start} -e {week_end} -i' to recalculate this week's "
                   "air-port mole fractions.")
             return
@@ -4592,12 +4646,12 @@ class MainWindow(QMainWindow):
             sigma_ref=sigma_ref,
             serial_number=ref_serial,
         )
-        print(f"Saved IE3 cal fit ({method_label}): ng_response id={row_id} "
+        print(f"Saved {instrument_name} cal fit ({method_label}): ng_response id={row_id} "
               f"week={week_start} slope={row['slope']:.4g} "
               f"intercept={row['intercept']:.4g}")
         week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
         ch_arg = f" -c {self.current_channel}" if self.current_channel else ""
-        print(f"Run 'ie3_batch.py -p {pnum}{ch_arg} --site {self.instrument.site} "
+        print(f"Run '{batch_program} -p {pnum}{ch_arg} --site {self.instrument.site} "
               f"-s {week_start} -e {week_end} -i' to recalculate this week's "
               "air-port mole fractions using the updated fit.")
 
@@ -7040,6 +7094,21 @@ def get_instrument_for(instrument_id: str, site: str | None = None):
 
     return instrument
 
+
+def _parse_start_month(value: str) -> datetime:
+    """Parse a CLI starting month in YYMM or YYYY-MM form."""
+    value = value.strip()
+    for fmt in ('%y%m', '%Y-%m'):
+        try:
+            return datetime.strptime(value, fmt).replace(day=1)
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"Invalid start month {value!r}; use YYMM (for example 9911) "
+        "or YYYY-MM (for example 1999-11)."
+    )
+
+
 def main():
     logos_instance = li.LOGOS_Instruments()
     insts = list(logos_instance.INSTRUMENTS.keys())  # valid LOGOS instruments
@@ -7057,6 +7126,14 @@ def main():
         default=None,
         help="Site code (e.g. brw, spo, smo). Used with ie3 and cats.",
     )
+    parser.add_argument(
+        "--start",
+        type=_parse_start_month,
+        default=None,
+        metavar="YYMM|YYYY-MM",
+        help=("Initial From month; To is set two months later "
+              "(for example --start 9911 or --start 1999-11)."),
+    )
     
     args = parser.parse_args()
     
@@ -7065,6 +7142,14 @@ def main():
     except ValueError as e:
         print(e)
         sys.exit(1)
+
+    if args.start is not None:
+        instrument_start = datetime.strptime(instrument.start_date[:8], '%Y%m%d')
+        if args.start < instrument_start.replace(day=1):
+            parser.error(
+                f"--start {args.start:%Y-%m} precedes this instrument's "
+                f"first available month ({instrument_start:%Y-%m})."
+            )
 
     app = QApplication(sys.argv)
     app.setStyleSheet("""
@@ -7085,7 +7170,7 @@ def main():
         }
         QToolTip { background-color: #fff59d; }
     """)
-    w = MainWindow(instrument)
+    w = MainWindow(instrument, initial_start=args.start)
     screen = app.primaryScreen()
     avail = screen.availableGeometry() if screen else None
     if avail is not None:

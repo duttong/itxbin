@@ -405,8 +405,10 @@ class CATS_batch(CATS_Instrument):
         # A zero-height/zero-RT record is an empty integration, not a zero
         # mole fraction. Keep it in dry-run output for QC review, but do not
         # create/update a mole-fraction value for it.
-        empty_peak = (pd.to_numeric(df['height'], errors='coerce').eq(0)
-                      & pd.to_numeric(df['retention_time'], errors='coerce').eq(0))
+        empty_peak = pd.Series(False, index=df.index)
+        if {'height', 'retention_time'}.issubset(df.columns):
+            empty_peak = (pd.to_numeric(df['height'], errors='coerce').eq(0)
+                          & pd.to_numeric(df['retention_time'], errors='coerce').eq(0))
         df.loc[empty_peak, ['mole_fraction', 'unc']] = np.nan
         if 'ng_response_id' in df.columns:
             df.loc[empty_peak, 'ng_response_id'] = None

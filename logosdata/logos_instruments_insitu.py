@@ -167,8 +167,11 @@ class IE3_Instrument(HATS_DB_Functions):
             ORDER BY start_date
         """) or []
         if not rows:
-            # N2O/SF6 historical assignments live in gas-specific reftank
-            # tables rather than the consolidated HATS view.
+            # caldrift assignments are stored in reftank; older records may
+            # additionally require the gas-specific legacy tables.
+            reference = self.reference_scale_assignment_history(serial, pnum)
+            if reference:
+                return reference
             return self.legacy_scale_assignment_history(serial, pnum)
         history = []
         for row in rows:
@@ -346,6 +349,25 @@ class IE3_Instrument(HATS_DB_Functions):
         df = self.add_port_labels(df)
 
         return df.sort_values('analysis_datetime')
+
+    def load_calcurves(self, pnum, channel, earliest_run):
+        """Load stored weekly response fits for IE3/CATS calibration plots."""
+        scale_num = self.qurey_return_scale_num(pnum)
+        earliest = pd.Timestamp(earliest_run).normalize().strftime('%Y-%m-%d %H:%M:%S')
+        channel_clause = f"AND channel = '{channel}'" if channel is not None else ''
+        rows = self.db.doquery(f"""
+            SELECT id, run_date, serial_number, coef0, coef1, coef2, coef3, function, flag
+            FROM hats.ng_response
+            WHERE inst_num = {self.inst_num}
+              AND scale_num = {scale_num}
+              {channel_clause}
+              AND run_date >= '{earliest}'
+            ORDER BY run_date DESC
+        """) or []
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df['flag'] = pd.to_numeric(df['flag'], errors='coerce').fillna(1).astype(int)
+        return df
 
     def _default_pnum(self) -> int | None:
         """Return a default parameter number for IE3."""
