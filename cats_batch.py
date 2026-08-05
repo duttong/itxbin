@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -94,6 +95,82 @@ class CATS_batch(CATS_Instrument):
     def _resolve_ref_serial(self, when=None):
         return self.tank_serial_for_port(self.STANDARD_PORT_NUM, when=when)
 
+    @staticmethod
+    def _apply_qc_flags(df: pd.DataFrame, qc_flags: pd.DataFrame | None) -> pd.DataFrame:
+        """Apply a QC CSV's timestamp flags as additional rejected rows."""
+        if df.empty or qc_flags is None or qc_flags.empty:
+            return df.copy()
+        if 'flags' not in qc_flags.columns or not ({'time', 'run_time'} & set(qc_flags.columns)):
+            raise ValueError("QC flags must contain 'flags' and either 'time' or 'run_time'")
+        qc = qc_flags.copy()
+        if 'time' in qc:
+            qc['time'] = pd.to_datetime(qc['time'], errors='coerce', utc=True)
+        if 'run_time' in qc:
+            qc['run_time'] = pd.to_datetime(qc['run_time'], errors='coerce', utc=True)
+        qc = qc.loc[qc['flags'].fillna('').astype(str).str.strip().ne('')
+                   & qc['flags'].fillna('').astype(str).str.strip().str.lower().ne('ok')]
+        if qc.empty:
+            return df.copy()
+        by_time = qc.groupby('time')['flags'].agg(
+            lambda values: ';'.join(dict.fromkeys(';'.join(values).split(';')))
+        ) if 'time' in qc else pd.Series(dtype='object')
+        by_run = qc.groupby('run_time')['flags'].agg(
+            lambda values: ';'.join(dict.fromkeys(';'.join(values).split(';')))
+        ) if 'run_time' in qc else pd.Series(dtype='object')
+        out = df.copy()
+        times = pd.to_datetime(out['analysis_datetime'], errors='coerce', utc=True)
+        runs = pd.to_datetime(out['run_time'], errors='coerce', utc=True)
+        out['qc_flags'] = times.map(by_time).fillna('')
+        out['qc_flags'] = out['qc_flags'].where(out['qc_flags'].ne(''), runs.map(by_run).fillna(''))
+        # A ratio flag identifies the calibration pair, not every air sample
+        # sharing that run timestamp. Keep it on calibration ports so those
+        # injections are excluded from fitting without painting the whole air
+        # sequence as QC-flagged.
+        ratio_mask = out['qc_flags'].str.contains('ratio_', na=False)
+        if 'port' in out.columns:
+            out.loc[ratio_mask & ~out['port'].isin((2, 6)), 'qc_flags'] = ''
+        out['rejected'] = out['rejected'].fillna(0).astype(int)
+        out.loc[out['qc_flags'].ne(''), 'rejected'] = 1
+        return out
+
+    def calc_mole_fraction_from_fits(self, df: pd.DataFrame, fits: pd.DataFrame) -> pd.DataFrame:
+        """Calculate mole fractions from an in-memory replacement fit table."""
+        out = df.copy()
+        out['mole_fraction'] = np.nan
+        out['unc'] = np.nan
+        out['ng_response_id'] = None
+        if out.empty:
+            return out
+
+        methods = out['mf_method_num'].astype(int)
+        direct_mask = methods.eq(self.MF_METHOD_REF)
+        if direct_mask.any():
+            direct = self.calc_mole_fraction_scale_simple(out.loc[direct_mask])
+            out.loc[direct.index, 'mole_fraction'] = direct['mole_fraction']
+
+        fit_table = fits.copy() if fits is not None else pd.DataFrame()
+        if fit_table.empty:
+            return out
+        fit_table['week_start'] = pd.to_datetime(fit_table['week_start'], utc=True)
+        fit_table = fit_table.sort_values('week_start')
+        for idx, row in out.loc[~direct_mask].iterrows():
+            resp = row.get('normalized_resp')
+            if pd.isna(resp):
+                continue
+            analysis_dt = pd.to_datetime(row['analysis_datetime'], utc=True)
+            applicable = fit_table.loc[fit_table['week_start'] <= analysis_dt]
+            if applicable.empty:
+                continue
+            fit = applicable.iloc[-1]
+            slope = float(fit['slope'])
+            intercept = float(fit['intercept'])
+            method = int(row['mf_method_num'])
+            out.at[idx, 'mole_fraction'] = slope * float(resp) + intercept if method == self.MF_METHOD_CAL12 else slope * float(resp)
+            unc_fit = float(fit.get('unc_ref_pred', 0.0) or 0.0)
+            sigma_ref = float(fit.get('sigma_ref_weekly', 0.0) or 0.0)
+            out.at[idx, 'unc'] = np.sqrt(unc_fit ** 2 + (slope * sigma_ref) ** 2)
+        return out
+
     def _weekly_tank_data(self, tanks: pd.DataFrame) -> pd.DataFrame:
         """Aggregate tank responses by week and the tank installed per row."""
         tanks = tanks.copy()
@@ -122,6 +199,8 @@ class CATS_batch(CATS_Instrument):
         start_date=None,
         end_date=None,
         verbose: bool = False,
+        qc_flags: pd.DataFrame | None = None,
+        method_override: int | None = None,
     ):
         """Compute weekly cal fits and return (fits_df, scale_num, ref_serial, channel_str).
 
@@ -142,6 +221,7 @@ class CATS_batch(CATS_Instrument):
             if verbose:
                 print("No data loaded; skipping fits.")
             return pd.DataFrame(), None, None, None
+        df = self._apply_qc_flags(df, qc_flags)
 
         cal_ports = self._cal_ports()
         tanks = filter_tanks(df, plot_ports=self._plot_ports())
@@ -162,7 +242,8 @@ class CATS_batch(CATS_Instrument):
         fit_rows = []
         warned = set()
         for week_start, wk in weekly.groupby('week_start'):
-            method = self.get_week_mf_method(pnum, channel, week_start)
+            method = (int(method_override) if method_override is not None
+                      else self.get_week_mf_method(pnum, channel, week_start))
             if not self.uses_ng_response_fit(method):
                 # method 1 (ref): mole fractions come from the ref-tank coef0
                 # directly in update_runs; no weekly ng_response fit to store.
@@ -284,6 +365,9 @@ class CATS_batch(CATS_Instrument):
         start_date=None,
         end_date=None,
         verbose: bool = False,
+        qc_flags: pd.DataFrame | None = None,
+        fits_override: pd.DataFrame | None = None,
+        method_override: int | None = None,
     ) -> pd.DataFrame:
         """Apply stored ng_response fits to CATS air and tank rows.
 
@@ -303,6 +387,8 @@ class CATS_batch(CATS_Instrument):
         if df.empty:
             return pd.DataFrame()
 
+        df = self._apply_qc_flags(df, qc_flags)
+
         df = df.loc[df['port'].isin(self._measurement_ports())].copy()
         if df.empty:
             if verbose:
@@ -310,8 +396,20 @@ class CATS_batch(CATS_Instrument):
             return pd.DataFrame()
 
         df = self._apply_week_methods_to_tanks(df)
-        df = self.calc_mole_fraction(df)
-        df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
+        if method_override is not None:
+            df['mf_method_num'] = int(method_override)
+        if fits_override is None:
+            df = self.calc_mole_fraction(df)
+        else:
+            df = self.calc_mole_fraction_from_fits(df, fits_override)
+        # A zero-height/zero-RT record is an empty integration, not a zero
+        # mole fraction. Keep it in dry-run output for QC review, but do not
+        # create/update a mole-fraction value for it.
+        empty_peak = (pd.to_numeric(df['height'], errors='coerce').eq(0)
+                      & pd.to_numeric(df['retention_time'], errors='coerce').eq(0))
+        df.loc[empty_peak, ['mole_fraction', 'unc']] = np.nan
+        if 'ng_response_id' in df.columns:
+            df.loc[empty_peak, 'ng_response_id'] = None
 
         if verbose:
             n_ok = df['mole_fraction'].notna().sum()
@@ -356,10 +454,19 @@ class CATS_batch(CATS_Instrument):
             help="Run update_fits() before update_runs() to (re)compute weekly cal fits.",
         )
         parser.add_argument(
+            '--qc-flags', type=Path, default=None,
+            help="CSV from cats_peak_qc.py; flagged timestamps are rejected for fit inputs.",
+        )
+        parser.add_argument(
             '-v', '--verbose', action='store_true',
             help="Print progress detail.",
         )
         args = parser.parse_args()
+        args.qc_flags_df = None
+        if args.qc_flags is not None:
+            if not args.qc_flags.is_file():
+                parser.error(f"QC flag CSV does not exist: {args.qc_flags}")
+            args.qc_flags_df = pd.read_csv(args.qc_flags)
 
         # Re-init with correct site if overridden on command line
         if args.site != self.site:
@@ -391,11 +498,12 @@ class CATS_batch(CATS_Instrument):
         print(f"\nDone. Total elapsed: {time.time() - self.t0:.1f}s")
 
     def _process_one(self, pnum: int, channel, args) -> None:
+        fits_override = None
         if args.fits:
             fits, scale_num, ref_serial, channel_str = self.update_fits(
                 pnum, channel=channel,
                 start_date=args.start_date, end_date=args.end_date,
-                verbose=args.verbose,
+                verbose=args.verbose, qc_flags=args.qc_flags_df,
             )
             # No fits is normal when every week uses method 1 (ref); still run
             # update_runs so those weeks' mole fractions get (re)computed.
@@ -404,6 +512,7 @@ class CATS_batch(CATS_Instrument):
                       "(ref-only or insufficient cal data).")
             else:
                 print(f"  Computed {len(fits)} weekly fits for pnum={pnum}")
+                fits_override = fits
                 if args.insert and scale_num is not None:
                     self._upsert_fits(
                         fits, scale_num, ref_serial, channel_str,
@@ -414,7 +523,8 @@ class CATS_batch(CATS_Instrument):
         df = self.update_runs(
             pnum, channel=channel,
             start_date=args.start_date, end_date=args.end_date,
-            verbose=args.verbose,
+            verbose=args.verbose, qc_flags=args.qc_flags_df,
+            fits_override=fits_override,
         )
         if df.empty:
             print(f"  No air or tank measurement rows for pnum={pnum}.")
@@ -424,8 +534,12 @@ class CATS_batch(CATS_Instrument):
         print(f"  Mole fractions: {n_ok}/{len(df)} rows for pnum={pnum}")
 
         if args.insert:
-            self.upsert_mole_fractions(df)
-            print(f"  Upserted {n_ok} rows into ng_insitu_mole_fractions.")
+            empty_peak = (pd.to_numeric(df['height'], errors='coerce').eq(0)
+                          & pd.to_numeric(df['retention_time'], errors='coerce').eq(0))
+            write_df = df.loc[~empty_peak].copy()
+            self.upsert_mole_fractions(write_df)
+            print(f"  Upserted {len(write_df)} rows into ng_insitu_mole_fractions "
+                  f"(skipped {int(empty_peak.sum())} empty integrations).")
 
 
 if __name__ == '__main__':
