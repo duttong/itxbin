@@ -166,6 +166,10 @@ class IE3_Instrument(HATS_DB_Functions):
               AND current_assignment = 1
             ORDER BY start_date
         """) or []
+        if not rows:
+            # N2O/SF6 historical assignments live in gas-specific reftank
+            # tables rather than the consolidated HATS view.
+            return self.legacy_scale_assignment_history(serial, pnum)
         history = []
         for row in rows:
             end_date = row.get('end_date')
