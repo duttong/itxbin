@@ -44,6 +44,73 @@ class HATS_DB_Functions(LOGOS_Instruments):
     # to drop statistically meaningless low-n groups (see FE3_Instrument).
     MIN_CAL_INJECTIONS = 1
 
+    # N2O and SF6 predate the consolidated hats.scale_assignments_view.  Keep
+    # this compatibility mapping here, in the database-access layer, so all
+    # instruments use the same fallback rather than embedding table names in
+    # calibration code.
+    LEGACY_REFERENCE_SCALES = {
+        5: ("reftank.N2O_X2006A",),
+        6: ("reftank.SF6_X2006", "reftank.SF6_X2014"),
+    }
+
+    def _legacy_scale_rows(self, tank, pnum, run_date=None):
+        """Return legacy N2O/SF6 assignment rows when the HATS view lacks one."""
+        tables = self.LEGACY_REFERENCE_SCALES.get(int(pnum), ())
+        if not tables or not tank:
+            return []
+        escaped = str(tank).replace("'", "''")
+        date = pd.Timestamp(run_date).strftime('%Y-%m-%d') if run_date is not None else None
+        # X2014 supersedes X2006 on its published scale start date.  Prefer
+        # the newer table for current dates, while retaining X2006 historically.
+        if int(pnum) == 6 and (date is None or date >= '2014-08-22'):
+            tables = tuple(reversed(tables))
+        rows = []
+        for table in tables:
+            clause = f" AND start_date <= '{date}'" if date else ""
+            result = self.db.doquery(
+                f"SELECT serial_number, start_date, coef0, coef1, coef2, standard_unc, level "
+                f"FROM {table} WHERE serial_number = '{escaped}'{clause} "
+                "ORDER BY start_date DESC LIMIT 1"
+            ) or []
+            rows.extend(result)
+            if result and date:
+                break
+        return rows
+
+    def legacy_scale_assignment_history(self, tank, pnum):
+        """Return legacy assignments in the same shape as the consolidated view."""
+        tables = self.LEGACY_REFERENCE_SCALES.get(int(pnum), ())
+        if not tables or not tank:
+            return []
+        escaped = str(tank).replace("'", "''")
+        history = []
+        sf6_cutover = pd.Timestamp('2014-08-22').date()
+        for table in tables:
+            rows = self.db.doquery(
+                f"SELECT serial_number, start_date, coef0, standard_unc, level "
+                f"FROM {table} WHERE serial_number = '{escaped}' ORDER BY start_date"
+            ) or []
+            for row in rows:
+                start = row.get('start_date')
+                end = None
+                if int(pnum) == 6:
+                    start_date = pd.Timestamp(start).date()
+                    start = start_date
+                    if table.endswith('SF6_X2006'):
+                        end = sf6_cutover
+                    else:
+                        start = max(start_date, sf6_cutover)
+                else:
+                    start = pd.Timestamp(start).date()
+                history.append({
+                    'fill_code': None,
+                    'start_date': start,
+                    'end_date': end,
+                    'coef0': float(row.get('coef0') or 0.0),
+                    'unc_c0': float(row.get('standard_unc') or 0.0),
+                })
+        return sorted(history, key=lambda row: row['start_date'])
+
     def __init__(self, inst_id=None):
         super().__init__()
         self.inst_id = inst_id or 'fe3'  # Default to 'fe3' if no inst_id is provided
@@ -231,9 +298,25 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df = pd.DataFrame(self.db.doquery(sql))
         if not df.empty:
             return df.iloc[0].to_dict()
-        else:
-            Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
-            return None
+
+        # N2O/SF6 have legacy gas-specific tables that are not represented in
+        # hats.scale_assignments_view.
+        legacy = self._legacy_scale_rows(tank, pnum, run_date=run_date)
+        if legacy:
+            row = legacy[0]
+            return {
+                'start_date': row.get('start_date'),
+                'end_date': None,
+                'fill_code': None,
+                'serial_number': row.get('serial_number', tank),
+                'level': row.get('level'),
+                'coef0': row.get('coef0'),
+                'coef1': row.get('coef1'),
+                'coef2': row.get('coef2'),
+                'unc_c0': row.get('standard_unc'),
+            }
+        Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
+        return None
 
     def return_analysis_nums(self, df, time_col='dt_run'):
         """ Inserts the analysis numbers into the dataframe based on the time column.
@@ -709,6 +792,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         assigned value is a property of the tank/fill, not of the measuring
         instrument, and fills for one tank are scattered across inst_nums.
         """
+        original_tank = tank
         # Extract only the digits before the first "_" in the tank variable
         match = re.search(r'(\d+)[^\d_]*_', tank)
         tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
@@ -732,9 +816,17 @@ class HATS_DB_Functions(LOGOS_Instruments):
         df = pd.DataFrame(self.db.doquery(sql))
         if not df.empty:
             return df.iloc[0].to_dict()
-        else:
-            Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
-            return None
+        legacy = self._legacy_scale_rows(original_tank, pnum, run_date=run_date)
+        if legacy:
+            row = legacy[0]
+            return {
+                'start_date': row.get('start_date'), 'end_date': None,
+                'fill_code': None, 'serial_number': row.get('serial_number', original_tank),
+                'level': row.get('level'), 'coef0': row.get('coef0'),
+                'coef1': row.get('coef1'), 'coef2': row.get('coef2'),
+            }
+        Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
+        return None
 
     def qurey_return_scale_num(self, pnum):
         """ Query the scale number for a given parameter number. """
