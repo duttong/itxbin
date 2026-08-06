@@ -1744,7 +1744,7 @@ class MainWindow(QMainWindow):
         tag_layout.addLayout(btn_row)
         self.hide_flagged_cb = QCheckBox("Hide Rejected Data")
         self.hide_flagged_cb.setChecked(False)
-        self.hide_flagged_cb.stateChanged.connect(lambda: self.on_plot_type_changed(self.current_plot_type))
+        self.hide_flagged_cb.stateChanged.connect(self._on_hide_flagged_toggled)
         tag_layout.addWidget(self.hide_flagged_cb)
         self.show_info_cb = QCheckBox("Show Info Tags")
         self.show_info_cb.setChecked(False)
@@ -2665,9 +2665,23 @@ class MainWindow(QMainWindow):
         self.smoothing_changed = True
         self._style_gc_buttons()
 
+        # Preserve the pan/zoom x-axis; let the y-axis autoscale fresh for
+        # the recomputed values.
+        ax = self.figure.axes[0] if self.figure.axes else None
+        if ax is not None:
+            self._pending_xlim = ax.get_xlim()
+
         # Redraw
         self.gc_plot(self._current_yparam, sub_info="Smoothing changed")
-        
+
+    def _on_hide_flagged_toggled(self):
+        # Preserve the pan/zoom x-axis across the Hide Rejected Data toggle;
+        # let the y-axis autoscale fresh since hidden points can shift it.
+        ax = self.figure.axes[0] if self.figure.axes else None
+        if ax is not None:
+            self._pending_xlim = ax.get_xlim()
+        self.on_plot_type_changed(self.current_plot_type)
+
     def on_plot_type_changed(self, id: int):
         # Captured before dispatch: a nested call (e.g. calibration_plot's
         # no-data fallback) may legitimately override current_plot_type
@@ -4119,6 +4133,11 @@ class MainWindow(QMainWindow):
     def _on_show_info_toggled(self, state):
         if state:
             self._update_info_tagged()
+        # Preserve the pan/zoom x-axis across the toggle; let the y-axis
+        # autoscale fresh, same as Hide Rejected Data.
+        ax = self.figure.axes[0] if self.figure.axes else None
+        if ax is not None:
+            self._pending_xlim = ax.get_xlim()
         self.on_plot_type_changed(self.current_plot_type)
 
     def _toggle_flags(self, idxs):
