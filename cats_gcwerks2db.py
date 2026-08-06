@@ -477,7 +477,7 @@ def load(
     site: str = typer.Argument(..., help="Site code: brw, spo"),
     all_data: bool = typer.Option(False, "--all", help="Process all data"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
-    flagged: bool = typer.Option(False, "--flagged", help="Parse and sync GCwerks flag characters"),
+    flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
 ):
     """Load CATS GCwerks export data into HATS ng_insitu tables.
 
