@@ -787,6 +787,7 @@ _TAG_LAYOUT = [
         ("P", "Bad flask pair agreement",                            167,   0),
         ("V", "Out of range sample pressure",                         32,   0),
         ("W", "Rejected in GCwerks integration",                     324,   0),
+        ("S", "CATS cal-response step change (auto)",                  0, 401),
     ]),
 ]
 
@@ -2672,7 +2673,8 @@ class MainWindow(QMainWindow):
         # no-data fallback) may legitimately override current_plot_type
         # while this call is still on the stack. That later write must win,
         # so don't compare against self.current_plot_type again afterward.
-        changed_type = id != self.current_plot_type
+        previous_id = self.current_plot_type
+        changed_type = id != previous_id
         self.current_plot_type = id
         # Keep the radio button in sync even when this is invoked
         # programmatically rather than from a user click on the button
@@ -2684,6 +2686,20 @@ class MainWindow(QMainWindow):
         self.set_calibration_enabled(False)
         self.calcurve_label.setVisible(False)
         self.calcurve_combo.setVisible(False)
+
+        # Preserve the pan/zoom x-axis across Response/Ratio/Mole Fraction
+        # switches (all three share a time x-axis) so nav-tool adjustments
+        # survive the redraw. Leave _pending_ylim untouched -- response,
+        # ratio, and mole fraction sit on unrelated scales, so the y-axis
+        # should autoscale fresh for the new plot type, not inherit the old
+        # one's limits. The calibration view (id 3) plots against
+        # normalized_resp, not time, so don't carry a zoom across that
+        # boundary either. The toolbar's Home button still resets to the
+        # full data range -- this only changes the view gc_plot starts from.
+        if changed_type and id in (0, 1, 2) and previous_id in (0, 1, 2):
+            ax = self.figure.axes[0] if self.figure.axes else None
+            if ax is not None:
+                self._pending_xlim = ax.get_xlim()
 
         if id == 0:
             self.gc_plot('resp')
