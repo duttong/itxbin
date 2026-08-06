@@ -4271,25 +4271,29 @@ class MainWindow(QMainWindow):
 
     def _ie3_tank_assigned(self, port, pnum, coefs, week_start):
         """Assigned mole fraction (coef0) for a standard port in this week.
-        Ref tank (port 5) uses ref_tank_coef0; cal tanks use the fill active on
-        week_start. Returns None if unavailable."""
+        Cal tanks (including CATS, where CAL2_PORT == STANDARD_PORT_NUM) use
+        the dated fill active on week_start; a genuinely separate ref port
+        (IE3's port 5, never in coefs) falls back to ref_tank_coef0, which
+        only knows the *current* tank -- fine there since that port isn't
+        fill-tracked, but wrong for CATS's cal2/ref port. Returns None if
+        unavailable."""
+        fills = (coefs or {}).get(port)
+        if fills:
+            return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'coef0')
         if port == self.instrument.STANDARD_PORT_NUM:
             return self.instrument.ref_tank_coef0(pnum)
-        fills = (coefs or {}).get(port)
-        if not fills:
-            return None
-        return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'coef0')
+        return None
 
     def _ie3_tank_unc(self, port, pnum, coefs, week_start):
         """Uncertainty (unc_c0) of the assigned mole fraction for a standard
         port in this week. Mirrors _ie3_tank_assigned. Returns None if
         unavailable."""
+        fills = (coefs or {}).get(port)
+        if fills:
+            return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'unc_c0')
         if port == self.instrument.STANDARD_PORT_NUM:
             return self.instrument.ref_tank_unc_c0(pnum)
-        fills = (coefs or {}).get(port)
-        if not fills:
-            return None
-        return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'unc_c0')
+        return None
 
     @staticmethod
     def _ie3_ref_pred_unc(fit_row, ref_x, force_zero):
@@ -4394,16 +4398,32 @@ class MainWindow(QMainWindow):
             coefs = self._ie3_cal_tank_coefs_for_run(unflagged, pnum)
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
-        port_color = {
-            self.instrument.CAL2_PORT: 'tab:orange',
-            self.instrument.STANDARD_PORT_NUM: 'tab:purple',
-            self.instrument.CAL1_PORT: 'tab:gray',
-        }
-        port_abbr = {
-            self.instrument.CAL2_PORT: 'cal2',
-            self.instrument.STANDARD_PORT_NUM: 'ref',
-            self.instrument.CAL1_PORT: 'cal1',
-        }
+        # CATS defines CAL2_PORT == STANDARD_PORT_NUM (cal2 *is* the ref
+        # tank), so build these keyed on the deduped port list rather than
+        # assuming three distinct ports -- otherwise the shared port's
+        # 'cal2' role is silently clobbered by 'ref' in the dict, and the
+        # port gets plotted twice under the 'ref' label alone.
+        cal_ports = list(dict.fromkeys([
+            self.instrument.CAL2_PORT,
+            self.instrument.STANDARD_PORT_NUM,
+            self.instrument.CAL1_PORT,
+        ]))
+        port_color = {}
+        port_abbr = {}
+        for port in cal_ports:
+            roles = []
+            if port == self.instrument.CAL2_PORT:
+                roles.append('cal2')
+            if port == self.instrument.STANDARD_PORT_NUM:
+                roles.append('ref')
+            if port == self.instrument.CAL1_PORT:
+                roles.append('cal1')
+            port_abbr[port] = '/'.join(roles)
+            port_color[port] = (
+                'tab:orange' if 'cal2' in roles else
+                'tab:purple' if 'ref' in roles else
+                'tab:gray'
+            )
         stats_lines = []
         xvals = []
 
@@ -4412,18 +4432,13 @@ class MainWindow(QMainWindow):
         # tank/fill, so these points remain in the same coordinates as the
         # weekly means and fit line.  Keep them small and behind the summary
         # markers so the means/error bars remain readable.
-        raw_color = {
-            self.instrument.CAL2_PORT: 'tab:orange',
-            self.instrument.STANDARD_PORT_NUM: 'tab:purple',
-            self.instrument.CAL1_PORT: 'tab:gray',
-        }
         raw = unflagged.copy()
         raw = raw[pd.to_numeric(raw['normalized_resp'], errors='coerce').notna()]
         for port, grp in raw.groupby('port'):
             assigned = self._ie3_tank_assigned(port, pnum, coefs, week_start)
             if assigned is None or grp.empty:
                 continue
-            color = raw_color.get(port, 'tab:blue')
+            color = port_color.get(port, 'tab:blue')
             ax.scatter(
                 pd.to_numeric(grp['normalized_resp'], errors='coerce'),
                 np.full(len(grp), assigned, dtype=float),
@@ -4431,9 +4446,7 @@ class MainWindow(QMainWindow):
                 zorder=1,
             )
 
-        for port in (self.instrument.CAL2_PORT,
-                     self.instrument.STANDARD_PORT_NUM,
-                     self.instrument.CAL1_PORT):
+        for port in cal_ports:
             grp = unflagged[unflagged['port'] == port]
             if grp.empty:
                 continue
@@ -4503,10 +4516,14 @@ class MainWindow(QMainWindow):
                 force_zero, _single_port = self.instrument.fit_params_for_method(method)
                 pred_unc = self._ie3_ref_pred_unc(fit_row, ref_x, force_zero)
 
-                ref_assigned = self.instrument.ref_tank_coef0(pnum)
+                ref_assigned = self._ie3_tank_assigned(
+                    self.instrument.STANDARD_PORT_NUM, pnum, coefs, week_start
+                )
                 diff_unc = None
                 if ref_assigned is not None:
-                    ref_assigned_unc = self.instrument.ref_tank_unc_c0(pnum)
+                    ref_assigned_unc = self._ie3_tank_unc(
+                        self.instrument.STANDARD_PORT_NUM, pnum, coefs, week_start
+                    )
                     if pred_unc is not None or ref_assigned_unc is not None:
                         diff_unc = float(np.hypot(pred_unc or 0.0, ref_assigned_unc or 0.0))
 
