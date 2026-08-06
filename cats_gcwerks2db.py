@@ -27,6 +27,12 @@ class CATS_GCwerks2DB:
 
     VALID_SITES = {"brw", "spo", "nwr", "mlo", "smo", "sum"}
 
+    # CATS port layout: 2=cal1 (Std), 4=air1, 6=cal2 (Ref), 8=air2. Odd port
+    # numbers show up in the raw GCwerks export during valve malfunctions
+    # (e.g. NWR Jun-Jul 2005, Sep 2018-Jul 2019, Jun 2023) -- never a real
+    # CATS sample port -- so they're dropped before loading.
+    VALID_PORTS = {2, 4, 6, 8}
+
     INST_NUM_BY_SITE: dict[str, int] = {
         "brw": 239,
         "sum": 240,
@@ -460,6 +466,12 @@ class CATS_GCwerks2DB:
         # so no upper trim needed.
         if year is not None:
             df = df.loc[df["time"].dt.year == int(year)]
+
+        bad_port = ~df["port"].isin(self.VALID_PORTS)
+        if bad_port.any():
+            print(f"  Dropping {int(bad_port.sum())} rows on non-CATS ports "
+                  f"(valid: {sorted(self.VALID_PORTS)}).")
+            df = df.loc[~bad_port].reset_index(drop=True)
 
         df = self._assign_run_time(df)
         df["analysis_time_str"] = df["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
