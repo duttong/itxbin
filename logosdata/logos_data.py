@@ -591,6 +591,7 @@ class MSChromatogramWindow(QMainWindow):
         peak_integration=None,
         row_idx=None,
         navigator=None,
+        analyte=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
@@ -605,6 +606,7 @@ class MSChromatogramWindow(QMainWindow):
             "peak_integration": peak_integration,
             "default_mass": default_mass,
             "row_idx": row_idx,
+            "analyte": analyte,
         }
         self.overlay_payloads = []
 
@@ -680,9 +682,11 @@ class MSChromatogramWindow(QMainWindow):
             payloads = [self.current_payload]
         current = self.current_payload
         chromatogram = current["chromatogram"]
-        self.setWindowTitle(
-            f"Chromatogram — {chromatogram.path.name} — {trace_label}"
-        )
+        analyte = current.get("analyte")
+        title = f"Chromatogram — {chromatogram.path.name} — {trace_label}"
+        if analyte:
+            title += f" — {analyte}"
+        self.setWindowTitle(title)
 
         self.axes.clear()
         for payload in payloads:
@@ -2162,6 +2166,7 @@ class MainWindow(QMainWindow):
             "peak_window": peak_window,
             "peak_integration": peak_integration,
             "row_idx": row_idx,
+            "analyte": analyte,
         }
 
     def _chromatogram_navigator(self, current_row_idx):
@@ -2225,6 +2230,7 @@ class MainWindow(QMainWindow):
                 peak_integration=payload["peak_integration"],
                 row_idx=row_idx,
                 navigator=navigator,
+                analyte=payload.get("analyte"),
                 parent=self,
             )
         else:
