@@ -7,6 +7,7 @@ del _here, _sys, _os
 import sys
 import os
 import html
+import traceback
 from datetime import datetime, timedelta, timezone
 import numpy as np
 import math
@@ -3768,6 +3769,18 @@ class MainWindow(QMainWindow):
                 )
             except (OSError, ValueError) as exc:
                 QMessageBox.warning(self, "Chromatogram unavailable", str(exc))
+            except Exception as exc:
+                # Anything unexpected here (e.g. a stale Qt widget) must not
+                # vanish silently — the outer _on_pick_point wrapper only
+                # prints to a console the user may not be watching (notably
+                # over a Windows/PuTTY session), which looks like the Chrom
+                # View button simply "breaking" with no feedback at all.
+                traceback.print_exc()
+                QMessageBox.warning(
+                    self,
+                    "Chromatogram error",
+                    f"Could not open the chromatogram window:\n{exc}",
+                )
             return
 
         # Update multi-tag panel for any scatter click (tagging mode not required).
