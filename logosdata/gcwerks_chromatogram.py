@@ -472,6 +472,19 @@ def read_gcwerks_peak_windows(path: str | Path) -> tuple[GCWerksPeakWindow, ...]
     return tuple(windows)
 
 
+# Known GCWerks peakid entries that glue a channel letter directly onto the
+# compound name with no delimiter (contrast the general "_b" / "(b)" forms
+# _analyte_name_parts() already parses). Keyed by the alnum-normalized
+# peakid name, mapped to the normalized base name it identifies. A generic
+# "strip a trailing channel letter" rule can't be used here instead: real
+# compound names such as CFC-113a and HFC-134a also end in a channel letter
+# as part of the name itself, so stripping blindly would wrongly alias them
+# to CFC-113 / HFC-134.
+_PEAKID_BARE_SUFFIX_ALIASES = {
+    "cfc11b": "cfc11",  # GCWerks M4 peakid: CFC-11's channel-b window is "CFC-11b"
+}
+
+
 def _analyte_name_parts(value: object) -> tuple[str, str | None]:
     """Return a normalized analyte name and optional GC channel suffix."""
     name = str(value).strip().lower()
@@ -496,6 +509,9 @@ def _analyte_name_aliases(value: object) -> set[str]:
     aliases = {base}
     if channel:
         aliases.add(base + channel)
+    bare_suffix_base = _PEAKID_BARE_SUFFIX_ALIASES.get(base)
+    if bare_suffix_base:
+        aliases.add(bare_suffix_base)
     return aliases
 
 
@@ -518,6 +534,13 @@ def _peak_result_analyte_prefix(
             wanted_channel is not None
             and normalized_prefix == wanted_base + wanted_channel
         )
+        # Some GCWerks peak-result fields glue a channel letter directly onto
+        # the name with no delimiter (see _PEAKID_BARE_SUFFIX_ALIASES), which
+        # a bare wanted_base (no explicit channel) would otherwise miss.
+        bare_suffix_match = (
+            wanted_channel is None
+            and _PEAKID_BARE_SUFFIX_ALIASES.get(normalized_prefix) == wanted_base
+        )
         if wanted_channel is not None and (
             channel == wanted_channel or attached_channel_match
         ):
@@ -526,6 +549,8 @@ def _peak_result_analyte_prefix(
             priority = 1
         elif base == wanted_base and wanted_channel is None:
             priority = 2
+        elif bare_suffix_match:
+            priority = 3
         else:
             continue
         candidates.append((priority, prefix))
