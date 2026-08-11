@@ -542,6 +542,16 @@ class ChromatogramWindow(QMainWindow):
         payload = self.navigator(self.current_payload["row_idx"], direction)
         if payload is None:
             return
+        self.show_payload(payload)
+
+    def show_payload(self, payload, navigator=None):
+        """Display a newly-selected chromatogram, honoring the Overlay toggle.
+
+        Used both for arrow-key stepping and for reusing this window when a
+        different sample point is clicked in the main plot.
+        """
+        if navigator is not None:
+            self.navigator = navigator
         self.current_payload = payload
         if self.overlay_cb.isChecked():
             if not self.overlay_payloads:
@@ -551,6 +561,8 @@ class ChromatogramWindow(QMainWindow):
             }
             if payload["chromatogram"].path not in known_paths:
                 self.overlay_payloads.append(payload)
+        else:
+            self.overlay_payloads = []
         self._render()
 
     def _overlay_toggled(self, checked):
@@ -739,6 +751,17 @@ class MSChromatogramWindow(QMainWindow):
         payload = self.navigator(self.current_payload["row_idx"], direction)
         if payload is None:
             return
+        self.show_payload(payload)
+
+    def show_payload(self, payload, navigator=None):
+        """Display a newly-selected chromatogram, honoring the Overlay toggle.
+
+        Used both for arrow-key stepping and for reusing this window when a
+        different sample point is clicked in the main plot. The currently
+        selected ion/mass trace is preserved.
+        """
+        if navigator is not None:
+            self.navigator = navigator
         self.current_payload = payload
         if self.overlay_cb.isChecked():
             if not self.overlay_payloads:
@@ -748,6 +771,8 @@ class MSChromatogramWindow(QMainWindow):
             }
             if payload["chromatogram"].path not in known_paths:
                 self.overlay_payloads.append(payload)
+        else:
+            self.overlay_payloads = []
         self._render()
 
     def _overlay_toggled(self, checked):
@@ -1245,7 +1270,7 @@ class MainWindow(QMainWindow):
         self.smoothing_changed = False
         self._ie3_mf_dirty = False      # True once a method save leaves mole fractions stale
         self._ie3_cal_tooltip_points = []  # click-tooltip metadata for _ie3_cal_plot markers
-        self._chromatogram_windows = set()
+        self._chromatogram_window = None
         self.tabs = None
         
         self._save_payload = None       # data for the Save Cal2DB button
@@ -2158,10 +2183,36 @@ class MainWindow(QMainWindow):
         return load_neighbor
 
     def _open_chromatogram_for_row(self, row_idx, point_info_html=""):
-        """Locate, decode, and show the chromatogram for one plotted row."""
+        """Show the chromatogram for one plotted row.
+
+        Reuses the existing chromatogram window (if one of the right type is
+        still open) rather than opening a new one, so repeated sample clicks
+        redraw a single window. If "Overlay" is toggled on in that window,
+        the new trace is added alongside the previous ones, matching the
+        window's left/right-arrow overlay behavior.
+        """
         payload = self._chromatogram_payload_for_row(row_idx, point_info_html)
         navigator = self._chromatogram_navigator(row_idx)
-        if self.instrument.inst_id == "m4":
+        window_cls = (
+            MSChromatogramWindow if self.instrument.inst_id == "m4" else ChromatogramWindow
+        )
+
+        existing = getattr(self, "_chromatogram_window", None)
+        try:
+            reusable = existing is not None and isinstance(existing, window_cls)
+            if reusable:
+                existing.isVisible()  # raises RuntimeError if the C++ object is gone
+        except RuntimeError:
+            reusable = False
+
+        if reusable:
+            existing.show_payload(payload, navigator=navigator)
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+
+        if window_cls is MSChromatogramWindow:
             default_mass = payload["default_mass"]
             window = MSChromatogramWindow(
                 payload["chromatogram"],
@@ -2187,10 +2238,11 @@ class MainWindow(QMainWindow):
                 navigator=navigator,
                 parent=self,
             )
-        self._chromatogram_windows.add(window)
+        self._chromatogram_window = window
 
-        def _forget_window(_obj=None, opened_window=window):
-            self._chromatogram_windows.discard(opened_window)
+        def _forget_window(_obj=None):
+            if getattr(self, "_chromatogram_window", None) is window:
+                self._chromatogram_window = None
 
         window.destroyed.connect(_forget_window)
         window.show()
