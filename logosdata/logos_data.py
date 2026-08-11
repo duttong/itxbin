@@ -702,9 +702,10 @@ class MSChromatogramWindow(QMainWindow):
         base_mass = base.get("default_mass")
         if base_mass is None or np.isclose(selected_mass, float(base_mass)):
             _plot_peak_integration(self.axes, base.get("peak_integration"))
+        header = f"{str(current['site']).upper()} channel {current['channel_number']} — "
+        header += f"{analyte} ({trace_label})" if analyte else trace_label
         self.axes.set_title(
-            f"{str(current['site']).upper()} channel {current['channel_number']} — {trace_label}\n"
-            f"{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
+            f"{header}\n{chromatogram.start_time:%Y-%m-%d %H:%M UTC}",
             fontsize=10,
         )
         self.axes.set_xlabel("Time (minutes)", fontsize=9)
