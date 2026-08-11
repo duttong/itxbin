@@ -162,9 +162,12 @@ class ChromatogramNavigationTests(unittest.TestCase):
         self.assertEqual(window.axes.get_xlim(), custom_x)
         self.assertEqual(window.axes.get_ylim(), custom_y)
 
+        # Switching ions intentionally resets the view (a different ion can
+        # have a wholly different scale/peak location), so the custom zoom
+        # from before the switch should no longer be in effect.
         window.mass_combo.setCurrentIndex(0)
-        self.assertEqual(window.axes.get_xlim(), custom_x)
-        self.assertEqual(window.axes.get_ylim(), custom_y)
+        self.assertNotEqual(window.axes.get_xlim(), custom_x)
+        self.assertNotEqual(window.axes.get_ylim(), custom_y)
 
 
 if __name__ == "__main__":
