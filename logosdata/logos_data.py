@@ -55,6 +55,7 @@ from gcwerks_chromatogram import (
     gcwerks_channel_number,
     gcwerks_focus_limits,
     gcwerks_ms_quantitation_mass,
+    gcwerks_ms_quantitation_masses,
     gcwerks_peak_integration,
     gcwerks_peak_window,
     read_gcwerks_chromatogram,
@@ -592,6 +593,7 @@ class MSChromatogramWindow(QMainWindow):
         row_idx=None,
         navigator=None,
         analyte=None,
+        analyte_by_mass=None,
         parent=None,
     ):
         super().__init__(parent, Qt.Window)
@@ -607,6 +609,7 @@ class MSChromatogramWindow(QMainWindow):
             "default_mass": default_mass,
             "row_idx": row_idx,
             "analyte": analyte,
+            "analyte_by_mass": analyte_by_mass,
         }
         self.overlay_payloads = []
 
@@ -662,6 +665,26 @@ class MSChromatogramWindow(QMainWindow):
             return "TIC (m/z 0)"
         return f"m/z {cls._mass_text(mass)}"
 
+    @staticmethod
+    def _analyte_for_mass(payload, mass, tolerance=0.05):
+        """Identify which analyte (if any) owns the given ion trace.
+
+        Prefers the analyte the window was opened for when its own
+        quantitation mass matches; otherwise looks up any analyte GCWerks
+        associates with this m/z, so switching the Ion combo relabels the
+        plot for whichever analyte is actually being viewed.
+        """
+        default_mass = payload.get("default_mass")
+        if default_mass is not None and np.isclose(mass, float(default_mass)):
+            return payload.get("analyte")
+        analyte_by_mass = payload.get("analyte_by_mass") or {}
+        best_name, best_diff = None, tolerance
+        for name, candidate_mass in analyte_by_mass.items():
+            diff = abs(float(candidate_mass) - mass)
+            if diff <= best_diff:
+                best_name, best_diff = name, diff
+        return best_name
+
     def _plot_selected_trace(self, index):
         if index < 0:
             return
@@ -682,13 +705,7 @@ class MSChromatogramWindow(QMainWindow):
             payloads = [self.current_payload]
         current = self.current_payload
         chromatogram = current["chromatogram"]
-        current_mass = current.get("default_mass")
-        # Only attach the analyte name to its own quantitation ion — the Ion
-        # combo can select any trace in the chromatogram, and it would be
-        # misleading to keep labeling an unrelated m/z as this analyte.
-        analyte = current.get("analyte")
-        if current_mass is None or not np.isclose(selected_mass, float(current_mass)):
-            analyte = None
+        analyte = self._analyte_for_mass(current, selected_mass)
         title = f"Chromatogram — {chromatogram.path.name} — {trace_label}"
         if analyte:
             title += f" — {analyte}"
@@ -2127,6 +2144,7 @@ class MainWindow(QMainWindow):
             channel_number,
         )
         analyte = self._current_analyte_name()
+        analyte_by_mass = None
         if self.instrument.inst_id == "m4":
             chromatogram = read_gcwerks_ms_chromatogram(path)
             peak_window = gcwerks_peak_window(
@@ -2141,6 +2159,10 @@ class MainWindow(QMainWindow):
                     self.instrument.gc_dir,
                     analyte,
                 )
+            # Every analyte GCWerks knows on this channel, keyed by its own
+            # quantitation mass — lets the Ion combo identify whichever
+            # analyte (if any) owns the newly selected trace.
+            analyte_by_mass = gcwerks_ms_quantitation_masses(self.instrument.gc_dir)
         else:
             chromatogram = read_gcwerks_chromatogram(path)
             peak_window = gcwerks_peak_window(
@@ -2174,6 +2196,7 @@ class MainWindow(QMainWindow):
             "peak_integration": peak_integration,
             "row_idx": row_idx,
             "analyte": analyte,
+            "analyte_by_mass": analyte_by_mass,
         }
 
     def _chromatogram_navigator(self, current_row_idx):
@@ -2238,6 +2261,7 @@ class MainWindow(QMainWindow):
                 row_idx=row_idx,
                 navigator=navigator,
                 analyte=payload.get("analyte"),
+                analyte_by_mass=payload.get("analyte_by_mass"),
                 parent=self,
             )
         else:
