@@ -378,6 +378,12 @@ class M4_Instrument(HATS_DB_Functions):
         if df_32.empty or df_178.empty:
             return pd.DataFrame()
 
+        # Each compound normalizes against its own reference-gas curve, so the
+        # Point-to-Point-vs-Lowess-5 default choice is made independently per
+        # compound before the pair is merged for deconvolution.
+        df_32  = self.norm.apply_default_detrend_choice(df_32)
+        df_178 = self.norm.apply_default_detrend_choice(df_178)
+
         df = df_32.merge(
             df_178[['analysis_num', 'normalized_resp', 'detrend_method_num', 'channel']],
             on='analysis_num',

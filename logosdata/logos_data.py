@@ -1614,7 +1614,7 @@ class MainWindow(QMainWindow):
             "5-point boxcar",           # 6
             "Lowess ~10 points",        # 5
         ])
-        self.smoothing_cb.setCurrentIndex(3)  # show "Lowess 5 points" by default
+        self.smoothing_cb.setCurrentIndex(2)  # show "Lowess 5 points" by default
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
