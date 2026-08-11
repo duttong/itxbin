@@ -682,7 +682,13 @@ class MSChromatogramWindow(QMainWindow):
             payloads = [self.current_payload]
         current = self.current_payload
         chromatogram = current["chromatogram"]
+        current_mass = current.get("default_mass")
+        # Only attach the analyte name to its own quantitation ion — the Ion
+        # combo can select any trace in the chromatogram, and it would be
+        # misleading to keep labeling an unrelated m/z as this analyte.
         analyte = current.get("analyte")
+        if current_mass is None or not np.isclose(selected_mass, float(current_mass)):
+            analyte = None
         title = f"Chromatogram — {chromatogram.path.name} — {trace_label}"
         if analyte:
             title += f" — {analyte}"
