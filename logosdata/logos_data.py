@@ -645,7 +645,7 @@ class MSChromatogramWindow(QMainWindow):
         self.mass_combo.setToolTip("Select the total ion current or an individual m/z trace")
         self.mass_combo.setMinimumWidth(105)
         for mass in chromatogram.display_masses:
-            self.mass_combo.addItem(self._mass_label(mass), mass)
+            self.mass_combo.addItem(self._combo_label_for_mass(mass), mass)
         self.controls_toolbar.addWidget(self.mass_combo)
 
         masses = np.asarray(chromatogram.display_masses, dtype=float)
@@ -684,6 +684,11 @@ class MSChromatogramWindow(QMainWindow):
             if diff <= best_diff:
                 best_name, best_diff = name, diff
         return best_name
+
+    def _combo_label_for_mass(self, mass):
+        analyte = self._analyte_for_mass(self.current_payload, mass)
+        label = self._mass_label(mass)
+        return f"{label} — {analyte}" if analyte else label
 
     def _plot_selected_trace(self, index):
         if index < 0:
