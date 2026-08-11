@@ -693,11 +693,14 @@ class MSChromatogramWindow(QMainWindow):
     def _plot_selected_trace(self, index):
         if index < 0:
             return
-        self._render()
+        # A different ion can have a wholly different scale and peak
+        # location, so start from its own focused view rather than keeping
+        # whatever zoom was set for the previous ion.
+        self._render(reset_view=True)
 
-    def _render(self):
+    def _render(self, reset_view=False):
         previous_limits = None
-        if self.axes.lines:
+        if not reset_view and self.axes.lines:
             previous_limits = (self.axes.get_xlim(), self.axes.get_ylim())
         index = self.mass_combo.currentIndex()
         if index < 0:
