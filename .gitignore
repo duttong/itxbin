@@ -6,7 +6,15 @@ __py*
 !logosdata/assets/*.png
 
 cfc113a/
-cats_qc/
+
+# cats_qc/: only track the active tagging tool, its detection algorithm,
+# tests, and docs -- the rest is outdated/exploratory (see cats_qc/README.md)
+cats_qc/*
+!cats_qc/cats_tagging.py
+!cats_qc/cats_cal_step_qc.py
+!cats_qc/test_cats_cal_step_qc.py
+!cats_qc/README.md
+!cats_qc/CATS_QC_TODO.md
 
 hats_receptors/*
 
