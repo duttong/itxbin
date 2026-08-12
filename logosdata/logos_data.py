@@ -772,13 +772,14 @@ _TAG_LAYOUT = [
         ("O", "Measurement lab operator error",                       43, 121),
         ("U", "Unknown measurement problem",                         141, 142),
     ]),
-    ("Automatic Tags", [
+    ("Automated Tags", [
         ("C", "Mole fraction falls outside of calibration",          286, 287),
         ("G", "Chromatography issue",                                316,   0),
         ("P", "Bad flask pair agreement",                            167,   0),
         ("V", "Out of range sample pressure",                         32,   0),
         ("W", "Rejected in GCwerks integration",                     324,   0),
-        ("S", "Detector cal-response rapid change (auto)",             0, 401),
+        ("S", "Detector cal-response rapid change",                  328, 401),
+        ("X", "Abnormal chromatogram",                                 0, 402),
     ]),
 ]
 
@@ -933,7 +934,7 @@ class MultiTagPanel(QWidget):
 
         table_row = 0
         for section_name, entries in _TAG_LAYOUT:
-            is_auto_section = (section_name == "Automatic Tags")
+            is_auto_section = (section_name == "Automated Tags")
 
             hdr = QTableWidgetItem(f"  {section_name}")
             hdr.setBackground(QBrush(section_bg))
@@ -1170,7 +1171,7 @@ class MultiTagPanel(QWidget):
 
 class MainWindow(QMainWindow):
 
-    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324}
+    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324, 328}
 
     def __init__(self, instrument, initial_start=None):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
@@ -2236,7 +2237,7 @@ class MainWindow(QMainWindow):
                 FROM ccgg.tag_view
                 WHERE hats_ng = 1
                 ORDER BY
-                    CASE WHEN tag_num IN (316, 26, 25, 2, 32, 324) THEN 1 ELSE 0 END,
+                    CASE WHEN tag_num IN (316, 26, 25, 2, 32, 324, 328) THEN 1 ELSE 0 END,
                     flag;
             """)
         except Exception as e:
@@ -2271,7 +2272,7 @@ class MainWindow(QMainWindow):
         }
         self.tag_options = []
         for section_name, entries in _TAG_LAYOUT:
-            if section_name == "Automatic Tags":
+            if section_name == "Automated Tags":
                 continue
             row_color = _section_colors.get(section_name)
             for letter, desc, r_tag, i_tag in entries:
