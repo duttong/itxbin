@@ -778,7 +778,7 @@ _TAG_LAYOUT = [
         ("P", "Bad flask pair agreement",                            167,   0),
         ("V", "Out of range sample pressure",                         32,   0),
         ("W", "Rejected in GCwerks integration",                     324,   0),
-        ("S", "CATS cal-response step change (auto)",                  0, 401),
+        ("S", "Detector cal-response rapid change (auto)",             0, 401),
     ]),
 ]
 
@@ -2979,6 +2979,13 @@ class MainWindow(QMainWindow):
 
         self.figure.clear()
         ax = self.figure.add_subplot(111)
+        # scatter artists themselves are wiped by figure.clear() above, but
+        # this list of references to them is not -- without resetting it here,
+        # every plot (parameter switch, month navigation, etc.) accumulates
+        # more scatters, and stale _df_index values from long-gone self.run
+        # snapshots leak into chromatogram navigation (row indices that no
+        # longer exist in the current self.run -- see _chromatogram_navigation_rows).
+        self._scatter_main = []
         hide_flagged = self.hide_flagged_cb.isChecked()
         rejected = self.run['rejected'].fillna(0).astype(int)
         plot_df = self.run.loc[rejected == 0] if hide_flagged else self.run
