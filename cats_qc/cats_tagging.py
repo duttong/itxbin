@@ -8,11 +8,12 @@ window before reinserting it on the currently-flagged subset. This means a
 point that stops being flagged after retuning a threshold loses its tag on
 the next run instead of keeping it forever -- rerun freely while tuning.
 
-NOTE on tag_num: 401 (cal_step below) is a placeholder chosen because it's
-unused today, pending the real number being registered in ccgg.tag_dictionary
-(automated=1, reject=0, information=1 -- see the itxbin project's CATS QC
-notes). Update ALGORITHMS once that's assigned; the tag rows already written
-under the placeholder can be moved with a single UPDATE ... SET tag_num.
+NOTE on tag_num: cal_step writes tag 328 ("Detector cal-response rapid
+change"), registered in ccgg.tag_dictionary as a real reject tag (reject=1,
+automated=1). 402 (baseline below) is still an unregistered placeholder
+(pending automated=1, reject=0, information=1 in ccgg.tag_dictionary) --
+update ALGORITHMS once a real number is assigned; tag rows already written
+under a placeholder can be moved with a single UPDATE ... SET tag_num.
 
 This module is meant to grow: as more CATS QC algorithms are added (peak
 integration, ratio-based, etc.), register each as another ALGORITHMS entry
@@ -48,6 +49,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cats_batch import CATS_batch
 from cats_cal_step_qc import ALL_GASES, build_cal_step_qc
+from cats_baseline_qc import build_baseline_tag_qc
 
 
 def _parse_yyyymmdd(s: str) -> str:
@@ -69,11 +71,18 @@ class QcAlgorithm:
     build: Callable[..., pd.DataFrame]
 
 
-# Placeholder tag_nums pending registration in ccgg.tag_dictionary
-# (automated=1, reject=0, information=1). Update the tag_num here once a
+# tag_num=328 ("Detector cal-response rapid change") is registered in
+# ccgg.tag_dictionary as reject=1, automated=1 -- cal_step writes this as the
+# real reject tag.
+#
+# 402 (baseline, below) is still a placeholder pending registration
+# (automated=1, reject=0, information=1). Update its tag_num here once a
 # real number is assigned -- nothing else about the pipeline needs to change.
 ALGORITHMS: dict[str, QcAlgorithm] = {
-    "cal_step": QcAlgorithm(tag_num=401, build=build_cal_step_qc),
+    "cal_step": QcAlgorithm(tag_num=328, build=build_cal_step_qc),
+    # "Abnormal chromatogram": pre-peak shape deviates from its own local
+    # (time-nearest) neighbors' median shape -- see cats_baseline_qc.py.
+    "baseline": QcAlgorithm(tag_num=402, build=build_baseline_tag_qc),
 }
 
 # analyte display_name -> its one reporting channel, per ALL_GASES
@@ -212,6 +221,17 @@ def main() -> int:
                    help="cal_step: drop periods with fewer than this many rate-outlier cal points (default: 1)")
     p.add_argument("--scale-window-days", type=float, default=30.0,
                    help="cal_step: trailing local window (days) for the typical-noise scale (default: 30)")
+    p.add_argument("--baseline-neighbor-window", type=int, default=10,
+                   help="baseline: chromatograms before/after used to build the local "
+                        "median reference trace (default: 10)")
+    p.add_argument("--baseline-pre-peak-min", type=float, default=5.0,
+                   help="baseline: pre-peak window scored against the reference, in "
+                        "minutes from run start (default: 5)")
+    p.add_argument("--baseline-diff-threshold", type=float, default=0.15,
+                   help="baseline: absolute cutoff on mean|deviation| from the local "
+                        "median reference (default: 0.15)")
+    p.add_argument("--baseline-max-gap-hours", type=float, default=1.0,
+                   help="baseline: max gap between flagged runs in one period (default: 1.0)")
     p.add_argument("--dry-run", action="store_true", help="Report counts; write nothing")
     args = p.parse_args()
 
@@ -233,6 +253,12 @@ def main() -> int:
             max_gap_hours=args.max_gap_hours,
             min_cal_points=args.min_cal_points,
             scale_window_days=args.scale_window_days,
+        ),
+        "baseline": dict(
+            neighbor_window=args.baseline_neighbor_window,
+            pre_peak_min=args.baseline_pre_peak_min,
+            diff_threshold=args.baseline_diff_threshold,
+            max_gap_hours=args.baseline_max_gap_hours,
         ),
     }
 
