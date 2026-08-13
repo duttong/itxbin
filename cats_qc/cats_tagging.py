@@ -8,12 +8,14 @@ window before reinserting it on the currently-flagged subset. This means a
 point that stops being flagged after retuning a threshold loses its tag on
 the next run instead of keeping it forever -- rerun freely while tuning.
 
-NOTE on tag_num: cal_step writes tag 328 ("Detector cal-response rapid
-change"), registered in ccgg.tag_dictionary as a real reject tag (reject=1,
-automated=1). 402 (baseline below) is still an unregistered placeholder
-(pending automated=1, reject=0, information=1 in ccgg.tag_dictionary) --
-update ALGORITHMS once a real number is assigned; tag rows already written
-under a placeholder can be moved with a single UPDATE ... SET tag_num.
+NOTE on tag_num: both registered algorithms write real reject tags in
+ccgg.tag_dictionary (reject=1, automated=1) -- cal_step writes 328
+("Detector cal-response rapid change"), baseline writes 329 ("Abnormal
+chromatogram"). A future algorithm can start on an unregistered placeholder
+number the same way these two did; update ALGORITHMS once a real number is
+assigned, and move any rows already written under the placeholder with
+UPDATE hats.ng_insitu_mole_fraction_tags SET tag_num = <new> WHERE tag_num
+= <placeholder>.
 
 This module is meant to grow: as more CATS QC algorithms are added (peak
 integration, ratio-based, etc.), register each as another ALGORITHMS entry
@@ -71,18 +73,15 @@ class QcAlgorithm:
     build: Callable[..., pd.DataFrame]
 
 
-# tag_num=328 ("Detector cal-response rapid change") is registered in
-# ccgg.tag_dictionary as reject=1, automated=1 -- cal_step writes this as the
-# real reject tag.
-#
-# 402 (baseline, below) is still a placeholder pending registration
-# (automated=1, reject=0, information=1). Update its tag_num here once a
-# real number is assigned -- nothing else about the pipeline needs to change.
+# tag_num=328 ("Detector cal-response rapid change") and tag_num=329
+# ("Abnormal chromatogram") are both registered in ccgg.tag_dictionary as
+# reject=1, automated=1 -- cal_step and baseline write these as real reject
+# tags.
 ALGORITHMS: dict[str, QcAlgorithm] = {
     "cal_step": QcAlgorithm(tag_num=328, build=build_cal_step_qc),
     # "Abnormal chromatogram": pre-peak shape deviates from its own local
     # (time-nearest) neighbors' median shape -- see cats_baseline_qc.py.
-    "baseline": QcAlgorithm(tag_num=402, build=build_baseline_tag_qc),
+    "baseline": QcAlgorithm(tag_num=329, build=build_baseline_tag_qc),
 }
 
 # analyte display_name -> its one reporting channel, per ALL_GASES

@@ -13,7 +13,7 @@ Two detectors are registered today:
 | Algorithm | Tag | What it finds | Scope |
 |---|---|---|---|
 | `cal_step` | 328 (reject) | Abrupt cal-port response shifts | per analyte + channel |
-| `baseline` | 402 (placeholder) | Abnormal chromatogram shape | per **physical channel** |
+| `baseline` | 329 (reject) | Abnormal chromatogram shape | per **physical channel** |
 
 ## cats_cal_step_qc.py + cats_tagging.py
 
@@ -87,22 +87,20 @@ Worked example: BRW N2O (q), April 1999 -- flags all four ports from
 
 ### Tagging (cats_tagging.py)
 
-- **tag_num 328 ("Detector cal-response rapid change") is a real reject
-  tag**, registered in `ccgg.tag_dictionary` with `reject=1, automated=1`.
-  Points it tags become `rejected` immediately, because the view's `rejected`
-  column is a live join against `tag_dictionary.reject`.
-- **tag_num 402 ("Abnormal chromatogram") is still a placeholder** -- not yet
-  in `ccgg.tag_dictionary`, so it currently has no effect on `rejected` (the
-  join finds no row). Once a real number is assigned, update `ALGORITHMS` in
-  `cats_tagging.py`; rows already written under the placeholder move with a
-  single `UPDATE hats.ng_insitu_mole_fraction_tags SET tag_num = <new> WHERE
-  tag_num = 402`. (An earlier 401 placeholder for `cal_step` was retired this
-  way when 328 was registered, and all 401 rows were deleted.)
-- `_TAG_LAYOUT` in `logosdata/logos_data.py` carries both, under **Automated
-  Tags**: 328 as a reject tag paired with the 401 slot, and 402 as
-  "Abnormal chromatogram". Informational tags show up as the info-tag overlay
-  (hollow purple diamond) when "Show Info Tags" is checked, and in the point
-  tooltip.
+- **Both tag_num 328 ("Detector cal-response rapid change") and tag_num 329
+  ("Abnormal chromatogram") are real reject tags**, registered in
+  `ccgg.tag_dictionary` with `reject=1, automated=1`. Points either tags
+  become `rejected` immediately, because the view's `rejected` column is a
+  live join against `tag_dictionary.reject`. Both started life as
+  unregistered placeholders (401, then 402) before their real numbers were
+  assigned; each transition was a single
+  `UPDATE hats.ng_insitu_mole_fraction_tags SET tag_num = <new> WHERE
+  tag_num = <placeholder>` plus updating `ALGORITHMS`, and the placeholder
+  rows were fully migrated (none left at 401 or 402).
+- `_TAG_LAYOUT` in `logosdata/logos_data.py` carries both under **Automated
+  Tags** as reject tags (letters `S` and `X`). `AUTO_TAG_NUMS` and the
+  tag-dropdown sort order both include 328 and 329 so they render correctly
+  as automated, not manual, tags.
 - **Applying a tag doesn't recompute mole fractions.** Once a tag with
   `reject=1` lands (or a point is promoted to a reject tag like 141 after
   review in logos_data), the weekly cal fit (`hats.ng_response`) and
@@ -115,7 +113,7 @@ Worked example: BRW N2O (q), April 1999 -- flags all four ports from
   DataFrame` with at least an `mf_num` column for the flagged rows.
   `--algo all` runs everything registered.
 
-## cats_baseline_qc.py -- "Abnormal chromatogram" (tag 402)
+## cats_baseline_qc.py -- "Abnormal chromatogram" (tag 329)
 
 Finds chromatograms whose **pre-peak baseline shape** departs from what its
 own neighbours were doing at the time: contamination carryover, detector

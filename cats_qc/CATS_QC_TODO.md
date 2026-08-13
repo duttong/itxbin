@@ -3,41 +3,6 @@
 Pending follow-ups for the cats_qc work. See `README.md` for how the
 `cal_step` and `baseline` algorithms and `cats_tagging.py` work.
 
-## Register a real tag number for "Abnormal chromatogram" (currently 402)
-
-`baseline` writes tag **402**, a placeholder that is not in
-`ccgg.tag_dictionary`, so it has no effect on `rejected` today -- the view's
-`rejected` column is a live join against `tag_dictionary.reject`, and with no
-row for 402 the join finds nothing. Flagged points still show up in
-logos_data as the info-tag overlay via `_TAG_LAYOUT`.
-
-Once a real number is assigned:
-
-1. Update `ALGORITHMS` in `cats_tagging.py` with the real number.
-2. Update the 402 entry in `_TAG_LAYOUT` (`logosdata/logos_data.py`).
-3. Move already-written rows:
-   ```sql
-   UPDATE hats.ng_insitu_mole_fraction_tags SET tag_num = <new> WHERE tag_num = 402;
-   ```
-
-This is the same path `cal_step` took: it ran under placeholder 401 until
-**328** ("Detector cal-response rapid change", `reject=1, automated=1`) was
-registered, at which point `ALGORITHMS` was pointed at 328 and every 401 row
-was deleted.
-
-**Decide reject vs informational before registering.** If 402 lands with
-`reject=1`, every algorithm-flagged point becomes rejected globally and at
-once -- not just ones reviewed and confirmed. If a curated approach is
-preferred, register it as informational and promote reviewed episodes
-individually to a reject tag (141) via the MultiTagPanel. Reverting means
-re-reviewing what should go back to unrejected, so the choice is easier made
-up front.
-
-**Mole fractions need recomputing afterward**, whenever a reject tag lands on
-points that feed a cal fit. Rerun
-`cats_batch.py --site <site> -p <pnum> -c <channel> -i --fits -s <week>`
-(or use "Update Method" / "Update MF" in logos_data) for the affected weeks.
-
 ## Scan the chromatogram archive with `baseline`
 
 Only a small validation window is in `hats.ng_chromatogram_qc` so far. The

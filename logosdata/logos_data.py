@@ -779,7 +779,7 @@ _TAG_LAYOUT = [
         ("V", "Out of range sample pressure",                         32,   0),
         ("W", "Rejected in GCwerks integration",                     324,   0),
         ("S", "Detector cal-response rapid change",                  328, 401),
-        ("X", "Abnormal chromatogram",                                 0, 402),
+        ("X", "Abnormal chromatogram",                                329,   0),
     ]),
 ]
 
@@ -1171,7 +1171,7 @@ class MultiTagPanel(QWidget):
 
 class MainWindow(QMainWindow):
 
-    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324, 328}
+    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324, 328, 329}
 
     def __init__(self, instrument, initial_start=None):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
@@ -2247,7 +2247,7 @@ class MainWindow(QMainWindow):
                 FROM ccgg.tag_view
                 WHERE hats_ng = 1
                 ORDER BY
-                    CASE WHEN tag_num IN (316, 26, 25, 2, 32, 324, 328) THEN 1 ELSE 0 END,
+                    CASE WHEN tag_num IN (316, 26, 25, 2, 32, 324, 328, 329) THEN 1 ELSE 0 END,
                     flag;
             """)
         except Exception as e:
