@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flag CATS chromatograms whose pre-peak shape deviates from their own
+"""Flag CATS chromatograms whose overall shape deviates from their own
 local neighbors' typical shape, and persist results to hats.ng_chromatogram_qc.
 
 Reads raw chromatogram files directly (not DB mole-fraction rows). Each
@@ -7,15 +7,40 @@ chromatogram is normalized by dividing by the mean signal in its own
 29.0-29.5 min tail window -- a quiet, settled region after all peaks have
 eluted, so every run is expressed relative to its own steady-state level.
 
-Design (Geoff, Aug 2026): rather than judging a run's pre-peak baseline
-(0-5 min, before any analyte peak) against a fixed shape rule, build a
-*local reference trace* from the pointwise MEDIAN of the N nearest
-chromatograms before and after it (same channel), then measure how far the
-target's own normalized trace deviates from that reference, point by point,
-within the pre-peak window. This is deliberately scoped to the pre-peak
-region: baseline changes there ("heart-cutting"-adjacent behavior) can occur
-without touching the downstream analyte peaks at all, so a whole-trace
-comparison would conflate two different questions.
+Design (Geoff, Aug 2026): build a *local reference trace* from the pointwise
+MEDIAN of the N nearest chromatograms before and after the target (same
+channel), then score how far the target deviates from that reference as the
+mean of target/reference over the WHOLE trace, with the analyte peak
+region(s) masked out.
+
+Whole trace, not a fixed early/late window: peak retention times drift over
+a 25+ year archive and differ by channel, so any hardcoded minute range
+(the original design scored only 0-5 min) eventually goes stale or misses
+events outside it -- e.g. 260713.0258.8 (SPO channel0) has a normal 0-5 min
+baseline but a real post-peak sag around minute 22-23 that a pre-peak-only
+window can't see. Masking instead of windowing sidesteps the drift problem
+entirely: the mask comes from GCwerks' own dated peakid files
+(find_gcwerks_peakid_file / read_gcwerks_peak_windows), which already track
+each channel's real analyte retention times across the whole archive, so it
+adapts automatically instead of needing per-channel/per-era config.
+
+Ratio, not difference: dividing target by reference (rather than the
+original design's target-minus-reference) makes the statistic scale-free
+and lets one mean summarize the ENTIRE non-peak trace as a single number,
+rather than needing per-region difference thresholds. On a quiet month
+(SPO channel0, June 2026, 60 runs) the whole-trace ratio mean sits tight at
+0.986-1.007 (std 0.004); the 260713 event scores 0.89-0.90, a clean
+separation with no z-score tuning needed.
+
+Masking peaks is required, not optional: an unmasked ratio blows up at any
+point where the reference is large and changing fast (peak edges), because
+a small height or timing mismatch produces a huge ratio error there --
+tested directly, and it let an entirely ordinary tall-peak run (ratio mean
+1.6, peak/tail height ratio 7.65x) outrank the real anomaly (ratio mean
+0.89). Masking each analyte's peakid window (+0.3 min margin per side)
+resolves this while still correctly leaving genuinely oversized peaks
+visible in the score, since an outsized peak's base still extends past its
+own masked window into the "baseline" being scored.
 
 Median (not mean) is required for the reference: manual review on CATS-SPO
 channel0, 2026-07-17 showed a mean-based reference gets measurably dragged
@@ -26,25 +51,14 @@ mean reference sat at ~1.2x baseline near the event instead of flat 1.0,
 understating the anomaly, while the median stayed correctly flat at ~1.0
 until roughly half the window was itself contaminated.
 
-Validated against the 2026-07-17 SPO channel0 event: the root-cause run and
-every affected run out to the recovery tail (~2345 UTC) score mean|diff|
-0.2-1.4 in the pre-peak window, against ~0.001-0.06 for genuinely quiet runs
-sampled the same day -- a clean order-of-magnitude separation, no z-score
-tuning required. This also correctly *cleared* a run (260717.0843.6) that an
-earlier slope/range-based prototype flagged as a false positive.
-
 Known limitation: the local median reference degrades if a majority of the
 N neighbors on one side are themselves anomalous (a long-duration or
 back-to-back event) -- a median only resists a minority of outliers. Keep N
 modest (default 10 each side) and review flagged clusters together rather
 than trusting any single run's score in isolation.
 
-This does NOT catch pure peak-height dropouts with an otherwise-normal
-pre-peak baseline (a different, separately-seen failure mode) or anomalies
-confined to the post-peak region (this only scores pre-peak by design, per
-the heart-cutting rationale above) -- see cats_peak_qc.py for a peak-height
-feature, or widen --pre-peak-min / add a symmetric post-peak scorer if
-post-peak shape turns out to matter too.
+This does NOT catch pure peak-height dropouts (the peak region is masked
+out of the score entirely) -- see cats_peak_qc.py for a peak-height feature.
 
 Scoped by physical GCwerks channel, not by analyte (Geoff, Aug 2026): a
 chromatogram file covers every analyte reported on that channel together
@@ -83,6 +97,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,7 +107,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "logosdata"))
-from gcwerks_chromatogram import gcwerks_channel_number, read_gcwerks_chromatogram
+from gcwerks_chromatogram import (
+    find_gcwerks_peakid_file,
+    gcwerks_channel_number,
+    read_gcwerks_chromatogram,
+    read_gcwerks_peak_windows,
+)
 from cats_cal_step_qc import _group_periods
 from cats_batch import CATS_batch
 
@@ -128,6 +148,44 @@ def list_chromatogram_files(gc_dir: Path, channel_number: int, start: pd.Timesta
                 yield ts, path
 
 
+def peak_mask_for_chromatogram(
+    gc_dir: Path,
+    channel_number: int,
+    analysis_time: pd.Timestamp,
+    minutes: np.ndarray,
+    margin_min: float = 0.3,
+    peakid_cache: dict | None = None,
+) -> np.ndarray:
+    """Boolean mask, True wherever `minutes` falls inside any analyte's peak
+    window (+/- margin_min) on this channel, per GCwerks' own dated peakid
+    file for analysis_time -- see find_gcwerks_peakid_file(). One
+    chromatogram covers every analyte on its channel, so this masks all of
+    them in one pass, not just one analyte's window.
+
+    peakid_cache, if given, memoizes the (peakid path -> raw window list)
+    lookup so a full scan (which reuses the same handful of dated peakid
+    files across potentially hundreds of thousands of chromatograms) doesn't
+    re-glob the peakid directory or re-parse the same file per chromatogram.
+    """
+    path = find_gcwerks_peakid_file(gc_dir, channel_number, analysis_time)
+    if path is None:
+        return np.zeros(len(minutes), dtype=bool)
+
+    if peakid_cache is not None and path in peakid_cache:
+        windows = peakid_cache[path]
+    else:
+        windows = read_gcwerks_peak_windows(path)
+        if peakid_cache is not None:
+            peakid_cache[path] = windows
+
+    mask = np.zeros(len(minutes), dtype=bool)
+    for w in windows:
+        lo = (w.center_seconds - w.width_seconds) / 60.0 - margin_min
+        hi = (w.center_seconds + w.width_seconds) / 60.0 + margin_min
+        mask |= (minutes >= lo) & (minutes <= hi)
+    return mask
+
+
 def normalized_trace(
     path: Path,
     tail_start_min: float = 29.0,
@@ -158,12 +216,25 @@ def normalized_trace(
 
 
 def _neighbor_median(sub: np.ndarray) -> np.ndarray:
-    """Pointwise median of sub's rows via np.partition.
+    """Pointwise median of sub's rows via np.partition, NaN-aware.
 
     A median only needs the middle one/two order statistics, not a full sort,
     so np.partition beats np.median here (~1.2x) -- worthwhile because this
-    runs once per scored chromatogram.
+    runs once per scored chromatogram. Falls back to np.nanmedian when any
+    column has masked (NaN) values from peak_mask_for_chromatogram, since
+    np.partition doesn't handle NaN placement consistently across columns
+    with different numbers of them.
     """
+    if np.isnan(sub).any():
+        # A column that's a real peak on every row (the normal case: the
+        # analyte's own peak window, masked out for every chromatogram)
+        # is all-NaN here by design -- nanmedian warns about that on every
+        # call, harmlessly; score_matrix already drops non-finite ratio
+        # values downstream, so silence the expected warning rather than
+        # let it fire once per scored chromatogram.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return np.nanmedian(sub, axis=0)
     n = len(sub)
     if n % 2:
         return np.partition(sub, n // 2, axis=0)[n // 2]
@@ -176,28 +247,42 @@ def score_matrix(
     neighbor_window: int,
     min_neighbors: int = 4,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Score every row of a [n_chromatograms x n_pre_peak_samples] matrix
-    against the pointwise median of its time-nearest neighbors.
+    """Score every row of a [n_chromatograms x n_samples] matrix against the
+    pointwise median of its time-nearest neighbors, as target/reference
+    (ratio, not difference) over the whole trace.
 
-    matrix rows must already be tail-normalized and sliced to the pre-peak
-    window (see build_baseline_qc) -- slicing *before* the median matters:
-    scoring only ever reads the pre-peak region, so medianing the full ~7100
-    sample trace throws away ~83% of the work (measured 5.4x on a month of
-    SPO channel0).
+    matrix rows must already be tail-normalized (see build_baseline_qc), with
+    each analyte's peak window(s) set to NaN by peak_mask_for_chromatogram --
+    masking, not a fixed window, is what lets this score the WHOLE trace: a
+    hardcoded early/late minute range would eventually go stale as retention
+    times drift over a 25+ year archive, where GCwerks' own dated peakid
+    files already track that drift per channel.
 
-    The reference median deliberately EXCLUDES the target row (leave-one-out).
-    An inclusive median (e.g. scipy.ndimage.median_filter over the same
-    matrix) is marginally faster but lets a strongly anomalous run drag its
-    own reference toward itself, damping the very score meant to catch it --
-    always in the under-detection direction, and worst during the multi-run
-    events this is built for.
+    The reference median deliberately EXCLUDES the target row (leave-one-out)
+    and uses np.nanmedian per column so a neighbor's own masked samples don't
+    corrupt the reference elsewhere. An inclusive median (e.g.
+    scipy.ndimage.median_filter) is marginally faster but lets a strongly
+    anomalous run drag its own reference toward itself, damping the very
+    score meant to catch it -- always in the under-detection direction, and
+    worst during the multi-run events this is built for.
 
-    Returns (mean_abs_diff, max_abs_diff, n_neighbors) per row; rows with
-    fewer than min_neighbors usable neighbors get NaN scores.
+    Ratio (not difference) is what lets one mean/std summarize the entire
+    non-peak trace as a single scalar: on a quiet month (SPO channel0, June
+    2026) the whole-trace ratio mean sits at 0.986-1.007 across 60 ordinary
+    runs (std 0.004), against 0.89-0.90 for a validated real event
+    (2026-07-13 SPO channel0) -- a clean separation with no per-region
+    threshold tuning. An unmasked ratio instead blows up at peak edges (a
+    small height/timing mismatch produces a huge ratio error where the
+    reference is large and changing fast), which is why peaks must be masked
+    rather than merely reduced in weight.
+
+    Returns (ratio_mean, ratio_std, n_neighbors) per row; rows with fewer
+    than min_neighbors usable neighbors, or with every sample masked, get NaN
+    scores.
     """
     n_rows = len(matrix)
-    mean_abs = np.full(n_rows, np.nan)
-    max_abs = np.full(n_rows, np.nan)
+    ratio_mean = np.full(n_rows, np.nan)
+    ratio_std = np.full(n_rows, np.nan)
     n_neighbors = np.zeros(n_rows, dtype=int)
 
     for i in range(n_rows):
@@ -207,11 +292,16 @@ def score_matrix(
         n_neighbors[i] = len(idxs)
         if len(idxs) < min_neighbors:
             continue
-        diff = np.abs(matrix[i] - _neighbor_median(matrix[idxs]))
-        mean_abs[i] = diff.mean()
-        max_abs[i] = diff.max()
+        reference = _neighbor_median(matrix[idxs])
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ratio = matrix[i] / reference
+        ratio = ratio[np.isfinite(ratio)]
+        if ratio.size == 0:
+            continue
+        ratio_mean[i] = ratio.mean()
+        ratio_std[i] = ratio.std()
 
-    return mean_abs, max_abs, n_neighbors
+    return ratio_mean, ratio_std, n_neighbors
 
 
 def build_baseline_qc(
@@ -220,26 +310,29 @@ def build_baseline_qc(
     start: pd.Timestamp,
     end: pd.Timestamp,
     neighbor_window: int = 10,
-    pre_peak_min: float = 5.0,
-    diff_threshold: float = 0.15,
+    peak_margin_min: float = 0.3,
+    ratio_threshold: float = 0.05,
     max_gap_hours: float = 1.0,
     workers: int = 16,
     verbose: bool = False,
 ) -> pd.DataFrame:
-    """Scan chromatograms in [start, end] and flag pre-peak shape anomalies
-    against each run's own local (time-nearest) neighbors.
+    """Scan chromatograms in [start, end] and flag whole-trace shape
+    anomalies against each run's own local (time-nearest) neighbors.
 
     Loads an extra neighbor_window runs of context on each side of the
     requested range so runs near the start/end of the window still get a
     full neighbor set; those context-only rows are dropped before scoring.
 
-    diff_threshold is an absolute cutoff on pre_mean_abs_diff (fraction of
-    the run's own tail-normalized baseline), not a z-score -- deliberately,
-    since the whole point of the local-median design is to not need a
-    separately-tuned statistical threshold. 0.15 sits roughly 3-10x above
-    the ~0.001-0.06 range seen on quiet runs and well below the 0.2-1.4
-    range seen on the validated 2026-07-17 event; adjust after reviewing
-    --output on more data.
+    peak_margin_min pads each analyte's GCwerks peakid window (see
+    peak_mask_for_chromatogram) before excluding it from the score.
+
+    ratio_threshold is an absolute cutoff on |ratio_mean - 1|, not a
+    z-score -- deliberately, since the whole point of the local-median
+    design is to not need a separately-tuned statistical threshold. 0.05
+    sits well above the 0.986-1.007 range (std 0.004) seen on 60 quiet SPO
+    channel0 runs in June 2026, and below the 0.89-0.90 range seen on the
+    validated 2026-07-13 event; adjust after reviewing --output on more
+    data or other channels/sites.
 
     workers threads read+decode chromatograms concurrently. Reads come off
     NFS and are latency-bound, not bandwidth- or CPU-bound (~38 ms/file cold
@@ -270,25 +363,31 @@ def build_baseline_qc(
 
     traces.sort(key=lambda t: t[2])
     if verbose:
-        print(f"  decoded {len(traces)} chromatograms; scoring...")
+        print(f"  decoded {len(traces)} chromatograms; masking peaks and scoring...")
 
-    # One [n_chromatograms x n_pre_peak_samples] matrix, sliced to the
-    # pre-peak window up front (the only region scored). Rows are truncated
-    # to the shortest trace so the array is rectangular -- run lengths vary
-    # by a few samples (7118-7181 seen on SPO), well inside the pre-peak
-    # window, so this never actually clips scored data.
+    # One [n_chromatograms x n_samples] matrix over the WHOLE trace (not a
+    # fixed early/late window -- see module docstring), rows truncated to
+    # the shortest trace so the array is rectangular. Each analyte's peak
+    # window on this channel is set to NaN per row, using that row's own
+    # applicable dated peakid file, so retention-time drift across the
+    # archive never needs a hardcoded minute range.
     min_len = min(len(norm) for _m, norm, _t, _p in traces)
     minutes = traces[0][0][:min_len]
-    pre_n = int((minutes <= pre_peak_min).sum())
-    if pre_n < 1:
-        return pd.DataFrame()
-    matrix = np.array([norm[:pre_n] for _m, norm, _t, _p in traces])
+    matrix = np.array([norm[:min_len] for _m, norm, _t, _p in traces])
 
-    mean_abs, max_abs, n_neighbors = score_matrix(matrix, neighbor_window)
+    peakid_cache: dict = {}
+    for i, (_m, _n, ts, _p) in enumerate(traces):
+        mask = peak_mask_for_chromatogram(
+            gc_dir, channel_number, ts, minutes,
+            margin_min=peak_margin_min, peakid_cache=peakid_cache,
+        )
+        matrix[i, mask] = np.nan
+
+    ratio_mean, ratio_std, n_neighbors = score_matrix(matrix, neighbor_window)
 
     timestamps = np.array([ts for _m, _n, ts, _p in traces])
     in_range = np.array([start <= ts <= end for ts in timestamps])
-    scored = in_range & ~np.isnan(mean_abs)
+    scored = in_range & ~np.isnan(ratio_mean)
     if not scored.any():
         return pd.DataFrame()
 
@@ -296,10 +395,11 @@ def build_baseline_qc(
         "analysis_datetime": timestamps[scored],
         "path": [str(traces[i][3]) for i in np.flatnonzero(scored)],
         "n_neighbors": n_neighbors[scored],
-        "pre_mean_abs_diff": mean_abs[scored],
-        "pre_max_abs_diff": max_abs[scored],
+        "ratio_mean": ratio_mean[scored],
+        "ratio_std": ratio_std[scored],
+        "n_masked_samples": [int(np.isnan(matrix[i]).sum()) for i in np.flatnonzero(scored)],
     }).sort_values("analysis_datetime").reset_index(drop=True)
-    df["baseline_outlier"] = df["pre_mean_abs_diff"] > diff_threshold
+    df["baseline_outlier"] = (df["ratio_mean"] - 1.0).abs() > ratio_threshold
 
     flagged_times = df.loc[df["baseline_outlier"], "analysis_datetime"]
     periods = _group_periods(flagged_times, max_gap_hours)
@@ -327,11 +427,12 @@ def upsert_chromatogram_qc(db, inst_num: int, channel_number: int, df: pd.DataFr
     sql = """
         INSERT INTO hats.ng_chromatogram_qc
             (inst_num, gcwerks_channel_num, analysis_time, algo_name,
-             pre_mean_abs_diff, pre_max_abs_diff, outlier, period_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             ratio_mean, ratio_std, n_masked_samples, outlier, period_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
-            pre_mean_abs_diff = VALUES(pre_mean_abs_diff),
-            pre_max_abs_diff = VALUES(pre_max_abs_diff),
+            ratio_mean = VALUES(ratio_mean),
+            ratio_std = VALUES(ratio_std),
+            n_masked_samples = VALUES(n_masked_samples),
             outlier = VALUES(outlier),
             period_id = VALUES(period_id)
     """
@@ -343,7 +444,7 @@ def upsert_chromatogram_qc(db, inst_num: int, channel_number: int, df: pd.DataFr
             (
                 inst_num, channel_number,
                 row.analysis_datetime.strftime("%Y-%m-%d %H:%M:%S"), ALGO_NAME,
-                float(row.pre_mean_abs_diff), float(row.pre_max_abs_diff),
+                float(row.ratio_mean), float(row.ratio_std), int(row.n_masked_samples),
                 int(bool(row.baseline_outlier)), int(row.period_id),
             )
             for row in chunk.itertuples(index=False)
@@ -424,13 +525,14 @@ def main() -> int:
     p.add_argument("--neighbor-window", type=int, default=10,
                     help="Number of chromatograms before/after used to build the "
                          "local median reference trace (default: 10).")
-    p.add_argument("--pre-peak-min", type=float, default=5.0,
-                    help="Pre-peak window scored against the reference: first N "
-                         "minutes of the run (default: 5).")
-    p.add_argument("--diff-threshold", type=float, default=0.15,
-                    help="Absolute cutoff on mean|deviation| from the local median "
-                         "reference, as a fraction of tail-normalized baseline "
-                         "(default: 0.15; see build_baseline_qc docstring).")
+    p.add_argument("--peak-margin-min", type=float, default=0.3,
+                    help="Minutes of margin added to each side of every analyte's "
+                         "GCwerks peakid window before excluding it from the score "
+                         "(default: 0.3).")
+    p.add_argument("--ratio-threshold", type=float, default=0.05,
+                    help="Absolute cutoff on |ratio_mean - 1|, the whole-trace "
+                         "target/reference ratio averaged over all non-peak samples "
+                         "(default: 0.05; see build_baseline_qc docstring).")
     p.add_argument("--max-gap-hours", type=float, default=1.0,
                     help="Max gap between flagged runs to merge into one period (default: 1.0).")
     p.add_argument("--workers", type=int, default=16,
@@ -456,8 +558,8 @@ def main() -> int:
     df = build_baseline_qc(
         gc_dir, channel_number, start, end,
         neighbor_window=args.neighbor_window,
-        pre_peak_min=args.pre_peak_min,
-        diff_threshold=args.diff_threshold,
+        peak_margin_min=args.peak_margin_min,
+        ratio_threshold=args.ratio_threshold,
         max_gap_hours=args.max_gap_hours,
         workers=args.workers,
         verbose=args.verbose,
@@ -477,7 +579,7 @@ def main() -> int:
     flagged = df.loc[df["baseline_outlier"]]
     print(f"Flagged {len(flagged)} run(s) across {flagged['period_id'].nunique()} period(s).")
     if not flagged.empty:
-        cols = ["analysis_datetime", "period_id", "pre_mean_abs_diff", "pre_max_abs_diff", "path"]
+        cols = ["analysis_datetime", "period_id", "ratio_mean", "ratio_std", "path"]
         print(flagged[cols].to_string(index=False))
 
     if args.dry_run:

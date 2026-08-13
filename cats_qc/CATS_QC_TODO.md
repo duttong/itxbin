@@ -18,10 +18,17 @@ Worth confirming on the first pre-2020 scan:
 
 - Do older chromatograms share the ~30 min / 4 Hz / ~7150-sample shape? (2015
   and 2011-2012 spot checks did.)
-- Does `--diff-threshold 0.15` still separate cleanly, or does the
-  quiet-run baseline spread differ enough by era to need a per-era value?
-  Unflagged rows are stored, so a different threshold can be re-derived with
-  SQL rather than a rescan.
+- Does GCwerks' dated peakid file coverage reach back far enough, and are
+  the windows still sane, for the earliest eras? `find_gcwerks_peakid_file`
+  falls back to the earliest available file if the target predates all of
+  them, so masking degrades gracefully rather than failing outright, but a
+  badly-mismatched fallback window would silently under- or over-mask peaks.
+  `n_masked_samples` in `hats.ng_chromatogram_qc` is a cheap sanity check --
+  compare it across eras for surprises.
+- Does `--ratio-threshold 0.05` still separate cleanly, or does the
+  quiet-run spread differ enough by era to need a per-era value? Unflagged
+  rows are stored, so a different threshold can be re-derived with SQL
+  rather than a rescan.
 
 ## Possible: reusable CATS chromatogram store
 

@@ -115,10 +115,11 @@ Worked example: BRW N2O (q), April 1999 -- flags all four ports from
 
 ## cats_baseline_qc.py -- "Abnormal chromatogram" (tag 329)
 
-Finds chromatograms whose **pre-peak baseline shape** departs from what its
-own neighbours were doing at the time: contamination carryover, detector
-upsets, ECD instability, runs that start before the detector has recovered
-from whatever preceded them.
+Finds chromatograms whose **overall shape** departs from what its own
+neighbours were doing at the time: contamination carryover, detector upsets,
+ECD instability, baseline sag/ramp during elution -- anything that disturbs
+the trace outside the analyte peaks themselves, wherever in the run it
+happens.
 
 Unlike `cal_step`, this reads **raw chromatogram files**, never DB response
 values, and is scoped to a **physical GCwerks channel** rather than an
@@ -145,7 +146,7 @@ Add `--dry-run` to either phase to preview without writing.
 Running Phase 2 per analyte against a live scan (the original design) redid
 an identical chromatogram scan 5-8x -- CATS channel `f` alone carries eight
 analytes. Phase 1 also stores **unflagged** rows, so a different
-`--diff-threshold` can be re-derived later with a SQL query instead of a
+`--ratio-threshold` can be re-derived later with a SQL query instead of a
 rescan.
 
 Note `--analyte all` in Phase 2 iterates every CATS analyte across *all*
@@ -183,17 +184,40 @@ GCwerks channel directory via `gcwerks_channel_number()`:
    being hunted. The reference also **excludes the target row** -- including
    it lets a strongly anomalous run pull its own reference toward itself,
    always biasing toward under-detection.
-3. **Score the pre-peak window only.** Mean and max absolute deviation from
-   that reference over the first `--pre-peak-min` (default 5) minutes.
-   Scoping to pre-peak is deliberate: baseline changes there can occur
-   without touching the downstream analyte peaks at all (heart-cutting), so
-   a whole-trace comparison would conflate two different questions.
-4. **Flag** when `pre_mean_abs_diff > --diff-threshold` (default 0.15). This
+3. **Mask every analyte's peak.** For each analyte reported on the channel,
+   GCwerks' own dated peakid file (`find_gcwerks_peakid_file` /
+   `read_gcwerks_peak_windows`) gives that era's real retention-time window;
+   each window is padded by `--peak-margin-min` (default 0.3) and excluded
+   from scoring. This is not a fixed minute range -- peak retention times
+   drift over a 25+ year archive and differ by channel, and GCwerks'
+   per-era files already track that drift, so the mask adapts automatically
+   instead of needing hand-maintained config per channel/era. Masking (not
+   just a fixed early window) is what lets the score cover the *whole*
+   trace: 260713.0258.8 (SPO channel0) has a normal 0-5 min baseline but a
+   real post-peak sag around minute 22-23 that an earlier pre-peak-only
+   design couldn't see.
+4. **Score as a ratio, over the whole non-peak trace.** `ratio = target /
+   reference` at every remaining (unmasked) sample, then `ratio_mean` and
+   `ratio_std` summarize the entire trace as two numbers. Ratio, not
+   difference, is what makes one mean meaningful across the whole trace
+   instead of needing separate thresholds per region. Masking is required
+   for this to work, not optional: an *unmasked* ratio blows up at peak
+   edges, where a small height or timing mismatch between target and
+   reference produces a huge ratio error because the reference is large and
+   changing fast there. Tested directly on 2026-07-13 (SPO channel0): an
+   entirely ordinary tall-peak run (ratio_mean 1.6, peak height 7.65x its
+   own tail) outranked the real anomaly (ratio_mean 0.89) when peaks weren't
+   masked. With peaks masked, both are still correctly flagged --
+   the oversized peak's base still extends past its own masked window into
+   the baseline being scored, so it isn't hidden by masking, just no longer
+   the dominant noise source everywhere else.
+5. **Flag** when `|ratio_mean - 1| > --ratio-threshold` (default 0.05). This
    is an absolute cutoff, not a z-score -- the local-median design already
-   removes the need for a separately tuned statistic. On the validated
-   2026-07-17 SPO event, affected runs score 0.2-1.4 against ~0.001-0.06 for
-   quiet runs the same day, a clean order-of-magnitude separation.
-5. **Period grouping** (`--max-gap-hours`, default 1): flagged runs within
+   removes the need for a separately tuned statistic. On 60 quiet SPO
+   channel0 runs (June 2026) `ratio_mean` sits at 0.986-1.007 (std 0.004);
+   the validated 2026-07-13 event scores 0.89-0.90 (and 1.6 for the
+   tall-peak run one injection prior) -- a clean separation.
+6. **Period grouping** (`--max-gap-hours`, default 1): flagged runs within
    this gap merge into one `period_id`, so a multi-run event reads as one
    episode rather than a scatter of points.
 
@@ -202,9 +226,9 @@ neighbours on one side are themselves anomalous -- a median only resists a
 *minority* of outliers. Keep the window modest and review flagged clusters
 together rather than trusting a single isolated run's score.
 
-**What it does not catch:** peak-height dropouts with an otherwise-normal
-baseline, and anomalies confined to the post-peak region (only pre-peak is
-scored, per point 3). See `cats_peak_qc.py` for peak-height features.
+**What it does not catch:** peak-height dropouts (the peak region is masked
+out of the score entirely by design). See `cats_peak_qc.py` for peak-height
+features.
 
 ### Performance
 
@@ -217,8 +241,9 @@ hours. Lower `--workers` if the NFS server objects.
 ### hats.ng_chromatogram_qc
 
 Phase 1's output table -- one row per **scored chromatogram**, flagged or
-not. Created 2026-08 (Geoff + Claude); the DDL lives here because it is not
-otherwise captured in the repo:
+not. Created 2026-08 (Geoff + Claude), columns renamed 2026-08 when the
+algorithm changed from pre-peak-window difference to whole-trace masked
+ratio; the DDL lives here because it is not otherwise captured in the repo:
 
 ```sql
 CREATE TABLE hats.ng_chromatogram_qc (
@@ -227,8 +252,9 @@ CREATE TABLE hats.ng_chromatogram_qc (
     gcwerks_channel_num INT NOT NULL,
     analysis_time DATETIME NOT NULL,
     algo_name VARCHAR(32) NOT NULL,
-    pre_mean_abs_diff DOUBLE PRECISION,
-    pre_max_abs_diff DOUBLE PRECISION,
+    ratio_mean DOUBLE PRECISION,
+    ratio_std DOUBLE PRECISION,
+    n_masked_samples INT,
     outlier TINYINT NOT NULL DEFAULT 0,
     period_id INT NOT NULL DEFAULT 0,
     scanned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -244,8 +270,9 @@ CREATE TABLE hats.ng_chromatogram_qc (
 | `gcwerks_channel_num` | **Physical** channel dir (0-3), not the DB letter -- one GCwerks channel maps to different letters at SMO vs other sites, so the table records physical reality |
 | `analysis_time` | Chromatogram start, matching `ng_insitu_analysis.analysis_time` exactly (both derive from the file's `YYMMDD.HHMM`) |
 | `algo_name` | Detector that produced the row (`baseline` today) |
-| `pre_mean_abs_diff` | Mean abs deviation from the local median over the pre-peak window -- the value `--diff-threshold` tests |
-| `pre_max_abs_diff` | Max abs deviation over the same window |
+| `ratio_mean` | Mean of target/reference over every non-peak sample -- the value `--ratio-threshold` tests against 1.0 |
+| `ratio_std` | Std of the same ratio; not used to flag today, kept for review (a real event's std is typically far larger than a quiet run's, e.g. 0.52 vs ~0.01-0.08) |
+| `n_masked_samples` | How many samples this row's peakid-window mask excluded; a sanity check that the mask found the expected analyte windows |
 | `outlier` | 1 if it exceeded the threshold at scan time |
 | `period_id` | Groups consecutive flagged runs into one episode; 0 for unflagged |
 | `scanned_at` | When the row was last written |
@@ -270,7 +297,7 @@ GROUP BY inst_num, gcwerks_channel_num, algo_name;
 -- Flagged episodes for one site/channel
 SELECT period_id, COUNT(*) AS n,
        MIN(analysis_time) AS start, MAX(analysis_time) AS end,
-       MAX(pre_mean_abs_diff) AS worst
+       MAX(ABS(ratio_mean - 1.0)) AS worst
 FROM hats.ng_chromatogram_qc
 WHERE inst_num = 244 AND gcwerks_channel_num = 0 AND outlier = 1
 GROUP BY period_id ORDER BY start;
@@ -278,7 +305,7 @@ GROUP BY period_id ORDER BY start;
 -- Re-derive a different threshold without rescanning
 SELECT COUNT(*) FROM hats.ng_chromatogram_qc
 WHERE inst_num = 244 AND gcwerks_channel_num = 0
-  AND pre_mean_abs_diff > 0.25;
+  AND ABS(ratio_mean - 1.0) > 0.10;
 ```
 
 ## Other files in this directory
