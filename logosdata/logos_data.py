@@ -2081,7 +2081,17 @@ class MainWindow(QMainWindow):
             analysis_time,
             channel_number,
         )
-        analyte = self._current_analyte_name()
+        # Use the row's own analyte, not whatever happens to be the current
+        # Processing-tab selection: Chrom View navigation (arrow buttons) can
+        # walk across rows for a different parameter_num sharing the same
+        # physical GCwerks channel (e.g. CATS N2O/SF6 both on channel 'q'),
+        # and an unparameterized _current_analyte_name() would silently
+        # mislabel the peak window with the wrong analyte's peak position.
+        row_pnum = row.get("parameter_num")
+        if pd.notna(row_pnum):
+            analyte = self._current_analyte_name(int(row_pnum), data_channel)
+        else:
+            analyte = self._current_analyte_name()
         analyte_by_mass = None
         if self.instrument.inst_id == "m4":
             chromatogram = read_gcwerks_ms_chromatogram(path)
@@ -2764,18 +2774,25 @@ class MainWindow(QMainWindow):
     def _fmt_cal_plot(self, x, y):
         return f"x={x:0.3g}  y={y:0.3g}"
 
-    def _current_analyte_name(self):
-        """Return the real analyte label matching current parameter and channel."""
-        for name, pnum in self.analytes.items():
-            if int(pnum) != int(self.current_pnum):
+    def _current_analyte_name(self, pnum=None, channel=None):
+        """Return the real analyte label matching a parameter and channel.
+
+        Defaults to the current Processing-tab selection, but accepts an
+        explicit pnum/channel so callers scoring a specific row (which may
+        belong to a different analyte than the current selection, e.g. Chrom
+        View navigation across analytes sharing one physical GCwerks channel)
+        can resolve that row's own analyte instead.
+        """
+        pnum = self.current_pnum if pnum is None else pnum
+        channel = self.current_channel if channel is None else channel
+        for name, name_pnum in self.analytes.items():
+            if int(name_pnum) != int(pnum):
                 continue
             match = re.search(r'\(([^()]*)\)\s*$', name)
-            channel = match.group(1).strip() if match else None
-            if channel == self.current_channel:
+            name_channel = match.group(1).strip() if match else None
+            if name_channel == channel:
                 return name
-        return self.instrument.analytes_inv.get(
-            self.current_pnum, str(self.current_pnum)
-        )
+        return self.instrument.analytes_inv.get(pnum, str(pnum))
 
     def _fill_missing_insitu_mole_fractions(self) -> int:
         """Compute missing IE3/CATS mole fractions in memory for display."""

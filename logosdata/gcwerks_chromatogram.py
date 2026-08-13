@@ -542,7 +542,7 @@ def _peak_result_analyte_prefix(
             and _PEAKID_BARE_SUFFIX_ALIASES.get(normalized_prefix) == wanted_base
         )
         if wanted_channel is not None and (
-            channel == wanted_channel or attached_channel_match
+            (base == wanted_base and channel == wanted_channel) or attached_channel_match
         ):
             priority = 0
         elif base == wanted_base and channel is None:
