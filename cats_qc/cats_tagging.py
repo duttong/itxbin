@@ -221,17 +221,6 @@ def main() -> int:
                    help="cal_step: drop periods with fewer than this many rate-outlier cal points (default: 1)")
     p.add_argument("--scale-window-days", type=float, default=30.0,
                    help="cal_step: trailing local window (days) for the typical-noise scale (default: 30)")
-    p.add_argument("--baseline-neighbor-window", type=int, default=10,
-                   help="baseline: chromatograms before/after used to build the local "
-                        "median reference trace (default: 10)")
-    p.add_argument("--baseline-pre-peak-min", type=float, default=5.0,
-                   help="baseline: pre-peak window scored against the reference, in "
-                        "minutes from run start (default: 5)")
-    p.add_argument("--baseline-diff-threshold", type=float, default=0.15,
-                   help="baseline: absolute cutoff on mean|deviation| from the local "
-                        "median reference (default: 0.15)")
-    p.add_argument("--baseline-max-gap-hours", type=float, default=1.0,
-                   help="baseline: max gap between flagged runs in one period (default: 1.0)")
     p.add_argument("--dry-run", action="store_true", help="Report counts; write nothing")
     args = p.parse_args()
 
@@ -253,12 +242,6 @@ def main() -> int:
             max_gap_hours=args.max_gap_hours,
             min_cal_points=args.min_cal_points,
             scale_window_days=args.scale_window_days,
-        ),
-        "baseline": dict(
-            neighbor_window=args.baseline_neighbor_window,
-            pre_peak_min=args.baseline_pre_peak_min,
-            diff_threshold=args.baseline_diff_threshold,
-            max_gap_hours=args.baseline_max_gap_hours,
         ),
     }
 
