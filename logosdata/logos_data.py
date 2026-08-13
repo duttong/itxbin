@@ -3836,6 +3836,18 @@ class MainWindow(QMainWindow):
         """Return the shared tooltip/chromatogram information for a point."""
         meta = getattr(artist, "_meta", {})
 
+        # A queued click/pick event can be delivered after a redraw has
+        # already swapped in a differently-sized artist (e.g. tagging a point
+        # via MultiTagPanel triggers gc_plot() mid-interaction) -- point_index
+        # then no longer matches this artist's current _meta lists. Treat it
+        # like "no info for this point" rather than raising IndexError.
+        try:
+            n_points = len(artist.get_offsets())
+        except AttributeError:
+            n_points = min((len(v) for v in meta.values()), default=0)
+        if not (0 <= point_index < n_points):
+            return ""
+
         site = meta.get("site", [None])[point_index]
         analysis_time = meta.get("analysis_time", [None])[point_index]
         sample_time = meta.get("sample_datetime", [None])[point_index]
