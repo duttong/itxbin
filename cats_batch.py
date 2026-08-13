@@ -18,6 +18,10 @@ Usage examples:
   # Dry-run: compute fits and mole fractions, print summary, no DB writes
   python3 cats_batch.py -p 5 -c q --site brw -s 2025-01
 
+  # Same, by analyte display_name instead of parameter_num (mirrors
+  # --analyte/--channel in the cats_qc/ scripts)
+  python3 cats_batch.py --analyte N2O -c q --site brw -s 2025-01
+
   # Compute fits + mole fractions and write to DB for one analyte
   python3 cats_batch.py -p 5 -c q --site brw -s 2025-01 -i --fits
 
@@ -39,6 +43,48 @@ from ie3_cal_test import (
     filter_tanks,
     weekly_cal_fits,
 )
+
+
+def resolve_analyte(batch: "CATS_batch", analyte: str, channel: str | None) -> tuple[int, str | None]:
+    """Resolve an analyte display name (+ optional channel) to (pnum, channel).
+
+    Mirrors cats_qc/cats_tagging.py's resolve_analyte -- same lookup against
+    hats.analyte_list, same disambiguation rule (only require --channel when
+    the analyte reports on more than one channel for this site). Exits via
+    parser.error()-style argparse failure on an unknown analyte or an
+    unresolved channel ambiguity.
+    """
+    rows = batch.db.doquery(
+        "SELECT display_name, param_num, channel FROM hats.analyte_list "
+        f"WHERE inst_num = {batch.inst_num} "
+        f"AND display_name = '{analyte}';"
+    ) or []
+    if not rows:
+        available = sorted(batch.analytes.keys())
+        raise SystemExit(
+            f"No analyte named {analyte!r} for CATS-{batch.site.upper()}. "
+            f"Available: {available}"
+        )
+
+    by_channel = {(r['channel'] or None): int(r['param_num']) for r in rows}
+    if channel is not None:
+        channel = channel.lower().strip()
+        if channel not in by_channel:
+            raise SystemExit(
+                f"Analyte {analyte!r} has no channel {channel!r} on "
+                f"CATS-{batch.site.upper()}. Available channels: "
+                f"{sorted(c for c in by_channel if c)}"
+            )
+        return by_channel[channel], channel
+
+    if len(by_channel) > 1:
+        raise SystemExit(
+            f"Analyte {analyte!r} is present on multiple channels for "
+            f"CATS-{batch.site.upper()}: {sorted(c for c in by_channel if c)}. "
+            f"Pass -c/--channel to disambiguate."
+        )
+    (only_channel, pnum), = by_channel.items()
+    return pnum, only_channel
 
 
 class CATS_batch(CATS_Instrument):
@@ -426,13 +472,21 @@ class CATS_batch(CATS_Instrument):
             description=__doc__,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        parser.add_argument(
-            '-p', '--parameter-num', type=str, required=True,
+        target = parser.add_mutually_exclusive_group(required=True)
+        target.add_argument(
+            '-p', '--parameter-num', type=str, default=None,
             help="Parameter number or 'all' to process all analytes.",
+        )
+        target.add_argument(
+            '--analyte', type=str, default=None,
+            help="Analyte display_name from hats.analyte_list (e.g. N2O), "
+                 "as an alternative to -p/--parameter-num. Pass -c/--channel "
+                 "too if the analyte is on more than one channel for this site.",
         )
         parser.add_argument(
             '-c', '--channel', type=str, default=None,
-            help="GC channel (q, f, cc, a...).",
+            help="GC channel (q, f, cc, a...). Required with --analyte if "
+                 "that analyte is ambiguous across channels.",
         )
         parser.add_argument(
             '-s', '--start-date', type=str, default=None,
@@ -473,6 +527,14 @@ class CATS_batch(CATS_Instrument):
         # Re-init with correct site if overridden on command line
         if args.site != self.site:
             self.__init__(site=args.site)
+
+        # --analyte is an alternative spelling of -p/--parameter-num (mutually
+        # exclusive at the parser level); resolve it to a pnum now so
+        # everything downstream keeps using args.parameter_num/args.channel.
+        if args.analyte is not None:
+            pnum, resolved_channel = resolve_analyte(self, args.analyte, args.channel)
+            args.parameter_num = str(pnum)
+            args.channel = resolved_channel
 
         # Resolve date keywords
         if args.start_date and args.start_date.lower() == 'start':
