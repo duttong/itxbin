@@ -153,7 +153,7 @@ class TanksPlotter:
         sql = f"""
             SELECT
                 h.num,
-                h.fill_idx,
+                f.idx AS fill_idx,
                 f.serial_number,
                 f.`date`,
                 f.code,
@@ -1714,6 +1714,12 @@ class TanksWidget(QWidget):
         serial_safe = str(serial).replace("'", "''")
         inst_filter = self._calibration_inst_filter(inst_id)
         flag_filter = "c.flag IN ('.', 'M')" if include_flagged else "c.flag = '.'"
+        # num >= 3 is only a meaningful quality signal for instruments that
+        # actually vary it. The legacy 'm3' system recorded num=1 on every
+        # row it ever wrote (its entire 1994-2022 history) — for m3 that's
+        # just how the column is populated, not a low-confidence flag, so a
+        # uniform threshold would silently discard all m3 history. M4 does
+        # vary num meaningfully, so the threshold still applies there.
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
@@ -1731,7 +1737,7 @@ class TanksWidget(QWidget):
               AND c.mixratio IS NOT NULL
               AND c.mixratio > -99
               AND c.mixratio != 0
-              AND c.num >= 3
+              AND (c.inst = 'm3' OR c.num >= 3)
               AND {flag_filter}
             ORDER BY c.date, c.time;
         """
@@ -1860,12 +1866,22 @@ class TanksWidget(QWidget):
         # Include unflagged cals ('.') — plus flagged ('M') episodes when the
         # panel asks to include them — and drop 9'd/None values.  The selected
         # system list above keeps these candidates aligned with the plot.
+        # Also require num >= 3 for instruments where num is a meaningful
+        # quality signal, matching _fetch_calibration_df's plot query
+        # (below): a num=1/2 M4 row is a single/double-injection episode
+        # that never appears as a plotted point, so letting it feed the fit
+        # lets an invisible point silently skew the curve. The legacy 'm3'
+        # system is exempted: it recorded num=1 on every row it ever wrote
+        # (its entire 1994-2022 history), so for m3 that value carries no
+        # quality information and this threshold would otherwise discard
+        # all of it.
         allowed_flags = (".",) if exclude_flagged else (".", "M")
         candidates = [
             d for d in cals.cals
             if d.get("flag") in allowed_flags
             and d.get("mixratio") is not None
             and d.get("mixratio") > -800
+            and (d.get("inst") == "m3" or (d.get("num") or 0) >= 3)
         ]
         # Guard the shared ccg_calfit engine: it weights points by 1/unc**2,
         # so a cal with zero/blank uncertainty (single-injection num=1 rows,

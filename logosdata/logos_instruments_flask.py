@@ -13,7 +13,7 @@ from logos_instruments_core import HATS_DB_Functions, Normalizing
 
 class M4_Instrument(HATS_DB_Functions):
     """ Class for accessing M4 specific functions in the HATS database. """
-    
+
     RUN_TYPE_MAP = {
         "All": None,        # no filter
         "Flasks": 1,        # run_type_num
@@ -23,6 +23,11 @@ class M4_Instrument(HATS_DB_Functions):
     STANDARD_RUN_TYPE = 8
     CAL_RUN_TYPES = {7}  # run_type_num values written to hats.calibrations
     EXCLUDE = [6, 7]     # run_type_num to exclude from autoscaling (zero air and tank runs)
+    # Require >=3 unrejected injections for a calibration row, matching FE3.
+    # A num=1/2 group has too few injections for a meaningful stddev and
+    # can silently skew a caldrift fit even though it's excluded from the
+    # plotted calibration series (which also requires num >= 3).
+    MIN_CAL_INJECTIONS = 3
     
     MARKER_MAP = {
         # run_type_num
