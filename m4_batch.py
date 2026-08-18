@@ -75,7 +75,6 @@ def main():
             )
             if df.empty:
                 continue
-            df = m4.norm.apply_default_detrend_choice(df)
             df = m4.calc_mole_fraction(df)
             if args.insert:
                 m4.upsert_mole_fractions(df)
@@ -123,7 +122,6 @@ def main():
         if df.empty:
             return
 
-        df = m4.norm.apply_default_detrend_choice(df)
         df = m4.calc_mole_fraction(df)
 
         analytes = m4.analytes

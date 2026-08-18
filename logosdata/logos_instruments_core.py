@@ -1678,50 +1678,6 @@ class Normalizing():
         stats_df = pd.DataFrame(results)
         return stats_df, best_method, best_rms
 
-    def apply_default_detrend_choice(
-        self,
-        df: pd.DataFrame,
-        default_method: int = 2,
-        override_method: int = 1,
-        margin_frac: float = 0.20,
-        verbose: bool = False,
-    ) -> pd.DataFrame:
-        """
-        For each run_time currently at `default_method` (Lowess 5 point),
-        check whether `override_method` (Point-to-Point) beats it on Sample
-        Pair RMS by at least `margin_frac`. If so, switch that run_time's
-        detrend_method_num to override_method; otherwise leave it at the
-        default. Run_times already set to some other method (manually chosen
-        and saved via the GUI) are left untouched.
-
-        Returns a copy of df with 'detrend_method_num' updated and smoothed/
-        normalized_resp recomputed to match.
-        """
-        df = df.copy()
-        if df.empty or 'detrend_method_num' not in df.columns:
-            return df
-
-        default_mask = pd.to_numeric(df['detrend_method_num'], errors='coerce').eq(default_method)
-        if not default_mask.any():
-            return df
-
-        for rt in sorted(df.loc[default_mask, 'run_time'].unique()):
-            run_df = df.loc[df['run_time'] == rt]
-            stats_df, best_method, best_rms = self.detrend_stats_for_run(
-                run_df,
-                methods=(override_method, default_method),
-                default_method=default_method,
-                margin_frac=margin_frac,
-                verbose=verbose,
-            )
-            if best_method == override_method:
-                if verbose:
-                    print(f"run_time={rt}: switching detrend_method_num {default_method} -> {override_method} (RMS={best_rms:.6g})")
-                df.loc[df['run_time'] == rt, 'detrend_method_num'] = override_method
-
-        df = self.merge_smoothed_data(df)
-        return df
-
     def find_best_reftank_norm_resp(
         self,
         df: pd.DataFrame,
