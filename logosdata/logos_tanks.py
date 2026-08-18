@@ -261,7 +261,39 @@ CALDRIFT_FIT_DEGREES = [
 # assignment -- an update to an existing assignment always carries the
 # existing row's level forward untouched (see update_assignment_db() in
 # caldrift.py, which refuses to change level on an existing assignment).
+#
+# NOTE: distinct from CALDRIFT_CAL_LEVELS below. This one is a *write-time*
+# choice for a new hats.scale_assignments row; that one is a *read-time*
+# filter on hats.calibrations.cal_level. Same word, unrelated columns.
 CALDRIFT_LEVELS = ["Primary", "Secondary", "Tertiary", "Other"]
+
+# hats.calibrations.cal_level values, for the fit's scope filter and for
+# splitting the plotted series. A tank/fill's calibration history can mix
+# cal_level values over time (e.g. a PRS tank calibrated as 'secondary' for
+# a while, then 'tertiary' afterward, interleaved rather than a clean
+# cutover) -- those are different methodologies rather than one drifting
+# record, so blending them into a single fit or a single connected line
+# silently mixes them.
+#
+# Only PR1/PR2 populate this column (~131k rows of 'tertiary'/'secondary',
+# plus a little 'gravimetric'/'primary'); M4/FE3/BLD1/m3 rows are all NULL,
+# so both the filter and the series split are no-ops there.
+CALDRIFT_CAL_LEVELS = [
+    ("All", "all"),
+    ("Tertiary", "tertiary"),
+    ("Secondary", "secondary"),
+    ("Primary", "primary"),
+    ("Gravimetric", "gravimetric"),
+]
+
+# Display bucket for rows with a NULL cal_level (the norm for non-PRS
+# instruments). Kept out of CALDRIFT_CAL_LEVELS since it isn't a filter
+# choice -- only a label for the series split.
+CAL_LEVEL_NONE = "unspecified"
+
+# Fixed display order for split series, so a tank's levels sit together in
+# the legend in a stable order rather than whatever order the rows arrive in.
+CAL_LEVEL_ORDER = ["tertiary", "secondary", "primary", "gravimetric", CAL_LEVEL_NONE]
 
 
 class CaldriftPanel(QWidget):
@@ -372,6 +404,34 @@ class CaldriftPanel(QWidget):
         layout.addWidget(fit_group_box)
         self._fit_group.buttonToggled.connect(self._on_fit_degree_toggled)
 
+        # Scopes the fit to one hats.calibrations.cal_level. Distinct from the
+        # LEVEL box further down, which picks the level written to a new
+        # scale assignment -- this one only filters what the fit reads.
+        cal_level_box = QGroupBox("CAL LEVEL")
+        cal_level_row = QHBoxLayout()
+        cal_level_tooltip = (
+            "Restrict the caldrift fit to one hats.calibrations.cal_level. "
+            "A tank's history can mix levels (e.g. secondary and tertiary "
+            "interleaved), which are different methodologies -- All blends "
+            "them into one fit. Every level stays plotted either way, as its "
+            "own trace. No effect on instruments that don't record cal_level "
+            "(everything but Perseus)."
+        )
+        self._cal_level_buttons: dict[str, QRadioButton] = {}
+        self._cal_level_group = QButtonGroup(self)
+        for label, value in CALDRIFT_CAL_LEVELS:
+            rb = QRadioButton(label)
+            rb.setToolTip(cal_level_tooltip)
+            rb.setChecked(value == "all")
+            self._cal_level_group.addButton(rb)
+            self._cal_level_buttons[value] = rb
+            cal_level_row.addWidget(rb)
+        cal_level_row.addStretch()
+        cal_level_box.setLayout(cal_level_row)
+        cal_level_box.setToolTip(cal_level_tooltip)
+        layout.addWidget(cal_level_box)
+        self._cal_level_group.buttonToggled.connect(self._on_cal_level_toggled)
+
         self._refresh_btn = QPushButton("Refresh Fit")
         self._refresh_btn.setStyleSheet(
             "QPushButton { padding: 4px 8px; border: 1px solid #8bbf8b; "
@@ -425,6 +485,14 @@ class CaldriftPanel(QWidget):
         for value, rb in self._fit_buttons.items():
             if rb is button:
                 self.controller._caldrift_set_fit_degree(value)
+                break
+
+    def _on_cal_level_toggled(self, button, checked):
+        if not checked:
+            return
+        for value, rb in self._cal_level_buttons.items():
+            if rb is button:
+                self.controller._caldrift_set_cal_level(value)
                 break
 
     def _on_level_toggled(self, button, checked):
@@ -516,6 +584,7 @@ class TanksWidget(QWidget):
         self._caldrift_exclude_flagged: bool = True  # flagged episodes omitted from the fit
         self._caldrift_hide_flagged: bool = False    # flagged episodes removed from the figure
         self._caldrift_fit_degree: str = "auto"      # degree passed to ccg_calfit.fitCalibrations
+        self._caldrift_cal_level: str = "all"        # hats.calibrations.cal_level the fit is restricted to
         self._caldrift_level: str = "Tertiary"       # level for a first-time scale assignment
         self._caldrift_suppress_close_refresh = False  # True while tearing down the whole figure
         self.analytes = self.instrument.analytes or {} if self.instrument else {}
@@ -1729,7 +1798,8 @@ class TanksWidget(QWidget):
                 c.run_number,
                 c.inst,
                 c.species,
-                c.flag
+                c.flag,
+                c.cal_level
             FROM hats.calibrations c
             WHERE c.serial_number = '{serial_safe}'
               AND {inst_filter}
@@ -1814,7 +1884,7 @@ class TanksWidget(QWidget):
 
     def _overlay_caldrift_fit(self, ax, serial, species, fillcode, plot_df,
                               exclude_flagged: bool = True, parameter_num=None,
-                              degree: str = "auto"):
+                              degree: str = "auto", cal_level: str = "all"):
         """Overlay caldrift's drift fit (curve + legend entry) for one tank.
 
         Reuses ccg_cal_db.Calibrations (the same cal source caldrift reads) and
@@ -1831,6 +1901,12 @@ class TanksWidget(QWidget):
         (default) matches standalone caldrift's significance-cascade
         behavior; "mean"/"linear"/"quadratic" force that exact degree with
         no fallback. Driven by the caldrift panel's "Fit degree" radio buttons.
+
+        cal_level: restrict the fit to one hats.calibrations.cal_level
+        ("all" disables the filter). A tank's history can mix levels, which
+        are different methodologies -- see CALDRIFT_CAL_LEVELS. Driven by the
+        caldrift panel's "CAL LEVEL" radio buttons. A no-op for instruments
+        that never populate cal_level (everything but PR1/PR2).
         """
         if not species or not fillcode:
             return
@@ -1883,6 +1959,25 @@ class TanksWidget(QWidget):
             and d.get("mixratio") > -800
             and (d.get("inst") == "m3" or (d.get("num") or 0) >= 3)
         ]
+        # cal_level filter, applied only when a specific level was asked for.
+        # cals.cals rows come from hats.calibrations_fill_view via SELECT *,
+        # so they carry cal_level directly. Counted separately from
+        # n_excluded (which is a data-quality drop) because this is a
+        # deliberate scope choice, not a bad point -- the legend reports the
+        # two differently.
+        n_wrong_level = 0
+        if cal_level and cal_level != "all":
+            level_filtered = [
+                d for d in candidates if d.get("cal_level") == cal_level
+            ]
+            n_wrong_level = len(candidates) - len(level_filtered)
+            candidates = level_filtered
+            if not candidates:
+                self._toast(
+                    f"No {cal_level} calibrations for {serial} "
+                    f"({fillcode}); nothing to fit."
+                )
+                return
         # Guard the shared ccg_calfit engine: it weights points by 1/unc**2,
         # so a cal with zero/blank uncertainty (single-injection num=1 rows,
         # degenerate 0.0 values) yields an infinite weight -> NaN -> a LAPACK
@@ -1961,6 +2056,13 @@ class TanksWidget(QWidget):
         # coefficients exactly like the stored scale assignment below, so the
         # two results can be compared directly in the legend.
         excl = f", {n_excluded} excl." if n_excluded else ""
+        # Points dropped by the cal_level filter, reported separately from
+        # n_excluded so "other levels omitted" reads as the deliberate scope
+        # choice it is rather than as a data problem.
+        wrong = f", {n_wrong_level} other level" if n_wrong_level else ""
+        # Name the fitted level in the legend: with one trace per level on
+        # the figure, the red curve alone doesn't say which one it came from.
+        level_tag = f" [{cal_level}]" if cal_level and cal_level != "all" else ""
         parts = [f"c0={fit.coef0:.3f}±{fit.unc_c0:.3f}"]
         if fit.coef2 != 0.0:
             fit_type = "quad"
@@ -1973,7 +2075,10 @@ class TanksWidget(QWidget):
             parts.append(f"c1={fit.coef1:.5f}±{fit.unc_c1:.5f}")
         else:
             fit_type = "mean"
-        label = f"caldrift ({fit_type}): {', '.join(parts)}  (n={fit.n}{excl})"
+        label = (
+            f"caldrift ({fit_type}){level_tag}: {', '.join(parts)}  "
+            f"(n={fit.n}{excl}{wrong})"
+        )
 
         ax.plot(
             x_dates, ys,
@@ -2045,6 +2150,14 @@ class TanksWidget(QWidget):
         target_rb.blockSignals(True)
         target_rb.setChecked(True)
         target_rb.blockSignals(False)
+        # The panel outlives a replot but _caldrift_cal_level resets to "all"
+        # with it, so re-sync the radio or it would show a stale selection.
+        cal_level_buttons = self._caldrift_panel._cal_level_buttons
+        cal_rb = (cal_level_buttons.get(self._caldrift_cal_level)
+                  or cal_level_buttons["all"])
+        cal_rb.blockSignals(True)
+        cal_rb.setChecked(True)
+        cal_rb.blockSignals(False)
         self._caldrift_sync_level_control()
         ctx = self._caldrift_ctx or {}
         self._caldrift_panel.set_tank(ctx.get("serial"), ctx.get("fillcode"))
@@ -2161,6 +2274,15 @@ class TanksWidget(QWidget):
 
     def _caldrift_set_fit_degree(self, degree):
         self._caldrift_fit_degree = degree or "auto"
+        self._caldrift_refresh_fit()
+
+    def _caldrift_set_cal_level(self, cal_level):
+        """Restrict the fit to one hats.calibrations.cal_level ("all" = off).
+
+        Scopes the fit only -- every level stays plotted, so the fit's scope
+        stays visible against the data it omits.
+        """
+        self._caldrift_cal_level = cal_level or "all"
         self._caldrift_refresh_fit()
 
     def _caldrift_set_level(self, level):
@@ -2301,11 +2423,13 @@ class TanksWidget(QWidget):
 
     def _caldrift_on_panel_closed(self):
         """Panel closed: drop selection + highlight, and revert to
-        caldrift's own auto fit -- overriding the fit degree is only in
-        effect while the panel is open."""
+        caldrift's own auto fit over all cal_levels -- overriding the fit
+        degree or cal_level scope is only in effect while the panel is
+        open."""
         self._caldrift_selected = set()
         self._caldrift_redraw_highlight()
         self._caldrift_fit_degree = "auto"
+        self._caldrift_cal_level = "all"
         if not self._caldrift_suppress_close_refresh:
             self._caldrift_refresh_fit()
 
@@ -2447,27 +2571,71 @@ class TanksWidget(QWidget):
                     if "inst" in df.columns:
                         all_inst_dts.extend(zip(df["datetime"], df["inst"]))
 
-                    err_label = f"{serial} ({fill_code})" if fill_code else str(serial)
-                    label_to_serial[err_label] = serial
-                    err_container = ax.errorbar(
-                        df["datetime"],
-                        df["mixratio"],
-                        yerr=df["stddev"] if "stddev" in df.columns else None,
-                        fmt="o-",
-                        markersize=4,
-                        linewidth=1,
-                        capsize=3,
-                        label=err_label,
+                    base_label = f"{serial} ({fill_code})" if fill_code else str(serial)
+
+                    # One series per (tank, cal_level) rather than one per
+                    # tank. A tank/fill's history can mix cal_level values
+                    # over time (see CALDRIFT_CAL_LEVELS), which are separate
+                    # methodologies -- plotting them as a single connected
+                    # line makes the connecting segments cross between them
+                    # and reads as one continuous drift record. Splitting
+                    # gives each level its own line, marker colour and legend
+                    # entry, all still on the one shared y-axis.
+                    #
+                    # Rows with a NULL cal_level (every non-PRS instrument)
+                    # collapse to a single CAL_LEVEL_NONE group, so this is a
+                    # no-op there and those plots look exactly as before.
+                    if "cal_level" in df.columns:
+                        level_series = df["cal_level"].fillna(CAL_LEVEL_NONE)
+                        level_series = level_series.replace("", CAL_LEVEL_NONE)
+                    else:
+                        level_series = pd.Series(CAL_LEVEL_NONE, index=df.index)
+                    levels_present = list(dict.fromkeys(level_series))
+                    levels_present.sort(
+                        key=lambda lv: (
+                            CAL_LEVEL_ORDER.index(lv)
+                            if lv in CAL_LEVEL_ORDER else len(CAL_LEVEL_ORDER),
+                            str(lv),
+                        )
                     )
-                    line = err_container.lines[0] if err_container.lines else None
-                    line_color = line.get_color() if line is not None else "C0"
-                    if line is not None:
-                        line.set_picker(5)
-                        pick_map[line] = {
-                            "df": df,
-                            "serial": serial,
-                            "fill_code": fill_code,
-                        }
+                    # Only suffix the label when this tank actually spans more
+                    # than one level, so the common single-level legend (and
+                    # every M4/FE3 plot) stays exactly as it was.
+                    multi_level = len(levels_present) > 1
+                    line_color = "C0"
+
+                    for level in levels_present:
+                        sub = df[level_series == level]
+                        if sub.empty:
+                            continue
+                        err_label = (
+                            f"{base_label} — {level}" if multi_level else base_label
+                        )
+                        label_to_serial[err_label] = serial
+                        err_container = ax.errorbar(
+                            sub["datetime"],
+                            sub["mixratio"],
+                            yerr=sub["stddev"] if "stddev" in sub.columns else None,
+                            fmt="o-",
+                            markersize=4,
+                            linewidth=1,
+                            capsize=3,
+                            label=err_label,
+                        )
+                        line = err_container.lines[0] if err_container.lines else None
+                        if line is not None:
+                            # Flagged-point overlay below uses the colour of
+                            # the tank's first (or only) level.
+                            if level == levels_present[0]:
+                                line_color = line.get_color()
+                            line.set_picker(5)
+                            # Pick returns the clicked level's own subset, so
+                            # click-to-inspect reports the right episode.
+                            pick_map[line] = {
+                                "df": sub.reset_index(drop=True),
+                                "serial": serial,
+                                "fill_code": fill_code,
+                            }
                     any_data = True
 
                     if len(tank_keys) == 1:
@@ -2570,6 +2738,7 @@ class TanksWidget(QWidget):
                         exclude_flagged=self._caldrift_exclude_flagged,
                         parameter_num=param_num,
                         degree=self._caldrift_fit_degree,
+                        cal_level=self._caldrift_cal_level,
                     )
 
                 # Legend order: tank series first, then the caldrift fit, then
