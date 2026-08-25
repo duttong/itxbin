@@ -30,6 +30,8 @@ unused/
 hatsdb.py
 hats_db.py
 
+obsolete/
+
 tests/
 
 # Nuitka build output (compiled binaries, not source)
