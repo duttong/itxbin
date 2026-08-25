@@ -389,24 +389,29 @@ class LOGOSDataAgentTools:
         """
         Return recent flask-pair runs for a site.
 
-        Define "recent" from hats.Status_MetData.sample_datetime_utc, which is
-        the authoritative flask sample timestamp for the pair. Then enrich those
+        Define "recent" from hats.hatsflask_event_view.ev_datetime, the
+        authoritative flask sample timestamp for the pair. Then enrich those
         pairs with analysis/analyte counts from ng_data_processing_view.
         """
         site_code_norm = _normalize_site_code(site_code)
 
         pair_sql = """
             SELECT
-                PairID AS pair_id_num,
-                Station AS site,
-                sample_datetime_utc AS sample_datetime,
-                Flask_1,
-                Flask_2
-            FROM hats.Status_MetData
-            WHERE UPPER(Station) = %s
-              AND PairID IS NOT NULL
-              AND sample_datetime_utc IS NOT NULL
-            ORDER BY sample_datetime_utc DESC, PairID DESC
+                v.pair_id AS pair_id_num,
+                MAX(v.site) AS site,
+                MAX(v.ev_datetime) AS sample_datetime,
+                SUBSTRING_INDEX(
+                    GROUP_CONCAT(v.flask_id ORDER BY v.event_num SEPARATOR ','), ',', 1
+                ) AS Flask_1,
+                CASE WHEN COUNT(*) > 1 THEN SUBSTRING_INDEX(
+                    GROUP_CONCAT(v.flask_id ORDER BY v.event_num DESC SEPARATOR ','), ',', 1
+                ) END AS Flask_2
+            FROM hats.hatsflask_event_view v
+            WHERE UPPER(v.site) = %s
+              AND v.pair_id IS NOT NULL
+              AND v.ev_datetime IS NOT NULL
+            GROUP BY v.pair_id
+            ORDER BY sample_datetime DESC, pair_id_num DESC
             LIMIT %s;
         """
 
@@ -498,24 +503,29 @@ class LOGOSDataAgentTools:
         """Return flask IDs, flask type, and met data for a flask pair."""
         sql = """
             SELECT
-                PairID AS pair_id_num,
-                Station AS site_code,
-                Flask_1,
-                Flask_2,
-                Flask_Type,
-                Sample_Date,
-                sample_datetime_utc,
-                Wind_Speed,
-                Wind_Direction,
-                Air_Temp,
-                Dew_Point,
-                Precipitation,
-                Sky,
-                Comments,
-                Operator
-            FROM hats.Status_MetData
-            WHERE PairID = %s
-            ORDER BY sample_datetime_utc DESC
+                v.pair_id AS pair_id_num,
+                MAX(v.site) AS site_code,
+                SUBSTRING_INDEX(
+                    GROUP_CONCAT(v.flask_id ORDER BY v.event_num SEPARATOR ','), ',', 1
+                ) AS Flask_1,
+                CASE WHEN COUNT(*) > 1 THEN SUBSTRING_INDEX(
+                    GROUP_CONCAT(v.flask_id ORDER BY v.event_num DESC SEPARATOR ','), ',', 1
+                ) END AS Flask_2,
+                MAX(i.flask_type) AS Flask_Type,
+                DATE(MAX(v.ev_datetime)) AS Sample_Date,
+                MAX(v.ev_datetime) AS sample_datetime_utc,
+                MAX(v.wind_speed) AS Wind_Speed,
+                MAX(v.wind_direction) AS Wind_Direction,
+                MAX(v.air_temp) AS Air_Temp,
+                MAX(v.dew_point) AS Dew_Point,
+                MAX(v.precipitation) AS Precipitation,
+                MAX(v.sky) AS Sky,
+                MAX(v.comments) AS Comments,
+                MAX(v.operator) AS Operator
+            FROM hats.hatsflask_event_view v
+            LEFT JOIN hats.hatsflask_inv i ON i.id = v.flask_id
+            WHERE v.pair_id = %s
+            GROUP BY v.pair_id
             LIMIT 1;
         """
         rows = self.db.doquery(sql, [int(pair_id_num)])
@@ -553,7 +563,7 @@ class LOGOSDataAgentTools:
         }
 
     def get_recent_flask_pairs_with_metadata(self, site_code: str, limit: int = 10) -> dict[str, Any]:
-        """Return recent flask pairs and enrich them with Status_MetData metadata."""
+        """Return recent flask pairs and enrich them with hatsflask metadata."""
         pairs_payload = self.get_recent_flask_pairs(site_code, limit=limit)
         rows: list[dict[str, Any]] = []
 
@@ -577,7 +587,7 @@ class LOGOSDataAgentTools:
         }
 
     def get_recent_processed_flask_pairs_with_metadata(self, site_code: str, limit: int = 10) -> dict[str, Any]:
-        """Return recent processed/analyzed flask pairs enriched with Status_MetData metadata."""
+        """Return recent processed/analyzed flask pairs enriched with hatsflask metadata."""
         pairs_payload = self.get_recent_processed_flask_pairs(site_code, limit=limit)
         rows: list[dict[str, Any]] = []
 
