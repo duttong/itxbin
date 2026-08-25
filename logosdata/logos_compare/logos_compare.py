@@ -880,54 +880,25 @@ class LogosCompareWindow(QMainWindow):
         pnum = int(selection.parameter_num)
         start = self.start_year.value()
         end = self.end_year.value()
-        frames = []
         loader = self.loaders[loader_key]
-        regular_sites = [s for s in sites if s not in PFP_SITES]
-        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
-
-        pfp_base_sites = set(PFP_SITES.values())
-        has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
-
-        if regular_sites:
-            sql = f"""
-            SELECT UPPER(v.site) AS site,
-                DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(v.pair_avg) AS monthly_avg,
-                STDDEV(v.pair_avg) AS monthly_std,
-                COUNT(*) AS n
-            FROM hats.ng_pair_avg_view v
-            WHERE {regular_condition}
-              AND v.parameter_num = %s
-              AND UPPER(v.site) IN ({",".join(["%s"] * len(regular_sites))})
-              {pfp_exclusion}
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY site, month_start ORDER BY site, month_start;
-            """
-            params = [pnum] + regular_sites + [start, end]
-            frames.append(pd.DataFrame(loader.instrument.doquery(sql, params)))
-
-        for pfp_site in pfp_pseudo_sites:
-            base_site = PFP_SITES[pfp_site]
-            sql = f"""
-            SELECT %s AS site,
-                DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(v.pair_avg) AS monthly_avg,
-                STDDEV(v.pair_avg) AS monthly_std,
-                COUNT(*) AS n
-            FROM hats.ng_pair_avg_view v
-            WHERE {pfp_condition}
-              AND v.parameter_num = %s
-              AND v.sample_type = 'PFP'
-              AND v.site = %s
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY month_start ORDER BY month_start;
-            """
-            params = [pfp_site, pnum, base_site, start, end]
-            frames.append(pd.DataFrame(loader.instrument.doquery(sql, params)))
-
-        non_empty = [frame for frame in frames if not frame.empty]
-        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+        sites = [s for s in sites if s not in PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT UPPER(v.site) AS site,
+            DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+            AVG(v.pair_avg) AS monthly_avg,
+            STDDEV(v.pair_avg) AS monthly_std,
+            COUNT(*) AS n
+        FROM hats.ng_pair_avg_view v
+        WHERE {regular_condition}
+          AND v.parameter_num = %s
+          AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start ORDER BY site, month_start;
+        """
+        params = [pnum] + sites + [start, end]
+        df = pd.DataFrame(loader.instrument.doquery(sql, params))
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df

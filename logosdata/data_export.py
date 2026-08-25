@@ -30,9 +30,9 @@ def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
         warnings.simplefilter('ignore', FutureWarning)
         return pd.concat(non_empty, ignore_index=True)
 
-# Pseudo-site names that select PFP-only data from the named base site.
-# Must stay consistent with the definition in logos_timeseries.py.
-_PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
+# Pseudo-sites are populated from ng_data_processing_view. They have no rows
+# in ng_pair_avg_view because PFP processing rows have no pair ID.
+_PFP_SITES = {'MLO_PFP', 'MKO_PFP'}
 
 
 HEADER_FILE = Path(__file__).parent / 'mstar_header.txt'
@@ -108,50 +108,24 @@ class MstarDataExporter:
     def query_data(self) -> pd.DataFrame:
         """Query ng_pair_avg_view for all M* instruments, returning a DataFrame.
 
-        Regular sites use sample_type IN ('S', 'G', 'S85', 'SA').  PFP pseudo-sites
-        (e.g. MLO_PFP) query the base site with sample_type='PFP' and
-        relabel the site column so the output carries the pseudo-site name.
+        PFP pseudo-sites are omitted because they have no pair-average rows.
         """
         insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
-        regular_sites = [s for s in self.sites if s not in _PFP_SITES]
-        pfp_pseudo_sites = [s for s in self.sites if s in _PFP_SITES]
-
-        frames = []
-
-        if regular_sites:
-            site_list = ', '.join(f"'{s}'" for s in regular_sites)
-            sql = f"""
-            SELECT *
-            FROM hats.ng_pair_avg_view
-            WHERE inst_id IN ({insts})
-              AND parameter_num = %s
-              AND sample_type IN ('S', 'G', 'S85', 'SA')
-              AND UPPER(site) IN ({site_list})
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
-            ORDER BY site, sample_datetime
-            """
-            rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
-            frames.append(pd.DataFrame(rows) if rows else pd.DataFrame())
-
-        for pfp_site in pfp_pseudo_sites:
-            base_site = _PFP_SITES[pfp_site]
-            sql = f"""
-            SELECT *
-            FROM hats.ng_pair_avg_view
-            WHERE inst_id IN ({insts})
-              AND parameter_num = %s
-              AND sample_type = 'PFP'
-              AND UPPER(site) = '{base_site}'
-              AND YEAR(sample_datetime) BETWEEN %s AND %s
-            ORDER BY sample_datetime
-            """
-            rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
-            df_pfp = pd.DataFrame(rows) if rows else pd.DataFrame()
-            if not df_pfp.empty:
-                df_pfp['site'] = pfp_site
-            frames.append(df_pfp)
-
-        df = _concat_frames(frames)
+        sites = [s for s in self.sites if s not in _PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        site_list = ', '.join(f"'{s}'" for s in sites)
+        sql = f"""
+        SELECT *
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id IN ({insts})
+          AND parameter_num = %s
+          AND UPPER(site) IN ({site_list})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        ORDER BY site, sample_datetime
+        """
+        rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
+        df = pd.DataFrame(rows) if rows else pd.DataFrame()
         if not df.empty:
             df['sample_datetime'] = pd.to_datetime(df['sample_datetime'])
             df = df.sort_values(['site', 'sample_datetime'])
@@ -354,12 +328,11 @@ class FecdDataExporter:
 
         # ── OTTO: all years, no channel filter ───────────────────────────────
         sql = """
-        SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, sample_type,
+        SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                'OTTO' AS instrument
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) = %s
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY sample_datetime
@@ -376,12 +349,11 @@ class FecdDataExporter:
 
             # Before preferred channel start_date: no channel filter
             sql_before = """
-            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, sample_type,
+            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
               AND parameter_num = %s
-              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
               AND sample_datetime < %s
@@ -395,13 +367,12 @@ class FecdDataExporter:
 
             # From preferred channel start_date onward: filter to preferred channel
             sql_after = """
-            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, sample_type,
+            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
               AND parameter_num = %s
               AND channel = %s
-              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
               AND sample_datetime >= %s
@@ -416,12 +387,11 @@ class FecdDataExporter:
         else:
             # No preferred channel: query FE3 without channel filter
             sql = """
-            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, sample_type,
+            SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
               AND parameter_num = %s
-              AND sample_type IN ('S', 'G', 'S85', 'SA')
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
             ORDER BY sample_datetime

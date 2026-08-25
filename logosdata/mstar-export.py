@@ -124,8 +124,7 @@ def main(
     insts = ', '.join(f"'{i}'" for i in INSTRUMENTS)
     where = (
         f"inst_id IN ({insts}) "
-        f"AND parameter = '{parameter}' "
-        f"AND sample_type IN ('S', 'G', 'S85', 'SA')"
+        f"AND parameter = '{parameter}'"
     )
     if site:
         where += f" AND UPPER(site) = '{site.upper()}'"

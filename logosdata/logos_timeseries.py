@@ -71,8 +71,8 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'BLD', 'MLO_PFP', 'MKO_PFP']
 
 # Pseudo-site names that represent PFP-only subsets of the named base site.
-# These do not exist in gmd.site; they are handled by filtering run_type_num=5
-# (ng_data_processing_view) or sample_type='PFP' (ng_pair_avg_view).
+# These do not exist in gmd.site. Processing-view queries use run_type_num=5;
+# ng_pair_avg_view has no PFP rows because PFP processing rows have no pair ID.
 PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 
 # Sites only shown when FE3 is active (OTTO predecessor data only).
@@ -2064,7 +2064,7 @@ class TimeseriesWidget(QWidget):
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
-        PFP pseudo-sites (MLO_PFP, MKO_PFP) use sample_type='PFP' filter."""
+        PFP pseudo-sites have no pair-average rows and are omitted."""
         if self.instrument.inst_num == 236:
             return pd.DataFrame()
 
@@ -2087,7 +2087,7 @@ class TimeseriesWidget(QWidget):
 
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = self.get_active_sites()
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
 
@@ -2097,53 +2097,24 @@ class TimeseriesWidget(QWidget):
                 ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
             END"""
 
-        frames = []
-        regular_sites = [s for s in sites if s not in PFP_SITES]
-        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
-
-        # For sites that have a PFP pseudo-site counterpart, exclude PFP rows so
-        # the means here cover flask-only data (PFP data belongs to the pseudo-site).
-        pfp_base_sites = set(PFP_SITES.values())
-        has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
-
-        if regular_sites:
-            sql = f"""
-            SELECT v.site, {_period_expr} AS period_start,
-                AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
-            FROM hats.ng_pair_avg_view v
-            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-              AND v.site IN ({",".join(["%s"] * len(regular_sites))})
-              {pfp_exclusion}
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY v.site, period_start ORDER BY v.site, period_start;
-            """
-            params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
-            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
-
-        for pfp_site in pfp_pseudo_sites:
-            base_site = PFP_SITES[pfp_site]
-            sql = f"""
-            SELECT %s AS site, {_period_expr} AS period_start,
-                AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
-            FROM hats.ng_pair_avg_view v
-            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-              AND v.sample_type = 'PFP' AND v.site = %s
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY period_start ORDER BY period_start;
-            """
-            params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
-            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
-
-        non_empty = [f for f in frames if not f.empty]
-        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+        sql = f"""
+        SELECT v.site, {_period_expr} AS period_start,
+            AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
+        FROM hats.ng_pair_avg_view v
+        WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+          AND v.site IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        GROUP BY v.site, period_start ORDER BY v.site, period_start;
+        """
+        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["period_start"] = pd.to_datetime(df["period_start"])
         return df
 
     def query_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3/CATS handled via insitu).
-        PFP pseudo-sites (MLO_PFP, MKO_PFP) use sample_type='PFP' filter."""
+        PFP pseudo-sites have no pair-average rows and are omitted."""
         insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
             if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
         if self.instrument.inst_num in insitu_inst_nums:
@@ -2168,49 +2139,21 @@ class TimeseriesWidget(QWidget):
 
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = self.get_active_sites()
+        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
 
-        frames = []
-        regular_sites = [s for s in sites if s not in PFP_SITES]
-        pfp_pseudo_sites = [s for s in sites if s in PFP_SITES]
-
-        # Exclude PFP rows from base sites that have a PFP pseudo-site counterpart
-        pfp_base_sites = set(PFP_SITES.values())
-        has_pfp_base = any(s in pfp_base_sites for s in regular_sites)
-        pfp_exclusion = "AND v.sample_type IN ('S', 'G', 'S85', 'SA')" if has_pfp_base else ""
-
-        if regular_sites:
-            sql = f"""
-            SELECT v.site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
-            FROM hats.ng_pair_avg_view v
-            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-              AND v.site IN ({",".join(["%s"] * len(regular_sites))})
-              {pfp_exclusion}
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY v.site, month_start ORDER BY v.site, month_start;
-            """
-            params = [self.instrument.inst_num, pnum] + regular_sites + [start, end]
-            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
-
-        for pfp_site in pfp_pseudo_sites:
-            base_site = PFP_SITES[pfp_site]
-            sql = f"""
-            SELECT %s AS site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
-                AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
-            FROM hats.ng_pair_avg_view v
-            WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-              AND v.sample_type = 'PFP' AND v.site = %s
-              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-            GROUP BY month_start ORDER BY month_start;
-            """
-            params = [pfp_site, self.instrument.inst_num, pnum, base_site, start, end]
-            frames.append(pd.DataFrame(self.instrument.doquery(sql, params)))
-
-        non_empty = [f for f in frames if not f.empty]
-        df = pd.concat(non_empty, ignore_index=True) if non_empty else pd.DataFrame()
+        sql = f"""
+        SELECT v.site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+            AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
+        FROM hats.ng_pair_avg_view v
+        WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
+          AND v.site IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        GROUP BY v.site, month_start ORDER BY v.site, month_start;
+        """
+        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
@@ -2437,7 +2380,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY site, sample_datetime
@@ -2475,7 +2417,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, period_start
@@ -2510,7 +2451,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id IN ('M1', 'M3')
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, month_start
@@ -2540,7 +2480,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         ORDER BY site, sample_datetime
@@ -2577,7 +2516,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, period_start
@@ -2611,7 +2549,6 @@ class TimeseriesWidget(QWidget):
         FROM hats.ng_pair_avg_view
         WHERE inst_id = 'OTTO'
           AND parameter_num = %s
-          AND sample_type IN ('S', 'G', 'S85', 'SA')
           AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(sample_datetime) BETWEEN %s AND %s
         GROUP BY site, month_start

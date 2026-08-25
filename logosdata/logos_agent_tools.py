@@ -671,7 +671,7 @@ class LOGOSDataAgentTools:
                 pair_avg AS mole_fraction,
                 n AS num_analyses,
                 pair_stdv AS stddev_mole_fraction,
-                sample_type,
+                '' AS sample_type,
                 Wind_Speed AS wind_speed,
                 Wind_Direction AS wind_direction
             FROM hats.ng_pair_avg_view
@@ -735,7 +735,7 @@ class LOGOSDataAgentTools:
                 pair_avg,
                 n,
                 pair_stdv,
-                sample_type,
+                '' AS sample_type,
                 Wind_Speed,
                 Wind_Direction
             FROM hats.ng_pair_avg_view
