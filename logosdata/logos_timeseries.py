@@ -2159,14 +2159,19 @@ class TimeseriesWidget(QWidget):
         return df
 
     def query_pr1_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query PR1 monthly means via hats.prs_data_view.
+        """Query combined PR1+PR2 ("PRS") monthly means via hats.prs_data_view.
+
+        PR1 (inst_num=58) and PR2 (inst_num=238) are two different physical
+        mass spectrometers that share the same GCwerks export pipeline; PR2
+        came online 2026-04-23. Both are queried together here so the "PRS"
+        program in logos_compare doesn't silently drop PR2 data.
 
         The view resolves sample_datetime from Status_MetData (HATS) or
         flask_event_view (PFP/CCGG), and computes rejected from both HATS
         flags_internal tags and ccgg flask_event/flask_data reject tags.
         Aggregation is per-event on sample_datetime, then per calendar month.
         """
-        if self.instrument.inst_num != 58:
+        if self.instrument.inst_num not in (58, 238):
             return pd.DataFrame()
 
         analyte = analyte or self.analyte_combo.currentText()
@@ -2199,7 +2204,7 @@ class TimeseriesWidget(QWidget):
                     v.event_num,
                     AVG(v.value) AS event_avg
                 FROM hats.prs_data_view v
-                WHERE v.inst_num = 58
+                WHERE v.inst_num IN (58, 238)
                   AND v.parameter_num = %s
                   AND v.sample_type = 'HATS'
                   AND v.event_num > 0
@@ -2234,7 +2239,7 @@ class TimeseriesWidget(QWidget):
                     v.event_num,
                     AVG(v.value) AS event_avg
                 FROM hats.prs_data_view v
-                WHERE v.inst_num = 58
+                WHERE v.inst_num IN (58, 238)
                   AND v.parameter_num = %s
                   AND v.sample_type = 'PFP'
                   AND v.event_num > 0
