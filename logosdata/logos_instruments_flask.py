@@ -801,9 +801,56 @@ class FE3_Instrument(HATS_DB_Functions):
         return df
 
 class Perseus_Instrument(HATS_DB_Functions):
-    """Combined Perseus PR1/PR2 instrument facade for tank/calibration tools."""
+    """Combined Perseus PR1/PR2 instrument facade.
 
-    RUN_TYPE_MAP = {"All": None}
+    Serves the tank/calibration tools and read-only Processing-tab loading:
+    responses, normalized responses, and mole fractions all come from the
+    stored legacy processing chain (prs_data_view / prs_corrected_response_view)
+    rather than being recomputed here.
+    """
+
+    # Perseus has no run_type_num column; RUN_TYPE_MAP values are
+    # hats.analysis.sample_type strings applied as a filter in load_data.
+    RUN_TYPE_MAP = {
+        "All": None,
+        "Flasks": 'HATS',
+        "PFPs": 'PFP',
+        "Tanks": 'tank',
+        "CCGG": 'CCGG',
+    }
+    # sample_type -> synthetic run_type_num so the GUI's numeric plumbing
+    # (marker maps, PFP stats skip, autoscale excludes) keeps working.
+    SAMPLE_TYPE_NUM = {
+        'HATS': 1, 'cal': 2, 'CCGG': 3, 'test': 4, 'PFP': 5,
+        'blank': 6, 'tank': 7, 'std': 8, 'burn': 9,
+    }
+    STANDARD_RUN_TYPE = 8       # 'std' in SAMPLE_TYPE_NUM
+    STANDARD_PORT_NUM = 7       # reference tank port
+    EXCLUDE = [2, 4, 6, 7, 9]   # cal/test/blank/tank/burn: keep out of autoscale
+    BASE_MARKER_SIZE = 40       # smaller than the 60 default -- prs loads a
+                                 # full month of points per plot, not one run
+    # Every group except 'std' (8) is consolidated into one legend/plot entry
+    # spanning many distinct samples/cylinders/sites -- a mean+-std across
+    # them is meaningless. Only the reference tank the data is normalized to
+    # (std, run_type_num 8) gets a stats line.
+    STATS_RUN_TYPES = (8,)
+    # S0-S5 "beginning of a new sensitivity level" tags delimit the segments
+    # the reference-tank smoothing runs between; they serve as run_time here.
+    S_TAG_NUMS = (271, 272, 273, 274, 275, 276)
+
+    MARKER_MAP = {
+        # synthetic run_type_num
+        0: '*',   # unknown
+        1: 'o',   # HATS flask
+        2: '^',   # cal tank
+        3: 'h',   # CCGG flask
+        4: 'P',   # test
+        5: 's',   # PFP
+        6: 'v',   # blank
+        7: '^',   # tank
+        8: 'D',   # std
+        9: 'v',   # burn
+    }
 
     def __init__(self):
         super().__init__(inst_id='pr1')
@@ -812,6 +859,8 @@ class Perseus_Instrument(HATS_DB_Functions):
         self.inst_nums = (self.INSTRUMENTS['pr1'], self.INSTRUMENTS['pr2'])
         self.calibration_inst_ids = ('PR1', 'PR2')
         self.start_date = '20100101'
+        self.gc_dir = Path("/hats/gc/pr1")
+        self.response_type = 'response'     # column name built in load_data
         self.analytes = self.query_analytes()
         self.molecules = self.analytes.keys()
         self.analytes_inv = {v: k for k, v in self.analytes.items()}
@@ -829,6 +878,382 @@ class Perseus_Instrument(HATS_DB_Functions):
         if df.empty:
             return {}
         return dict(zip(df['display_name'], df['param_num']))
+
+    def _segment_breaks(self, pnum, inst_num, start_date=None, end_date=None):
+        """Return sorted S-tag (271-276) datetimes for one parameter on one
+        instrument.
+
+        These mark "beginning of a new sensitivity level" -- the boundaries
+        the legacy reference-tank smoothing runs between -- and stand in for
+        run_time, which Perseus has no native concept of. Looks back up to 60
+        days before start_date (segments run up to ~42 days long) so the
+        carry-in break for a segment that started before the window is still
+        found, and a day past end_date for a break landing on the edge.
+
+        PR1 (58) and PR2 (238) are different physical mass spectrometers, not
+        one relabeled system -- a segment must never be computed as spanning
+        both, so this always filters to a single inst_num rather than the
+        pooled ``inst_nums`` tuple.
+        """
+        date_filter = ""
+        params = [pnum, inst_num]
+        if start_date is not None and end_date is not None:
+            date_filter = "AND a.analysis_datetime BETWEEN %s AND %s"
+            params += [
+                (pd.Timestamp(start_date) - pd.Timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S'),
+                (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S'),
+            ]
+        tag_ph = ",".join(str(t) for t in self.S_TAG_NUMS)
+        sql = f"""
+            SELECT DISTINCT a.analysis_datetime
+            FROM hats.flags_internal f
+            JOIN hats.analysis a ON a.num = f.analysis_num
+            WHERE f.parameter_num = %s
+                AND a.inst_num = %s
+                AND f.tag_num IN ({tag_ph})
+                {date_filter}
+            ORDER BY a.analysis_datetime;
+        """
+        rows = self.doquery(sql, params)
+        if not rows:
+            return pd.DatetimeIndex([])
+        return pd.DatetimeIndex(pd.to_datetime([r['analysis_datetime'] for r in rows], utc=True))
+
+    def _assign_run_time(self, df, pnum, start_date=None, end_date=None):
+        """Assign df['run_time'] = the S-tag segment start <= analysis_datetime.
+
+        Rows preceding the first known break fall back to the first
+        analysis_datetime present *for that instrument* in df (there is no
+        earlier boundary to anchor to). PR1/PR2 rows are resolved against
+        each instrument's own break list independently -- see
+        _segment_breaks().
+        """
+        df['run_time'] = pd.Series(pd.NaT, index=df.index, dtype='datetime64[ns, UTC]')
+        for inst_num, idx in df.groupby('inst_num').groups.items():
+            breaks = self._segment_breaks(pnum, int(inst_num), start_date, end_date)
+            dt = df.loc[idx, 'analysis_datetime']
+            if breaks.empty:
+                df.loc[idx, 'run_time'] = dt.min()
+                continue
+            positions = np.searchsorted(breaks.values, dt.values, side='right') - 1
+            run_time = pd.Series(pd.NaT, index=idx, dtype='datetime64[ns, UTC]')
+            found = positions >= 0
+            run_time.loc[dt.index[found]] = breaks[positions[found]]
+            if (~found).any():
+                run_time.loc[dt.index[~found]] = dt.min()
+            df.loc[idx, 'run_time'] = run_time
+        return df
+
+    def _resolve_load_dates(self, pnum, start_date, end_date):
+        """Normalize start_date/end_date (YYMM or full datetime) to a
+        concrete (start, end) datetime-string range shared by every
+        load_data* variant.
+
+        When start_date == end_date, resolves to the full S-tag segment
+        [this break, next break) containing that timestamp, so a
+        click-to-zoom / carry-in load pulls the whole sensitivity level
+        rather than just the clicked instant. PR1/PR2 are different
+        instruments, so the timestamp's own inst_num is looked up first
+        rather than pooling both instruments' segment breaks together.
+        """
+        if end_date is None:
+            end_date = datetime.today()
+        elif len(end_date) == 4:
+            # YYMM -> last instant of that month
+            month_start = datetime.strptime(end_date, "%y%m")
+            end_date = (month_start + pd.offsets.MonthEnd(1)).strftime("%Y-%m-%d 23:59:59")
+        # else: expecting '%Y-%m-%d %H:%M:%S' format
+
+        if start_date is None:
+            start_date = end_date - timedelta(days=30)
+        elif len(start_date) == 4:
+            start_date = datetime.strptime(start_date, "%y%m")
+            start_date = start_date.strftime("%Y-%m-01")
+        # else: expecting '%Y-%m-%d %H:%M:%S' format
+
+        exact_segment = (str(start_date) == str(end_date))
+        if exact_segment:
+            target = pd.Timestamp(start_date, tz='UTC')
+            target_naive = target.tz_convert(None).strftime('%Y-%m-%d %H:%M:%S')
+            inst_row = self.doquery(
+                "SELECT inst_num FROM hats.analysis "
+                "WHERE inst_num IN (%s, %s) AND analysis_datetime = %s LIMIT 1",
+                [self.inst_nums[0], self.inst_nums[1], target_naive],
+            )
+            target_inst_num = inst_row[0]['inst_num'] if inst_row else self.inst_nums[0]
+            breaks = self._segment_breaks(
+                pnum,
+                target_inst_num,
+                (target - pd.Timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S'),
+                (target + pd.Timedelta(days=60)).strftime('%Y-%m-%d %H:%M:%S'),
+            )
+            pos = np.searchsorted(breaks.values, np.array([target.to_datetime64()]), side='right')[0] - 1
+            if pos >= 0:
+                seg_start = breaks[pos]
+                seg_end = breaks[pos + 1] if pos + 1 < len(breaks) else (target + pd.Timedelta(days=1))
+            else:
+                seg_start = target - pd.Timedelta(hours=1)
+                seg_end = target + pd.Timedelta(hours=1)
+            start_date = seg_start.strftime('%Y-%m-%d %H:%M:%S')
+            end_date = (seg_end - pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')
+
+        return start_date, end_date
+
+    def load_data(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
+        """Load data from prs_data_view / prs_corrected_response_view.
+
+        Read-only: response, normalized_resp ("ratio"), and mole_fraction all
+        come from the already-computed legacy processing chain. run_type_num
+        here is actually a sample_type string (see RUN_TYPE_MAP).
+
+        Args:
+            pnum (int): Parameter number to filter data.
+            channel: unused (Perseus has no channel concept); accepted for
+                signature compatibility with the GUI's generic call site.
+            run_type_num (str, optional): sample_type filter, e.g. 'PFP'.
+            start_date (str, optional): Start date; YYMM or full datetime.
+                When equal to end_date, loads the full S-tag segment whose
+                run_time equals that timestamp (click-to-zoom / carry-in load).
+            end_date (str, optional): End date; YYMM or full datetime.
+        """
+        start_date, end_date = self._resolve_load_dates(pnum, start_date, end_date)
+
+        run_type_filter = ""
+        if run_type_num is not None:
+            safe_type = str(run_type_num).replace("'", "''")
+            run_type_filter = f"AND v.sample_type = '{safe_type}'"
+
+        if verbose:
+            print(f"Loading data from {start_date} to {end_date} for parameter {pnum}")
+
+        # prs_data_view.rejected folds in tag 318 ("Preliminary data, not
+        # ready for release"), an automated release-status marker rather than
+        # a quality rejection -- it fires on huge swaths of otherwise-good
+        # data. rejected_other_than_preliminary is the view's own column that
+        # excludes just that tag; use it here instead.
+        query = f"""
+            SELECT
+                v.analysis_num, v.analysis_datetime, v.inst_num, v.inst_id,
+                v.sample_id, v.pair_id_num, v.site, v.sample_datetime,
+                v.sample_type, v.port, v.standard_serial_num,
+                v.value, v.rejected_other_than_preliminary AS rejected,
+                v.suspicious, v.interp,
+                c.blank_corrected_response, c.interpolated_std_response,
+                c.normalized_response
+            FROM hats.prs_data_view v
+            LEFT JOIN hats.prs_corrected_response_view c
+                ON c.analysis_num = v.analysis_num AND c.parameter_num = v.parameter_num
+            WHERE v.inst_num IN ({self.inst_nums[0]}, {self.inst_nums[1]})
+                AND v.parameter_num = {pnum}
+                {run_type_filter}
+                AND v.analysis_datetime BETWEEN '{start_date}' AND '{end_date}'
+            ORDER BY v.analysis_datetime;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            if verbose:
+                print(f"No data found for parameter {pnum} in the specified date range.")
+            return pd.DataFrame()
+
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
+        df['sample_datetime']   = pd.to_datetime(df['sample_datetime'], errors='coerce', utc=True)
+        df['port']              = df['port'].astype(int)
+        df['parameter_num']     = pnum
+        df['channel']           = None
+        df['detrend_method_num'] = 0
+
+        df['response']       = df['blank_corrected_response'].astype(float)
+        df['smoothed']        = df['interpolated_std_response'].astype(float)
+        df['normalized_resp'] = df['normalized_response'].astype(float)
+        df.drop(columns=['blank_corrected_response', 'interpolated_std_response',
+                          'normalized_response'], inplace=True)
+
+        df['value'] = df['value'].astype(float)
+        df['mole_fraction'] = df['value'].mask(df['value'] <= -99)
+        df.drop(columns=['value'], inplace=True)
+
+        df['run_type_num'] = df['sample_type'].map(self.SAMPLE_TYPE_NUM).fillna(0).astype(int)
+        df['port_info']    = df['sample_type']
+        df['flask_port']   = pd.NA
+
+        df['rejected']   = df['rejected'].fillna(0).astype(int)
+        df['suspicious'] = df['suspicious'].fillna(0).astype(int)
+        df['has_info_tag'] = df['suspicious'].astype(bool)
+
+        df = self._assign_run_time(df, pnum, start_date=start_date, end_date=end_date)
+        df = self.add_port_labels(df)
+
+        return df.sort_values('analysis_datetime')
+
+    def load_data_from_prs_tables(self, pnum, channel=None, run_type_num=None, start_date=None, end_date=None, verbose=True):
+        """Load data from hats.prs_analysis / hats.prs_mole_fractions --
+        itxbin's own independent (non-Matlab) computation, written by
+        prs_batch.py. CFC-11 (pnum 29) only as of this writing; other
+        parameters simply won't have prs_mole_fractions rows yet.
+
+        Same output contract as load_data() (same columns, same run_time/
+        segment semantics) so the rest of Perseus_Instrument/logos_data.py
+        (add_port_labels, _assign_run_time's caller, the GUI) needs no
+        changes to consume either source -- see logos_data.conf's
+        [instrument.prs] data_source flag for how callers choose between
+        the two.
+
+        rows carrying nonlinearity_uncorrected=1 (currently PFP/CCGG/cal/
+        burn/test) have a mole_fraction computed without the response-
+        nonlinearity correction the legacy Matlab chain applies at low
+        sample pressure -- known incomplete, not nulled, so the data stays
+        visible with its caveat rather than silently disappearing.
+        """
+        start_date, end_date = self._resolve_load_dates(pnum, start_date, end_date)
+
+        run_type_filter = ""
+        if run_type_num is not None:
+            safe_type = str(run_type_num).replace("'", "''")
+            run_type_filter = f"AND a.sample_type = '{safe_type}'"
+
+        if verbose:
+            print(f"Loading data from {start_date} to {end_date} for parameter {pnum} (prs_tables source)")
+
+        query = f"""
+            SELECT
+                a.legacy_analysis_num AS analysis_num, a.analysis_datetime, a.run_time,
+                a.inst_num, a.sample_id, a.pair_id_num, a.site_num,
+                a.sample_type, a.port, a.standard_serial_num,
+                m.raw_response, m.blank_corrected_response, m.smoothed_response,
+                m.normalized_resp, m.mole_fraction, m.nonlinearity_uncorrected,
+                m.ref_tank_serial, m.ref_tank_coef0
+            FROM hats.prs_analysis a
+            JOIN hats.prs_mole_fractions m ON m.analysis_num = a.num AND m.parameter_num = {pnum}
+            WHERE a.inst_num IN ({self.inst_nums[0]}, {self.inst_nums[1]})
+                {run_type_filter}
+                AND a.analysis_datetime BETWEEN '{start_date}' AND '{end_date}'
+            ORDER BY a.analysis_datetime;
+        """
+        df = pd.DataFrame(self.db.doquery(query))
+        if df.empty:
+            if verbose:
+                print(f"No prs_tables data found for parameter {pnum} in the specified date range.")
+            return pd.DataFrame()
+
+        df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], errors='raise', utc=True)
+        df['run_time']          = pd.to_datetime(df['run_time'], errors='raise', utc=True)
+        df['sample_datetime']   = pd.NaT   # not resolved yet in prs_analysis (see plan's out-of-scope note)
+        df['port']              = df['port'].astype(int)
+        df['parameter_num']     = pnum
+        df['channel']           = None
+        df['detrend_method_num'] = 0
+
+        inst_id_map = dict(zip(self.inst_nums, self.calibration_inst_ids))
+        df['inst_id'] = df['inst_num'].map(inst_id_map)
+        df['site']    = None  # site_num -> site code lookup not needed for the demo; PFP/HATS labels fall back gracefully
+
+        df['response']       = df['raw_response'].astype(float)
+        df['smoothed']        = df['smoothed_response'].astype(float)
+        df['normalized_resp'] = df['normalized_resp'].astype(float)
+        df['mole_fraction']   = df['mole_fraction'].astype(float)
+        df['nonlinearity_uncorrected'] = df['nonlinearity_uncorrected'].fillna(0).astype(bool)
+
+        df['run_type_num'] = df['sample_type'].map(self.SAMPLE_TYPE_NUM).fillna(0).astype(int)
+        df['port_info']    = df['sample_type']
+        df['flask_port']   = pd.NA
+
+        # rejected/suspicious tagging is not wired up for prs_tables yet --
+        # this source is compute-only, no tag_mole_fractions write path exists.
+        df['rejected']     = 0
+        df['suspicious']   = 0
+        df['has_info_tag'] = df['nonlinearity_uncorrected']  # surface the known-gap flag via the existing info-tag overlay
+
+        df = self.add_port_labels(df)
+
+        return df.sort_values('analysis_datetime')
+
+    def add_port_labels(self, df):
+        """Helper to add port labels, colors, and markers for the Perseus plot."""
+        multi_inst = df['inst_id'].nunique() > 1
+
+        def _inst_suffix(row):
+            return f" [{row['inst_id']}]" if multi_inst else ""
+
+        df['port_label'] = df['sample_type'].astype(str)
+
+        # std / blank / burn / test / cal / tank: label by serial/sample id
+        # when the loaded window only ever saw one of them (the common case
+        # for std/blank/tank -- a reference cylinder installed for months) --
+        # otherwise fall back to the bare category name so the legend gets
+        # one stable label instead of an arbitrary cylinder's serial standing
+        # in for a group that actually rotated through many.
+        simple_mask = df['sample_type'].isin(['std', 'blank', 'burn', 'test', 'cal', 'tank'])
+        for st, grp_idx in df.loc[simple_mask].groupby('sample_type').groups.items():
+            if df.loc[grp_idx, 'sample_id'].nunique() == 1:
+                df.loc[grp_idx, 'port_label'] = f"{st} {df.loc[grp_idx, 'sample_id'].iat[0]}"
+
+        # HATS/PFP/CCGG samples share one port_idx per category (see below) --
+        # a generic group label here; per-flask site/sample/pair detail is
+        # still available per-point in the click tooltip via the raw columns.
+        df.loc[df['sample_type'] == 'HATS', 'port_label'] = 'Flasks'
+        df.loc[df['sample_type'] == 'PFP', 'port_label'] = 'PFPs'
+        df.loc[df['sample_type'] == 'CCGG', 'port_label'] = 'CCGG'
+
+        if multi_inst:
+            df['port_label'] = df['port_label'] + df.apply(_inst_suffix, axis=1)
+
+        df['port_label'] = (
+            df['port_label']
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.strip()
+        )
+
+        # assign colors to sites (HATS/PFP/CCGG)
+        cmap = plt.get_cmap('tab20')
+        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+        df['port_color'] = df['site'].map(site_colors).fillna('gray').astype(object)
+
+        # std/cal/tank: distinct color per cylinder. sample_id is the
+        # cylinder identity for all three (for 'std' it's the reference
+        # standard itself; for 'cal'/'tank' it's the tank being calibrated,
+        # which differs from standard_serial_num -- that column names the
+        # *reference* tank used to normalize it, not the sample's own identity).
+        std_like = df['sample_type'].isin(['std', 'cal', 'tank'])
+        if std_like.any():
+            serials = df.loc[std_like, 'sample_id'].astype(str)
+            serial_codes = pd.factorize(serials)[0]
+            tank_cmap = plt.get_cmap('tab10')
+            colors = pd.Series(
+                [tank_cmap(c % 10) for c in serial_codes], index=df.index[std_like], dtype=object
+            )
+            df.loc[std_like, 'port_color'] = colors
+        df.loc[df['sample_type'] == 'std', 'port_color'] = 'red'
+        df.loc[df['sample_type'].isin(['blank', 'burn']), 'port_color'] = 'black'
+        df.loc[df['sample_type'] == 'test', 'port_color'] = 'gray'
+
+        # legend_color: the swatch color for each port_idx group's legend
+        # entry. Equal to port_color everywhere except groups that mix many
+        # per-point colors (site for HATS/PFP/CCGG, serial for cal/tank) --
+        # port_color.iloc[0] there would show one arbitrary member's color as
+        # if it applied to the whole group, so use a fixed representative
+        # color per category whenever the group has more than one identity.
+        df['legend_color'] = df['port_color']
+        df.loc[df['sample_type'] == 'HATS', 'legend_color'] = 'steelblue'
+        df.loc[df['sample_type'] == 'PFP', 'legend_color'] = 'darkorange'
+        df.loc[df['sample_type'] == 'CCGG', 'legend_color'] = 'seagreen'
+        for st, fallback in (('cal', 'purple'), ('tank', 'saddlebrown')):
+            mask = df['sample_type'] == st
+            if mask.any() and df.loc[mask, 'sample_id'].nunique() > 1:
+                df.loc[mask, 'legend_color'] = fallback
+
+        # port_idx: one group per sample_type (run_type_num already gives
+        # this). Perseus loads a whole month of continuous flask/PFP traffic
+        # at once -- factorizing every individual flask/package (as M4 does
+        # for its much smaller per-run PFP counts) produced 500+ scatter
+        # artists and legend rows in a typical month and made the plot very
+        # slow to render. Site identity is kept as the per-point scatter
+        # color (see add_port_labels callers); per-flask detail lives in the
+        # point tooltip instead of the legend.
+        df['port_idx'] = df['run_type_num'].astype('Int64')
+
+        df['port_marker'] = df['run_type_num'].map(self.MARKER_MAP).fillna('o')
+
+        return df
 
 
 PRS_Instrument = Perseus_Instrument

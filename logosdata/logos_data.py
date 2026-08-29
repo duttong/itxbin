@@ -1868,8 +1868,11 @@ class MainWindow(QMainWindow):
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
         h_main.addWidget(right_spacer, stretch=1)
 
+        if self.instrument.inst_id == 'prs':
+            self._apply_prs_read_only_restrictions()
+
         self.populate_analyte_controls()
-        
+
         # Kick off by selecting the default analyte from config
         _default_analyte = self._inst_cfg.get('default_analyte', fallback=None)
         if not _default_analyte:
@@ -1969,6 +1972,22 @@ class MainWindow(QMainWindow):
             dialog.hide()
             dialog.deleteLater()
         self._on_tab_changed(self.tabs.currentIndex())
+
+    def _apply_prs_read_only_restrictions(self):
+        """Perseus (prs) is loading/visualization only for now: no tagging,
+        no smoothing changes, no Save. Rejection/suspicious state is shown
+        from prs_data_view, but editing it means writing hats.flags_internal
+        with the Perseus tag vocabulary -- a separate future phase."""
+        self._tagging_btn.setEnabled(False)
+        self._tagging_btn.setToolTip("Tagging is not yet supported for Perseus (prs)")
+        self._multi_tag_btn.setEnabled(False)
+        self._multi_tag_btn.setToolTip("Tagging is not yet supported for Perseus (prs)")
+        self.tag_select_cb.setEnabled(False)
+        self.smoothing_label.setVisible(False)
+        self.smoothing_cb.setVisible(False)
+        for sc in getattr(self, "save_shortcuts", []):
+            if sc.key().toString() == "S":
+                sc.setEnabled(False)
 
     def _cycle_g_mode(self):
         """Cycle G key: off → tagging → multi-tag → off → ..."""
@@ -2349,6 +2368,10 @@ class MainWindow(QMainWindow):
     def _mole_fraction_nums_for_indices(self, idxs):
         """Return mole-fraction primary keys for DataFrame rows being tagged."""
         if idxs is None or len(idxs) == 0:
+            return []
+        if self.instrument.inst_id == 'prs':
+            # Perseus tagging writes to hats.flags_internal, not the ng
+            # mole-fraction tag tables this lookup targets; not wired up yet.
             return []
         _tag_table, _tag_key, mf_table, id_col = self._tag_table_info()
         subset = self.run.loc[list(idxs)]
@@ -2957,17 +2980,37 @@ class MainWindow(QMainWindow):
         self._hidden_ports &= set(ports_in_run)
         label_to_port = {}  # legend label text -> port_idx, for click-to-toggle
 
+        # legend_color overrides port_color for the swatch only, when a
+        # port_idx group mixes per-point colors (e.g. prs consolidates all
+        # HATS/PFP samples into one legend row but still scatters each point
+        # in its site color) -- the swatch would otherwise show an arbitrary
+        # member's color as if it applied to the whole group.
+        legend_color_col = 'legend_color' if 'legend_color' in self.run.columns else 'port_color'
+
         for port in ports_in_run:
-            color = self.run.loc[self.run['port_idx'] == port, 'port_color'].iloc[0]
+            color = self.run.loc[self.run['port_idx'] == port, legend_color_col].iloc[0]
             marker = self.run.loc[self.run['port_idx'] == port, 'port_marker'].iloc[0]
             base_label = self.run.loc[self.run['port_idx'] == port, 'port_label'].iloc[0]
             if base_label == 'Push port':
                 continue
             subset_port = self.run.loc[self.run['port_idx'] == port]
             skip_stats = False
+            # PFP run_type_num==5 mixes many packages/sites in one legend
+            # group, so a mean+-std across them is meaningless; instruments
+            # may extend this via NO_STATS_RUN_TYPES for their own mixed
+            # groups. STATS_RUN_TYPES is the inverse (an allowlist) for
+            # instruments where only one group (e.g. prs's std reference
+            # tank, the thing the data is normalized to) has a meaningful
+            # stats line at all.
+            stats_types = getattr(self.instrument, 'STATS_RUN_TYPES', None)
+            no_stats_types = {5} | set(getattr(self.instrument, 'NO_STATS_RUN_TYPES', ()))
             if yparam in ('ratio', 'mole_fraction') and 'run_type_num' in subset_port.columns:
                 try:
-                    skip_stats = (subset_port['run_type_num'].astype(int) == 5).any()
+                    rtns = subset_port['run_type_num'].astype(int)
+                    skip_stats = (
+                        (~rtns.isin(stats_types)).any() if stats_types is not None
+                        else rtns.isin(no_stats_types).any()
+                    )
                 except Exception:
                     skip_stats = False
 
@@ -3185,7 +3228,7 @@ class MainWindow(QMainWindow):
 
         chunk_start = None
         carry_in_rt = None
-        if (self.instrument.inst_id in ('ie3', 'cats')
+        if (self.instrument.inst_id in ('ie3', 'cats', 'prs')
                 and self._ie3_exact_run_time is None
                 and self.current_run_time):
             try:
@@ -3246,7 +3289,7 @@ class MainWindow(QMainWindow):
             legend_handles.append(Line2D([], [], linestyle='None', label=l))
 
         # --- Detrend summary box for resp/ratio plots ---
-        if yparam in ('ratio', 'resp') and self.instrument.inst_id not in ('ie3', 'cats'):
+        if yparam in ('ratio', 'resp') and self.instrument.inst_id not in ('ie3', 'cats', 'prs'):
             try:
                 # Order from least to most smoothing
                 method_order = [1, 3, 2, 4, 6, 5]
@@ -3305,20 +3348,21 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Warning: unable to compute detrend summary ({e})")
 
-        # --- Always append Save/Revert legend "buttons" ---
-        spacer_handle     = Line2D([], [], linestyle='None', label='\u2009')
-        save2db_handle    = Line2D([], [], linestyle='None', label='Save current gas (s)')
-        save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
-        revert_handle     = Line2D([], [], linestyle='None', label='Revert changes')
+        # --- Save/Revert legend "buttons" (read-only instruments skip these) ---
+        if self.instrument.inst_id != 'prs':
+            spacer_handle     = Line2D([], [], linestyle='None', label='\u2009')
+            save2db_handle    = Line2D([], [], linestyle='None', label='Save current gas (s)')
+            save2dball_handle = Line2D([], [], linestyle='None', label='Save all gases')
+            revert_handle     = Line2D([], [], linestyle='None', label='Revert changes')
 
-        legend_handles.extend([
-            spacer_handle,
-            save2db_handle,
-            spacer_handle,
-            revert_handle,
-            spacer_handle,
-            save2dball_handle
-        ])
+            legend_handles.extend([
+                spacer_handle,
+                save2db_handle,
+                spacer_handle,
+                revert_handle,
+                spacer_handle,
+                save2dball_handle
+            ])
 
         leg = ax.legend(
             handles=legend_handles,
@@ -3473,8 +3517,8 @@ class MainWindow(QMainWindow):
             autoscale_mode = self._get_autoscale_mode()
             if autoscale_mode in {"samples", "standard"}:
                 exclude = self.instrument.EXCLUDE
-                if self.instrument.inst_id == 'm4':
-                    # m4 uses run_type_num to exclude blanks/calibrations
+                if self.instrument.inst_id in ('m4', 'prs'):
+                    # m4/prs use run_type_num to exclude blanks/calibrations
                     exclude_variable = 'run_type_num'
                     standard = self.instrument.STANDARD_RUN_TYPE
                 else:
@@ -4116,8 +4160,13 @@ class MainWindow(QMainWindow):
         Points with any manual rejection tag (not in AUTO_TAG_NUMS) get False."""
         if self.run.empty or "rejected" not in self.run.columns:
             return
-        rejected_mask = self.run["rejected"].fillna(0).astype(int) != 0
         self.run["auto_rejected"] = False
+        if self.instrument.inst_id == 'prs':
+            # Perseus rejection comes from hats.flags_internal (a different
+            # tag vocabulary than ng_mole_fraction_tags); the auto/manual
+            # split below doesn't apply until that path is wired up.
+            return
+        rejected_mask = self.run["rejected"].fillna(0).astype(int) != 0
         if not rejected_mask.any():
             return
         rejected_idxs = self.run.index[rejected_mask].tolist()
@@ -4153,7 +4202,12 @@ class MainWindow(QMainWindow):
 
     def _update_info_tagged(self):
         """Set run['has_info_tag']=True for rows that carry any informational tag."""
-        if self.run.empty or not _INFO_TAG_NUMS:
+        if self.run.empty:
+            return
+        if self.instrument.inst_id == 'prs':
+            # Already populated in load_data from prs_data_view.suspicious.
+            return
+        if not _INFO_TAG_NUMS:
             return
         self.run['has_info_tag'] = False
         tag_table, tag_key, mf_table, id_col = self._tag_table_info()
@@ -5724,7 +5778,12 @@ class MainWindow(QMainWindow):
         self.run_type_num = self.instrument.RUN_TYPE_MAP.get(run_type, None)
         self._update_calibration_button_state()
 
-        if self.instrument.inst_id in ('ie3', 'cats'):
+        if self.instrument.inst_id == 'prs':
+            period = _ie3_chunk_period(self._inst_cfg)
+            self.current_run_times = [
+                label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
+            ]
+        elif self.instrument.inst_id in ('ie3', 'cats'):
             period = _ie3_chunk_period(self._inst_cfg)
             chunk_labels = [
                 label for label, _s, _e in _ie3_iter_chunks(t0, t1, period)
@@ -5786,7 +5845,7 @@ class MainWindow(QMainWindow):
             if target is None:
                 return None
             target_str = str(target)
-            if self.instrument.inst_id in ('ie3', 'cats'):
+            if self.instrument.inst_id in ('ie3', 'cats', 'prs'):
                 # Direct label match first; otherwise treat target as a timestamp
                 # and find the chunk containing it.
                 for idx, label in enumerate(self.current_run_times):
@@ -6321,6 +6380,20 @@ class MainWindow(QMainWindow):
                 self.fit_method_cb.blockSignals(True)
                 self.fit_method_cb.setCurrentIndex(idx)
                 self.fit_method_cb.blockSignals(False)
+        elif (self.instrument.inst_id == 'prs'
+                and self._inst_cfg.get('data_source', fallback='legacy_view') == 'prs_tables'):
+            # itxbin's own independent (non-Matlab) computation -- see
+            # logos_data.conf's [instrument.prs] data_source flag and
+            # prs_batch.py. Same load_data() call signature/output contract,
+            # just a different table source.
+            start, end = self._current_load_dates()
+            self.run = self.instrument.load_data_from_prs_tables(
+                pnum=self.current_pnum,
+                channel=self.current_channel,
+                run_type_num=self.run_type_num,
+                start_date=start,
+                end_date=end
+            )
         else:
             # call sql load function from instrument class
             start, end = self._current_load_dates()
@@ -6352,13 +6425,13 @@ class MainWindow(QMainWindow):
         When zoomed into a specific IE3 run_time group, returns that run_time
         so that Save all gases operates only on the visible data.
         """
-        if self.instrument.inst_id in ('ie3', 'cats') and self._ie3_exact_run_time is not None:
+        if self.instrument.inst_id in ('ie3', 'cats', 'prs') and self._ie3_exact_run_time is not None:
             rt = pd.Timestamp(self._ie3_exact_run_time).strftime('%Y-%m-%d %H:%M:%S')
             return (rt, rt)
-        if self.instrument.inst_id in ('ie3', 'cats') and self._zoom_run_time is not None:
+        if self.instrument.inst_id in ('ie3', 'cats', 'prs') and self._zoom_run_time is not None:
             rt = pd.Timestamp(self._zoom_run_time).strftime('%Y-%m-%d %H:%M:%S')
             return (rt, rt)
-        if self.instrument.inst_id in ('ie3', 'cats') and self.current_run_time:
+        if self.instrument.inst_id in ('ie3', 'cats', 'prs') and self.current_run_time:
             start, end = _ie3_chunk_sql_range(self.current_run_time)
             if start is not None:
                 return (start, end)
