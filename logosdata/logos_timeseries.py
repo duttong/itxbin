@@ -2760,12 +2760,19 @@ class TimeseriesWidget(QWidget):
 
         # Right click adds extra action -- loads the run in main window
         if event.mouseevent.button == 3:  # right click
+            # artist._meta['analyte'] may already carry its own channel
+            # suffix (e.g. a popup figure explicitly viewing "CFC11 (f)"),
+            # in addition to the separate per-point channel above -- strip
+            # it to the base compound name so it isn't doubled up when
+            # reconstructing "<analyte> (<channel>)" below.
+            base_analyte = re.sub(r'\s+\([^()]+\)\s*$', '', analyte) if analyte else analyte
+
             self.main_window.current_run_time = str(effective_run_time)
-            self.main_window.current_pnum = int(self.analytes.get(analyte))
+            self.main_window.current_pnum = int(self._resolve_pnum(base_analyte))
             self.main_window.current_channel = channel
-            processing_analyte = analyte
+            processing_analyte = base_analyte
             if channel:
-                candidate = f"{analyte} ({channel})"
+                candidate = f"{base_analyte} ({channel})"
                 if candidate in self.main_window.analytes:
                     processing_analyte = candidate
 
