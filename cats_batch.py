@@ -217,8 +217,50 @@ class CATS_batch(CATS_Instrument):
             out.at[idx, 'unc'] = np.sqrt(unc_fit ** 2 + (slope * sigma_ref) ** 2)
         return out
 
+    def _fit_periods(self, df: pd.DataFrame) -> pd.Series:
+        """Return each row's fit-period start (tz-naive).
+
+        Normally a row's calendar week, but bumped to the most recent cal-port
+        (self._cal_ports()) tank swap if one falls inside that week -- so a
+        week straddling a swap splits into a pre- and post-swap period
+        instead of either blending two tanks' responses into one bad fit or
+        being dropped entirely (which used to leave every day after the swap
+        silently falling back to the prior week's now-stale fit). The swap
+        timestamps are shared across every cal port, not just the one that
+        changed, so both sides of a two-tank fit land in the same period.
+        """
+        analysis_dt = pd.to_datetime(df['analysis_datetime'], utc=True).dt.tz_localize(None)
+        calendar_week = analysis_dt.dt.to_period('W-SUN').dt.start_time
+
+        cutpoints = []
+        history = getattr(self, 'port_config_history', None)
+        if history is not None and not history.empty:
+            for port in self._cal_ports():
+                rows = history.loc[
+                    (history['site_num'] == self.site_num) & (history['port_num'] == int(port))
+                ]
+                cutpoints.extend(
+                    pd.to_datetime(rows['start_datetime'], utc=True)
+                    .dt.tz_localize(None).tolist()
+                )
+        cutpoints = sorted(set(cutpoints))
+        if not cutpoints:
+            return calendar_week
+
+        cut_arr = np.array(cutpoints, dtype='datetime64[ns]')
+        dt_arr = analysis_dt.to_numpy()
+        wk_arr = calendar_week.to_numpy()
+        pos = np.searchsorted(cut_arr, dt_arr, side='right') - 1
+        candidate = np.where(pos >= 0, cut_arr[np.clip(pos, 0, None)], np.datetime64('NaT'))
+        period_start = np.where((pos >= 0) & (candidate > wk_arr), candidate, wk_arr)
+        return pd.Series(period_start, index=df.index)
+
     def _weekly_tank_data(self, tanks: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate tank responses by week and the tank installed per row."""
+        """Aggregate tank responses by fit period and the tank installed per row.
+
+        See _fit_periods() for how a period can be a sub-week slice when a
+        mid-week tank swap occurs.
+        """
         tanks = tanks.copy()
         tanks['tank_serial'] = None
         for port in tanks['port'].dropna().unique():
@@ -226,13 +268,12 @@ class CATS_batch(CATS_Instrument):
             tanks.loc[mask, 'tank_serial'] = self.tank_serials_for_dates(
                 int(port), tanks.loc[mask, 'analysis_datetime']
             )
-        tanks['week_start'] = (
-            pd.to_datetime(tanks['analysis_datetime'], utc=True)
-            .dt.tz_localize(None).dt.to_period('W-SUN').dt.start_time
-        )
+        tanks = tanks.dropna(subset=['tank_serial']).copy()
+        if tanks.empty:
+            return tanks.assign(week_start=pd.Series(dtype='datetime64[ns]'))
+        tanks['week_start'] = self._fit_periods(tanks)
         return (
-            tanks.dropna(subset=['tank_serial'])
-            .groupby(['port', 'tank_serial', 'week_start'])['normalized_resp']
+            tanks.groupby(['port', 'tank_serial', 'week_start'])['normalized_resp']
             .agg(mean='mean', std='std', count='count')
             .reset_index()
         )
@@ -340,16 +381,14 @@ class CATS_batch(CATS_Instrument):
 
         fits = pd.concat(fit_rows, ignore_index=True)
 
-        # sigma_ref: weekly std of ref-port normalized_resp from raw data
+        # sigma_ref: per-period std of ref-port normalized_resp from raw data.
+        # Uses the same period boundaries as the fit itself (_fit_periods)
+        # so a split week's sigma_ref lines up with its split fit instead of
+        # falling back to 0.0 via a mismatched calendar-week key.
         ref_raw = tanks[tanks['port'] == self.STANDARD_PORT_NUM][
             ['analysis_datetime', 'normalized_resp']
         ].copy()
-        ref_raw['week_start'] = (
-            ref_raw['analysis_datetime']
-            .dt.tz_localize(None)
-            .dt.to_period('W-SUN')
-            .dt.start_time
-        )
+        ref_raw['week_start'] = self._fit_periods(ref_raw)
         ref_weekly_std = (
             ref_raw.groupby('week_start')['normalized_resp']
             .std()

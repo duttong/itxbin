@@ -151,7 +151,13 @@ class TimeseriesFigure:
             pass
 
     def _setup_toolbar_widgets(self):
-        analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
+        # Use the parent widget's (possibly channel-simplified, e.g. CATS's
+        # one-preferred-channel-per-compound) analyte list, not the raw
+        # instrument.analytes -- query_insitu_data()/query_flask_data() key
+        # their pnum lookup against parent_widget.analytes, so a name only
+        # present in instrument.analytes (e.g. "SF6 (q)" for CATS) resolves
+        # to no pnum there and silently returns empty data.
+        analyte_names = list((self.parent_widget.analytes or {}).keys())
         if not analyte_names:
             analyte_names = [self.analyte]
 
@@ -1006,7 +1012,13 @@ class RelStdDevFigure:
             pass
 
     def _setup_toolbar_widgets(self):
-        analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
+        # Use the parent widget's (possibly channel-simplified, e.g. CATS's
+        # one-preferred-channel-per-compound) analyte list, not the raw
+        # instrument.analytes -- query_insitu_data()/query_flask_data() key
+        # their pnum lookup against parent_widget.analytes, so a name only
+        # present in instrument.analytes (e.g. "SF6 (q)" for CATS) resolves
+        # to no pnum there and silently returns empty data.
+        analyte_names = list((self.parent_widget.analytes or {}).keys())
         if not analyte_names:
             analyte_names = [self.analyte]
 
@@ -2656,8 +2668,18 @@ class TimeseriesWidget(QWidget):
         analyte     = artist._meta.get("analyte", "Unknown")
         channel     = artist._meta.get("channel", None)
 
-        # For in-situ points run_time is absent; fall back to analysis_time
-        effective_run_time = run_time if run_time is not None else sample_time
+        # IE3/CATS run_time is an ingest-batch stamp (set once when the loader
+        # runs), not a per-point or per-GC-run timestamp -- for CATS in
+        # particular it can stay frozen for months while analysis_time moves
+        # on, so navigating by run_time can land months away from the clicked
+        # point. sample_datetime (analysis_time) is the reliable per-point
+        # timestamp there; M4/FE3 run_time is a genuine per-run grouping, so
+        # keep preferring it for those.
+        inst_id = getattr(self.main_window.instrument, 'inst_id', None)
+        if inst_id in ('ie3', 'cats', 'prs'):
+            effective_run_time = sample_time if sample_time is not None else run_time
+        else:
+            effective_run_time = run_time if run_time is not None else sample_time
 
         # Build tooltip, skipping fields with no data
         lines = [f"<b>Site:</b> {site}"]
@@ -2730,7 +2752,7 @@ class TimeseriesWidget(QWidget):
             # raw timestamp string is what other code expects.
             self.main_window.set_runlist(initial_date=t)
             self.main_window.on_plot_type_changed(self.main_window.current_plot_type)
-            if self.main_window.instrument.inst_id != 'ie3':
+            if inst_id not in ('ie3', 'cats', 'prs'):
                 self.main_window.current_run_time = str(t)
             # no need for the apply button highlight
             self.main_window.apply_date_btn.setStyleSheet("")
