@@ -529,11 +529,11 @@ class CATS_batch(CATS_Instrument):
         )
         parser.add_argument(
             '-s', '--start-date', type=str, default=None,
-            help="Start date: YYMM, YYYY-MM-DD, or 'start' for instrument start.",
+            help="Start date: YYMM, YYYYMMDD, YYYY-MM-DD, or 'start' for instrument start.",
         )
         parser.add_argument(
             '-e', '--end-date', type=str, default=None,
-            help="End date: YYMM, YYYY-MM-DD, or 'end' for today.",
+            help="End date: YYMM, YYYYMMDD, YYYY-MM-DD, or 'end' for today.",
         )
         parser.add_argument(
             '-i', '--insert', action='store_true',
@@ -574,6 +574,15 @@ class CATS_batch(CATS_Instrument):
             pnum, resolved_channel = resolve_analyte(self, args.analyte, args.channel)
             args.parameter_num = str(pnum)
             args.channel = resolved_channel
+
+        # Accept a bare YYYYMMDD (8 digits, no dashes) as shorthand for
+        # YYYY-MM-DD -- load_data() only special-cases 4-char YYMM strings,
+        # so an 8-digit date would otherwise pass through unparsed into the
+        # SQL BETWEEN filter.
+        for attr in ('start_date', 'end_date'):
+            value = getattr(args, attr)
+            if value and value.isdigit() and len(value) == 8:
+                setattr(args, attr, f"{value[:4]}-{value[4:6]}-{value[6:]}")
 
         # Resolve date keywords
         if args.start_date and args.start_date.lower() == 'start':
