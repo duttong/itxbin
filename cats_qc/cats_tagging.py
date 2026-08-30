@@ -8,11 +8,15 @@ window before reinserting it on the currently-flagged subset. This means a
 point that stops being flagged after retuning a threshold loses its tag on
 the next run instead of keeping it forever -- rerun freely while tuning.
 
-NOTE on tag_num: both registered algorithms write real reject tags in
+NOTE on tag_num: all three registered algorithms write real reject tags in
 ccgg.tag_dictionary (reject=1, automated=1) -- cal_step writes 328
 ("Detector cal-response rapid change"), baseline writes 329 ("Abnormal
-chromatogram"). A future algorithm can start on an unregistered placeholder
-number the same way these two did; update ALGORITHMS once a real number is
+chromatogram"), cal_window writes 286 ("Mole fraction falls outside of
+calibration range, results certainly adversely affected" -- the "C" tag
+under _TAG_LAYOUT's Automated Tags section in logos_data.py; its 287
+companion is the non-reject "c" variant and is not written by cal_window).
+A future algorithm can start on an unregistered placeholder number the same
+way cal_step/baseline did; update ALGORITHMS once a real number is
 assigned, and move any rows already written under the placeholder with
 UPDATE hats.ng_insitu_mole_fraction_tags SET tag_num = <new> WHERE tag_num
 = <placeholder>.
@@ -22,6 +26,19 @@ integration, ratio-based, etc.), register each as another ALGORITHMS entry
 with its own tag_num and a build() callable of the same shape as
 cats_cal_step_qc.build_cal_step_qc -- (batch, pnum, channel, start, end,
 **kwargs) -> DataFrame with at least an mf_num column for the flagged rows.
+
+ORDERING: cal_window must run after cal_step and baseline, and after mole
+fractions have been recomputed against their rejection state -- its
+reference-tank/air statistics exclude already-rejected rows (see
+cats_cal_window_qc.py), and tagging alone never recomputes mole fractions
+(see ../CLAUDE.md). `--algo all` handles both automatically: ALGORITHMS'
+insertion order runs cal_step -> baseline -> cal_window, and main() calls
+recalc_mole_fractions() (the cats_batch.py `-i --fits` recompute+upsert
+path) for each analyte/channel right before cal_window's build() -- unless
+--dry-run (preview only, no DB writes at all) or --skip-recalc (mole
+fractions already known current). Running `--algo cal_window` on its own in
+a separate invocation still gets this recalc; it is NOT conditional on
+cal_step/baseline having just run in the same command.
 
 Usage::
 
@@ -52,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cats_batch import CATS_batch
 from cats_cal_step_qc import ALL_GASES, build_cal_step_qc
 from cats_baseline_qc import build_baseline_tag_qc
+from cats_cal_window_qc import TAG_NUM as CAL_WINDOW_TAG_NUM, build_cal_window_qc
 
 
 def _parse_yyyymmdd(s: str) -> str:
@@ -73,16 +91,35 @@ class QcAlgorithm:
     build: Callable[..., pd.DataFrame]
 
 
-# tag_num=328 ("Detector cal-response rapid change") and tag_num=329
-# ("Abnormal chromatogram") are both registered in ccgg.tag_dictionary as
-# reject=1, automated=1 -- cal_step and baseline write these as real reject
-# tags.
+# tag_num=328 ("Detector cal-response rapid change"), tag_num=329 ("Abnormal
+# chromatogram"), and tag_num=286 ("Mole fraction falls outside of
+# calibration") are all registered in ccgg.tag_dictionary as reject=1,
+# automated=1 -- cal_step, baseline, and cal_window write these as real
+# reject tags.
 ALGORITHMS: dict[str, QcAlgorithm] = {
     "cal_step": QcAlgorithm(tag_num=328, build=build_cal_step_qc),
     # "Abnormal chromatogram": pre-peak shape deviates from its own local
     # (time-nearest) neighbors' median shape -- see cats_baseline_qc.py.
     "baseline": QcAlgorithm(tag_num=329, build=build_baseline_tag_qc),
+    # "Mole fraction falls outside of calibration": air1/air2 mole fraction
+    # deviates from its local air median by more than a reference-tank-noise
+    # multiple (asymmetric: 3 sigma high, 2 sigma low) -- see
+    # cats_cal_window_qc.py. tag_num is imported (not hardcoded here) since
+    # cats_cal_window_qc.py's own logic needs the same number to exclude its
+    # own prior tags from its "already rejected" pool filter.
+    "cal_window": QcAlgorithm(tag_num=CAL_WINDOW_TAG_NUM, build=build_cal_window_qc),
 }
+
+# Algorithms whose build() reads mole_fraction values that depend on
+# up-to-date rejection state (cal_window's reference-tank/air statistics
+# exclude already-rejected rows -- see cats_cal_window_qc.py). Tagging alone
+# never recomputes mole fractions (see ../CLAUDE.md's calibrations/
+# tag-propagation notes), so main() recomputes+upserts them for these
+# algorithms' pnum/channel/window right before calling their build(). Only
+# matters in practice for cal_step/baseline rejections applied in an EARLIER
+# invocation -- ALGORITHMS' own insertion order already sequences
+# cal_step -> baseline -> cal_window within a single `--algo all` run.
+_RECALC_BEFORE_BUILD = {"cal_window"}
 
 # analyte display_name -> its one reporting channel, per ALL_GASES
 # (CATS_GCwerks2DB.UPLOAD_MOLS: q for N2O/SF6, f for the halocarbon solvents).
@@ -139,6 +176,46 @@ def _scope_mf_nums(batch: CATS_batch, pnum: int, channel: str, start: str, end: 
     if df.empty or "mf_num" not in df:
         return set()
     return set(pd.to_numeric(df["mf_num"], errors="coerce").dropna().astype(int))
+
+
+def recalc_mole_fractions(
+    batch: CATS_batch, pnum: int, channel: str, start: str, end: str, verbose: bool = False,
+) -> None:
+    """Recompute weekly cal fits + mole fractions and upsert to DB.
+
+    Mirrors cats_batch.py's `-i --fits` path (CATS_batch._process_one with
+    args.fits=True, args.insert=True): update_fits() computes+upserts the
+    weekly ng_response fits, then update_runs() applies them and
+    upsert_mole_fractions() writes the resulting air/tank mole fractions.
+
+    Rejecting rows (cal_step, baseline, or manual review) changes which
+    points feed a week's response fit and which get a recomputed mole
+    fraction, but applying a tag never triggers this itself -- see
+    ../CLAUDE.md's calibrations/tag-propagation notes. Called for
+    _RECALC_BEFORE_BUILD algorithms (cal_window) so their build() always
+    reads mole fractions consistent with the CURRENT rejection state,
+    including any cal_step/baseline tags applied in an earlier invocation.
+    """
+    fits, scale_num, ref_serial, channel_str = batch.update_fits(
+        pnum, channel=channel, start_date=start, end_date=end, verbose=verbose,
+    )
+    fits_override = None
+    if not fits.empty:
+        fits_override = fits
+        if scale_num is not None:
+            batch._upsert_fits(fits, scale_num, ref_serial, channel_str, verbose=verbose)
+
+    df = batch.update_runs(
+        pnum, channel=channel, start_date=start, end_date=end, verbose=verbose,
+        fits_override=fits_override,
+    )
+    if df.empty:
+        return
+    empty_peak = (
+        pd.to_numeric(df["height"], errors="coerce").eq(0)
+        & pd.to_numeric(df["retention_time"], errors="coerce").eq(0)
+    )
+    batch.upsert_mole_fractions(df.loc[~empty_peak])
 
 
 def sync_tags(
@@ -220,7 +297,21 @@ def main() -> int:
                    help="cal_step: drop periods with fewer than this many rate-outlier cal points (default: 1)")
     p.add_argument("--scale-window-days", type=float, default=30.0,
                    help="cal_step: trailing local window (days) for the typical-noise scale (default: 30)")
+    p.add_argument("--window-days", type=float, default=10.0,
+                   help="cal_window: full window width, centered on each candidate (default: 10)")
+    p.add_argument("--sigma-high", type=float, default=3.0,
+                   help="cal_window: reference-tank sigmas above the local air median to flag (default: 3)")
+    p.add_argument("--sigma-low", type=float, default=2.0,
+                   help="cal_window: reference-tank sigmas below the local air median to flag (default: 2)")
+    p.add_argument("--min-ref-points", type=int, default=4,
+                   help="cal_window: minimum in-window reference-tank readings to trust ref_std (default: 4)")
+    p.add_argument("--min-air-points", type=int, default=4,
+                   help="cal_window: minimum other in-window air readings to trust air_median (default: 4)")
     p.add_argument("--dry-run", action="store_true", help="Report counts; write nothing")
+    p.add_argument("--skip-recalc", action="store_true",
+                   help="cal_window: skip the automatic cats_batch-style mole-fraction "
+                        "recalc that normally runs first (use if fits/mole fractions are "
+                        "already known current for this window).")
     args = p.parse_args()
 
     start_date = args.start or f"{datetime.today().year}-01-01"
@@ -242,12 +333,21 @@ def main() -> int:
             min_cal_points=args.min_cal_points,
             scale_window_days=args.scale_window_days,
         ),
+        "cal_window": dict(
+            window_days=args.window_days,
+            sigma_high=args.sigma_high,
+            sigma_low=args.sigma_low,
+            min_ref_points=args.min_ref_points,
+            min_air_points=args.min_air_points,
+        ),
     }
 
     results = []
     for algo_name in algos:
         for analyte, channel in analytes:
             pnum, resolved_channel = resolve_analyte(batch, analyte, channel)
+            if algo_name in _RECALC_BEFORE_BUILD and not args.dry_run and not args.skip_recalc:
+                recalc_mole_fractions(batch, pnum, resolved_channel, start_date, end_date)
             summary = sync_tags(
                 batch, algo_name, pnum, resolved_channel, start_date, end_date,
                 dry_run=args.dry_run, **algo_kwargs.get(algo_name, {}),

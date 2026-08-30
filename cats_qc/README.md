@@ -4,16 +4,18 @@ CATS QC detection algorithms and the tagging tool that applies their results
 to `hats.ng_insitu_mole_fraction_tags`.
 
 Only the active pipeline is tracked in git (`cats_tagging.py`,
-`cats_cal_step_qc.py`, `cats_baseline_qc.py`, `test_cats_cal_step_qc.py`, and
-these docs) -- the rest of this directory is earlier exploratory work and is
-gitignored. See the `cats_qc/` allowlist in `../.gitignore`.
+`cats_cal_step_qc.py`, `cats_baseline_qc.py`, `cats_cal_window_qc.py`,
+`test_cats_cal_step_qc.py`, `test_cats_cal_window_qc.py`, and these docs) --
+the rest of this directory is earlier exploratory work and is gitignored.
+See the `cats_qc/` allowlist in `../.gitignore`.
 
-Two detectors are registered today:
+Three detectors are registered today:
 
 | Algorithm | Tag | What it finds | Scope |
 |---|---|---|---|
 | `cal_step` | 328 (reject) | Abrupt cal-port response shifts | per analyte + channel |
 | `baseline` | 329 (reject) | Abnormal chromatogram shape | per **physical channel** |
+| `cal_window` | 286 (reject) | Mole fraction outside local calibration noise | per analyte + channel |
 
 ## cats_cal_step_qc.py + cats_tagging.py
 
@@ -155,18 +157,22 @@ flags. That's harmless, just expected noise in the summary table.
 
 ### Channel mapping (non-SMO CATS sites)
 
-`--channel` takes the **DB channel letter**; the scan resolves it to the
-GCwerks channel directory via `gcwerks_channel_number()`:
+`--channel` takes the **DB channel letter** (resolved via
+`gcwerks_channel_number()`) or the **physical GCwerks channel number**
+directly (`0`-`3`) -- `gcwerks_channel_number()` returns a bare digit
+argument as-is, so `--channel 0` and `--channel q` are equivalent at SPO:
 
-| DB letter | GCwerks dir | Analytes at SPO |
-|---|---|---|
-| `q` | `channel0` | N2O, SF6 |
-| `a` | `channel1` | CFC11, CFC113, CFC12, H1211, N2O |
-| `f` | `channel2` | CCl4, CFC11, CFC113, CFC12, CH3CCl3, CHCl3, H1211, TCE |
-| `c` / `cc` | `channel3` | CFC12, CH3Br, CH3Cl, H1211, H1301, HCFC142b, HCFC22, OCS |
+| DB letter | `--channel` number | GCwerks dir | Analytes at SPO |
+|---|---|---|---|
+| `q` | `0` | `channel0` | N2O, SF6 |
+| `a` | `1` | `channel1` | CFC11, CFC113, CFC12, H1211, N2O |
+| `f` | `2` | `channel2` | CCl4, CFC11, CFC113, CFC12, CH3CCl3, CHCl3, H1211, TCE |
+| `c` / `cc` | `3` | `channel3` | CFC12, CH3Br, CH3Cl, H1211, H1301, HCFC142b, HCFC22, OCS |
 
-**SMO/IE3 uses a different mapping** (`a/b/c` → 0/1/2) -- see
-`gcwerks_channel_number()` in `logosdata/gcwerks_chromatogram.py`.
+**SMO/IE3 uses a different letter mapping** (`a/b/c` → 0/1/2) -- the numeric
+form sidesteps that ambiguity entirely, since the channel number is the same
+physical thing regardless of site. See `gcwerks_channel_number()` in
+`logosdata/gcwerks_chromatogram.py`.
 
 ### How detection works (cats_baseline_qc.py)
 
@@ -308,6 +314,98 @@ WHERE inst_num = 244 AND gcwerks_channel_num = 0
   AND ABS(ratio_mean - 1.0) > 0.10;
 ```
 
+## cats_cal_window_qc.py -- "Mole fraction falls outside of calibration" (tag 286)
+
+Finds air1/air2 mole fractions that drift beyond what the instrument's own
+current noise level can explain, using the reference tank (CAL2_PORT, the
+near-ambient tank normalization is anchored to -- see `../CLAUDE.md`) as a
+live noise gauge rather than a fixed tolerance.
+
+**Must run after `cal_step` and `baseline`** -- see "Run order" below.
+
+Reproduce/tune:
+
+```
+cd cats_qc
+python3 cats_tagging.py --site brw --algo cal_window --analyte N2O \
+    --channel q --start 20250101 --end 20250401 --dry-run
+```
+
+Same idempotency contract as `cal_step`/`baseline`: `cats_tagging.py` deletes
+tag 286 from every `mf_num` in the requested scope before reinserting it on
+whatever's currently flagged, so it's always safe to rerun after retuning a
+threshold.
+
+### How detection works
+
+1. **Reference-tank noise as the yardstick.** For each candidate air1/air2
+   reading, `ref_std` is the plain standard deviation (ddof=0) of the
+   reference tank's `mole_fraction` values inside a window centered on that
+   reading -- a direct, contemporaneous measurement of how noisy the
+   instrument currently is, independent of atmospheric variability.
+2. **Local air median as the baseline.** `air_median` is the median
+   `mole_fraction` of every air1+air2 reading in the same window, computed
+   leave-one-out (the candidate's own value is excluded) -- same rationale
+   as `cats_baseline_qc.py`'s local reference: including the candidate lets
+   an anomalous point drag its own baseline toward itself, always biasing
+   toward under-detection. Air1 and air2 are pooled into one median, not
+   scored separately, since both read the same air intake through the same
+   normalization.
+3. **Asymmetric bounds** (`--sigma-high`/`--sigma-low`, default 3/2): flag
+   when the reading is more than `sigma_high` reference-tank sigmas *above*
+   `air_median`, or more than `sigma_low` sigmas *below* it. Downward
+   excursions (partial peaks, leaks, a starved sample loop) are judged more
+   strictly than upward ones (e.g. brief contamination spikes).
+4. **Window** (`--window-days`, default 10, i.e. +/-5 days): wide enough to
+   collect a stable reference/air sample at CATS' cal/air cadence, narrow
+   enough that both statistics reflect what the instrument and atmosphere
+   were doing right around that point rather than a stale trailing average.
+5. **Minimum context** (`--min-ref-points`/`--min-air-points`, default 4
+   each): a candidate whose window has too few reference or (leave-one-out)
+   air neighbors gets `NaN` stats and is never flagged -- same "not enough
+   context to judge" convention as `cal_step`'s `scale=NaN` rows.
+
+### Already-rejected data is excluded from the statistics, not from candidacy
+
+`ref_std` and `air_median` are built only from rows **not already rejected
+for some other reason** (a cal-port glitch caught by `cal_step`, a bad
+chromatogram caught by `baseline`, manual review, GCwerks sync, etc.) --
+already-known-bad points shouldn't count toward "what normal noise/air looks
+like right now". Every air1/air2 row is still itself evaluated as a
+candidate regardless of its own rejected status; only the neighbor *pool*
+used to judge other points is filtered.
+
+Crucially, this filter deliberately excludes rows rejected **only** by
+`cal_window`'s own tag (286) -- every rerun re-evaluates every candidate
+against the same pool of *other* algorithms' rejects, never its own from a
+previous run. If a flagged point's own rejection fed back into the pool it
+would itself be judged against, a rerun could shift the median/std enough to
+flip the verdict, flapping between two different flagged sets instead of
+converging. That is what keeps `cats_tagging.py`'s delete-over-scope +
+reinsert cycle landing on the same result every time.
+
+### Run order
+
+`cal_window` needs `cal_step` and `baseline` to have *already tagged*, and
+mole fractions to have been *recomputed* against that rejection state --
+tagging alone never recomputes a mole fraction (see `../CLAUDE.md`). Running
+`cal_window` against stale mole fractions (computed before those rejects
+existed) defeats the "already-rejected" filter above.
+
+`cats_tagging.py` handles both automatically:
+
+- `--algo all` already sequences `cal_step -> baseline -> cal_window`
+  (`ALGORITHMS`' dict insertion order), each fully applied across every
+  requested analyte/channel before the next algorithm starts.
+- Immediately before calling `cal_window`'s `build()` for each
+  analyte/channel, `main()` calls `recalc_mole_fractions()` -- the same
+  `update_fits()` + `_upsert_fits()` + `update_runs()` +
+  `upsert_mole_fractions()` sequence as `cats_batch.py -i --fits` -- so its
+  statistics always reflect the current rejection state, whether
+  `cal_step`/`baseline` were just run in the same command or in an earlier
+  one. Skipped under `--dry-run` (no DB writes at all) or `--skip-recalc`
+  (mole fractions already known current for this window).
+
 ## Other files in this directory
 
 - `cats_cal_ratio_qc.py` / `cats_peak_qc.py` / `cats_peak_qc_plot.py` /
@@ -316,3 +414,6 @@ WHERE inst_num = 244 AND gcwerks_channel_num = 0
 - `test_cats_cal_step_qc.py` -- unit tests for the pure helper functions
   (`_port_rate_outliers`, `_group_periods`) using synthetic data; run with
   `python3 -m unittest test_cats_cal_step_qc.py`.
+- `test_cats_cal_window_qc.py` -- unit tests for the pure windowed-outlier
+  core (`_windowed_air_outliers`) using synthetic data; run with
+  `python3 -m unittest test_cats_cal_window_qc.py`.

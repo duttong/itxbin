@@ -413,6 +413,12 @@ def build_baseline_qc(
 
 ALGO_NAME = "baseline"
 
+# /hats/gc/smo now belongs to the new IE3 instrument; the legacy CATS
+# instrument's chromatogram archive was moved to /hats/gc/cats_smo instead
+# of being removed. Add further site: dirname overrides here if other sites
+# are similarly renamed in the future.
+GC_DIR_OVERRIDES = {"smo": "cats_smo"}
+
 
 def upsert_chromatogram_qc(db, inst_num: int, channel_number: int, df: pd.DataFrame, batch_size: int = 500) -> int:
     """Upsert every scored row (flagged or not) from build_baseline_qc()'s
@@ -516,7 +522,8 @@ def main() -> int:
     )
     p.add_argument("--site", required=True, help="CATS site code (e.g. spo, brw).")
     p.add_argument("--channel", required=True,
-                    help="DB channel letter (q, a, f, c/cc) -- one chromatogram scan "
+                    help="DB channel letter (q, a, f, c/cc) or the physical GCwerks "
+                         "channel number directly (0-3) -- one chromatogram scan "
                          "covers every analyte reported on this channel.")
     p.add_argument("--start", type=_parse_yyyymmdd, default=None,
                     help="Start date, YYYYMMDD (default: Jan 1 of the current year).")
@@ -549,7 +556,7 @@ def main() -> int:
     start = args.start or pd.Timestamp(f"{datetime.today().year}-01-01", tz="UTC")
     end = args.end or pd.Timestamp(datetime.today(), tz="UTC")
 
-    gc_dir = Path(f"/hats/gc/{args.site}")
+    gc_dir = Path(f"/hats/gc/{GC_DIR_OVERRIDES.get(args.site.lower(), args.site)}")
     channel_number = gcwerks_channel_number("cats", args.channel, site=args.site)
 
     print(f"CATS-{args.site.upper()} channel {args.channel!r} (gcwerks channel{channel_number}) "
