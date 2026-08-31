@@ -6362,6 +6362,21 @@ class MainWindow(QMainWindow):
         self._clear_highlight()
         # A freshly loaded run starts with all ports visible.
         self._hidden_ports = set()
+        if self.instrument.inst_id in ('ie3', 'cats', 'prs') and not self.current_run_time:
+            # No run selected -- e.g. a run-type filter like Calibrations
+            # matched nothing in the chosen date range (set_runlist() left
+            # current_run_time as None). Show nothing rather than falling
+            # through to instrument.load_data() with an ambiguous range --
+            # see _current_load_dates()'s (None, None) fallback discussion.
+            self.run = pd.DataFrame()
+            self.update_smoothing_combobox()
+            self.set_runtype_combo()
+            self._update_auto_rejected()
+            self._update_info_tagged()
+            self.madechanges = False
+            self._ie3_mf_dirty = False
+            self._refresh_ie3_update_button()
+            return
         # IE3 cal run: load cal+ref port data for the selected week
         if (self.instrument.inst_id in ('ie3', 'cats')
                 and self.current_run_time
@@ -6435,6 +6450,14 @@ class MainWindow(QMainWindow):
             start, end = _ie3_chunk_sql_range(self.current_run_time)
             if start is not None:
                 return (start, end)
+        if self.instrument.inst_id in ('ie3', 'cats', 'prs'):
+            # No run selected -- e.g. a run-type filter like Calibrations
+            # matched nothing in the chosen range, so set_runlist() left
+            # current_run_time as None. Fall back to the GUI's own selected
+            # date range so load_data() correctly returns empty instead of
+            # silently substituting its (None, None) -> "last 30 days from
+            # today" default (see get_load_range() / IE3_Instrument.load_data()).
+            return self.get_load_range()
         return (self.current_run_time, self.current_run_time)
 
     def update_smoothing_combobox(self):
