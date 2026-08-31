@@ -3,7 +3,8 @@
 
 Applies CATS_Instrument.default_mf_method(pnum) to every air-port row from
 --start-date onward: cal12 (method 2) for most analytes, cal1 (method 3)
-for CCl4 (parameter_num=37).
+for CCl4 (parameter_num=37). Pass --method to force a specific method
+(ref/cal1/cal2/cal12) instead of each analyte's default.
 
 Unlike ie3_set_mf_method.py, there is no baked-in date floor -- CATS has
 decades of legacy history that was populated from published /aftp mole
@@ -45,9 +46,15 @@ def _has_scale_assignment(cats, tank, pnum):
     return tank is not None and cats.scale_assignments(tank, pnum) is not None
 
 
-def resolve_methods(cats):
+def resolve_methods(cats, method_override=None):
     """Return {pnum: method_num}, falling back to ref where the cal tank(s)
-    needed for the analyte's default method have no scale_assignments."""
+    needed for the desired method have no scale_assignments.
+
+    method_override, if given, replaces default_mf_method(pnum) as the
+    desired method for every analyte (e.g. force cal2 instead of the default
+    cal12). Still validated per-method below -- cal2 needs the CAL2_PORT
+    tank's scale_assignments, cal1 needs CAL1_PORT's, cal12 needs both.
+    """
     cal1_tank = _tank_serial(cats, cats.CAL1_PORT)
     cal2_tank = _tank_serial(cats, cats.CAL2_PORT)
 
@@ -58,9 +65,11 @@ def resolve_methods(cats):
     methods = {}
     for r in rows:
         pnum = int(r['param_num'])
-        desired = cats.default_mf_method(pnum)
+        desired = method_override if method_override is not None else cats.default_mf_method(pnum)
         if desired == cats.MF_METHOD_CAL1:
             ok = _has_scale_assignment(cats, cal1_tank, pnum)
+        elif desired == cats.MF_METHOD_CAL2:
+            ok = _has_scale_assignment(cats, cal2_tank, pnum)
         elif desired == cats.MF_METHOD_CAL12:
             ok = (_has_scale_assignment(cats, cal1_tank, pnum)
                   and _has_scale_assignment(cats, cal2_tank, pnum))
@@ -85,6 +94,21 @@ def main():
                         help="Only touch rows from this date onward "
                              "(YYYY-MM-DD). No default -- pass the same "
                              "window cats_batch.py will recompute.")
+    parser.add_argument('--pnum', type=str, default=None,
+                        help="Comma-separated parameter_num list to restrict to "
+                             "(e.g. '5,6' for N2O,SF6 at CATS). Default: every "
+                             "analyte for this instrument -- pass this to avoid "
+                             "also reassigning unrelated analytes/channels.")
+    parser.add_argument('--channel', type=str, default=None,
+                        help="Restrict to this DB channel letter (e.g. 'q'). Default: "
+                             "every channel this pnum reports on -- some analytes (e.g. "
+                             "CATS N2O) are quantitated on more than one physical "
+                             "channel, so omitting this can touch more than intended.")
+    parser.add_argument('--method', type=str, default=None,
+                        choices=['ref', 'cal1', 'cal2', 'cal12'],
+                        help="Force this method instead of each analyte's default "
+                             "(cal12, or cal1 for CCl4). Still falls back to ref if "
+                             "the required cal tank(s) lack scale_assignments.")
     parser.add_argument('--dry-run', action='store_true',
                         help='Show counts only; do not update.')
     args = parser.parse_args()
@@ -94,8 +118,20 @@ def main():
     air_ports = cats.AIR_PORTS
     port_in = ', '.join(str(p) for p in air_ports)
     date_filter = f"AND a.analysis_time >= '{args.start_date}'"
+    channel_filter = f"AND mf.channel = '{args.channel}'" if args.channel else ""
 
-    methods = resolve_methods(cats)
+    method_override = None
+    if args.method:
+        name_to_num = {v: k for k, v in cats.MF_METHOD_LABELS.items()}
+        method_override = name_to_num[args.method]
+    methods = resolve_methods(cats, method_override=method_override)
+    if args.pnum:
+        wanted = {int(p) for p in args.pnum.split(',')}
+        unknown = wanted - methods.keys()
+        if unknown:
+            parser.error(f"Unknown parameter_num(s) for {cats.inst_id} site {args.site}: "
+                         f"{sorted(unknown)}")
+        methods = {p: m for p, m in methods.items() if p in wanted}
 
     for pnum, method in sorted(methods.items()):
         count_sql = f"""
@@ -105,10 +141,12 @@ def main():
             WHERE a.inst_num = {cats.inst_num}
               AND a.port IN ({port_in})
               AND mf.parameter_num = {pnum}
+              {channel_filter}
               {date_filter}
         """
         n = db.doquery(count_sql)[0]['n']
-        print(f"  pnum={pnum} -> method {method} ({cats.MF_METHOD_LABELS[method]}): {n:,} rows")
+        chan_label = args.channel or "all channels"
+        print(f"  pnum={pnum} ({chan_label}) -> method {method} ({cats.MF_METHOD_LABELS[method]}): {n:,} rows")
 
         if args.dry_run or n == 0:
             continue
@@ -120,6 +158,7 @@ def main():
             WHERE a.inst_num = {cats.inst_num}
               AND a.port IN ({port_in})
               AND mf.parameter_num = {pnum}
+              {channel_filter}
               {date_filter}
         """
         db.doquery(update_sql)
