@@ -170,6 +170,19 @@ class IE3_Instrument(HATS_DB_Functions):
         run, so caching is safe; matches the same accepted staleness
         tolerance already used for port_config_history, loaded once at
         __init__ and never refreshed within a session either.
+
+        N2O/SF6 (pnum in LEGACY_REFERENCE_SCALES -- "N2O and SF6 predate the
+        consolidated hats.scale_assignments_view") get their assignment
+        history MERGED from both hats.scale_assignments_view and
+        reftank.scale_assignments_view, not hats-with-reftank-as-empty-only-
+        fallback like every other gas. hats.scale_assignments_view having
+        *a* row for a tank does not mean it has *complete* coverage: BRW SF6
+        tank AAL070427 has only a 2021-2022 fill in hats, silently hiding a
+        real 2004-onward fill that exists only in reftank -- the old
+        "if not rows: fall back to reftank" logic never even looked at
+        reftank once hats returned that one unrelated-era row. Every other
+        gas keeps the original empty-only fallback: reftank is not the
+        source of truth for them, only a last resort.
         """
         if not serial:
             return []
@@ -186,24 +199,31 @@ class IE3_Instrument(HATS_DB_Functions):
               AND current_assignment = 1
             ORDER BY start_date
         """) or []
-        if not rows:
+        hats_history = []
+        for row in rows:
+            end_date = row.get('end_date')
+            if str(end_date) == '9999-12-31':
+                end_date = None
+            hats_history.append({
+                'fill_code': row.get('fill_code'),
+                'start_date': row.get('start_date'),
+                'end_date': end_date,
+                'coef0': float(row['coef0']),
+                'unc_c0': float(row.get('unc_c0') or 0.0),
+            })
+
+        if int(pnum) in self.LEGACY_REFERENCE_SCALES:
+            reference = self.reference_scale_assignment_history(serial, pnum)
+            history = sorted(hats_history + reference, key=lambda r: r['start_date'])
+            if not history:
+                history = self.legacy_scale_assignment_history(serial, pnum)
+        elif hats_history:
+            history = hats_history
+        else:
             # caldrift assignments are stored in reftank; older records may
             # additionally require the gas-specific legacy tables.
             reference = self.reference_scale_assignment_history(serial, pnum)
             history = reference if reference else self.legacy_scale_assignment_history(serial, pnum)
-        else:
-            history = []
-            for row in rows:
-                end_date = row.get('end_date')
-                if str(end_date) == '9999-12-31':
-                    end_date = None
-                history.append({
-                    'fill_code': row.get('fill_code'),
-                    'start_date': row.get('start_date'),
-                    'end_date': end_date,
-                    'coef0': float(row['coef0']),
-                    'unc_c0': float(row.get('unc_c0') or 0.0),
-                })
 
         self._scale_assignment_cache[cache_key] = history
         return history
