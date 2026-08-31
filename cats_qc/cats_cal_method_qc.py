@@ -308,7 +308,13 @@ def _detect_discontinuities(
         in_range & periods["z"].notna() & (periods["z"].abs() > jump_z_threshold)
         & (periods["jump"].abs() >= min_jump)
     ]
-    episodes = _group_periods(flagged["period_mid"], max_gap_hours=max_gap_days * 24.0)
+    # Group on period_start, not period_mid: episode_start/episode_end need
+    # to be real week boundaries (valid cats_set_mf_method.py --start-date
+    # values), not the +3.5-day midpoints used for the trend-fit x
+    # coordinate above. The two series have identical relative spacing (a
+    # constant offset apart), so this changes nothing about which periods
+    # get grouped together -- only what the returned boundary values mean.
+    episodes = _group_periods(flagged["period_start"], max_gap_hours=max_gap_days * 24.0)
     return periods, episodes
 
 
@@ -321,7 +327,7 @@ def _evaluate_episode(
     """Recompute the window around one flagged episode under every candidate
     method and pick the first (in preference order) that resolves the jump."""
     pstart, pend = episode
-    in_episode = periods.loc[periods["period_mid"].between(pstart, pend)]
+    in_episode = periods.loc[periods["period_start"].between(pstart, pend)]
     # _group_periods() built this episode from flagged (z non-null) periods,
     # so a scored row is always present; the anchor is whichever one deviated
     # most from its own local trend.

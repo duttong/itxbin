@@ -15,9 +15,11 @@ cats_qc/*
 !cats_qc/cats_baseline_qc.py
 !cats_qc/cats_cal_window_qc.py
 !cats_qc/cats_cal_method_qc.py
+!cats_qc/cats_apply_cal_method.py
 !cats_qc/test_cats_cal_step_qc.py
 !cats_qc/test_cats_cal_window_qc.py
 !cats_qc/test_cats_cal_method_qc.py
+!cats_qc/test_cats_apply_cal_method.py
 !cats_qc/README.md
 !cats_qc/CATS_QC_TODO.md
 

@@ -5,10 +5,11 @@ to `hats.ng_insitu_mole_fraction_tags`.
 
 Only the active pipeline is tracked in git (`cats_tagging.py`,
 `cats_cal_step_qc.py`, `cats_baseline_qc.py`, `cats_cal_window_qc.py`,
-`cats_cal_method_qc.py`, `test_cats_cal_step_qc.py`,
-`test_cats_cal_window_qc.py`, `test_cats_cal_method_qc.py`, and these docs) --
-the rest of this directory is earlier exploratory work and is gitignored.
-See the `cats_qc/` allowlist in `../.gitignore`.
+`cats_cal_method_qc.py`, `cats_apply_cal_method.py`, `test_cats_cal_step_qc.py`,
+`test_cats_cal_window_qc.py`, `test_cats_cal_method_qc.py`,
+`test_cats_apply_cal_method.py`, and these docs) -- the rest of this
+directory is earlier exploratory work and is gitignored. See the
+`cats_qc/` allowlist in `../.gitignore`.
 
 Three detectors are registered today (apply a real reject tag via
 `cats_tagging.py`), plus one standalone recommendation tool that writes
@@ -495,23 +496,46 @@ review, never silently "fixed" by whichever method merely scores least-bad.
 
 ### Output
 
-One row per episode: `episode_start`/`episode_end`, `current_method`
-(modal `mf_method_num` already recorded), `detected_jump`/`detected_z`,
+One row per episode: `episode_start`/`episode_end` (the flagged period's own
+`period_start`/`period_end` -- real week boundaries, not the `period_mid`
+used internally for the trend-fit x coordinate, so they're directly valid
+`cats_set_mf_method.py --start-date` values), `current_method` (modal
+`mf_method_num` already recorded), `detected_jump`/`detected_z`,
 `jump_<method>`/`z_<method>` for every candidate, `recommendation` (or
 `UNRESOLVED` + `cal1_tank`/`cal2_tank` serials).
 
-### Applying a recommendation (manual, by design)
+### Applying recommendations: cats_apply_cal_method.py
+
+`cats_cal_method_qc.py` never writes anything -- `cats_apply_cal_method.py`
+is the manual "apply" step, reading its CSV output and running, per RESOLVED
+episode (oldest first):
 
 ```
-python3 cats_set_mf_method.py --site brw --start-date <episode's period_start> \
-    --pnum <pnum> --channel q --method <recommendation>
-python3 cats_batch.py --analyte <gas> -c q --site brw -s <period_start> -i --fits
+cats_set_mf_method.py --site <site> --start-date <episode_start> \
+    --pnum <pnum> --channel <channel> --method <recommendation>
+cats_batch.py -p <pnum> -c <channel> --site <site> \
+    -s <episode_start> [-e <next episode's episode_start>] -i --fits
 ```
 
-Each episode's `period_start` is already a valid `--start-date` for both
-commands; the next episode's `period_start` implicitly bounds how far the
-previous recommendation should extend, so no explicit end-date concept is
-needed in the output.
+```
+# Preview the exact commands without running them
+python3 cats_apply_cal_method.py --site brw --input brw_sf6_calmethod.csv --dry-run
+
+# Apply for real
+python3 cats_apply_cal_method.py --site brw --input brw_sf6_calmethod.csv
+```
+
+`cats_set_mf_method.py --start-date` has no end -- it labels everything from
+that date forward -- so applying oldest-first means each later episode
+naturally supersedes the previous one from its own start date on, with no
+explicit "clear the old range" step needed. The `cats_batch.py` recompute IS
+explicitly bounded to `[episode_start, next episode's episode_start)` so
+each episode only recomputes the mole fractions it actually owns (the last
+episode has no upper bound -- recomputes through today).
+
+`UNRESOLVED` episodes are skipped with a printed warning naming the active
+`cal1_tank`/`cal2_tank` -- whatever method was already in effect continues
+to apply through that stretch; the script never guesses.
 
 ### Usage
 
@@ -535,3 +559,6 @@ python3 cats_cal_method_qc.py --site brw --gas SF6_q --start 19980101 -v
   synthetic data (including a trend+seasonal-cycle case validating the
   "one-year window averages out the seasonal cycle" design assumption); run
   with `python3 -m unittest test_cats_cal_method_qc.py`.
+- `test_cats_apply_cal_method.py` -- unit tests for `cats_apply_cal_method.py`'s
+  pure plan-building functions (`_build_apply_plan`, `_retag_groups`); run
+  with `python3 -m unittest test_cats_apply_cal_method.py`.
