@@ -80,6 +80,8 @@ class IE3_Instrument(HATS_DB_Functions):
         self.analytes_inv[None] = self.DEFAULT_ANALYTE_NAME
         self.port_config = self._load_port_config()
         self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+        # scale_assignment_history() cache -- see that method's docstring.
+        self._scale_assignment_cache: dict = {}
 
     def get_valid_sites(self):
         """ Returns a dictionary of valid IE3 site codes and site numbers. """
@@ -154,9 +156,27 @@ class IE3_Instrument(HATS_DB_Functions):
         return rows.iat[0] if not rows.empty else None
 
     def scale_assignment_history(self, serial, pnum):
-        """Return current-scale assignment fills for one tank and parameter."""
+        """Return current-scale assignment fills for one tank and parameter.
+
+        Cached per (serial, pnum) for the lifetime of this instance.
+        update_fits() calls this once per required cal port for EVERY week in
+        its date range, and the same tank is typically installed for many
+        consecutive weeks (often the whole range), so without caching the
+        identical DB query gets reissued dozens to hundreds of times back to
+        back -- this is the dominant cost of a multi-year update_fits() call
+        (confirmed: a full 28-year BRW recalc and cats_cal_method_qc.py's
+        repeated per-candidate-method recomputation were both bottlenecked
+        here). A tank's assignment history doesn't change within one script
+        run, so caching is safe; matches the same accepted staleness
+        tolerance already used for port_config_history, loaded once at
+        __init__ and never refreshed within a session either.
+        """
         if not serial:
             return []
+        cache_key = (str(serial), int(pnum))
+        if cache_key in self._scale_assignment_cache:
+            return self._scale_assignment_cache[cache_key]
+
         rows = self.db.doquery(f"""
             SELECT fill_code, start_date, end_date, coef0, unc_c0
             FROM hats.scale_assignments_view
@@ -170,21 +190,22 @@ class IE3_Instrument(HATS_DB_Functions):
             # caldrift assignments are stored in reftank; older records may
             # additionally require the gas-specific legacy tables.
             reference = self.reference_scale_assignment_history(serial, pnum)
-            if reference:
-                return reference
-            return self.legacy_scale_assignment_history(serial, pnum)
-        history = []
-        for row in rows:
-            end_date = row.get('end_date')
-            if str(end_date) == '9999-12-31':
-                end_date = None
-            history.append({
-                'fill_code': row.get('fill_code'),
-                'start_date': row.get('start_date'),
-                'end_date': end_date,
-                'coef0': float(row['coef0']),
-                'unc_c0': float(row.get('unc_c0') or 0.0),
-            })
+            history = reference if reference else self.legacy_scale_assignment_history(serial, pnum)
+        else:
+            history = []
+            for row in rows:
+                end_date = row.get('end_date')
+                if str(end_date) == '9999-12-31':
+                    end_date = None
+                history.append({
+                    'fill_code': row.get('fill_code'),
+                    'start_date': row.get('start_date'),
+                    'end_date': end_date,
+                    'coef0': float(row['coef0']),
+                    'unc_c0': float(row.get('unc_c0') or 0.0),
+                })
+
+        self._scale_assignment_cache[cache_key] = history
         return history
 
     def scale_assignment_values_for_dates(self, serial, pnum, dates, key='coef0'):
@@ -1067,6 +1088,8 @@ class CATS_Instrument(IE3_Instrument):
 
         self.port_config = self._load_port_config()
         self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
+        # scale_assignment_history() cache -- see that method's docstring.
+        self._scale_assignment_cache: dict = {}
 
     def _site_num_for(self, site: str) -> int:
         rows = self.db.doquery(
