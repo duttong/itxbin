@@ -5,17 +5,21 @@ to `hats.ng_insitu_mole_fraction_tags`.
 
 Only the active pipeline is tracked in git (`cats_tagging.py`,
 `cats_cal_step_qc.py`, `cats_baseline_qc.py`, `cats_cal_window_qc.py`,
-`test_cats_cal_step_qc.py`, `test_cats_cal_window_qc.py`, and these docs) --
+`cats_cal_method_qc.py`, `test_cats_cal_step_qc.py`,
+`test_cats_cal_window_qc.py`, `test_cats_cal_method_qc.py`, and these docs) --
 the rest of this directory is earlier exploratory work and is gitignored.
 See the `cats_qc/` allowlist in `../.gitignore`.
 
-Three detectors are registered today:
+Three detectors are registered today (apply a real reject tag via
+`cats_tagging.py`), plus one standalone recommendation tool that writes
+nothing:
 
 | Algorithm | Tag | What it finds | Scope |
 |---|---|---|---|
 | `cal_step` | 328 (reject) | Abrupt cal-port response shifts | per analyte + channel |
 | `baseline` | 329 (reject) | Abnormal chromatogram shape | per **physical channel** |
 | `cal_window` | 286 (reject) | Mole fraction outside local calibration noise | per analyte + channel |
+| `cal_method_qc` (not a `cats_tagging.py` algorithm) | n/a -- recommendation only | Non-atmospheric discontinuities caused by the wrong per-period calibration method | per analyte + channel, BRW N2O/SF6 (q) only for v1 |
 
 ## cats_cal_step_qc.py + cats_tagging.py
 
@@ -406,6 +410,115 @@ existed) defeats the "already-rejected" filter above.
   one. Skipped under `--dry-run` (no DB writes at all) or `--skip-recalc`
   (mole fractions already known current for this window).
 
+## cats_cal_method_qc.py -- calibration-method discontinuity recommendations
+
+**Detect + recommend only -- never writes to the database.** Unlike the three
+detectors above, this is **not** registered in `cats_tagging.py`'s
+`ALGORITHMS`: it produces calibration-method recommendations (which of
+`ref`/`cal1`/`cal2`/`cal12` a period should use), not
+`ng_insitu_mole_fraction_tags` rows -- a fundamentally different kind of
+output that doesn't belong in that framework. There is no `--dry-run` flag
+since there is nothing to preview a write for.
+
+**v1 scope: BRW N2O + SF6 (channel `q`) only**, validated against a record
+the user already knew had visible artifacts (see below). Treat thresholds as
+unvalidated starting points before trusting recommendations on other
+analytes/sites/eras -- see `CATS_QC_TODO.md`.
+
+### Motivation
+
+Switching a species to `cal12` (weekly 2-point fit through both cal tanks)
+is usually the best choice -- it captures both detector gain and offset --
+but isn't always achievable across a multi-decade record: a period where one
+cal tank's response is too noisy/sparse to fit reliably, or where the tanks
+were simply run less consistently in an earlier era, can produce a `cal12`
+fit that's worse than a simpler method for that stretch, showing up as a
+visible step in the mole-fraction time series. This happened after switching
+BRW SF6/N2O to `cal12` for their whole 1998-2026 record: real SF6/N2O have
+only a slow secular trend plus a seasonal cycle -- they never step -- so a
+level discontinuity found near a period boundary is evidence the WRONG
+method was chosen for that period, not that the underlying data is bad.
+
+A secondary hypothesis: if NO candidate method resolves a discontinuity, the
+culprit is more likely a bad `hats.scale_assignments` entry for one of the
+cal tanks -- no method choice can fix that, so those periods are reported
+`UNRESOLVED` (with the cal-tank serials active at that date) for manual
+review, never silently "fixed" by whichever method merely scores least-bad.
+
+### How detection works
+
+1. **Period-level series.** Loads the currently-persisted `mole_fraction`
+   for air1/air2 rows, aggregated to `CATS_batch._fit_periods()` periods
+   (normally calendar weeks, split at a mid-week cal-tank swap -- the same
+   boundary granularity `update_fits()` itself fits on, so a recommended
+   period's `period_start` is already a valid `cats_set_mf_method.py
+   --start-date`). Each period's representative value is the **median**
+   (not mean) of its unrejected rows -- same rationale as `baseline`/
+   `cal_window`'s local references, one bad week shouldn't skew the level.
+2. **Two-sided detrended jump statistic.** Point-to-point differencing
+   (`cal_step`'s approach) doesn't work here -- SF6/N2O trend secularly and
+   cycle seasonally, and a naive diff would flag the trend itself. Instead,
+   at each candidate period, independent robust (Theil-Sen) trend lines are
+   fit to the ~1-year windows *before* and *after* it, each excluding a
+   `--gap-days` buffer around the candidate so its own value (and its
+   immediate neighbors, which may already be drifting toward a real step)
+   can't contaminate either side's trend estimate. Both lines are
+   extrapolated to the candidate's own time; `jump` is the difference
+   between them. The scale is `1.4826 * median(|residual|)` pooled over
+   both sides' own fits -- deliberately absorbing whatever seasonal wiggle a
+   straight line doesn't capture, so the resulting z-score threshold is
+   self-calibrated per analyte/era instead of a hand-tuned absolute cutoff
+   or a separate seasonal decomposition. A period needs
+   `>= --min-trend-points` on **both** sides or gets `NaN` (never flagged).
+3. **Grouping.** Flagged periods are merged into episodes with
+   `cats_cal_step_qc._group_periods` (reused, not reimplemented), bridging
+   gaps up to `--max-gap-days`. Each episode's anchor is its most-deviant
+   period.
+4. **Candidate evaluation.** For each episode, the surrounding window is
+   recomputed under every method in `--method-preference` (default
+   `cal12,cal2,cal1,ref`) via `CATS_batch.update_fits`/`update_runs(...,
+   method_override=M)` -- an existing **non-mutating** "try a method"
+   harness, no DB writes. The same jump statistic is recomputed at the
+   anchor under each candidate; the first method (in preference order) that
+   clears `--resolve-z-threshold` is the recommendation. None clear it ->
+   `UNRESOLVED`.
+
+   **Contract detail:** always pass `fits_override=fits` -- the literal
+   (possibly empty) return of `update_fits()` -- into `update_runs()`, never
+   convert an empty DataFrame to `None`. `update_runs()` branches on
+   `fits_override is None`, not `.empty`: `None` falls back to reading
+   whatever fit is *currently persisted* in `hats.ng_response`, silently
+   testing stale on-disk data instead of the freshly-forced candidate. An
+   empty `fits` table for a `ref` candidate (which stores no fit at all) is
+   handled correctly by `calc_mole_fraction_from_fits`'s `direct_mask`
+   branch regardless.
+
+### Output
+
+One row per episode: `episode_start`/`episode_end`, `current_method`
+(modal `mf_method_num` already recorded), `detected_jump`/`detected_z`,
+`jump_<method>`/`z_<method>` for every candidate, `recommendation` (or
+`UNRESOLVED` + `cal1_tank`/`cal2_tank` serials).
+
+### Applying a recommendation (manual, by design)
+
+```
+python3 cats_set_mf_method.py --site brw --start-date <episode's period_start> \
+    --pnum <pnum> --channel q --method <recommendation>
+python3 cats_batch.py --analyte <gas> -c q --site brw -s <period_start> -i --fits
+```
+
+Each episode's `period_start` is already a valid `--start-date` for both
+commands; the next episode's `period_start` implicitly bounds how far the
+previous recommendation should extend, so no explicit end-date concept is
+needed in the output.
+
+### Usage
+
+```
+python3 cats_cal_method_qc.py --site brw --gas SF6_q --start 19980101 -v
+```
+
 ## Other files in this directory
 
 - `cats_cal_ratio_qc.py` / `cats_peak_qc.py` / `cats_peak_qc_plot.py` /
@@ -417,3 +530,8 @@ existed) defeats the "already-rejected" filter above.
 - `test_cats_cal_window_qc.py` -- unit tests for the pure windowed-outlier
   core (`_windowed_air_outliers`) using synthetic data; run with
   `python3 -m unittest test_cats_cal_window_qc.py`.
+- `test_cats_cal_method_qc.py` -- unit tests for the pure period-aggregation
+  and detrended-jump core (`_period_medians`, `_local_level_jump`) using
+  synthetic data (including a trend+seasonal-cycle case validating the
+  "one-year window averages out the seasonal cycle" design assumption); run
+  with `python3 -m unittest test_cats_cal_method_qc.py`.

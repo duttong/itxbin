@@ -1,7 +1,29 @@
 # CATS QC TODO
 
 Pending follow-ups for the cats_qc work. See `README.md` for how the
-`cal_step` and `baseline` algorithms and `cats_tagging.py` work.
+`cal_step`, `baseline`, and `cal_method_qc` algorithms and `cats_tagging.py`
+work.
+
+## Validate `cats_cal_method_qc.py` thresholds against known BRW discontinuities
+
+`--trend-window-days=365`, `--gap-days=30`, `--min-trend-points=12`,
+`--jump-z-threshold=4.0`, `--resolve-z-threshold` (defaults to
+`jump-z-threshold`) are reasoned starting points, not validated ones -- same
+caveat this file already documents for `cal_step`'s `mad_multiplier=3.5` and
+`baseline`'s `ratio_threshold=0.05`, both tuned against real data before
+being trusted. Run against BRW N2O/SF6 (channel `q`) first and check:
+
+- Does it actually fire near the discontinuities already visible by eye in
+  the full-record SF6 plot (roughly 2001, 2004-2005, 2007, 2009-2010, 2012,
+  2017, 2019-2020, 2022), and not in the smooth stretches between them?
+- For `UNRESOLVED` episodes, do the reported cal-tank serials/dates line up
+  with anything suspicious in `hats.scale_assignments`?
+- Does `--jump-z-threshold=4.0` need to be different pre- vs. post- the
+  2025 switch to `cal12` (sparser/noisier cal-tank data in earlier eras
+  could inflate or deflate the self-calibrated scale differently)?
+
+Only validated for BRW N2O/SF6 (q) -- do not extend to other analytes/sites
+without re-checking the same way, same caution as the two items below.
 
 ## Scan the chromatogram archive with `baseline`
 
