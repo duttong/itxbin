@@ -3195,8 +3195,17 @@ class TimeseriesWidget(QWidget):
             # reconstructing "<analyte> (<channel>)" below.
             base_analyte = re.sub(r'\s+\([^()]+\)\s*$', '', analyte) if analyte else analyte
 
+            # Resolve pnum from the *un-stripped* analyte: for CATS/IE3 in
+            # forced-preferred-channel mode it's already a bare base name
+            # (self.analytes is channel-simplified there), but for FE3/M4
+            # etc. self.analytes/instrument.analytes are keyed on the full
+            # channel-suffixed name (e.g. "CFC11 (f)") with no bare entry --
+            # base_analyte alone would fail to resolve and crash int(None).
+            resolved_pnum = self._resolve_pnum(analyte)
+            if resolved_pnum is None:
+                return
             self.main_window.current_run_time = str(effective_run_time)
-            self.main_window.current_pnum = int(self._resolve_pnum(base_analyte))
+            self.main_window.current_pnum = int(resolved_pnum)
             self.main_window.current_channel = channel
             processing_analyte = base_analyte
             if channel:
