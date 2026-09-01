@@ -485,6 +485,17 @@ class TimeseriesFigure:
         self._ax.set_title(f"Mole fraction vs Sample datetime\nAnalyte: {self.analyte}")
         self._ax.grid(True, which="both", linestyle="--", alpha=0.5)
         plt.xticks(rotation=45)
+
+        # Reseed the toolbar's Home snapshot to this fresh, fully-autoscaled
+        # view -- must happen before any caller overrides xlim/ylim (e.g.
+        # _rebuild_preserving_view) to keep a prior zoom on screen, so Home
+        # always rescales to what's actually plotted now rather than a
+        # stale pre-toggle view.
+        toolbar = getattr(getattr(self._fig.canvas, "manager", None), "toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "update") and hasattr(toolbar, "push_current"):
+            toolbar.update()
+            toolbar.push_current()
+
         plt.show(block=False)
 
 
@@ -910,13 +921,28 @@ class TimeseriesFigure:
         self.parent_widget.start_year.setValue(self.fig_start_year.value())
         self.parent_widget.end_year.setValue(self.fig_end_year.value())
 
+    def _rebuild_preserving_view(self):
+        """Clear+rebuild the plot without losing the current x/y zoom.
+
+        Used by the palette/marker-size/show-flagged toggles, which only
+        restyle already-loaded data rather than fetching a new date range
+        or analyte. _build_plot() reseeds the toolbar's Home snapshot to
+        the freshly-autoscaled full view before we override xlim/ylim here,
+        so Home still rescales to whatever's actually plotted now.
+        """
+        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
+        self._ax.clear()
+        self._build_plot()
+        self._ax.set_xlim(xlim)
+        self._ax.set_ylim(ylim)
+        self._fig.canvas.draw_idle()
+
     def _on_palette_changed(self, palette):
         self._palette = palette
         _save_timeseries_palette(palette)
         self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
         try:
-            self._ax.clear()
-            self._build_plot()
+            self._rebuild_preserving_view()
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
 
@@ -925,8 +951,7 @@ class TimeseriesFigure:
         _save_timeseries_marker_size(size)
         self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
         try:
-            self._ax.clear()
-            self._build_plot()
+            self._rebuild_preserving_view()
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
 
@@ -934,8 +959,7 @@ class TimeseriesFigure:
         self._show_flagged = bool(state)
         self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
         try:
-            self._ax.clear()
-            self._build_plot()
+            self._rebuild_preserving_view()
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
 
