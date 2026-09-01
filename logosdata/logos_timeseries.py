@@ -524,23 +524,35 @@ class TimeseriesFigure:
             label = PORT_LABELS.get(port, f"Air(port {port})")
             color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE[label])
             visible = self.dataset_visibility.get(label, True)
-            line, = ax.plot(
-                grp["analysis_time"], grp["mole_fraction"],
-                marker="o", linestyle="", color=color,
-                markersize=self._raw_marker_size, alpha=0.6, label=label, picker=5
-            )
-            line._site = site
-            line._dataset_label = label
-            line._meta = {
-                "run_time":        grp["run_time"].tolist(),
-                "sample_datetime": grp["analysis_time"].tolist(),
-                "site":            grp["site"].tolist(),
-                "port":            grp["port"].tolist(),
-                "analyte":         self.analyte,
-                "channel":         self.channel,
-            }
-            line.set_visible(visible)
-            dataset_handles.setdefault(label, []).append(line)
+
+            is_flagged = grp["rejected"].fillna(0).astype(int) == 1
+            subsets = [(False, grp[~is_flagged])]
+            if self._show_flagged:
+                subsets.append((True, grp[is_flagged]))
+
+            for flagged, sub in subsets:
+                if sub.empty:
+                    continue
+                line, = ax.plot(
+                    sub["analysis_time"], sub["mole_fraction"],
+                    marker="o", linestyle="", color=color, mfc=color,
+                    alpha=(1.0 if flagged else 0.6), label=label, picker=5,
+                    markersize=(self._raw_marker_size + 1) if flagged else self._raw_marker_size,
+                    mec=('red' if flagged else color),
+                    markeredgewidth=(1.4 if flagged else 0.8),
+                )
+                line._site = site
+                line._dataset_label = label
+                line._meta = {
+                    "run_time":        sub["run_time"].tolist(),
+                    "sample_datetime": sub["analysis_time"].tolist(),
+                    "site":            sub["site"].tolist(),
+                    "port":            sub["port"].tolist(),
+                    "analyte":         self.analyte,
+                    "channel":         self.channel,
+                }
+                line.set_visible(visible)
+                dataset_handles.setdefault(label, []).append(line)
 
         return dataset_handles
 
@@ -586,7 +598,7 @@ class TimeseriesFigure:
             PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
             PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
             sites = self.parent_widget.get_active_sites()
-            insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
+            insitu = self.insitu_df[self.insitu_df["site"].isin(sites) & (self.insitu_df["rejected"] == 0)].copy()
             month_start = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
             day = insitu["analysis_time"].dt.day
             offset = pd.to_timedelta(
@@ -665,7 +677,7 @@ class TimeseriesFigure:
             PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
             PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
             sites = self.parent_widget.get_active_sites()
-            insitu = self.insitu_df[self.insitu_df["site"].isin(sites)].copy()
+            insitu = self.insitu_df[self.insitu_df["site"].isin(sites) & (self.insitu_df["rejected"] == 0)].copy()
             insitu["_month"] = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
             for (port, site, month), grp in insitu.groupby(["port", "site", "_month"]):
                 vals = grp["mole_fraction"].dropna()
@@ -2082,7 +2094,9 @@ class TimeseriesWidget(QWidget):
 
 
     def query_insitu_data(self, analyte: str | None = None, force: bool = False) -> pd.DataFrame:
-        """Query unflagged in-situ air port data (IE3 and CATS) for the selected analyte and date range."""
+        """Query in-situ air port data (IE3 and CATS) for the selected analyte and date
+        range, flagged and unflagged alike -- callers that need only unflagged rows
+        (aggregates) must filter on the returned 'rejected' column themselves."""
         insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
             if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
         if self.instrument.inst_num not in insitu_inst_nums:
@@ -2118,19 +2132,19 @@ class TimeseriesWidget(QWidget):
         data_floor = getattr(self.instrument, "DATA_START_DATE", None)
         floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
         sql = f"""
-        SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel
+        SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel,
+            EXISTS (
+                SELECT 1
+                FROM hats.ng_insitu_mole_fraction_tags t
+                JOIN ccgg.tag_dictionary d ON d.num = t.tag_num
+                WHERE t.ng_insitu_mole_fraction_num = mf.num
+                  AND d.reject = 1
+            ) AS rejected
         FROM hats.ng_insitu_analysis a
         JOIN hats.ng_insitu_mole_fractions mf ON a.num = mf.analysis_num
         JOIN gmd.site s ON a.site_num = s.num
         WHERE a.inst_num = {self.instrument.inst_num}
           AND a.port IN ({",".join(str(p) for p in getattr(self.instrument, "AIR_PORTS", [3, 7]))})
-          AND NOT EXISTS (
-              SELECT 1
-              FROM hats.ng_insitu_mole_fraction_tags t
-              JOIN ccgg.tag_dictionary d ON d.num = t.tag_num
-              WHERE t.ng_insitu_mole_fraction_num = mf.num
-                AND d.reject = 1
-          )
           AND mf.parameter_num = {pnum}
           {ch_filter}
           AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
@@ -2141,6 +2155,7 @@ class TimeseriesWidget(QWidget):
         if not df.empty:
             df["run_time"]      = pd.to_datetime(df["run_time"])
             df["analysis_time"] = pd.to_datetime(df["analysis_time"])
+            df["rejected"]      = df["rejected"].fillna(0).astype(int)
         self._cached_insitu_df = df
         self._last_insitu_params = query_params
         return df.copy() if not df.empty else df
