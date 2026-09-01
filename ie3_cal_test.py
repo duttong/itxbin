@@ -267,6 +267,15 @@ def weekly_cal_fits(
     active fill for that port.
     """
     cal = weekly[weekly['port'].isin(coefs.keys())].copy()
+    if cal.empty:
+        # cal.apply(..., axis=1) below would probe with a dummy all-NaN row
+        # to infer the return type; int(row['port']) raises on that NaN,
+        # and pandas silently falls back to returning cal.copy() (the whole
+        # multi-column frame) instead of a Series, breaking the assignment.
+        return pd.DataFrame(columns=[
+            'week_start', 'slope', 'intercept', 'x0', 'y0', 'x1', 'y1',
+            'uc0', 'uc1', 'unc_slope', 'unc_intercept', 'unc_ref_pred',
+        ])
 
     def _lookup(key):
         def _f(row):
