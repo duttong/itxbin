@@ -170,6 +170,7 @@ class TimeseriesFigure(TagCRUDMixin):
         self._build_plot()
         self._fig.canvas.mpl_connect("close_event", self._on_close)
         self._fig.canvas.mpl_connect("pick_event", self._on_pick_event)
+        self._fig.canvas.mpl_connect("button_press_event", self._on_multi_tag_empty_click)
 
     # ────────────────────────────────────────────────────────────
     def _on_close(self, evt):
@@ -992,11 +993,12 @@ class TimeseriesFigure(TagCRUDMixin):
     def _rebuild_preserving_view(self):
         """Clear+rebuild the plot without losing the current x/y zoom.
 
-        Used by the palette/marker-size/show-flagged toggles, which only
-        restyle already-loaded data rather than fetching a new date range
-        or analyte. _build_plot() reseeds the toolbar's Home snapshot to
-        the freshly-autoscaled full view before we override xlim/ylim here,
-        so Home still rescales to whatever's actually plotted now.
+        Used by the palette/marker-size/show-flagged toggles and tag
+        apply/remove, which only restyle already-loaded data rather than
+        fetching a new date range or analyte. _build_plot() reseeds the
+        toolbar's Home snapshot to the freshly-autoscaled full view before
+        we override xlim/ylim here, so Home still rescales to whatever's
+        actually plotted now.
         """
         xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
         self._ax.clear()
@@ -1004,6 +1006,7 @@ class TimeseriesFigure(TagCRUDMixin):
         self._ax.set_xlim(xlim)
         self._ax.set_ylim(ylim)
         self._fig.canvas.draw_idle()
+        self._refresh_multi_tag_selection_after_rebuild()
 
     def _on_palette_changed(self, palette):
         self._palette = palette
@@ -1035,8 +1038,13 @@ class TimeseriesFigure(TagCRUDMixin):
 
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
-            # Newly-rejected points would otherwise vanish from a "hide
-            # flagged" view right as they're tagged.
+            # Default it on so a freshly-tagged point doesn't immediately
+            # vanish -- but this is just a one-time nudge, not a lock: the
+            # selection/comment state survives a "Show flagged data" toggle
+            # either way (see _refresh_multi_tag_selection_after_rebuild),
+            # so it's fine to let the user turn it back off mid-session,
+            # e.g. to check for remaining untagged points once they're done
+            # with the current selection.
             if not self.show_flagged_cb.isChecked():
                 self.show_flagged_cb.setChecked(True)
             if self._multi_tag_panel is None:
@@ -1128,6 +1136,29 @@ class TimeseriesFigure(TagCRUDMixin):
             self._apply_multi_tag_selection(current)
         else:
             self._apply_multi_tag_selection([token])
+
+    def _on_multi_tag_empty_click(self, event):
+        """Clear the Multi-Tag selection on a plain click that hits no raw
+        point. pick_event (used for real selections) simply never fires on a
+        miss, so there's otherwise no way to deselect -- mirrors
+        logos_data.py's _on_click_tooltip empty-space deselect. A missed
+        SHIFT+click keeps the selection intact (matches the +/- toggle
+        semantics elsewhere); pan/zoom being engaged is left alone too."""
+        if not self._multi_tag_mode or self._multi_tag_panel is None:
+            return
+        if event.button != 1 or self._shift_held():
+            return
+        toolbar = getattr(getattr(self._fig.canvas, "manager", None), "toolbar", None)
+        if toolbar is not None and getattr(toolbar, "mode", None):
+            return
+        for artist in getattr(self, "_data_artists", []):
+            if artist.get_visible() and artist.contains(event)[0]:
+                return  # a real point was hit -- pick_event handles selection
+        if not self._multi_tag_selection:
+            return
+        self._multi_tag_selection = []
+        self._multi_tag_panel.clear_selection()
+        self._clear_multi_tag_highlight()
 
     def _apply_multi_tag_selection(self, row_idxs):
         """Refresh the Multi-Tag panel and highlight for an arbitrary selection.
@@ -1233,6 +1264,40 @@ class TimeseriesFigure(TagCRUDMixin):
                 mask = self.insitu_df['mf_num'].isin(mf_set)
                 self.insitu_df.loc[mask, 'rejected'] = new_val
         self._rebuild_preserving_view()
+
+    def _refresh_multi_tag_selection_after_rebuild(self):
+        """Called by _rebuild_preserving_view() after every clear+redraw
+        (palette/marker-size/show-flagged toggles, tag apply/remove -- any
+        of them can hide or redraw the selected points), since the
+        (artist, idx) tokens in self._multi_tag_selection point at now-
+        orphaned Line2D objects and the selection highlight is gone.
+
+        The panel's own mf_nums/comment state are deliberately left alone
+        here even when nothing survives the rebuild (e.g. the user toggles
+        "Show flagged data" off to go look for more bad points): clearing
+        it automatically would wipe an in-progress, unsaved comment out
+        from under the user for an unrelated visibility change. Only the
+        figure-level highlight/selection tracking is re-anchored or
+        dropped; explicit deselection (click elsewhere, or toggle Multi-Tag
+        off) still goes through clear_selection() directly."""
+        if not self._multi_tag_selection:
+            return
+        mf_nums = set(self._mf_nums_for_selection(self._multi_tag_selection))
+        fresh = []
+        if mf_nums:
+            for artist in getattr(self, "_data_artists", []):
+                vals = getattr(artist, "_meta", {}).get("mf_num")
+                if not vals:
+                    continue
+                fresh.extend((artist, i) for i, v in enumerate(vals) if v in mf_nums)
+        self._multi_tag_selection = fresh
+        if fresh:
+            self._highlight_multi_tag_selection(fresh)
+        else:
+            # Nothing left to draw a ring around (points now hidden, or
+            # scrolled outside the loaded range) -- the panel's mf_nums/
+            # comment state stay live regardless, see docstring above.
+            self._clear_multi_tag_highlight()
 
     def _rebuild_data_artists(self):
         """Cache only artists that represent data points we can tooltip (have _meta)."""
