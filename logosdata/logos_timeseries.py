@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QCursor, QKeySequence, QIcon, QPixmap
 from PyQt5.QtCore import Qt, QTimer
 
-from matplotlib.widgets import Button, RadioButtons
+from matplotlib.widgets import Button, RadioButtons, RectangleSelector
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from data_export import MstarDataExporter, FecdDataExporter
+from logos_tagging import TagCRUDMixin, MultiTagPanel
 
 import configparser
 
@@ -127,15 +128,23 @@ def adjust_brightness(color, factor=1.0):
     return (r, g, b, a)
 
 
-class TimeseriesFigure:
+class TimeseriesFigure(TagCRUDMixin):
     """Manages a single interactive matplotlib figure for timeseries data."""
 
     def __init__(self, parent_widget, df, analyte, insitu_df=None):
         self.parent_widget = parent_widget
+        self.instrument = parent_widget.instrument
         self.df = df
         self.analyte = analyte
         self.insitu_df = insitu_df if insitu_df is not None else pd.DataFrame()
         self.channel = parent_widget.current_channel
+
+        # Multi-Tag selection state (see _on_multi_tag_btn_toggled)
+        self._multi_tag_mode = False
+        self._multi_tag_panel = None
+        self._multi_tag_rect_selector = None
+        self._multi_tag_selection = []
+        self._multi_tag_highlight_artist = None
 
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
@@ -169,6 +178,16 @@ class TimeseriesFigure:
             self.parent_widget.open_figures.remove(self)
         except ValueError:
             pass
+        if self._multi_tag_rect_selector is not None:
+            self._multi_tag_rect_selector.disconnect_events()
+            self._multi_tag_rect_selector = None
+        # Swap the reference out first -- panel.close() synchronously fires
+        # its closeEvent, which unchecks multi_tag_btn and re-enters here via
+        # _on_multi_tag_btn_toggled(False); with the attribute already None
+        # that path's own panel-is-not-None check is a no-op.
+        panel, self._multi_tag_panel = self._multi_tag_panel, None
+        if panel is not None:
+            panel.close()
 
     def _setup_toolbar_widgets(self):
         # Use the full instrument.analytes list (every channel, e.g. CATS's
@@ -216,6 +235,15 @@ class TimeseriesFigure:
             "Show flagged/rejected raw samples, drawn larger with a red edge"
         )
         self.show_flagged_cb.stateChanged.connect(self._on_show_flagged_changed)
+
+        self.multi_tag_btn = QPushButton("Multi-Tag")
+        self.multi_tag_btn.setCheckable(True)
+        self.multi_tag_btn.setToolTip(
+            "Select raw points (click, SHIFT+click, drag box) to reject or\n"
+            "info-tag them. Only raw flask/air points are taggable -- mean\n"
+            "and aggregate markers are never selectable."
+        )
+        self.multi_tag_btn.toggled.connect(self._on_multi_tag_btn_toggled)
 
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(analyte_names)
@@ -266,6 +294,7 @@ class TimeseriesFigure:
         combo_layout.addWidget(self.marker_size_spin)
         combo_layout.addSpacing(8)
         combo_layout.addWidget(self.show_flagged_cb)
+        combo_layout.addWidget(self.multi_tag_btn)
         combo_layout.addWidget(self.analyte_combo)
         combo_layout.addWidget(self.reload_btn)
         combo_container.setLayout(combo_layout)
@@ -279,6 +308,43 @@ class TimeseriesFigure:
         else:
             combo_container.setParent(self._fig.canvas)
             combo_container.show()
+
+        self._relocate_toolbar_coordinates()
+
+    def _relocate_toolbar_coordinates(self):
+        """Move the x/y coordinate readout off the toolbar and into the
+        window's status bar. The native locLabel resizes on every mouse
+        move (coordinate text length varies), which forces the toolbar to
+        reflow and was pushing our controls into the overflow chevron and
+        back -- looked like the controls kept disappearing/reappearing."""
+        manager = getattr(self._fig.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        window = getattr(manager, "window", None)
+        if toolbar is not None and hasattr(toolbar, "locLabel"):
+            toolbar.coordinates = False
+            # The widget's own setVisible() gets overridden by QToolBar's
+            # layout, which re-syncs visibility from the QWidgetAction that
+            # wraps it (the object addWidget() returned) -- hide that instead.
+            for action in toolbar.actions():
+                if hasattr(action, "defaultWidget") and action.defaultWidget() is toolbar.locLabel:
+                    action.setVisible(False)
+                    break
+        self._coord_status_label = None
+        if window is not None and hasattr(window, "statusBar"):
+            self._coord_status_label = QLabel("")
+            window.statusBar().addPermanentWidget(self._coord_status_label)
+        self._fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move_coords)
+
+    def _on_mouse_move_coords(self, event):
+        if self._coord_status_label is None:
+            return
+        s = ""
+        if event.inaxes is not None and event.xdata is not None and event.ydata is not None:
+            try:
+                s = event.inaxes.format_coord(event.xdata, event.ydata)
+            except (ValueError, OverflowError):
+                s = ""
+        self._coord_status_label.setText(s)
 
     def _setup_shortcuts(self):
         self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
@@ -559,6 +625,8 @@ class TimeseriesFigure:
                     "sample_datetime": sub["analysis_time"].tolist(),
                     "site":            sub["site"].tolist(),
                     "port":            sub["port"].tolist(),
+                    "mf_num":          sub["mf_num"].tolist(),
+                    "rejected":        sub["rejected"].tolist(),
                     "analyte":         self.analyte,
                     "channel":         self.channel,
                 }
@@ -963,6 +1031,209 @@ class TimeseriesFigure:
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
 
+    # ─── Multi-Tag selection (raw points only: "All samples", Air1/Air2) ───
+
+    def _on_multi_tag_btn_toggled(self, checked: bool):
+        if checked:
+            # Newly-rejected points would otherwise vanish from a "hide
+            # flagged" view right as they're tagged.
+            if not self.show_flagged_cb.isChecked():
+                self.show_flagged_cb.setChecked(True)
+            if self._multi_tag_panel is None:
+                panel = MultiTagPanel(self)
+
+                def _panel_close(e):
+                    e.accept()
+                    self.multi_tag_btn.setChecked(False)
+                panel.closeEvent = _panel_close
+                self._multi_tag_panel = panel
+            self._multi_tag_panel.clear_selection()
+            self._multi_tag_panel.show()
+            self._multi_tag_panel.raise_()
+            self._multi_tag_mode = True
+            self._set_multi_tag_select(True)
+        else:
+            self._multi_tag_mode = False
+            self._set_multi_tag_select(False)
+            if self._multi_tag_panel is not None:
+                self._multi_tag_panel.hide()
+            self._clear_multi_tag_highlight()
+            self._multi_tag_selection = []
+
+    def _shift_held(self) -> bool:
+        """True while SHIFT is down. Qt modifiers are used instead of the
+        matplotlib event key because the canvas only sees key events when it
+        has keyboard focus, which is unreliable in this app."""
+        return bool(QApplication.keyboardModifiers() & Qt.ShiftModifier)
+
+    def _set_multi_tag_select(self, enabled: bool):
+        """Activate or deactivate the multi-tag window-select RectangleSelector."""
+        if self._multi_tag_rect_selector is not None:
+            self._multi_tag_rect_selector.set_active(False)
+            self._multi_tag_rect_selector.disconnect_events()
+            self._multi_tag_rect_selector = None
+        if enabled:
+            self._multi_tag_rect_selector = RectangleSelector(
+                ax=self._ax,
+                onselect=self._on_multi_tag_box_select,
+                useblit=True,
+                button=[1],
+                minspanx=5, minspany=5,
+                spancoords="pixels",
+                drag_from_anywhere=True,
+                ignore_event_outside=False,
+                # SHIFT extends the selection here; unbind matplotlib's
+                # default shift->force-square-box behavior.
+                state_modifier_keys=dict(square=''),
+            )
+            self._multi_tag_rect_selector.set_active(True)
+
+    def _on_multi_tag_box_select(self, eclick, erelease):
+        """Handle rectangle select in multi-tag mode: select all raw points in the box."""
+        if self._multi_tag_panel is None or not self._multi_tag_panel.isVisible():
+            return
+        x0, x1 = sorted([eclick.xdata, erelease.xdata])
+        y0, y1 = sorted([eclick.ydata, erelease.ydata])
+        if None in (x0, y0, x1, y1):
+            return
+
+        # One Line2D per (site, flagged-state) rather than logos_data.py's
+        # single unified array for the whole run -- box-test each raw-point
+        # artist individually and union the hits.
+        hits = []
+        for artist in getattr(self, "_data_artists", []):
+            if not artist.get_visible():
+                continue
+            xdata = np.asarray(mdates.date2num(artist.get_xdata()))
+            ydata = np.asarray(artist.get_ydata(), dtype=float)
+            mask = (xdata >= x0) & (xdata <= x1) & (ydata >= y0) & (ydata <= y1)
+            hits.extend((artist, int(i)) for i in np.nonzero(mask)[0])
+
+        if not hits:
+            return
+        # SHIFT+drag adds the box contents to the current selection.
+        if self._shift_held():
+            hits = list(self._multi_tag_selection) + hits
+        self._apply_multi_tag_selection(hits)
+
+    def _on_multi_tag_point_pick(self, artist, idx):
+        """Handle a single click in multi-tag mode: select (or SHIFT-toggle) one point."""
+        token = (artist, idx)
+        if self._shift_held():
+            current = list(self._multi_tag_selection)
+            if token in current:
+                current.remove(token)
+            else:
+                current.append(token)
+            self._apply_multi_tag_selection(current)
+        else:
+            self._apply_multi_tag_selection([token])
+
+    def _apply_multi_tag_selection(self, row_idxs):
+        """Refresh the Multi-Tag panel and highlight for an arbitrary selection.
+        `row_idxs` is a list of (artist, point_index) tokens -- there's no
+        single `self.run` here, so unlike logos_data.py's version this never
+        touches a DataFrame directly, only each artist's own `_meta`."""
+        if self._multi_tag_panel is None:
+            return
+        seen = set()
+        deduped = []
+        for tok in row_idxs:
+            if tok not in seen:
+                seen.add(tok)
+                deduped.append(tok)
+        row_idxs = deduped
+        self._multi_tag_selection = row_idxs
+
+        mf_nums = self._mf_nums_for_selection(row_idxs)
+        if not mf_nums:
+            self._multi_tag_panel.clear_selection()
+            self._clear_multi_tag_highlight()
+            return
+        tag_counts = self._fetch_tag_counts_for_mf_nums(mf_nums)
+        self._multi_tag_panel.update_for_point(
+            row_idxs, mf_nums, tag_counts, total=len(mf_nums) or 1,
+            info_text=self._multi_tag_info_text(row_idxs),
+        )
+        self._highlight_multi_tag_selection(row_idxs)
+
+    def _mf_nums_for_selection(self, row_idxs):
+        out = []
+        for artist, idx in row_idxs:
+            vals = getattr(artist, "_meta", {}).get("mf_num")
+            if not vals or idx >= len(vals):
+                continue
+            v = vals[idx]
+            if v is None:
+                continue
+            out.append(int(v))
+        return sorted(set(out))
+
+    def _multi_tag_info_text(self, row_idxs) -> str:
+        if len(row_idxs) == 1:
+            artist, idx = row_idxs[0]
+            meta = getattr(artist, "_meta", {})
+            ts_vals = meta.get("sample_datetime") or meta.get("run_time")
+            ts = ts_vals[idx] if ts_vals and idx < len(ts_vals) else None
+            site_vals = meta.get("site")
+            site = site_vals[idx] if site_vals and idx < len(site_vals) else None
+            label = getattr(artist, "_dataset_label", "")
+            prefix = " ".join(p for p in (site, label) if p)
+            if ts is not None:
+                return f"{prefix}: {str(ts)[:19]}" if prefix else str(ts)[:19]
+            return prefix or "1 point selected"
+        return f"{len(row_idxs)} points selected"
+
+    def _highlight_multi_tag_selection(self, row_idxs):
+        self._clear_multi_tag_highlight()
+        xs, ys = [], []
+        for artist, idx in row_idxs:
+            try:
+                xs.append(artist.get_xdata()[idx])
+                ys.append(artist.get_ydata()[idx])
+            except (IndexError, TypeError):
+                continue
+        if not xs:
+            return
+        self._multi_tag_highlight_artist, = self._ax.plot(
+            xs, ys, marker='o', linestyle='', markersize=12,
+            markerfacecolor='none', markeredgecolor='black', markeredgewidth=1.8,
+            zorder=10,
+        )
+        self._fig.canvas.draw_idle()
+
+    def _clear_multi_tag_highlight(self):
+        if self._multi_tag_highlight_artist is not None:
+            try:
+                self._multi_tag_highlight_artist.remove()
+            except Exception:
+                pass
+            self._multi_tag_highlight_artist = None
+            self._fig.canvas.draw_idle()
+
+    # ─── MultiTagPanel host hooks ───
+
+    def _record_pending_tag(self, row_idxs, tag_num, applied):
+        pass  # no "Copy Tags to all Analytes" from the Timeseries figure
+
+    def on_tag_state_changed(self, row_idxs, mf_nums, tag_num, applied, is_reject):
+        """MultiTagPanel hook: called right after a tag add/remove has been
+        written to the DB. Unlike logos_data.py's MainWindow (which must
+        recompute smoothing-dependent mole fractions across the whole run),
+        this only flips the local 'rejected' flag for redraw -- the actual
+        mole_fraction value is refreshed by the next relevant batch run
+        (m4_batch.py -i, fe3_batch.py -i, cats_ingest.py, etc.)."""
+        if is_reject:
+            new_val = 1 if applied else 0
+            mf_set = set(mf_nums)
+            if not self.df.empty and 'ng_mole_fraction_num' in self.df.columns:
+                mask = self.df['ng_mole_fraction_num'].isin(mf_set)
+                self.df.loc[mask, 'rejected'] = new_val
+            if not self.insitu_df.empty and 'mf_num' in self.insitu_df.columns:
+                mask = self.insitu_df['mf_num'].isin(mf_set)
+                self.insitu_df.loc[mask, 'rejected'] = new_val
+        self._rebuild_preserving_view()
+
     def _rebuild_data_artists(self):
         """Cache only artists that represent data points we can tooltip (have _meta)."""
         self._data_artists = []
@@ -1096,6 +1367,15 @@ class TimeseriesFigure:
         if picked_artist is None:
             return
 
+        # In Multi-Tag mode, a plain/SHIFT left-click selects for tagging
+        # instead of showing the tooltip; right-click keeps its existing
+        # "jump to this run in the Processing tab" behavior either way.
+        if (self._multi_tag_mode and self._multi_tag_panel is not None
+                and self._multi_tag_panel.isVisible()
+                and event.mouseevent.button != 3):
+            self._on_multi_tag_point_pick(picked_artist, picked_idx)
+            return
+
         self.parent_widget.on_point_pick(event, artist=picked_artist, idx=picked_idx)
 
 class RelStdDevFigure:
@@ -1223,6 +1503,43 @@ class RelStdDevFigure:
         else:
             combo_container.setParent(self._fig.canvas)
             combo_container.show()
+
+        self._relocate_toolbar_coordinates()
+
+    def _relocate_toolbar_coordinates(self):
+        """Move the x/y coordinate readout off the toolbar and into the
+        window's status bar. The native locLabel resizes on every mouse
+        move (coordinate text length varies), which forces the toolbar to
+        reflow and was pushing our controls into the overflow chevron and
+        back -- looked like the controls kept disappearing/reappearing."""
+        manager = getattr(self._fig.canvas, "manager", None)
+        toolbar = getattr(manager, "toolbar", None)
+        window = getattr(manager, "window", None)
+        if toolbar is not None and hasattr(toolbar, "locLabel"):
+            toolbar.coordinates = False
+            # The widget's own setVisible() gets overridden by QToolBar's
+            # layout, which re-syncs visibility from the QWidgetAction that
+            # wraps it (the object addWidget() returned) -- hide that instead.
+            for action in toolbar.actions():
+                if hasattr(action, "defaultWidget") and action.defaultWidget() is toolbar.locLabel:
+                    action.setVisible(False)
+                    break
+        self._coord_status_label = None
+        if window is not None and hasattr(window, "statusBar"):
+            self._coord_status_label = QLabel("")
+            window.statusBar().addPermanentWidget(self._coord_status_label)
+        self._fig.canvas.mpl_connect("motion_notify_event", self._on_mouse_move_coords)
+
+    def _on_mouse_move_coords(self, event):
+        if self._coord_status_label is None:
+            return
+        s = ""
+        if event.inaxes is not None and event.xdata is not None and event.ydata is not None:
+            try:
+                s = event.inaxes.format_coord(event.xdata, event.ydata)
+            except (ValueError, OverflowError):
+                s = ""
+        self._coord_status_label.setText(s)
 
     def _setup_shortcuts(self):
         self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
@@ -1843,6 +2160,8 @@ class TimeseriesWidget(QWidget):
                             "pair_id_num": sub.get("pair_id_num", pd.Series([None]*len(sub))).tolist(),
                             "run_type_num": sub.get("run_type_num", pd.Series([None]*len(sub))).tolist(),
                             "site": sub.get("site", pd.Series([None]*len(sub))).tolist(),
+                            "mf_num": sub.get("ng_mole_fraction_num", pd.Series([None]*len(sub))).tolist(),
+                            "rejected": sub.get("rejected", pd.Series([0]*len(sub))).tolist(),
                             "analyte": analyte,
                             "channel": self.current_channel,
                         }
@@ -2084,7 +2403,7 @@ class TimeseriesWidget(QWidget):
         if force or query_params != self._last_query_params:
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
-                   rejected, site, sample_id, pair_id_num, run_type_num
+                   rejected, site, sample_id, pair_id_num, run_type_num, ng_mole_fraction_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
               AND parameter_num = {pnum}
@@ -2157,6 +2476,7 @@ class TimeseriesWidget(QWidget):
         floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
         sql = f"""
         SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel,
+            mf.num AS mf_num,
             EXISTS (
                 SELECT 1
                 FROM hats.ng_insitu_mole_fraction_tags t
@@ -2753,7 +3073,8 @@ class TimeseriesWidget(QWidget):
         if df.empty:
             all_s = pd.DataFrame(columns=["sample_datetime", "run_time", "analysis_datetime",
                                           "mole_fraction", "channel", "rejected", "site",
-                                          "sample_id", "pair_id_num", "run_type_num"])
+                                          "sample_id", "pair_id_num", "run_type_num",
+                                          "ng_mole_fraction_num"])
             fm = pd.DataFrame(columns=["site", "sample_id", "sample_datetime", "mean", "std"])
             pm = pd.DataFrame(columns=["site", "pair_id_num", "sample_datetime", "mean", "std"])
             return {"All samples": all_s, "Flask mean": fm, "Pair mean": pm}

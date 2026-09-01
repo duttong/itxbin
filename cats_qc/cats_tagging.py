@@ -13,7 +13,7 @@ ccgg.tag_dictionary (reject=1, automated=1) -- cal_step writes 328
 ("Detector cal-response rapid change"), baseline writes 329 ("Abnormal
 chromatogram"), cal_window writes 286 ("Mole fraction falls outside of
 calibration range, results certainly adversely affected" -- the "C" tag
-under _TAG_LAYOUT's Automated Tags section in logos_data.py; its 287
+under _TAG_LAYOUT's Automated Tags section in logosdata/logos_tagging.py; its 287
 companion is the non-reject "c" variant and is not written by cal_window).
 A future algorithm can start on an unregistered placeholder number the same
 way cal_step/baseline did; update ALGORITHMS once a real number is

@@ -80,7 +80,7 @@ ALL_GASES = (
 
 # "C" reject tag: "Mole fraction falls outside of calibration range, results
 # certainly adversely affected" -- registered in ccgg.tag_dictionary and
-# _TAG_LAYOUT's Automated Tags section (logos_data.py). Kept here (the single
+# _TAG_LAYOUT's Automated Tags section (logosdata/logos_tagging.py). Kept here (the single
 # source of truth cats_tagging.py's ALGORITHMS registers) so
 # _already_rejected_mf_nums can exclude this algorithm's own prior tags from
 # its "already rejected" pool filter without importing cats_tagging (which
