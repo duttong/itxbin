@@ -155,6 +155,7 @@ class TimeseriesFigure:
 
         self._palette = _load_timeseries_palette()
         self._raw_marker_size = _load_timeseries_marker_size()
+        self._show_flagged = False
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
         self._build_plot()
@@ -209,6 +210,13 @@ class TimeseriesFigure:
         )
         self.marker_size_spin.valueChanged.connect(self._on_marker_size_changed)
 
+        self.show_flagged_cb = QCheckBox("Show flagged data")
+        self.show_flagged_cb.setChecked(self._show_flagged)
+        self.show_flagged_cb.setToolTip(
+            "Show flagged/rejected raw samples, drawn larger with a red edge"
+        )
+        self.show_flagged_cb.stateChanged.connect(self._on_show_flagged_changed)
+
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(analyte_names)
         idx = self.analyte_combo.findText(self.analyte, Qt.MatchExactly)
@@ -256,6 +264,8 @@ class TimeseriesFigure:
         combo_layout.addWidget(self.palette_combo)
         combo_layout.addWidget(QLabel("Marker size:"))
         combo_layout.addWidget(self.marker_size_spin)
+        combo_layout.addSpacing(8)
+        combo_layout.addWidget(self.show_flagged_cb)
         combo_layout.addWidget(self.analyte_combo)
         combo_layout.addWidget(self.reload_btn)
         combo_container.setLayout(combo_layout)
@@ -289,7 +299,7 @@ class TimeseriesFigure:
     # ────────────────────────────────────────────────────────────
     def _build_plot(self):
         """Build full figure layout and legends."""
-        datasets = self.parent_widget.build_datasets(self.df)
+        datasets = self.parent_widget.build_datasets(self.df, show_flagged=self._show_flagged)
         sites_by_lat = self.parent_widget.sites_by_lat
 
         site_colors = build_site_colors(sites_by_lat, self._palette)
@@ -901,6 +911,15 @@ class TimeseriesFigure:
     def _on_marker_size_changed(self, size):
         self._raw_marker_size = size
         _save_timeseries_marker_size(size)
+        self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
+        try:
+            self._ax.clear()
+            self._build_plot()
+        finally:
+            self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
+
+    def _on_show_flagged_changed(self, state):
+        self._show_flagged = bool(state)
         self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
         try:
             self._ax.clear()
@@ -1545,11 +1564,6 @@ class TimeseriesWidget(QWidget):
                 
         # ----- Set default selection -----
         self.set_current_analyte(self.current_analyte)
-        
-        # ------ Flagging options ------
-        self.hide_flagged = QCheckBox("Hide flagged data")
-        self.hide_flagged.setChecked(True)
-        controls.addWidget(self.hide_flagged)
 
         # Plot button
         self.plot_button = QPushButton("Mole Fractions Figure")
@@ -1771,26 +1785,33 @@ class TimeseriesWidget(QWidget):
                 visible = self._dataset_visibility.get(label, True)
 
                 if label == "All samples":
-                    line, = ax.plot(
-                        grp["sample_datetime"], grp["mole_fraction"],
-                        marker=style["marker"], linestyle="",
-                        color=color, markersize=style["size"], alpha=style["alpha"],
-                        label=label, mfc=color, mec='gray', picker=5
-                    )
-                    line._site = site
-                    line._dataset_label = label
-                    line._meta = {
-                        "run_time": grp.get("run_time", pd.Series([None]*len(grp))).tolist(),
-                        "sample_datetime": grp.get("sample_datetime", pd.Series([None]*len(grp))).tolist(),
-                        "sample_id": grp.get("sample_id", pd.Series([None]*len(grp))).tolist(),
-                        "pair_id_num": grp.get("pair_id_num", pd.Series([None]*len(grp))).tolist(),
-                        "run_type_num": grp.get("run_type_num", pd.Series([None]*len(grp))).tolist(),
-                        "site": grp.get("site", pd.Series([None]*len(grp))).tolist(),
-                        "analyte": analyte,
-                        "channel": self.current_channel,
-                    }
-                    line.set_visible(visible)
-                    dataset_handles.setdefault(label, []).append(line)
+                    is_flagged = grp["rejected"].fillna(0).astype(int) == 1 if "rejected" in grp else pd.Series(False, index=grp.index)
+                    for flagged, sub in ((False, grp[~is_flagged]), (True, grp[is_flagged])):
+                        if sub.empty:
+                            continue
+                        line, = ax.plot(
+                            sub["sample_datetime"], sub["mole_fraction"],
+                            marker=style["marker"], linestyle="",
+                            color=color, alpha=(1.0 if flagged else style["alpha"]),
+                            label=label, mfc=color, picker=5,
+                            markersize=(style["size"] + 1) if flagged else style["size"],
+                            mec=('red' if flagged else 'gray'),
+                            markeredgewidth=(1.4 if flagged else 0.8),
+                        )
+                        line._site = site
+                        line._dataset_label = label
+                        line._meta = {
+                            "run_time": sub.get("run_time", pd.Series([None]*len(sub))).tolist(),
+                            "sample_datetime": sub.get("sample_datetime", pd.Series([None]*len(sub))).tolist(),
+                            "sample_id": sub.get("sample_id", pd.Series([None]*len(sub))).tolist(),
+                            "pair_id_num": sub.get("pair_id_num", pd.Series([None]*len(sub))).tolist(),
+                            "run_type_num": sub.get("run_type_num", pd.Series([None]*len(sub))).tolist(),
+                            "site": sub.get("site", pd.Series([None]*len(sub))).tolist(),
+                            "analyte": analyte,
+                            "channel": self.current_channel,
+                        }
+                        line.set_visible(visible)
+                        dataset_handles.setdefault(label, []).append(line)
 
                 else:
                     # draw errorbar and tag all its parts
@@ -2689,7 +2710,7 @@ class TimeseriesWidget(QWidget):
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
-    def build_datasets(self, df: pd.DataFrame) -> dict:
+    def build_datasets(self, df: pd.DataFrame, show_flagged: bool = False) -> dict:
         if df.empty:
             all_s = pd.DataFrame(columns=["sample_datetime", "run_time", "analysis_datetime",
                                           "mole_fraction", "channel", "rejected", "site",
@@ -2701,7 +2722,7 @@ class TimeseriesWidget(QWidget):
         datasets = {}
         rejected = df["rejected"].fillna(0).astype(int)
 
-        if self.hide_flagged.isChecked():
+        if not show_flagged:
             datasets["All samples"] = df[rejected == 0].copy()
         else:
             datasets["All samples"] = df.copy()
