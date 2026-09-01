@@ -1165,10 +1165,17 @@ class Normalizing():
           5: LOWESS using roughly 10 points
         """
 
+        # A zero response means no peak was integrated at all -- not a real
+        # measurement -- so it must not count as a valid reference point,
+        # regardless of whether it's been formally tagged rejected. Tags
+        # come from cal_step/baseline, which can miss an isolated zero
+        # reading that doesn't itself look like a step or a bad chromatogram
+        # shape; a raw zero response has no ambiguity about being unusable.
         std = (
             df.loc[
                 (df[self.run_type_column] == self.standard_run_type)
-                & (df['rejected'].fillna(0).astype(int).eq(0)),
+                & (df['rejected'].fillna(0).astype(int).eq(0))
+                & (pd.to_numeric(df[self.response_type], errors='coerce').ne(0)),
                 ['analysis_datetime', 'run_time', 'detrend_method_num', self.response_type]
             ]
             .dropna()
@@ -1262,8 +1269,36 @@ class Normalizing():
         self,
         df: pd.DataFrame,
         detrend_method_num: int | None = None,
+        max_ref_gap_multiplier: float | None = 3.0,
     ) -> pd.DataFrame:
-        """Merge smoothed standard data and calculate normalized response."""
+        """Merge smoothed standard data and calculate normalized response.
+
+        Without a gap limit, the `.interpolate(...).ffill().bfill()` call
+        below has no gap-size cap: it will happily connect two valid
+        reference points that are hours or even days apart, silently
+        fabricating a normalization value across a real data hole (confirmed
+        for CATS: one BRW SF6 `run_time` spanned days during an 11-day
+        reference-tank height==0 dropout, and everything in between got
+        normalized against a straight line drawn across the whole gap
+        instead of getting NaN).
+
+        max_ref_gap_multiplier nulls out `smoothed` (and therefore
+        normalized_resp) for any row whose nearest valid reference
+        measurement -- either direction -- is farther away than this many
+        multiples of the reference's OWN typical (median) time between
+        measurements *in this call's data*. Deliberately self-calibrating
+        rather than a fixed hour count: sample cadence varies a lot across
+        instruments (CATS cycles all 4 ports roughly every ~2-2.7h; other
+        instruments' cadences haven't been assumed here), and this applies
+        to every Normalizing caller (every flask and in-situ instrument),
+        not just CATS. The multiplier (default 3x) is the one number that
+        isn't instrument-specific -- it just has to clear normal single-
+        cycle timing jitter around the median while still catching a
+        multi-cycle dropout, which is orders of magnitude larger either way.
+        Pass None to disable (legacy unlimited-interpolation behavior).
+        Deliberately global (not scoped to run_time) since the run_time
+        boundaries themselves can be the thing spanning too wide a gap.
+        """
         if 'smoothed' in df.columns:
             df = df.drop(columns=['smoothed'])
 
@@ -1306,6 +1341,31 @@ class Normalizing():
         )
         out.loc[outside_refs, 'smoothed'] = np.nan
         out = out.drop(columns=['first_ref', 'last_ref'])
+
+        if max_ref_gap_multiplier is not None:
+            ref_times = std['analysis_datetime'].dropna().sort_values().reset_index(drop=True)
+            if len(ref_times) < 2:
+                # Can't establish a typical cadence from 0-1 points; leave
+                # smoothed as already computed above rather than guessing.
+                pass
+            else:
+                typical_gap_hours = ref_times.diff().dt.total_seconds().median() / 3600.0
+                if np.isfinite(typical_gap_hours) and typical_gap_hours > 0:
+                    max_gap_hours = max_ref_gap_multiplier * typical_gap_hours
+                    out = out.reset_index(drop=True)  # out is already sorted by analysis_datetime
+                    before = pd.merge_asof(
+                        out[['analysis_datetime']], ref_times.to_frame('ref_ts'),
+                        left_on='analysis_datetime', right_on='ref_ts', direction='backward',
+                    )
+                    after = pd.merge_asof(
+                        out[['analysis_datetime']], ref_times.to_frame('ref_ts'),
+                        left_on='analysis_datetime', right_on='ref_ts', direction='forward',
+                    )
+                    gap_before = (out['analysis_datetime'] - before['ref_ts']).dt.total_seconds() / 3600.0
+                    gap_after = (after['ref_ts'] - out['analysis_datetime']).dt.total_seconds() / 3600.0
+                    nearest_gap = pd.concat([gap_before, gap_after], axis=1).min(axis=1)
+                    too_far = nearest_gap.isna() | (nearest_gap > max_gap_hours)
+                    out.loc[too_far, 'smoothed'] = np.nan
 
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
 

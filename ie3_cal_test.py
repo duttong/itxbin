@@ -221,10 +221,29 @@ def cal_tank_coefs(
 
 
 def _fill_value_for_date(fills: list[dict], date, key: str) -> Optional[float]:
-    """Return fills[key] for the fill active on *date* (a date or datetime object)."""
+    """Return fills[key] for the fill active on *date* (a date or datetime object).
+
+    A fill is active only while start_date <= date <= end_date (end_date of
+    None means still open/current). The most-recent-by-start_date fill that
+    has already started for `date` is the right one to check first (fills
+    are chronological, so an earlier fill can never be more applicable) --
+    but if THAT fill has already expired by `date`, there's a real gap, not
+    a reason to fall back to an even older, less-relevant fill: return None
+    rather than continuing the search. Confirmed this was previously
+    missing entirely (no end_date check at all): BRW SF6 tank ALM-064612's
+    only fill on record ends 2000-01-31, but was silently applied as if
+    still valid through at least October 2000 (no later fill exists to
+    supersede it), producing a plausible-looking but wrong mole fraction
+    instead of a clean gap.
+    """
     d = date.date() if hasattr(date, 'date') else date
     for fill in reversed(fills):
         if fill['start_date'] <= d:
+            end_date = fill.get('end_date')
+            if end_date is not None:
+                end_d = end_date.date() if hasattr(end_date, 'date') else pd.Timestamp(end_date).date()
+                if d > end_d:
+                    return None
             return fill[key]
     return None
 

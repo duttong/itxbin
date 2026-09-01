@@ -1125,6 +1125,52 @@ class CATS_Instrument(IE3_Instrument):
             return {}
         return dict(zip(df['code'].str.lower(), df['num']))
 
+    def _null_mole_fraction_for_zero_height(self, df):
+        """CATS-only guard: force mole_fraction/unc to NaN for any row with
+        height==0, OR whose computed mole_fraction came out non-finite
+        (inf/-inf), regardless of what the raw calculation produced.
+
+        height==0 means no peak was integrated at all -- not a real
+        measurement -- so that row's own mole_fraction is nulled directly.
+        But height==0 on a REFERENCE port injection also corrupts
+        normalized_resp for OTHER rows normalized against it (dividing by a
+        near-zero interpolated reference response), producing inf/-inf mole
+        fractions on rows whose own height is perfectly fine -- a per-row
+        height==0 check alone can't catch that cross-contamination, so any
+        row whose mole_fraction comes out non-finite is nulled too,
+        regardless of which row's height actually caused it. Confirmed for
+        an ~11-day BRW SF6 reference-tank dropout in 2007: 7 air rows had
+        height==0 directly, but 98 more had inf/-inf mole_fraction from
+        normalizing against that corrupted reference -- silently poisoning
+        a downstream median-based statistic with -inf rather than just
+        being absent data.
+
+        Called from every CATS mole-fraction computation path (this class's
+        calc_mole_fraction/calc_mole_fraction_scale_simple and
+        CATS_batch.calc_mole_fraction_from_fits) so the guard applies
+        regardless of which method/fit path a row goes through. IE3 keeps
+        the base, unguarded behavior -- this is CATS-specific by design,
+        not a shared IE3_Instrument change.
+        """
+        if df.empty or 'mole_fraction' not in df.columns:
+            return df
+        mf = pd.to_numeric(df['mole_fraction'], errors='coerce')
+        invalid = ~np.isfinite(mf) & mf.notna()  # inf/-inf only; leave real NaN alone
+        if 'height' in df.columns:
+            invalid = invalid | pd.to_numeric(df['height'], errors='coerce').eq(0)
+        if invalid.any():
+            df = df.copy()
+            df.loc[invalid, 'mole_fraction'] = np.nan
+            if 'unc' in df.columns:
+                df.loc[invalid, 'unc'] = np.nan
+        return df
+
+    def calc_mole_fraction(self, df):
+        """CATS override of the base per-method dispatch: apply the
+        zero-height guard (see _null_mole_fraction_for_zero_height) after
+        the base class routes each row through scale_simple/cal_fit."""
+        return self._null_mole_fraction_for_zero_height(super().calc_mole_fraction(df))
+
     def calc_mole_fraction_scale_simple(self, df):
         """Scale CATS rows with the reference tank installed at each analysis."""
         if df.empty:
@@ -1152,7 +1198,7 @@ class CATS_Instrument(IE3_Instrument):
                 serial, pnum, dates.loc[mask], key='coef0'
             )
             out.loc[mask, 'mole_fraction'] = normalized.loc[mask] * coef0
-        return out
+        return self._null_mole_fraction_for_zero_height(out)
 
 
 class BLD1_Instrument(HATS_DB_Functions):

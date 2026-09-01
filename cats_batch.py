@@ -243,7 +243,12 @@ class CATS_batch(CATS_Instrument):
         # RangeIndex (which would silently misalign/NaN against out's labels).
         out.loc[merged['_orig_idx'], 'mole_fraction'] = mole_fraction
         out.loc[merged['_orig_idx'], 'unc'] = unc.to_numpy()
-        return out
+        # CATS-only zero-height guard -- see
+        # CATS_Instrument._null_mole_fraction_for_zero_height's docstring.
+        # The direct_mask (ref) rows above already went through
+        # calc_mole_fraction_scale_simple, which applies this same guard
+        # internally; this covers the cal-fit (merge_asof) rows set here.
+        return self._null_mole_fraction_for_zero_height(out)
 
     def _fit_periods(self, df: pd.DataFrame) -> pd.Series:
         """Return each row's fit-period start (tz-naive).

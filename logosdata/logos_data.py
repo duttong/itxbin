@@ -2846,7 +2846,11 @@ class MainWindow(QMainWindow):
         for col in update_cols:
             if col not in self.run.columns:
                 self.run[col] = np.nan
-            self.run.loc[calculated.index, col] = calculated[col]
+            # calc_mole_fraction() can return id-like columns (e.g.
+            # ng_response_id) as object dtype mixing None with real ints;
+            # coerce to numeric so the assignment doesn't trip pandas'
+            # incompatible-dtype FutureWarning against self.run's float64 column.
+            self.run.loc[calculated.index, col] = pd.to_numeric(calculated[col], errors='coerce')
 
         if 'height' in self.run.columns:
             zero_height = pd.to_numeric(self.run['height'], errors='coerce').eq(0)
