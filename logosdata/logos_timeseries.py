@@ -66,6 +66,24 @@ def _save_timeseries_palette(palette: str) -> None:
         cfg.write(fh)
 
 
+def _load_timeseries_marker_size() -> int:
+    """Return saved raw-sample marker size, or 3 as default."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    return cfg.getint('timeseries', 'raw_marker_size', fallback=3)
+
+
+def _save_timeseries_marker_size(size: int) -> None:
+    """Persist raw-sample marker size to the user config file."""
+    cfg = configparser.ConfigParser()
+    cfg.read(str(_USER_CONF))
+    if not cfg.has_section('timeseries'):
+        cfg.add_section('timeseries')
+    cfg.set('timeseries', 'raw_marker_size', str(size))
+    with open(_USER_CONF, 'w') as fh:
+        cfg.write(fh)
+
+
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MLO_PFP', 'MKO_PFP']
@@ -136,6 +154,7 @@ class TimeseriesFigure:
         self.legend_label_lookup = {v: k for k, v in self.legend_label_map.items()}
 
         self._palette = _load_timeseries_palette()
+        self._raw_marker_size = _load_timeseries_marker_size()
         self._setup_toolbar_widgets()
         self._setup_shortcuts()
         self._build_plot()
@@ -180,6 +199,15 @@ class TimeseriesFigure:
         if pidx >= 0:
             self.palette_combo.setCurrentIndex(pidx)
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
+
+        self.marker_size_spin = QSpinBox()
+        self.marker_size_spin.setRange(1, 20)
+        self.marker_size_spin.setValue(self._raw_marker_size)
+        self.marker_size_spin.setFixedWidth(45)
+        self.marker_size_spin.setToolTip(
+            "Marker size for raw air/flask samples (aggregate means are unaffected)"
+        )
+        self.marker_size_spin.valueChanged.connect(self._on_marker_size_changed)
 
         self.analyte_combo = QComboBox()
         self.analyte_combo.addItems(analyte_names)
@@ -226,6 +254,8 @@ class TimeseriesFigure:
         combo_layout.addSpacing(8)
         combo_layout.addWidget(QLabel("Colormap:"))
         combo_layout.addWidget(self.palette_combo)
+        combo_layout.addWidget(QLabel("Marker size:"))
+        combo_layout.addWidget(self.marker_size_spin)
         combo_layout.addWidget(self.analyte_combo)
         combo_layout.addWidget(self.reload_btn)
         combo_container.setLayout(combo_layout)
@@ -265,7 +295,10 @@ class TimeseriesFigure:
         site_colors = build_site_colors(sites_by_lat, self._palette)
 
         # --- Draw datasets ---
-        self.dataset_handles = self.parent_widget._draw_dataset_artists(self._ax, datasets, self.analyte, palette=self._palette)
+        self.dataset_handles = self.parent_widget._draw_dataset_artists(
+            self._ax, datasets, self.analyte, palette=self._palette,
+            raw_marker_size=self._raw_marker_size,
+        )
 
         if not self.insitu_df.empty:
             insitu_handles = self._draw_insitu_artists(self._ax, site_colors)
@@ -484,7 +517,7 @@ class TimeseriesFigure:
             line, = ax.plot(
                 grp["analysis_time"], grp["mole_fraction"],
                 marker="o", linestyle="", color=color,
-                markersize=4, alpha=0.6, label=label, picker=5
+                markersize=self._raw_marker_size, alpha=0.6, label=label, picker=5
             )
             line._site = site
             line._dataset_label = label
@@ -858,6 +891,16 @@ class TimeseriesFigure:
     def _on_palette_changed(self, palette):
         self._palette = palette
         _save_timeseries_palette(palette)
+        self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
+        try:
+            self._ax.clear()
+            self._build_plot()
+        finally:
+            self.parent_widget._set_button_loading_state(self.reload_btn, False, "Reload")
+
+    def _on_marker_size_changed(self, size):
+        self._raw_marker_size = size
+        _save_timeseries_marker_size(size)
         self.parent_widget._set_button_loading_state(self.reload_btn, True, "Reload")
         try:
             self._ax.clear()
@@ -1699,7 +1742,7 @@ class TimeseriesWidget(QWidget):
             if lat is not None and lat_min <= lat < lat_max:
                 cb.setChecked(True)
 
-    def _draw_dataset_artists(self, ax, datasets, analyte, palette="Latitude"):
+    def _draw_dataset_artists(self, ax, datasets, analyte, palette="Latitude", raw_marker_size=None):
         """Draw datasets on a specific Axes, return dataset_handles dict."""
         dataset_handles = {}
 
@@ -1710,6 +1753,10 @@ class TimeseriesWidget(QWidget):
             "Flask mean": {"marker": "^", "shade": 0.8, "error": True,  "size": 5, "alpha": 0.9},
             "Pair mean":  {"marker": "s", "shade": 0.5, "error": True,  "size": 6, "alpha": 0.9},
         }
+        if raw_marker_size is not None:
+            # "All samples" is the raw flask scatter; the mean/aggregate
+            # entries keep their own fixed sizes.
+            styles["All samples"]["size"] = raw_marker_size
 
         for label, dset in datasets.items():
             for site, grp in dset.groupby("site"):
