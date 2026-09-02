@@ -314,6 +314,15 @@ def weekly_cal_fits(
             unc_intercept = np.sqrt((xs[-1]*uc0)**2 + (xs[0]*uc1)**2) / dx if dx != 0 else np.nan
             unc_ref_pred = np.sqrt((uc0*(1-xs[-1]))**2 + (uc1*(1-xs[0]))**2) / dx if dx != 0 else np.nan
 
+        if np.ptp(xs_fit) == 0:
+            # Degenerate design (e.g. force_zero with a 0.0 response collapsing
+            # onto the synthetic origin point, or two cal tanks reporting an
+            # identical mean response) -- no line is determined by a single
+            # x-value, and np.polyfit crashes (SVD does not converge) instead
+            # of erroring cleanly. Same "not enough information" convention as
+            # the unc_slope/unc_intercept NaN guards above: skip the week.
+            continue
+
         slope, intercept = np.polyfit(xs_fit, ys_fit, 1)
         rows.append({
             'week_start': week,
