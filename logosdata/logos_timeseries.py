@@ -407,6 +407,22 @@ class TimeseriesFigure(TagCRUDMixin):
             for artist in artists:
                 artist._site = getattr(artist, "_site", None)
 
+        # Method/cal-tank change lines, drawn only now that every real data
+        # artist is in place. axvline() extends the axes' x autoscale/dataLim
+        # for its line even when that date falls outside the actually-loaded
+        # data range (e.g. a 1998 tank swap while viewing 2018-2026) -- so the
+        # real data-only x-range is captured first and restored right after,
+        # keeping both the initial view and the toolbar's Home button tied to
+        # the data, not to whichever change line happens to be oldest/newest.
+        if not self.insitu_df.empty:
+            self._ax.relim()
+            self._ax.autoscale_view()
+            data_xlim = self._ax.get_xlim()
+            self._draw_method_change_lines(self._ax)
+            self._draw_cal_tank_change_lines(self._ax)
+            self._draw_change_legend(self._ax)
+            self._ax.set_xlim(data_xlim)
+
         # Layout adjustments
         self._fig.tight_layout(rect=[0, 0, 0.85, 1])
         self._fig.subplots_adjust(top=0.90, bottom=0.15, left=0.05, right=0.85)
@@ -635,6 +651,122 @@ class TimeseriesFigure(TagCRUDMixin):
                 dataset_handles.setdefault(label, []).append(line)
 
         return dataset_handles
+
+    def _draw_method_change_lines(self, ax):
+        """Vertical line at each mf_method_num transition for the single
+        active site. Only drawn with exactly one site active -- each site
+        has its own independent method history, so showing several at once
+        would clutter the plot rather than inform it."""
+        sites = self.parent_widget.get_active_sites()
+        if len(sites) != 1 or self.insitu_df.empty or 'mf_method_num' not in self.insitu_df.columns:
+            return
+        df = (self.insitu_df.loc[self.insitu_df['site'] == sites[0], ['analysis_time', 'mf_method_num']]
+              .dropna().sort_values('analysis_time'))
+        if df.empty:
+            return
+        changed = df['mf_method_num'] != df['mf_method_num'].shift()
+        changed.iloc[0] = False  # first row is the starting method, not a transition
+        for t in df.loc[changed, 'analysis_time']:
+            line = ax.axvline(t, color='dimgray', linestyle='--', linewidth=1.2,
+                               alpha=0.6, zorder=1, picker=5)
+            line._change_time = t
+
+    def _draw_cal_tank_change_lines(self, ax):
+        """Vertical line at each cal1/cal2 tank swap for the single active
+        site. Same single-site gating as _draw_method_change_lines, for the
+        same reason. Reuses instrument.port_config_history (already loaded
+        at init, covers every site -- no extra query needed except the
+        site-code -> site_num lookup)."""
+        sites = self.parent_widget.get_active_sites()
+        if len(sites) != 1:
+            return
+        instrument = self.parent_widget.instrument
+        cal1_port = getattr(instrument, 'CAL1_PORT', None)
+        cal2_port = getattr(instrument, 'CAL2_PORT', None)
+        history = getattr(instrument, 'port_config_history', None)
+        if cal1_port is None or cal2_port is None or history is None or history.empty:
+            return
+        site_rows = instrument.doquery(
+            f"SELECT num FROM gmd.site WHERE code='{sites[0]}'"
+        ) or []
+        if not site_rows:
+            return
+        site_num = site_rows[0]['num']
+        styles = {cal1_port: ('steelblue', 'cal1'), cal2_port: ('darkorange', 'cal2')}
+        for port_num, (color, _label) in styles.items():
+            rows = history.loc[
+                (history['site_num'] == site_num) & (history['port_num'] == port_num)
+            ].sort_values('start_datetime')
+            if rows.empty:
+                continue
+            for t in rows['start_datetime'].iloc[1:]:  # skip the initial install
+                t_naive = pd.Timestamp(t).tz_localize(None)
+                line = ax.axvline(t_naive, color=color, linestyle=':', linewidth=1.3,
+                                   alpha=0.6, zorder=1, picker=5)
+                line._change_time = t_naive
+
+    def _draw_change_legend(self, ax):
+        """Small in-axes legend explaining the method/cal-tank change lines.
+        Only meaningful when those lines are actually drawn (single site)."""
+        if len(self.parent_widget.get_active_sites()) != 1:
+            return
+        handles = [
+            mlines.Line2D([], [], color='dimgray', linestyle='--', linewidth=1.2,
+                          label='Method change'),
+            mlines.Line2D([], [], color='steelblue', linestyle=':', linewidth=1.3,
+                          label='Cal1 tank change'),
+            mlines.Line2D([], [], color='darkorange', linestyle=':', linewidth=1.3,
+                          label='Cal2 tank change'),
+        ]
+        legend = ax.legend(handles=handles, loc='upper left', fontsize=7,
+                            framealpha=0.85, borderaxespad=0.5)
+        ax.add_artist(legend)
+
+    def _show_change_tooltip(self, artist):
+        """Tooltip for a clicked method-change or cal-tank-change line.
+
+        Regardless of which of the three line types was actually clicked,
+        show the full calibration context at that moment -- the method and
+        both cal-tank serials active there -- since all three jointly
+        determine how the mole fraction was computed, not just whichever one
+        happened to change on this particular line."""
+        t = artist._change_time
+        lines = [f"<b>Date:</b> {pd.Timestamp(t).strftime('%Y-%m-%d %H:%M')}"]
+
+        sites = self.parent_widget.get_active_sites()
+        site = sites[0] if sites else None
+        instrument = self.parent_widget.instrument
+
+        if site:
+            history = getattr(instrument, 'port_config_history', None)
+            cal1_port = getattr(instrument, 'CAL1_PORT', None)
+            cal2_port = getattr(instrument, 'CAL2_PORT', None)
+            if history is not None and not history.empty:
+                site_rows = instrument.doquery(f"SELECT num FROM gmd.site WHERE code='{site}'") or []
+                if site_rows:
+                    site_num = site_rows[0]['num']
+                    t_utc = pd.Timestamp(t)
+                    t_utc = t_utc.tz_localize('UTC') if t_utc.tzinfo is None else t_utc
+                    for port_num, port_label in ((cal1_port, 'Cal1 tank'), (cal2_port, 'Cal2 tank')):
+                        if port_num is None:
+                            continue
+                        rows = history[(history['site_num'] == site_num)
+                                       & (history['port_num'] == port_num)
+                                       & (history['start_datetime'] <= t_utc)]
+                        if not rows.empty:
+                            serial = rows.sort_values('start_datetime')['label'].iloc[-1]
+                            lines.append(f"<b>{port_label}:</b> {serial}")
+
+        if site and not self.insitu_df.empty and 'mf_method_num' in self.insitu_df.columns:
+            sub = self.insitu_df[(self.insitu_df['site'] == site)
+                                  & (self.insitu_df['analysis_time'] <= t)]
+            if not sub.empty:
+                m = sub.sort_values('analysis_time')['mf_method_num'].iloc[-1]
+                if pd.notna(m):
+                    method_labels = getattr(instrument, 'MF_METHOD_LABELS', {})
+                    lines.append(f"<b>Method:</b> {method_labels.get(int(m), int(m))}")
+
+        QToolTip.showText(QCursor.pos(), "<br>".join(lines))
 
     def _draw_10day_mean_artists(self, ax, site_colors):
         """Draw 10-day mean ± std for flask and insitu data; return dataset_handles entries.
@@ -1426,6 +1558,11 @@ class TimeseriesFigure(TagCRUDMixin):
                 # Enforce site x dataset visibility
                 self._apply_visibility()
                 return
+
+        # ─── Method/cal-tank change line tooltip (left click only) ───
+        if hasattr(artist, "_change_time") and event.mouseevent.button == 1:
+            self._show_change_tooltip(artist)
+            return
 
         # ─── Data point pick (always choose nearest VISIBLE) ───
         picked_artist, picked_idx = self._pick_best_visible(event.mouseevent)
@@ -2541,7 +2678,7 @@ class TimeseriesWidget(QWidget):
         floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
         sql = f"""
         SELECT a.run_time, a.analysis_time, s.code AS site, mf.mole_fraction, a.port, mf.channel,
-            mf.num AS mf_num,
+            mf.num AS mf_num, mf.mf_method_num,
             EXISTS (
                 SELECT 1
                 FROM hats.ng_insitu_mole_fraction_tags t
