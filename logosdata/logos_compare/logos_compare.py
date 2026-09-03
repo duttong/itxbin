@@ -130,6 +130,49 @@ def _program_range_text(key: str) -> str:
         return ""
     start, end = span
     return f"{start} to Current" if end is None else f"{start}-{end}"
+
+
+def _combine_monthly_mean_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Combine independently aggregated monthly means without reweighting them.
+
+    FE3 and OTTO are read through different database paths.  A simple average
+    of their monthly means would give an equal weight to each source, rather
+    than to every flask pair.  Preserve the result of aggregating all pair
+    means together, including the sample standard deviation.
+    """
+    nonempty = [frame for frame in frames if not frame.empty]
+    if not nonempty:
+        return pd.DataFrame(columns=["site", "month_start", "monthly_avg", "monthly_std", "n"])
+
+    data = pd.concat(nonempty, ignore_index=True).copy()
+    data["n"] = pd.to_numeric(data["n"], errors="coerce")
+    data["monthly_avg"] = pd.to_numeric(data["monthly_avg"], errors="coerce")
+    data["monthly_std"] = pd.to_numeric(data["monthly_std"], errors="coerce")
+    data = data.dropna(subset=["site", "month_start", "n", "monthly_avg"])
+
+    rows = []
+    for (site, month_start), group in data.groupby(["site", "month_start"], sort=True):
+        n = group["n"].sum()
+        mean = (group["monthly_avg"] * group["n"]).sum() / n
+        # STDDEV is the sample standard deviation.  Combine each source's
+        # within-month sum of squares with the between-source contribution.
+        sum_squares = (
+            (group["n"] - 1).clip(lower=0) * group["monthly_std"].fillna(0).pow(2)
+            + group["n"] * (group["monthly_avg"] - mean).pow(2)
+        ).sum()
+        std = np.sqrt(sum_squares / (n - 1)) if n > 1 else np.nan
+        rows.append(
+            {
+                "site": site,
+                "month_start": month_start,
+                "monthly_avg": mean,
+                "monthly_std": std,
+                "n": int(n),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 ANALYTE_CATEGORIES = [
     "All",
     "CFCs",
@@ -861,13 +904,56 @@ class LogosCompareWindow(QMainWindow):
         fe3_condition = "v.inst_num = 193"
         if preferred_filter:
             fe3_condition = f"({fe3_condition} AND {preferred_filter})"
-        return self._query_combined_pair_monthly_mean_data(
+        fe3_df = self._query_combined_pair_monthly_mean_data(
             selection=selection,
             sites=sites,
             loader_key="fe3",
-            regular_condition=f"(v.inst_id = 'OTTO' OR {fe3_condition})",
+            regular_condition=fe3_condition,
             pfp_condition=fe3_condition,
         )
+        otto_df = self._query_otto_monthly_mean_data(selection, sites)
+        return _combine_monthly_mean_frames([fe3_df, otto_df])
+
+    def _query_otto_monthly_mean_data(
+        self,
+        selection: ProgramSelection,
+        sites: list[str],
+    ) -> pd.DataFrame:
+        """Load OTTO pair means using the pre-hatsflask event metadata.
+
+        OTTO analyses retain ``flask_id = 0``.  Consequently they cannot join
+        to ``hatsflask_event_view`` (which requires both pair and flask IDs),
+        leaving site and sample time null in ``ng_pair_avg_view``.  Its pair
+        averages are still valid, so use ``hatsflask_pair_info`` to supply
+        those two fields by pair ID without changing historical OTTO records.
+        """
+        pnum = int(selection.parameter_num)
+        start = self.start_year.value()
+        end = self.end_year.value()
+        sites = [site for site in sites if site not in PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT UPPER(s.code) AS site,
+            DATE_FORMAT(pi.datetime, '%%Y-%%m-01') AS month_start,
+            AVG(v.pair_avg) AS monthly_avg,
+            STDDEV(v.pair_avg) AS monthly_std,
+            COUNT(*) AS n
+        FROM hats.ng_pair_avg_view v
+        JOIN hats.hatsflask_pair_info pi ON pi.pair_id = v.pair_id_num
+        JOIN gmd.site s ON s.num = pi.site_num
+        WHERE v.inst_id = 'OTTO'
+          AND v.parameter_num = %s
+          AND UPPER(s.code) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(pi.datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start ORDER BY site, month_start;
+        """
+        params = [pnum] + sites + [start, end]
+        loader = self.loaders["fe3"]
+        df = pd.DataFrame(loader.instrument.doquery(sql, params))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
 
     def _query_combined_pair_monthly_mean_data(
         self,
