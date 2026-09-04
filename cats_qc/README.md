@@ -5,9 +5,11 @@ to `hats.ng_insitu_mole_fraction_tags`.
 
 Only the active pipeline is tracked in git (`cats_tagging.py`,
 `cats_cal_step_qc.py`, `cats_baseline_qc.py`, `cats_cal_window_qc.py`,
-`cats_cal_method_qc.py`, `cats_apply_cal_method.py`, `test_cats_cal_step_qc.py`,
+`cats_cal_method_qc.py`, `cats_apply_cal_method.py`, `cats_set_mf_method.py`,
+`cats_air_tagger.py`, `test_cats_cal_step_qc.py`,
 `test_cats_cal_window_qc.py`, `test_cats_cal_method_qc.py`,
-`test_cats_apply_cal_method.py`, and these docs) -- the rest of this
+`test_cats_apply_cal_method.py`, `test_cats_set_mf_method.py`,
+`test_cats_air_tagger.py`, and these docs) -- the rest of this
 directory is earlier exploratory work and is gitignored. See the
 `cats_qc/` allowlist in `../.gitignore`.
 
@@ -34,7 +36,7 @@ normalization corrects for when everything is working well.
 
 ```
 cd cats_qc
-python3 cats_tagging.py --site brw --algo cal_step --analyte N2O --channel q --start 19990101 --end 19991231
+python3 cats_tagging.py --site brw --algo cal_step --gas N2O_q --start 19990101 --end 19991231
 ```
 
 This is idempotent: it deletes tag 328 from every mf_num in the requested
@@ -43,10 +45,9 @@ safe to rerun (e.g. after retuning a threshold below).
 
 To extend to other sites/years/analytes: change `--site`, `--start`/`--end`
 (YYYYMMDD; `--start` defaults to Jan 1 of the current year, `--end` to now),
-or `--analyte`/`--channel` (`--channel` is only required when the analyte is
-on multiple channels; `--analyte all` runs all 9 CATS analytes: N2O (q),
-SF6 (q), CFC12 (f), CFC11 (f), CFC113 (f), H1211 (f), CCl4 (f), CH3CCl3 (f),
-CHCl3 (f)).
+or `--gas` (`Analyte_channel`, e.g. `SF6_q`; `--gas all` runs all 9 CATS
+analytes: N2O (q), SF6 (q), CFC12 (f), CFC11 (f), CFC113 (f), H1211 (f),
+CCl4 (f), CH3CCl3 (f), CHCl3 (f)).
 
 Add `--dry-run` to preview scope/flagged counts without writing anything.
 
@@ -144,7 +145,7 @@ python3 cats_baseline_qc.py --site spo --channel f --start 20260101 --end 202608
 
 # Phase 2 -- fast, re-runnable. Reads the persisted results, decodes nothing,
 # tags every analyte on that channel.
-python3 cats_tagging.py --site spo --algo baseline --analyte all \
+python3 cats_tagging.py --site spo --algo baseline --gas all \
     --start 20260101 --end 20260801
 ```
 
@@ -156,7 +157,7 @@ analytes. Phase 1 also stores **unflagged** rows, so a different
 `--ratio-threshold` can be re-derived later with a SQL query instead of a
 rescan.
 
-Note `--analyte all` in Phase 2 iterates every CATS analyte across *all*
+Note `--gas all` in Phase 2 iterates every CATS analyte across *all*
 channels, so analytes on channels you haven't scanned yet simply report zero
 flags. That's harmless, just expected noise in the summary table.
 
@@ -332,8 +333,8 @@ Reproduce/tune:
 
 ```
 cd cats_qc
-python3 cats_tagging.py --site brw --algo cal_window --analyte N2O \
-    --channel q --start 20250101 --end 20250401 --dry-run
+python3 cats_tagging.py --site brw --algo cal_window --gas N2O_q \
+    --start 20250101 --end 20250401 --dry-run
 ```
 
 Same idempotency contract as `cal_step`/`baseline`: `cats_tagging.py` deletes
@@ -453,7 +454,7 @@ review, never silently "fixed" by whichever method merely scores least-bad.
    (normally calendar weeks, split at a mid-week cal-tank swap -- the same
    boundary granularity `update_fits()` itself fits on, so a recommended
    period's `period_start` is already a valid `cats_set_mf_method.py
-   --start-date`). Each period's representative value is the **median**
+   --start`). Each period's representative value is the **median**
    (not mean) of its unrejected rows -- same rationale as `baseline`/
    `cal_window`'s local references, one bad week shouldn't skew the level.
 2. **Two-sided detrended jump statistic.** Point-to-point differencing
@@ -499,7 +500,7 @@ review, never silently "fixed" by whichever method merely scores least-bad.
 One row per episode: `episode_start`/`episode_end` (the flagged period's own
 `period_start`/`period_end` -- real week boundaries, not the `period_mid`
 used internally for the trend-fit x coordinate, so they're directly valid
-`cats_set_mf_method.py --start-date` values), `current_method` (modal
+`cats_set_mf_method.py --start` values), `current_method` (modal
 `mf_method_num` already recorded), `detected_jump`/`detected_z`,
 `jump_<method>`/`z_<method>` for every candidate, `recommendation` (or
 `UNRESOLVED` + `cal1_tank`/`cal2_tank` serials).
@@ -511,8 +512,8 @@ is the manual "apply" step, reading its CSV output and running, per RESOLVED
 episode (oldest first):
 
 ```
-cats_set_mf_method.py --site <site> --start-date <episode_start> \
-    --pnum <pnum> --channel <channel> --method <recommendation>
+cats_set_mf_method.py --site <site> --start <episode_start> \
+    --gas <gas>_<channel> --method <recommendation>
 cats_batch.py -p <pnum> -c <channel> --site <site> \
     -s <episode_start> [-e <next episode's episode_start>] -i --fits
 ```
@@ -525,8 +526,8 @@ python3 cats_apply_cal_method.py --site brw --input brw_sf6_calmethod.csv --dry-
 python3 cats_apply_cal_method.py --site brw --input brw_sf6_calmethod.csv
 ```
 
-`cats_set_mf_method.py --start-date` has no end -- it labels everything from
-that date forward -- so applying oldest-first means each later episode
+The `cats_set_mf_method.py` calls above omit `--end`, so they label everything
+from their start date forward. Applying oldest-first means each later episode
 naturally supersedes the previous one from its own start date on, with no
 explicit "clear the old range" step needed. The `cats_batch.py` recompute IS
 explicitly bounded to `[episode_start, next episode's episode_start)` so
@@ -541,6 +542,45 @@ to apply through that stretch; the script never guesses.
 
 ```
 python3 cats_cal_method_qc.py --site brw --gas SF6_q --start 19980101 -v
+```
+
+## cats_set_mf_method.py -- set mf_method_num directly
+
+Sets `ng_insitu_mole_fractions.mf_method_num` for CATS air-port rows in a
+date window: `CATS_Instrument.default_mf_method(pnum)` by default (`cal12`
+for most analytes, `cal1` for CCl4), or a forced `--method`
+(`ref`/`cal1`/`cal2`/`cal12`). Falls back to `ref` for any analyte whose
+desired method's cal tank(s) lack a `hats.scale_assignments` entry, printing
+a note rather than writing an unfittable method. `--start` is required (no
+baked-in date floor -- CATS carries decades of legacy history populated from
+published `/aftp` mole fractions, not a weekly `cal12` fit, so only rows in
+the same run that will actually recompute their `mole_fraction` should be
+retagged; see `cats_batch.py --fits`). Idempotent; `--dry-run` previews
+counts without writing. This is what `cats_apply_cal_method.py` calls per
+RESOLVED episode (see above); it's also usable standalone, scoped with
+`--pnum` or `--gas` (`Analyte_channel`, same format as `cats_tagging.py`'s
+`--gas`, case-insensitive) plus `--channel`.
+
+```
+python3 cats_set_mf_method.py --site brw --start 20250101 --gas SF6_q --method cal12 --dry-run
+```
+
+## cats_air_tagger.py -- multi-day air excursion detection (not yet wired in)
+
+Detects multi-day CATS air (Air1/Air2) excursions that drift off the
+analyte's own smooth long-term trend -- too extended for the point-local
+detectors above to catch (`cal_step` only judges cal-port response,
+`baseline` only judges chromatogram shape, and `cal_window`'s +/-5-day
+window gets swallowed whole by anything longer). Detect + visualize only --
+writes a review CSV and a JPG, never touches the database. **Not yet
+registered in `cats_tagging.py`'s `ALGORITHMS`**; meant to be tuned by eye
+against its output figure (`--sigma`/`--median-window-days`/
+`--mad-window-days`/`--min-block-hours`) before being wired into the
+automated pipeline. See the module docstring for the full rolling-median +
+MAD algorithm.
+
+```
+python3 cats_air_tagger.py --site brw --gas N2O_q --output brw_n2o_q_air_tags
 ```
 
 ## Other files in this directory
@@ -562,3 +602,9 @@ python3 cats_cal_method_qc.py --site brw --gas SF6_q --start 19980101 -v
 - `test_cats_apply_cal_method.py` -- unit tests for `cats_apply_cal_method.py`'s
   pure plan-building functions (`_build_apply_plan`, `_retag_groups`); run
   with `python3 -m unittest test_cats_apply_cal_method.py`.
+- `test_cats_set_mf_method.py` -- unit tests for `cats_set_mf_method.py`'s
+  pure date-window helpers (`_parse_yyyymmdd`, `_date_filter`); run with
+  `python3 -m unittest test_cats_set_mf_method.py`.
+- `test_cats_air_tagger.py` -- unit tests for `cats_air_tagger.py`'s pure
+  detection core (`_rolling_median`, `detect_air_excursions`) using
+  synthetic data; run with `python3 -m unittest test_cats_air_tagger.py`.

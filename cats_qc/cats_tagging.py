@@ -43,16 +43,16 @@ cal_step/baseline having just run in the same command.
 Usage::
 
     # See what would be tagged, without writing anything
-    python3 cats_tagging.py --site brw --algo cal_step --analyte N2O \\
-        --channel q --start 19990101 --end 19991231 --dry-run
+    python3 cats_tagging.py --site brw --algo cal_step --gas N2O_q \\
+        --start 19990101 --end 19991231 --dry-run
 
     # Actually write the tags
-    python3 cats_tagging.py --site brw --algo cal_step --analyte N2O \\
-        --channel q --start 19990101 --end 19991231
+    python3 cats_tagging.py --site brw --algo cal_step --gas N2O_q \\
+        --start 19990101 --end 19991231
 
     # All registered algorithms, all analytes, defaults to Jan 1 of the
     # current year through now
-    python3 cats_tagging.py --site brw --algo all --analyte all
+    python3 cats_tagging.py --site brw --algo all --gas all
 """
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def resolve_analyte(batch: CATS_batch, analyte: str, channel: str | None) -> tup
     rows = batch.db.doquery(
         "SELECT display_name, param_num, channel FROM hats.analyte_list "
         f"WHERE inst_num = {batch.inst_num} "
-        f"AND display_name = '{analyte}';"
+        f"AND LOWER(display_name) = LOWER('{analyte}');"
     ) or []
     if not rows:
         available = sorted(batch.analytes.keys())
@@ -277,11 +277,9 @@ def main() -> int:
     )
     p.add_argument("--site", default="brw")
     p.add_argument("--algo", default="cal_step", choices=[*ALGORITHMS, "all"])
-    p.add_argument("--analyte", default="N2O",
-                   help='Analyte display_name from hats.analyte_list (e.g. N2O), or "all".')
-    p.add_argument("--channel", default=None,
-                   help="GC channel (q, f, cc, ...). Required if --analyte is "
-                        "ambiguous across channels. Ignored when --analyte all.")
+    p.add_argument("--gas", default="N2O_q",
+                   help='Analyte_channel (e.g. N2O_q), same format as the other '
+                        'cats_qc/ scripts, or "all" for every CATS analyte/channel.')
     p.add_argument("--start", type=_parse_yyyymmdd, default=None,
                    help="Start date, YYYYMMDD (default: Jan 1 of the current year).")
     p.add_argument("--end", type=_parse_yyyymmdd, default=None,
@@ -320,10 +318,11 @@ def main() -> int:
     algos = list(ALGORITHMS) if args.algo == "all" else [args.algo]
     batch = CATS_batch(args.site)
 
-    if args.analyte.lower() == "all":
+    if args.gas.lower() == "all":
         analytes = list(ALL_ANALYTES.items())
     else:
-        analytes = [(args.analyte, args.channel)]
+        analyte, channel = args.gas.rsplit("_", 1)
+        analytes = [(analyte, channel)]
 
     algo_kwargs = {
         "cal_step": dict(

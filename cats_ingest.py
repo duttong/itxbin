@@ -102,9 +102,11 @@ def ingest(
         start_date, end_date = _resolve_mf_window(all_data, year)
 
         method_cmd = [
-            sys.executable, str(BIN_DIR / "cats_set_mf_method.py"),
-            "--site", site, "--start-date", start_date,
+            sys.executable, str(BIN_DIR / "cats_qc" / "cats_set_mf_method.py"),
+            "--site", site, "--start", start_date,
         ]
+        if end_date:
+            method_cmd.extend(["--end", end_date])
         _run(method_cmd)
 
         batch_cmd = [

@@ -5,16 +5,16 @@ cats_cal_method_qc.py only detects and recommends -- it never writes
 anything. This is the manual "apply" step: reads its CSV output and, for
 each RESOLVED episode (oldest first), runs
 
-    cats_set_mf_method.py --site <site> --start-date <episode_start> \\
-        --pnum <pnum> --channel <channel> --method <recommendation>
+    cats_set_mf_method.py --site <site> --start <episode_start> \\
+        --gas <gas>_<channel> --method <recommendation>
 
 then, once per (gas, channel) that had at least one applied change,
 
     cats_tagging.py --site <site> --algo cal_window \\
-        --analyte <gas> --channel <channel> --start <earliest episode_start>
+        --gas <gas>_<channel> --start <earliest episode_start>
 
-cats_set_mf_method.py --start-date has no end -- it labels everything from
-that date forward -- so applying oldest first means each later episode
+These cats_set_mf_method.py calls omit --end, so they label everything from
+their start date forward. Applying oldest first means each later episode
 naturally supersedes the previous one from its own start date on, with no
 explicit "clear the old range" step needed.
 
@@ -56,7 +56,6 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
-ITXBIN = HERE.parent
 
 
 def _build_apply_plan(df: pd.DataFrame) -> list[dict]:
@@ -141,9 +140,9 @@ def main() -> int:
         print(f"APPLY {step['gas']} ({step['channel']}) {step['start_date']} -> now: "
               f"{step['method']}")
         _run([
-            sys.executable, str(ITXBIN / "cats_set_mf_method.py"),
-            "--site", args.site, "--start-date", step["start_date"],
-            "--pnum", str(step["pnum"]), "--channel", step["channel"],
+            sys.executable, str(HERE / "cats_set_mf_method.py"),
+            "--site", args.site, "--start", step["start_date"],
+            "--gas", f"{step['gas']}_{step['channel']}",
             "--method", step["method"],
         ], args.dry_run)
         n_applied += 1
@@ -154,7 +153,7 @@ def main() -> int:
         _run([
             sys.executable, str(HERE / "cats_tagging.py"),
             "--site", args.site, "--algo", "cal_window",
-            "--analyte", group["gas"], "--channel", group["channel"],
+            "--gas", f"{group['gas']}_{group['channel']}",
             "--start", group["start_date"],
         ], args.dry_run)
 

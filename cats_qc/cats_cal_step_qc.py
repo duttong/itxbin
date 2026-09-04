@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -62,12 +63,27 @@ ALL_GASES = (
 )
 
 
+def _parse_yyyymmdd(s: str) -> str:
+    """Parse YYYYMMDD (or YYYY-MM-DD) into 'YYYY-MM-DD'."""
+    s = s.strip()
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"Invalid date {s!r}; expected YYYYMMDD or YYYY-MM-DD."
+    )
+
+
 def _resolve_pnum(batch: CATS_batch, gas: str, channel: str) -> int:
-    key = f"{gas} ({channel})"
-    pnum = batch.analytes.get(key)
+    key = f"{gas} ({channel})".lower()
+    lookup = {k.lower(): v for k, v in batch.analytes.items()}
+    pnum = lookup.get(key)
     if pnum is None:
         raise ValueError(
-            f"No analyte_list entry for {key!r} at {batch.inst_id} site {batch.site}"
+            f"No analyte_list entry for {gas!r} ({channel!r}) at "
+            f"{batch.inst_id} site {batch.site}"
         )
     return int(pnum)
 
@@ -280,8 +296,8 @@ def main() -> int:
     )
     p.add_argument("--site", default="brw")
     p.add_argument("--gas", default="N2O_q", help='Gas_channel (e.g. N2O_q) or "all"')
-    p.add_argument("--start", required=True)
-    p.add_argument("--end", required=True)
+    p.add_argument("--start", type=_parse_yyyymmdd, required=True)
+    p.add_argument("--end", type=_parse_yyyymmdd, required=True)
     p.add_argument(
         "--mad-multiplier", type=float, default=3.5,
         help="Point-to-point log-response z-score threshold on the cal ports (default: 3.5)",

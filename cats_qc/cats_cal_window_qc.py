@@ -130,11 +130,13 @@ def _parse_yyyymmdd(s: str) -> str:
 
 
 def _resolve_pnum(batch: CATS_batch, gas: str, channel: str) -> int:
-    key = f"{gas} ({channel})"
-    pnum = batch.analytes.get(key)
+    key = f"{gas} ({channel})".lower()
+    lookup = {k.lower(): v for k, v in batch.analytes.items()}
+    pnum = lookup.get(key)
     if pnum is None:
         raise ValueError(
-            f"No analyte_list entry for {key!r} at {batch.inst_id} site {batch.site}"
+            f"No analyte_list entry for {gas!r} ({channel!r}) at "
+            f"{batch.inst_id} site {batch.site}"
         )
     return int(pnum)
 
