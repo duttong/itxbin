@@ -1475,51 +1475,76 @@ class TimeseriesFigure(TagCRUDMixin):
         recompute smoothing-dependent mole fractions across the whole run),
         this only flips the local 'rejected' flag for redraw -- the actual
         mole_fraction value is refreshed by the next relevant batch run
-        (m4_batch.py -i, fe3_batch.py -i, cats_ingest.py, etc.)."""
-        if is_reject:
-            new_val = 1 if applied else 0
-            mf_set = set(mf_nums)
-            if not self.df.empty and 'ng_mole_fraction_num' in self.df.columns:
-                mask = self.df['ng_mole_fraction_num'].isin(mf_set)
-                self.df.loc[mask, 'rejected'] = new_val
-            if not self.insitu_df.empty and 'mf_num' in self.insitu_df.columns:
-                mask = self.insitu_df['mf_num'].isin(mf_set)
-                self.insitu_df.loc[mask, 'rejected'] = new_val
+        (m4_batch.py -i, fe3_batch.py -i, cats_ingest.py, etc.).
 
-            # Capture (x, y, color) now, from the still-live artists in
-            # row_idxs -- once _show_flagged is False, the coming rebuild
-            # drops these rows from every artist entirely, so this is the
-            # last point at which their position/color is recoverable.
-            # Newly-rejected points are kept for the highlight overlay; a
-            # manually un-rejected point (applied=False) is removed from it,
-            # whether or not it's still "fresh" -- Multi-Tag is normally
-            # used to reject, and dropping the highlight on removal is the
-            # more useful default either way.
-            if not self._show_flagged:
-                if applied:
-                    for artist, idx in row_idxs:
-                        vals = getattr(artist, "_meta", {}).get("mf_num")
-                        if not vals or idx >= len(vals) or vals[idx] not in mf_set:
-                            continue
-                        try:
-                            x = artist.get_xdata()[idx]
-                            y = artist.get_ydata()[idx]
-                        except (IndexError, TypeError):
-                            continue
-                        color = artist.get_color()
-                        self._fresh_tagged_mf_nums[vals[idx]] = (x, y, color)
-                else:
-                    for mf_num in mf_set:
-                        self._fresh_tagged_mf_nums.pop(mf_num, None)
+        Deliberately avoids _rebuild_preserving_view() (a full
+        ax.clear()+_build_plot(), including tight_layout() and every
+        dataset/mean/change-line artist across the whole loaded range) when
+        possible -- with the full multi-year CATS record loaded, that's the
+        dominant cost of tagging a single point, repeated on every click.
+        An info-tag never changes what's plotted (no fast path needed --
+        falls through to the full rebuild, which is cheap to skip *not*
+        doing). A reject-tag only needs the full rebuild when "Show tagged
+        data" is on, since that's the one case where a point must actually
+        move between the flagged/unflagged styling *inside its original
+        series artist*; with it off, the point already isn't drawn by that
+        series (see _draw_insitu_artists/build_datasets), so nothing there
+        needs to change -- only the fresh-tag overlay and selection ring,
+        both already cheap standalone artists that don't require touching
+        the rest of the plot."""
+        if not is_reject:
+            self._rebuild_preserving_view()
+            return
 
-        self._rebuild_preserving_view()
+        new_val = 1 if applied else 0
+        mf_set = set(mf_nums)
+        if not self.df.empty and 'ng_mole_fraction_num' in self.df.columns:
+            mask = self.df['ng_mole_fraction_num'].isin(mf_set)
+            self.df.loc[mask, 'rejected'] = new_val
+        if not self.insitu_df.empty and 'mf_num' in self.insitu_df.columns:
+            mask = self.insitu_df['mf_num'].isin(mf_set)
+            self.insitu_df.loc[mask, 'rejected'] = new_val
+
+        if self._show_flagged:
+            # The point must move between the flagged/unflagged subset of
+            # its own series artist -- only the full rebuild does that.
+            self._rebuild_preserving_view()
+            return
+
+        # Fast path: capture (x, y, color) now, from the still-live artists
+        # in row_idxs -- these rows stay in their original (unflagged)
+        # series artist since no rebuild is happening, so this is purely
+        # for the overlay, not a last chance to recover them.
+        if applied:
+            for artist, idx in row_idxs:
+                vals = getattr(artist, "_meta", {}).get("mf_num")
+                if not vals or idx >= len(vals) or vals[idx] not in mf_set:
+                    continue
+                try:
+                    x = artist.get_xdata()[idx]
+                    y = artist.get_ydata()[idx]
+                except (IndexError, TypeError):
+                    continue
+                color = artist.get_color()
+                self._fresh_tagged_mf_nums[vals[idx]] = (x, y, color)
+        else:
+            for mf_num in mf_set:
+                self._fresh_tagged_mf_nums.pop(mf_num, None)
+
+        self._redraw_fresh_tag_highlights()
+        self._fig.canvas.draw_idle()
 
     def _refresh_multi_tag_selection_after_rebuild(self):
         """Called by _rebuild_preserving_view() after every clear+redraw
-        (palette/marker-size/show-flagged toggles, tag apply/remove -- any
-        of them can hide or redraw the selected points), since the
+        (palette/marker-size/show-flagged toggles, info-tag apply/remove,
+        or reject-tag apply/remove while "Show tagged data" is on -- any of
+        them can hide or redraw the selected points), since the
         (artist, idx) tokens in self._multi_tag_selection point at now-
-        orphaned Line2D objects and the selection highlight is gone.
+        orphaned Line2D objects and the selection highlight is gone. A
+        reject-tag while "Show tagged data" is off takes on_tag_state_changed's
+        fast path instead (no rebuild, original artists untouched), so this
+        isn't called for that case -- and doesn't need to be, since neither
+        the selection tokens nor the ring's position are invalidated by it.
 
         The panel's own mf_nums/comment state are deliberately left alone
         here even when nothing survives the rebuild (e.g. the user toggles
