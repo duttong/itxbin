@@ -29,6 +29,29 @@ class IE3_Instrument(HATS_DB_Functions):
     EXCLUDE = [1, 2, 5, 9]  # tank and stop ports; autoscale samples uses only air ports 3 & 7
     AUTOSCALE_STANDARD_PORTS = [1, 5, 9]  # ref tank + high/low standards
 
+    # Explicit (serial, fill_code, pnum) -> source pnum overrides for tanks
+    # with no independent scale_assignments row on the requested parameter.
+    # CC487772/A and CC479994/A were BRW CAL2/CAL1 tanks only ever measured
+    # for CFC-11 on M3 (mass-spec scale CFC11_B, pnum 29); no instrument has
+    # measured either on the GC/ECD-family CFC11 scale (pnum 114) that
+    # IE3/CATS/FE3/BLD1 use, and the two scales have never overlapped on any
+    # tank in this database (no empirical conversion factor exists), so this
+    # borrows the M3 value as-is rather than leaving CATS with no assignment
+    # at all. This mirrors the operator's own field-note intent for
+    # CC479994 (~stand/CC479994: "use MSD [M3/M4] for F11, F12, F113, CCl4,
+    # MC, H1211") -- only CFC-11 needs an explicit override here because it's
+    # the sole gas in that list split across two parameter_nums (114 vs 29);
+    # CFC12/CFC113/CCl4/CH3CCl3/H1211 share one pnum between M-series and
+    # FE3/CATS, so scale_assignment_history() already reads the M3-written
+    # row directly with no override needed. Scoped to these tank/fill/pnum
+    # entries deliberately -- do not widen to a blanket 114->29 fallback;
+    # add another explicit entry here if the same gap recurs for another
+    # tank/fill.
+    SCALE_ASSIGNMENT_SOURCE_OVERRIDES = {
+        ('CC487772', 'A', 114): 29,
+        ('CC479994', 'A', 114): 29,
+    }
+
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
     # list and timeseries. CATS (subclass) overrides this to None to keep its
     # full record. load_data is intentionally not floored so batch/programmatic
@@ -225,8 +248,38 @@ class IE3_Instrument(HATS_DB_Functions):
             reference = self.reference_scale_assignment_history(serial, pnum)
             history = reference if reference else self.legacy_scale_assignment_history(serial, pnum)
 
+        history = self._apply_scale_assignment_source_overrides(serial, pnum, history)
+
         self._scale_assignment_cache[cache_key] = history
         return history
+
+    def _apply_scale_assignment_source_overrides(self, serial, pnum, history):
+        """Fill in fill_codes with no real assignment via SCALE_ASSIGNMENT_SOURCE_OVERRIDES.
+
+        See the class-level map's docstring comment for why this exists --
+        it's a named, per-tank/fill exception, not a general cross-scale
+        fallback. Only fills absent from `history` are borrowed, so a real
+        pnum=114 measurement later added for this fill takes precedence
+        automatically (the override becomes dead code, not a conflict).
+        """
+        covered_fills = {row['fill_code'] for row in history}
+        borrowed = []
+        for (o_serial, o_fill, o_pnum), source_pnum in self.SCALE_ASSIGNMENT_SOURCE_OVERRIDES.items():
+            if o_serial != str(serial) or o_pnum != int(pnum) or o_fill in covered_fills:
+                continue
+            source_history = self.scale_assignment_history(serial, source_pnum)
+            for row in source_history:
+                if row['fill_code'] != o_fill:
+                    continue
+                borrowed_row = dict(row)
+                borrowed_row['comment'] = (
+                    f"borrowed from pnum {source_pnum} "
+                    f"(SCALE_ASSIGNMENT_SOURCE_OVERRIDES)"
+                )
+                borrowed.append(borrowed_row)
+        if not borrowed:
+            return history
+        return sorted(history + borrowed, key=lambda r: r['start_date'])
 
     def scale_assignment_values_for_dates(self, serial, pnum, dates, key='coef0'):
         """Resolve an assignment value for each date without repeated DB queries."""
