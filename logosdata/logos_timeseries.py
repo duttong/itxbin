@@ -146,6 +146,25 @@ class TimeseriesFigure(TagCRUDMixin):
         self._multi_tag_selection = []
         self._multi_tag_highlight_artist = None
 
+        # mf_nums freshly reject-tagged this Multi-Tag session while "Show
+        # tagged data" is off -- build_datasets()/_draw_insitu_artists both
+        # gate on _show_flagged and would otherwise drop these points from
+        # the plot entirely the moment their local 'rejected' flag flips
+        # (see on_tag_state_changed and _on_multi_tag_btn_toggled). Drawn
+        # back with the same red-edge style a normal flagged point gets, by
+        # _redraw_fresh_tag_highlights(), instead of turning "Show tagged
+        # data" on, which would pull in every historically-flagged point
+        # across the loaded range. Untagging removes the mf_num again.
+        # Survives rebuilds within a session (re-applied by
+        # _redraw_fresh_tag_highlights after each one); cleared when
+        # Multi-Tag is closed, "Show tagged data" is turned on, or a fresh
+        # data load happens -- see those call sites. Maps mf_num ->
+        # (x, y, color) captured at tag time, since the point disappears
+        # from every plotted artist on the very next rebuild (see
+        # on_tag_state_changed) and can't be re-found afterwards.
+        self._fresh_tagged_mf_nums = {}
+        self._fresh_tag_highlight_artists = []
+
         # Per-figure state (fully independent)
         self._fig, self._ax = plt.subplots(figsize=(12, 6))
         self.dataset_handles = {}
@@ -230,7 +249,7 @@ class TimeseriesFigure(TagCRUDMixin):
         )
         self.marker_size_spin.valueChanged.connect(self._on_marker_size_changed)
 
-        self.show_flagged_cb = QCheckBox("Show flagged data")
+        self.show_flagged_cb = QCheckBox("Show tagged data")
         self.show_flagged_cb.setChecked(self._show_flagged)
         self.show_flagged_cb.setToolTip(
             "Show flagged/rejected raw samples, drawn larger with a red edge"
@@ -242,7 +261,9 @@ class TimeseriesFigure(TagCRUDMixin):
         self.multi_tag_btn.setToolTip(
             "Select raw points (click, SHIFT+click, drag box) to reject or\n"
             "info-tag them. Only raw flask/air points are taggable -- mean\n"
-            "and aggregate markers are never selectable."
+            "and aggregate markers are never selectable. Does not enable\n"
+            "'Show tagged data' -- a point you reject stays visible (styled\n"
+            "as flagged) until you close Multi-Tag or check that box."
         )
         self.multi_tag_btn.toggled.connect(self._on_multi_tag_btn_toggled)
 
@@ -1113,8 +1134,13 @@ class TimeseriesFigure(TagCRUDMixin):
 
             self.df = df
             self.insitu_df = insitu_df
+            # A fresh query reflects the real DB-side 'rejected' state
+            # already (including anything tagged since the last load), so
+            # the local fresh-tag shim would now just be stale/redundant.
+            self._fresh_tagged_mf_nums = {}
             self._ax.clear()
             self._build_plot()
+            self._redraw_fresh_tag_highlights()
         finally:
             self.parent_widget._set_button_loading_state(self.reload_btn, False, default_text)
 
@@ -1137,6 +1163,7 @@ class TimeseriesFigure(TagCRUDMixin):
         self._build_plot()
         self._ax.set_xlim(xlim)
         self._ax.set_ylim(ylim)
+        self._redraw_fresh_tag_highlights()
         self._fig.canvas.draw_idle()
         self._refresh_multi_tag_selection_after_rebuild()
 
@@ -1170,15 +1197,17 @@ class TimeseriesFigure(TagCRUDMixin):
 
     def _on_multi_tag_btn_toggled(self, checked: bool):
         if checked:
-            # Default it on so a freshly-tagged point doesn't immediately
-            # vanish -- but this is just a one-time nudge, not a lock: the
-            # selection/comment state survives a "Show flagged data" toggle
-            # either way (see _refresh_multi_tag_selection_after_rebuild),
-            # so it's fine to let the user turn it back off mid-session,
-            # e.g. to check for remaining untagged points once they're done
-            # with the current selection.
-            if not self.show_flagged_cb.isChecked():
-                self.show_flagged_cb.setChecked(True)
+            # Deliberately does NOT force "Show tagged data" on: that pulls
+            # in every historically-flagged point across the loaded range
+            # and forces a full ax.clear()+_build_plot() rebuild, which is
+            # slow and not what's usually wanted -- Multi-Tag is normally
+            # opened to go tag *new* points in the currently-visible
+            # unflagged data, not to review old flagged ones (toggle the
+            # checkbox manually for that). A freshly-tagged point would
+            # otherwise vanish once its 'rejected' flag flips locally
+            # (on_tag_state_changed), so that path draws it back with the
+            # same red-edge style a flagged point gets -- see
+            # _redraw_fresh_tag_highlights().
             if self._multi_tag_panel is None:
                 panel = MultiTagPanel(self)
 
@@ -1199,6 +1228,17 @@ class TimeseriesFigure(TagCRUDMixin):
                 self._multi_tag_panel.hide()
             self._clear_multi_tag_highlight()
             self._multi_tag_selection = []
+            # Points tagged this session are already saved to the DB (the
+            # red-edge overlay is only a display shim for points the normal
+            # unflagged series can no longer show -- see
+            # _redraw_fresh_tag_highlights). Once Multi-Tag is closed there's
+            # no reason to keep drawing them specially; they go back to
+            # being ordinary hidden flagged data until "Show tagged data" is
+            # turned on.
+            if self._fresh_tagged_mf_nums:
+                self._fresh_tagged_mf_nums = {}
+                self._redraw_fresh_tag_highlights()
+                self._fig.canvas.draw_idle()
 
     def _shift_held(self) -> bool:
         """True while SHIFT is down. Qt modifiers are used instead of the
@@ -1358,11 +1398,20 @@ class TimeseriesFigure(TagCRUDMixin):
                 continue
         if not xs:
             return
+        # ax.plot() extends the axes' autoscale dataLim for the new ring
+        # artist, which can nudge the "nice" padded y-limits even though the
+        # selected point was already on screen -- same effect as the
+        # axvline()/change-line autoscale creep in _build_plot(). Capture
+        # and restore the view around the plot() call so selecting a point
+        # never shifts the visible range.
+        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
         self._multi_tag_highlight_artist, = self._ax.plot(
             xs, ys, marker='o', linestyle='', markersize=12,
             markerfacecolor='none', markeredgecolor='black', markeredgewidth=1.8,
             zorder=10,
         )
+        self._ax.set_xlim(xlim)
+        self._ax.set_ylim(ylim)
         self._fig.canvas.draw_idle()
 
     def _clear_multi_tag_highlight(self):
@@ -1373,6 +1422,47 @@ class TimeseriesFigure(TagCRUDMixin):
                 pass
             self._multi_tag_highlight_artist = None
             self._fig.canvas.draw_idle()
+
+    def _redraw_fresh_tag_highlights(self):
+        """Redraw each point in _fresh_tagged_mf_nums with the same red-edge
+        style _draw_insitu_artists/build_datasets use for a normal flagged
+        point (site-colored fill, red edge, +1 markersize) -- so it reads as
+        "this is now a flagged point", not a distinct selection marker.
+
+        Called after every _rebuild_preserving_view() so a point tagged
+        while "Show tagged data" is off stays visible even though the
+        normal unflagged series no longer plots it -- see
+        on_tag_state_changed and _on_multi_tag_btn_toggled. Cheap
+        stand-alone overlay: no query, no restyle of the main dataset
+        artists. Once "Show tagged data" is turned on, the point is drawn
+        red by the normal path too, so this overlay is redundant but
+        harmless (removed the next time this runs after that toggle, since
+        _rebuild_preserving_view already fires on that change).
+        """
+        if self._fresh_tag_highlight_artists:
+            for artist in self._fresh_tag_highlight_artists:
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+            self._fresh_tag_highlight_artists = []
+        if not self._fresh_tagged_mf_nums or self._show_flagged:
+            return
+        # See _highlight_multi_tag_selection: ax.plot() extends autoscale
+        # dataLim for each new artist, which can nudge the y-limits even
+        # though every one of these points was already off-screen (hidden,
+        # not out of range) a moment ago. Restore the view around the loop.
+        xlim, ylim = self._ax.get_xlim(), self._ax.get_ylim()
+        for x, y, color in self._fresh_tagged_mf_nums.values():
+            artist, = self._ax.plot(
+                [x], [y], marker='o', linestyle='',
+                markerfacecolor=color, markeredgecolor='red',
+                markersize=self._raw_marker_size + 1, markeredgewidth=1.4,
+                alpha=1.0, zorder=9, picker=False,
+            )
+            self._fresh_tag_highlight_artists.append(artist)
+        self._ax.set_xlim(xlim)
+        self._ax.set_ylim(ylim)
 
     # ─── MultiTagPanel host hooks ───
 
@@ -1395,6 +1485,33 @@ class TimeseriesFigure(TagCRUDMixin):
             if not self.insitu_df.empty and 'mf_num' in self.insitu_df.columns:
                 mask = self.insitu_df['mf_num'].isin(mf_set)
                 self.insitu_df.loc[mask, 'rejected'] = new_val
+
+            # Capture (x, y, color) now, from the still-live artists in
+            # row_idxs -- once _show_flagged is False, the coming rebuild
+            # drops these rows from every artist entirely, so this is the
+            # last point at which their position/color is recoverable.
+            # Newly-rejected points are kept for the highlight overlay; a
+            # manually un-rejected point (applied=False) is removed from it,
+            # whether or not it's still "fresh" -- Multi-Tag is normally
+            # used to reject, and dropping the highlight on removal is the
+            # more useful default either way.
+            if not self._show_flagged:
+                if applied:
+                    for artist, idx in row_idxs:
+                        vals = getattr(artist, "_meta", {}).get("mf_num")
+                        if not vals or idx >= len(vals) or vals[idx] not in mf_set:
+                            continue
+                        try:
+                            x = artist.get_xdata()[idx]
+                            y = artist.get_ydata()[idx]
+                        except (IndexError, TypeError):
+                            continue
+                        color = artist.get_color()
+                        self._fresh_tagged_mf_nums[vals[idx]] = (x, y, color)
+                else:
+                    for mf_num in mf_set:
+                        self._fresh_tagged_mf_nums.pop(mf_num, None)
+
         self._rebuild_preserving_view()
 
     def _refresh_multi_tag_selection_after_rebuild(self):
@@ -1406,7 +1523,7 @@ class TimeseriesFigure(TagCRUDMixin):
 
         The panel's own mf_nums/comment state are deliberately left alone
         here even when nothing survives the rebuild (e.g. the user toggles
-        "Show flagged data" off to go look for more bad points): clearing
+        "Show tagged data" off to go look for more bad points): clearing
         it automatically would wipe an in-progress, unsaved comment out
         from under the user for an unrelated visibility change. Only the
         figure-level highlight/selection tracking is re-anchored or
