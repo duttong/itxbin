@@ -22,6 +22,10 @@ Usage examples:
   # --analyte/--channel in the cats_qc/ scripts)
   python3 cats_batch.py --analyte N2O -c q --site brw -s 2025-01
 
+  # Same, as a single Analyte_channel token (mirrors --gas in
+  # cats_set_mf_method.py/cats_tagging.py/cats_cal_method_qc.py)
+  python3 cats_batch.py --gas N2O_q --site brw -s 2025-01
+
   # Compute fits + mole fractions and write to DB for one analyte
   python3 cats_batch.py -p 5 -c q --site brw -s 2025-01 -i --fits
 
@@ -555,10 +559,19 @@ class CATS_batch(CATS_Instrument):
                  "as an alternative to -p/--parameter-num. Pass -c/--channel "
                  "too if the analyte is on more than one channel for this site.",
         )
+        target.add_argument(
+            '--gas', type=str, default=None,
+            help="Analyte_channel token (e.g. 'N2O_q'), as an alternative to "
+                 "-p/--parameter-num or --analyte/--channel. Same format as "
+                 "--gas in cats_set_mf_method.py/cats_tagging.py/"
+                 "cats_cal_method_qc.py. Not used together with -c/--channel, "
+                 "which it already carries.",
+        )
         parser.add_argument(
             '-c', '--channel', type=str, default=None,
             help="GC channel (q, f, cc, a...). Required with --analyte if "
-                 "that analyte is ambiguous across channels.",
+                 "that analyte is ambiguous across channels. Not used with "
+                 "--gas, which already carries a channel.",
         )
         parser.add_argument(
             '-s', '--start-date', type=str, default=None,
@@ -600,10 +613,21 @@ class CATS_batch(CATS_Instrument):
         if args.site != self.site:
             self.__init__(site=args.site)
 
-        # --analyte is an alternative spelling of -p/--parameter-num (mutually
-        # exclusive at the parser level); resolve it to a pnum now so
-        # everything downstream keeps using args.parameter_num/args.channel.
-        if args.analyte is not None:
+        # --gas and --analyte are alternative spellings of -p/--parameter-num
+        # (mutually exclusive at the parser level); resolve either to a pnum
+        # now so everything downstream keeps using
+        # args.parameter_num/args.channel.
+        if args.gas is not None:
+            if args.channel:
+                parser.error("-c/--channel is not used with --gas -- --gas "
+                              "already carries its own channel (e.g. N2O_q).")
+            analyte, _, channel = args.gas.rpartition('_')
+            if not analyte:
+                parser.error(f"--gas must be Analyte_channel (e.g. 'N2O_q'), got {args.gas!r}")
+            pnum, resolved_channel = resolve_analyte(self, analyte, channel)
+            args.parameter_num = str(pnum)
+            args.channel = resolved_channel
+        elif args.analyte is not None:
             pnum, resolved_channel = resolve_analyte(self, args.analyte, args.channel)
             args.parameter_num = str(pnum)
             args.channel = resolved_channel

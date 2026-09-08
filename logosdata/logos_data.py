@@ -2390,10 +2390,6 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             # incompatible-dtype FutureWarning against self.run's float64 column.
             self.run.loc[calculated.index, col] = pd.to_numeric(calculated[col], errors='coerce')
 
-        if 'height' in self.run.columns:
-            zero_height = pd.to_numeric(self.run['height'], errors='coerce').eq(0)
-            self.run.loc[mf_mask & zero_height, 'mole_fraction'] = 0.0
-
         filled = pd.to_numeric(
             calculated['mole_fraction'], errors='coerce'
         ).notna().sum()
