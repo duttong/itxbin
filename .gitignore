@@ -28,6 +28,7 @@ cats_qc/*
 !cats_qc/test_cats_air_tagger.py
 !cats_qc/README.md
 !cats_qc/CATS_QC_TODO.md
+!cats_qc/CATS-processing.md
 
 hats_receptors/*
 
