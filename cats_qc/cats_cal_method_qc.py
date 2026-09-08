@@ -68,7 +68,7 @@ Algorithm
    (--trend-window-days) is also recomputed and reported per candidate
    (z_{method}_long) as a cross-check, but never gates the decision. The
    first candidate (in --method-preference order, default
-   cal12 > cal2 > cal1 > ref) whose primary-horizon z clears
+   cal12 > cal2 > cal1) whose primary-horizon z clears
    --resolve-z-threshold is the recommendation. If none do, the episode is
    reported UNRESOLVED along with the cal-tank serials active at that date,
    for manual hats.scale_assignments review -- an unresolved jump is left
@@ -532,10 +532,23 @@ def _evaluate_episode(
     window_days: float, gap_days: float, resolve_window_days: float,
     min_trend_points: int, resolve_z_threshold: float, method_preference: list[str],
 ) -> dict:
-    """Pick the first candidate (in preference order) whose cached
-    full-range period-level series resolves the jump at this episode's
-    anchor. No DB calls here -- candidate_series was built once for the
-    whole scan by build_cal_method_qc, shared across every episode.
+    """Score every candidate at this episode's anchor, then recommend
+    whichever clears resolve_z_threshold with the SMALLEST |z| (ties broken
+    by method_preference order) -- not the first candidate in preference
+    order to merely clear the bar. No DB calls here -- candidate_series was
+    built once for the whole scan by build_cal_method_qc, shared across
+    every episode.
+
+    A first-to-clear rule lets a structurally weaker candidate (e.g. cal1's
+    single-tank, forced-through-origin fit, versus cal12's 2-point fit) win
+    outright just by narrowly ducking under the same bar a much closer-
+    fitting candidate barely missed -- a weak fit's trend line is looser and
+    absorbs a real step rather than seeing it, so "resolves the jump" can
+    mean "can't detect the jump" rather than "is the right method". Picking
+    the smallest |z| instead still requires clearing the bar (a candidate
+    that doesn't isn't a candidate), but among those that do, prefers
+    whichever actually flattens the discontinuity most, with
+    method_preference only breaking ties.
 
     Periods belonging to any OTHER flagged episode are excluded from each
     candidate's trend-fit input first (_exclude_other_episode_periods), so
@@ -561,7 +574,11 @@ def _evaluate_episode(
         "recommendation": "UNRESOLVED",
     }
 
-    recommendation = None
+    # Score every candidate first (also populates the reported jump_*/z_*
+    # columns for every method regardless of who wins), then pick whichever
+    # cleared resolve_z_threshold with the smallest |z| -- method_preference
+    # only breaks exact ties, it no longer short-circuits the search.
+    candidates_cleared = []
     for method_name in method_preference:
         series = candidate_series.get(method_name, pd.DataFrame())
         if series.empty:
@@ -588,8 +605,10 @@ def _evaluate_episode(
         result[f"jump_{method_name}"] = jump_here
         result[f"z_{method_name}"] = z_here
         result[f"z_{method_name}_long"] = z_long_here
-        if recommendation is None and np.isfinite(z_here) and abs(z_here) <= resolve_z_threshold:
-            recommendation = method_name
+        if np.isfinite(z_here) and abs(z_here) <= resolve_z_threshold:
+            candidates_cleared.append((abs(z_here), method_name))
+
+    recommendation = min(candidates_cleared)[1] if candidates_cleared else None
 
     if recommendation is not None:
         result["recommendation"] = recommendation
@@ -616,7 +635,7 @@ def build_cal_method_qc(
     resolve_z_threshold: float | None = None,
     min_jump: float = 0.0,
     max_gap_days: float = 21.0,
-    method_preference: str = "cal12,cal2,cal1,ref",
+    method_preference: str = "cal12,cal2,cal1",
 ) -> pd.DataFrame:
     """Detect calibration-method-induced discontinuities in [start, end] and
     recommend a method per episode. One row per detected episode; see module
@@ -698,9 +717,11 @@ def main() -> int:
                          "0 disables it (default: 0)")
     p.add_argument("--max-gap-days", type=float, default=21.0,
                     help="Max gap between flagged periods to merge into one episode (default: 21)")
-    p.add_argument("--method-preference", type=str, default="cal12,cal2,cal1,ref",
-                    help="Comma-separated method names, most-preferred first "
-                         "(default: cal12,cal2,cal1,ref)")
+    p.add_argument("--method-preference", type=str, default="cal12,cal2,cal1",
+                    help="Comma-separated method names, most-preferred first. "
+                         "'ref' is omitted by default -- pass it explicitly "
+                         "(e.g. 'cal12,cal2,cal1,ref') to consider it again "
+                         "(default: cal12,cal2,cal1)")
     p.add_argument("--output", type=Path, default=Path("cats_cal_method_flags.csv"))
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
