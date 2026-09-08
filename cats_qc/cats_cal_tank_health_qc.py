@@ -81,9 +81,36 @@ This is deliberately much simpler than cats_cal_method_qc.py's trend-jump
 machinery: it is not trying to detect whether the atmosphere-facing output
 changed, only whether the two calibration inputs are individually trustworthy.
 
+Reference mode (--reference-gas)
+---------------------------------
+CAL1 and CAL2 are physical tanks/regulators/valves feeding every channel's
+detector from the same injection at once -- if a tank is offline or dry,
+every channel sees it simultaneously, so COVERAGE and DROPOUT are properties
+of the tank/port, not of any one analyte. NOISE is not: it is a per-analyte,
+per-channel response-quality signal (a noise problem on one detector's trace
+does not imply another channel's detector is also noisy), so it stays
+per-analyte and is NOT combined across references.
+
+Pass --reference-gas one or more times (default: N2O_q, SF6_q, CFC11_f -- a
+traditionally well-measured, high-precision set spanning both physical
+channels in use) to compute ONE canonical, analyte-independent tank-health
+verdict from coverage+dropout only, unioned across references: a period is
+flagged bad for a port if ANY reference analyte's own coverage/dropout
+signal flags it there (not requiring unanimous agreement, since an
+unrelated per-analyte data gap in just one reference should not suppress a
+real tank problem the others correctly caught). The resulting CSV has no
+gas/channel/pnum columns -- it applies to every analyte at the site, and is
+the recommended input to cats_apply_cal_tank_health.py for routine use,
+rather than re-deriving (noisier, analyte-specific) episodes per analyte.
+
 Usage::
 
     python3 cats_cal_tank_health_qc.py --site brw --gas CFC113_f --start 19980101 -v
+
+    # Combined coverage+dropout reference verdict (recommended for routine use)
+    python3 cats_cal_tank_health_qc.py --site brw --reference-gas N2O_q \\
+        --reference-gas SF6_q --reference-gas CFC11_f --start 19980101 -v \\
+        --output brw_reference_tank_health.csv
 """
 from __future__ import annotations
 
@@ -240,43 +267,18 @@ def _score_ports(
     return pd.DataFrame(out, index=pd.Index(idx, name="period_start")).reset_index()
 
 
-def build_cal_tank_health_qc(
-    batch: CATS_batch,
-    pnum: int,
-    channel: str,
-    start: str,
-    end: str,
-    min_period_points: int = 4,
-    noise_window_days: float = 90.0,
-    min_relative_coverage: float = 0.25,
-    max_dropout_frac: float = 0.3,
-    max_noise_ratio: float = 3.0,
-    max_gap_days: float = 21.0,
+def _episodes_from_merged(
+    batch: CATS_batch, merged: pd.DataFrame, start: str, end: str, max_gap_days: float,
 ) -> pd.DataFrame:
-    """Detect periods where CAL1 and/or CAL2 look unhealthy, and recommend
-    the single-tank method that avoids whichever tank is bad. One row per
-    detected episode. Never writes to the database.
+    """Shared episode-grouping/recommendation step for both the per-analyte
+    path (build_cal_tank_health_qc) and the combined-reference path
+    (build_reference_tank_health_qc): given a period_start-indexed table
+    with cal1_bad/cal2_bad/*_reasons/*_rel_coverage/*_dropout_frac/
+    *_noise_ratio columns (noise columns may be entirely NaN for the
+    reference path -- see its docstring), group flagged periods into
+    episodes and recommend a method per episode. One row per detected
+    episode; empty DataFrame if nothing is flagged in [start, end].
     """
-    df = batch.load_data(pnum, channel=channel, start_date=start, end_date=end, verbose=False)
-    if df.empty:
-        return pd.DataFrame()
-    df["analysis_datetime"] = pd.to_datetime(df["analysis_datetime"], utc=True).dt.tz_localize(None)
-    df["period_start"] = batch._fit_periods(df)
-
-    cal1_df = df.loc[df["port"] == batch.CAL1_PORT]
-    cal2_df = df.loc[df["port"] == batch.CAL2_PORT]
-    if cal1_df.empty and cal2_df.empty:
-        return pd.DataFrame()
-    cal1_stats = _period_port_stats(batch, cal1_df, min_period_points)
-    cal2_stats = _period_port_stats(batch, cal2_df, min_period_points)
-    if cal1_stats.empty and cal2_stats.empty:
-        return pd.DataFrame()
-
-    merged = _score_ports(
-        cal1_stats, cal2_stats, noise_window_days,
-        min_relative_coverage, max_dropout_frac, max_noise_ratio,
-    )
-
     in_range = merged["period_start"].between(pd.Timestamp(start), pd.Timestamp(end))
     cal1_bad = merged.get("cal1_bad", pd.Series(False, index=merged.index)).fillna(False)
     cal2_bad = merged.get("cal2_bad", pd.Series(False, index=merged.index)).fillna(False)
@@ -345,12 +347,145 @@ def build_cal_tank_health_qc(
     return pd.DataFrame(rows).sort_values("episode_start").reset_index(drop=True)
 
 
+def build_cal_tank_health_qc(
+    batch: CATS_batch,
+    pnum: int,
+    channel: str,
+    start: str,
+    end: str,
+    min_period_points: int = 4,
+    noise_window_days: float = 90.0,
+    min_relative_coverage: float = 0.25,
+    max_dropout_frac: float = 0.3,
+    max_noise_ratio: float = 3.0,
+    max_gap_days: float = 21.0,
+) -> pd.DataFrame:
+    """Detect periods where CAL1 and/or CAL2 look unhealthy, and recommend
+    the single-tank method that avoids whichever tank is bad. One row per
+    detected episode. Never writes to the database.
+    """
+    df = batch.load_data(pnum, channel=channel, start_date=start, end_date=end, verbose=False)
+    if df.empty:
+        return pd.DataFrame()
+    df["analysis_datetime"] = pd.to_datetime(df["analysis_datetime"], utc=True).dt.tz_localize(None)
+    df["period_start"] = batch._fit_periods(df)
+
+    cal1_df = df.loc[df["port"] == batch.CAL1_PORT]
+    cal2_df = df.loc[df["port"] == batch.CAL2_PORT]
+    if cal1_df.empty and cal2_df.empty:
+        return pd.DataFrame()
+    cal1_stats = _period_port_stats(batch, cal1_df, min_period_points)
+    cal2_stats = _period_port_stats(batch, cal2_df, min_period_points)
+    if cal1_stats.empty and cal2_stats.empty:
+        return pd.DataFrame()
+
+    merged = _score_ports(
+        cal1_stats, cal2_stats, noise_window_days,
+        min_relative_coverage, max_dropout_frac, max_noise_ratio,
+    )
+    return _episodes_from_merged(batch, merged, start, end, max_gap_days)
+
+
+def build_reference_tank_health_qc(
+    batch: CATS_batch,
+    reference_gases: list[str],
+    start: str,
+    end: str,
+    min_period_points: int = 4,
+    min_relative_coverage: float = 0.25,
+    max_dropout_frac: float = 0.3,
+    max_gap_days: float = 21.0,
+) -> pd.DataFrame:
+    """Combined, analyte-independent tank-health verdict from coverage +
+    dropout ONLY (no noise -- see module docstring's Reference mode
+    section), unioned across reference_gases (each an 'Analyte_channel'
+    token, e.g. 'N2O_q'). A period is bad for a port if ANY reference
+    analyte's own coverage/dropout signal flags it there. One row per
+    detected episode; no gas/channel/pnum columns, since the result applies
+    to every analyte at this site. Never writes to the database.
+    """
+    per_gas_merged = []
+    for gas_channel in reference_gases:
+        gas, channel = gas_channel.rsplit("_", 1)
+        try:
+            pnum = _resolve_pnum(batch, gas, channel)
+        except ValueError as exc:
+            print(f"  Skipping reference {gas_channel}: {exc}")
+            continue
+
+        df = batch.load_data(pnum, channel=channel, start_date=start, end_date=end, verbose=False)
+        if df.empty:
+            continue
+        df["analysis_datetime"] = pd.to_datetime(df["analysis_datetime"], utc=True).dt.tz_localize(None)
+        df["period_start"] = batch._fit_periods(df)
+
+        cal1_df = df.loc[df["port"] == batch.CAL1_PORT]
+        cal2_df = df.loc[df["port"] == batch.CAL2_PORT]
+        if cal1_df.empty and cal2_df.empty:
+            continue
+        cal1_stats = _period_port_stats(batch, cal1_df, min_period_points)
+        cal2_stats = _period_port_stats(batch, cal2_df, min_period_points)
+        if cal1_stats.empty and cal2_stats.empty:
+            continue
+
+        # max_noise_ratio=np.inf disables the high_noise flag entirely
+        # (noise_ratio > inf is always False), matching this mode's
+        # coverage+dropout-only contract -- noise_window_days is still
+        # computed internally but its result never gates anything here.
+        scored = _score_ports(
+            cal1_stats, cal2_stats, noise_window_days=90.0,
+            min_relative_coverage=min_relative_coverage,
+            max_dropout_frac=max_dropout_frac, max_noise_ratio=np.inf,
+        )
+        per_gas_merged.append(scored)
+
+    if not per_gas_merged:
+        return pd.DataFrame()
+
+    idx = sorted(set().union(*(set(m["period_start"]) for m in per_gas_merged)))
+    combined = {"period_start": idx}
+    for label in ("cal1", "cal2"):
+        bad_any = pd.Series(False, index=idx)
+        reasons_union: dict = {p: set() for p in idx}
+        rel_coverage_min = pd.Series(np.nan, index=idx)
+        dropout_max = pd.Series(np.nan, index=idx)
+        for m in per_gas_merged:
+            s = m.set_index("period_start").reindex(idx)
+            bad_any = bad_any | s[f"{label}_bad"].astype("boolean").fillna(False).to_numpy(dtype=bool)
+            for p, cell in s[f"{label}_reasons"].items():
+                if isinstance(cell, str) and cell:
+                    # Noise never appears here (max_noise_ratio=np.inf above
+                    # means high_noise can't trigger), so only
+                    # low_coverage/high_dropout tokens ever reach the union.
+                    reasons_union[p].update(cell.split(";"))
+            rel_coverage_min = np.fmin(rel_coverage_min, s[f"{label}_rel_coverage"].to_numpy())
+            dropout_max = np.fmax(dropout_max, s[f"{label}_dropout_frac"].to_numpy())
+
+        combined[f"{label}_bad"] = bad_any
+        combined[f"{label}_reasons"] = [";".join(sorted(reasons_union[p])) for p in idx]
+        combined[f"{label}_rel_coverage"] = rel_coverage_min
+        combined[f"{label}_dropout_frac"] = dropout_max
+        combined[f"{label}_noise_ratio"] = np.nan  # not scored in reference mode
+
+    merged = pd.DataFrame(combined)
+    return _episodes_from_merged(batch, merged, start, end, max_gap_days)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--site", default="brw")
-    p.add_argument("--gas", required=True, help='Gas_channel (e.g. CFC113_f) or "all"')
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--gas", help='Gas_channel (e.g. CFC113_f) or "all" -- '
+                         "per-analyte mode (coverage+dropout+noise, this analyte only).")
+    target.add_argument(
+        "--reference-gas", action="append", dest="reference_gas", metavar="GAS_CHANNEL",
+        help="Repeatable. Combined, analyte-independent coverage+dropout-only "
+             "verdict unioned across these reference analytes (e.g. "
+             "--reference-gas N2O_q --reference-gas SF6_q --reference-gas CFC11_f). "
+             "See module docstring's Reference mode section. Not used with --gas.",
+    )
     p.add_argument("--start", type=_parse_yyyymmdd, default="1998-01-01",
                     help="Start date, YYYYMMDD (default: instrument start).")
     p.add_argument("--end", type=_parse_yyyymmdd, default=None,
@@ -385,6 +520,27 @@ def main() -> int:
 
     end_date = args.end or datetime.today().strftime("%Y-%m-%d")
     batch = CATS_batch(args.site)
+
+    if args.reference_gas:
+        if args.verbose:
+            print(f"Scanning references {args.reference_gas} "
+                  f"{args.start} -> {end_date} (coverage+dropout only) ...")
+        result = build_reference_tank_health_qc(
+            batch, args.reference_gas, args.start, end_date,
+            min_period_points=args.min_period_points,
+            min_relative_coverage=args.min_relative_coverage,
+            max_dropout_frac=args.max_dropout_frac,
+            max_gap_days=args.max_gap_days,
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        result.to_csv(args.output, index=False, float_format="%.6g")
+        print(f"Wrote {len(result):,} episode(s) to {args.output}")
+        if not result.empty:
+            cols = ["episode_start", "episode_end", "cal1_bad", "cal2_bad", "recommendation"]
+            print(result[cols].to_string(index=False))
+        else:
+            print("  No unhealthy cal-tank periods flagged across references.")
+        return 0
 
     if args.gas.lower() == "all":
         rows = batch.db.doquery(

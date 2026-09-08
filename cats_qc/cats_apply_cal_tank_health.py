@@ -43,6 +43,19 @@ avoids the problem; whatever method is already in effect continues to
 apply. This script never guesses a method for an episode
 cats_cal_tank_health_qc.py couldn't resolve.
 
+Reference-mode input (--gas required)
+--------------------------------------
+cats_cal_tank_health_qc.py --reference-gas produces a combined,
+analyte-independent CSV with no gas/channel/pnum columns -- coverage and
+dropout are properties of the shared CAL1/CAL2 tanks, not of any one
+analyte (see that script's module docstring), so its episodes are meant to
+be applied to every analyte at the site, not just the reference analytes
+used to detect them. Detected automatically from the input CSV's columns
+(no 'gas' column present); pass --gas one or more times (or --gas all) to
+say which analytes to fan each episode out to. Per-analyte-mode input (a
+CSV from cats_cal_tank_health_qc.py --gas) already carries its own
+gas/channel/pnum per row and --gas must be omitted.
+
 Usage::
 
     # Preview the exact commands without running them
@@ -50,6 +63,10 @@ Usage::
 
     # Apply for real
     python3 cats_apply_cal_tank_health.py --site brw --input brw_health_flags.csv
+
+    # Reference-mode CSV, applied to every analyte at the site
+    python3 cats_apply_cal_tank_health.py --site brw \\
+        --input brw_reference_tank_health.csv --gas all --dry-run
 """
 from __future__ import annotations
 
@@ -60,10 +77,15 @@ from pathlib import Path
 
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from cats_batch import CATS_batch
+
 HERE = Path(__file__).resolve().parent
 
 
-def _build_apply_plan(df: pd.DataFrame) -> list[dict]:
+def _build_apply_plan(
+    df: pd.DataFrame, target_gases: list[tuple[str, str]] | None = None,
+) -> list[dict]:
     """Turn a cats_cal_tank_health_qc.py episodes DataFrame into an ordered
     list of steps -- {'action': 'apply', ...} (one bounded override per
     RESOLVED episode) or {'action': 'skip', ...} for UNRESOLVED episodes.
@@ -71,29 +93,51 @@ def _build_apply_plan(df: pd.DataFrame) -> list[dict]:
     set for dates outside these episodes (see module docstring for why).
     Pure function (no subprocess/DB calls), so the ordering is
     unit-testable without a database.
+
+    target_gases is required (a list of (gas, channel) tuples) when df has
+    no 'gas' column -- the reference-mode CSV shape -- and fans each
+    episode out to every target: one apply/skip step PER (episode, target)
+    pair, sorted so episodes still apply oldest-first within each target.
+    Ignored (must be None) for a per-analyte-mode df, which already carries
+    its own gas/channel per row.
     """
     df = df.sort_values("episode_start").reset_index(drop=True)
+    is_reference_mode = "gas" not in df.columns
+
+    if is_reference_mode and not target_gases:
+        raise ValueError(
+            "Input has no 'gas' column (reference-mode CSV) -- pass --gas "
+            "(one or more times, or --gas all) to say which analytes to apply to."
+        )
+    if not is_reference_mode and target_gases:
+        raise ValueError(
+            "Input already has its own gas/channel per row (per-analyte-mode CSV) "
+            "-- --gas must not be passed with this input."
+        )
 
     plan = []
-    for _, row in df.iterrows():
-        start_date = pd.Timestamp(row["episode_start"]).strftime("%Y-%m-%d")
-        end_date = pd.Timestamp(row["episode_end"]).strftime("%Y-%m-%d")
+    targets = target_gases if is_reference_mode else [None]
+    for target in targets:
+        for _, row in df.iterrows():
+            gas, channel = target if target is not None else (row["gas"], row["channel"])
+            start_date = pd.Timestamp(row["episode_start"]).strftime("%Y-%m-%d")
+            end_date = pd.Timestamp(row["episode_end"]).strftime("%Y-%m-%d")
 
-        if row["recommendation"] == "UNRESOLVED":
+            if row["recommendation"] == "UNRESOLVED":
+                plan.append({
+                    "action": "skip",
+                    "gas": gas, "channel": channel,
+                    "start_date": start_date, "end_date": end_date,
+                    "cal1_tank": row.get("cal1_tank"), "cal2_tank": row.get("cal2_tank"),
+                    "cal1_reasons": row.get("cal1_reasons"), "cal2_reasons": row.get("cal2_reasons"),
+                })
+                continue
+
             plan.append({
-                "action": "skip",
-                "gas": row["gas"], "channel": row["channel"],
-                "start_date": start_date, "end_date": end_date,
-                "cal1_tank": row.get("cal1_tank"), "cal2_tank": row.get("cal2_tank"),
-                "cal1_reasons": row.get("cal1_reasons"), "cal2_reasons": row.get("cal2_reasons"),
+                "action": "apply",
+                "gas": gas, "channel": channel,
+                "start_date": start_date, "end_date": end_date, "method": row["recommendation"],
             })
-            continue
-
-        plan.append({
-            "action": "apply",
-            "gas": row["gas"], "channel": row["channel"], "pnum": int(row["pnum"]),
-            "start_date": start_date, "end_date": end_date, "method": row["recommendation"],
-        })
     return plan
 
 
@@ -128,6 +172,13 @@ def main() -> int:
     p.add_argument("--site", required=True, help="CATS site code (e.g. brw).")
     p.add_argument("--input", type=Path, required=True,
                     help="CSV produced by cats_cal_tank_health_qc.py --output.")
+    p.add_argument(
+        "--gas", action="append", dest="gas", metavar="GAS_CHANNEL",
+        help="Required (repeatable, or 'all') ONLY for a reference-mode input CSV "
+             "(no gas/channel columns -- see module docstring); fans each episode "
+             "out to every listed analyte. Must be omitted for a per-analyte-mode "
+             "input, which already carries its own gas/channel per row.",
+    )
     p.add_argument("--dry-run", action="store_true",
                     help="Print the commands that would run; execute nothing.")
     args = p.parse_args()
@@ -137,7 +188,25 @@ def main() -> int:
         print(f"{args.input}: no episodes, nothing to apply.")
         return 0
 
-    plan = _build_apply_plan(df)
+    target_gases = None
+    if "gas" not in df.columns:
+        if not args.gas:
+            p.error(f"{args.input} has no 'gas' column (reference-mode CSV) -- "
+                    "pass --gas (repeatable, or --gas all) to say which analytes to apply to.")
+        batch = CATS_batch(args.site)
+        if len(args.gas) == 1 and args.gas[0].lower() == "all":
+            rows = batch.db.doquery(
+                f"SELECT DISTINCT display_name, channel FROM hats.analyte_list "
+                f"WHERE inst_num = {batch.inst_num}"
+            )
+            target_gases = [(r["display_name"], r["channel"]) for r in rows if r.get("channel")]
+        else:
+            target_gases = [tuple(g.rsplit("_", 1)) for g in args.gas]
+    elif args.gas:
+        p.error(f"{args.input} already has gas/channel columns (per-analyte-mode CSV) "
+                "-- --gas must not be passed with this input.")
+
+    plan = _build_apply_plan(df, target_gases)
     n_applied = n_skipped = 0
     for step in plan:
         if step["action"] == "skip":
