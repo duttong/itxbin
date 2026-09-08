@@ -1369,6 +1369,15 @@ class Normalizing():
 
         out['normalized_resp'] = out[self.response_type] / out['smoothed']
 
+        # A zero response on the row itself means no peak was integrated --
+        # not a real measurement -- so its ratio is meaningless (0, not the
+        # NaN it should be), the same reasoning calculate_smoothed_std()
+        # above already applies to the reference side. Left unguarded here,
+        # these real zeros flow straight into weekly_cal_fits, the Ratio
+        # plot, and ratio-threshold QC instead of being dropped as missing.
+        zero_resp = pd.to_numeric(out[self.response_type], errors='coerce').eq(0)
+        out.loc[zero_resp, 'normalized_resp'] = np.nan
+
         return out
 
     def extract_digits(self, s: str) -> str:
