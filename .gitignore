@@ -16,6 +16,7 @@ cats_qc/*
 !cats_qc/cats_cal_window_qc.py
 !cats_qc/cats_cal_method_qc.py
 !cats_qc/cats_apply_cal_method.py
+!cats_qc/cats_cal_tank_health_qc.py
 !cats_qc/cats_set_mf_method.py
 !cats_qc/cats_air_tagger.py
 !cats_qc/test_cats_cal_step_qc.py
