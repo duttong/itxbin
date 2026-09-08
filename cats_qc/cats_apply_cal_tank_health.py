@@ -31,11 +31,17 @@ episode, in order:
        (each comes from a distinct _group_periods() episode) but if they
        did, oldest-first ordering means the later one wins.
     2. cats_tagging.py --algo cal_window --start <earliest episode_start>
-       -- one retag covering from the earliest applied episode through now,
-       recomputing mole fractions for every method set above (see
-       cats_apply_cal_method.py's docstring for why this step -- not a
-       plain cats_batch.py call -- is required to keep the cal_window (286)
-       reject tag in sync).
+       -- one retag covering from the earliest applied episode through now.
+       IMPORTANT: cal_window is in cats_tagging.py's _RECALC_BEFORE_BUILD
+       set, so this step itself calls recalc_mole_fractions() (the
+       update_fits/_upsert_fits/update_runs/upsert_mole_fractions sequence,
+       cats_batch.py's `-i --fits` path) FIRST, before reading mole
+       fractions to decide what to tag -- the fits are already current
+       against every mf_method_num set in step 1 by the time cal_window
+       looks at the data. No separate cats_batch.py call is needed here (see
+       cats_apply_cal_method.py's docstring for why a plain recompute alone,
+       without this retag, would be insufficient the other direction --
+       it would leave the cal_window (286) reject tag stale).
 
 UNRESOLVED episodes are skipped with a printed warning -- both tanks (or
 neither clearly) looked bad that period, so no method choice reliably
