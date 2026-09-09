@@ -1573,20 +1573,53 @@ class TanksWidget(QWidget):
             QToolTip.showText(global_pos, tooltip, cb)
 
     def _annotate_next_fill_dates(self):
-        """Add next_fill_date to metadata so plotting can bracket fills."""
-        per_serial: dict[str, list[tuple[pd.Timestamp, str]]] = defaultdict(list)
-        for key, meta in self._tank_metadata.items():
-            serial_val = meta.get("serial_number") or meta.get("tank_serial_num") or str(key).split("::")[0]
-            fill_date = pd.to_datetime(meta.get("fill_date") or meta.get("date"), errors="coerce")
-            if pd.notnull(fill_date):
-                per_serial[str(serial_val)].append((fill_date, key))
+        """Add next_fill_date to metadata so plotting can bracket fills.
 
-        for serial, items in per_serial.items():
-            items_sorted = sorted(items, key=lambda t: t[0])
-            for idx, (fill_dt, key) in enumerate(items_sorted):
-                next_dt = items_sorted[idx + 1][0] if idx + 1 < len(items_sorted) else None
-                if key in self._tank_metadata:
-                    self._tank_metadata[key]["next_fill_date"] = next_dt
+        Looks up each serial's COMPLETE fill history from reftank.fill,
+        independent of the panel's selected year range, rather than
+        inferring next_fill_date only from whatever fills happen to have
+        survived that range's _tank_metadata. self._tank_metadata is built
+        from return_active_tanks_df(start, end) (see _build_tank_cache),
+        which excludes any fill outside [start, end] -- a fill's actual
+        next fill can easily fall outside that window (e.g. a 2017 fill
+        whose replacement isn't until 2021, well past a 2015-2020 view).
+        Without this, the currently-displayed (last-in-range) fill gets no
+        next_fill_date at all, so the boundary check in the plotting loop
+        (`if next_fill_date: ...`) never fires and every LATER fill's
+        calibrations -- which truly belong to a different fill code --
+        leak into what should be a single-fill plot/caldrift fit.
+        """
+        serials = sorted({
+            str(meta.get("serial_number") or meta.get("tank_serial_num") or str(key).split("::")[0])
+            for key, meta in self._tank_metadata.items()
+        })
+        if not serials or not self.instrument or not getattr(self.instrument, "db", None):
+            return
+
+        placeholders = ",".join(["%s"] * len(serials))
+        try:
+            rows = self.instrument.db.doquery(
+                f"SELECT serial_number, date FROM reftank.fill "
+                f"WHERE serial_number IN ({placeholders})",
+                serials,
+            )
+        except Exception:
+            rows = None
+        all_fill_dates: dict[str, list[pd.Timestamp]] = defaultdict(list)
+        for row in rows or []:
+            dt = pd.to_datetime(row.get("date"), errors="coerce")
+            if pd.notnull(dt):
+                all_fill_dates[str(row.get("serial_number"))].append(dt)
+        for serial, dts in all_fill_dates.items():
+            all_fill_dates[serial] = sorted(dts)
+
+        for key, meta in self._tank_metadata.items():
+            serial_val = str(meta.get("serial_number") or meta.get("tank_serial_num") or str(key).split("::")[0])
+            fill_date = pd.to_datetime(meta.get("fill_date") or meta.get("date"), errors="coerce")
+            if pd.isnull(fill_date):
+                continue
+            later = [dt for dt in all_fill_dates.get(serial_val, []) if dt > fill_date]
+            meta["next_fill_date"] = min(later) if later else None
 
     def _annotate_recent_analysis(self):
         """Add recent_analysis (most recent hats.calibrations timestamp within
