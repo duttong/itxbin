@@ -115,6 +115,18 @@ class CATS_batch(CATS_Instrument):
         still be NULL in the database (and therefore loaded with the default
         method), so copy the modal air-row method for each week before applying
         the response fit to every measurement port.
+
+        Only TANK (non-air) rows are overwritten. Applying the mapped method
+        to air rows too used to silently clobber already-correct air-row
+        methods whenever a cats_set_mf_method.py --start/--end boundary fell
+        mid-week: a week straddling the boundary mixes old- and new-method
+        air rows, and if the old method happened to be the week's mode, every
+        air row in that week -- including the ones just switched to the new
+        method -- got stamped back to the old one on the next recompute.
+        Confirmed at BRW CFC113(f) the week of 2014-01-20: a --start
+        2014-01-24 update correctly set 36 air rows (Jan 24-26) to cal12, but
+        the week's other 132 air rows (Jan 20-23) were still cal2, so cal2
+        (the mode) got reapplied to all 168 -- undoing the 36-row change.
         """
         if df.empty:
             return df.copy()
@@ -131,7 +143,8 @@ class CATS_batch(CATS_Instrument):
             .agg(lambda values: int(values.mode().iat[0]))
         )
         mapped_methods = out['_week_start'].map(week_methods)
-        has_week_method = mapped_methods.notna()
+        is_tank_row = ~out['port'].isin(self.AIR_PORTS)
+        has_week_method = mapped_methods.notna() & is_tank_row
         out.loc[has_week_method, 'mf_method_num'] = mapped_methods[has_week_method]
         out['mf_method_num'] = out['mf_method_num'].astype(int)
         return out.drop(columns='_week_start')
