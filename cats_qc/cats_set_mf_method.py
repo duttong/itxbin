@@ -25,6 +25,22 @@ Safe to run repeatedly (idempotent) -- intended as a daily pipeline step
 for newly-ingested rows (see cats_ingest.py).
 
 Run with --dry-run to see row counts before committing.
+
+Week-boundary note: mf_method_num is stored per air-injection row, not per
+week -- the "one method per analyte/channel/week" rule enforced elsewhere
+(get_week_mf_method()'s modal lookup, set_week_mf_method()'s whole-week
+write in the logos_data cal-week editor) is a convention, not a schema
+constraint. --start/--end here are arbitrary calendar dates, deliberately
+NOT snapped to week (W-SUN) boundaries -- useful for matching a tank swap
+or scale correction's exact effective date -- so a --start/--end that lands
+mid-week leaves that one week's rows genuinely split across two methods
+until a later cats_set_mf_method.py call (or the GUI) re-covers the whole
+week with one value. cats_batch.py's weekly cal12 fit (update_fits(),
+called once per week per its OWN method resolution) and
+_apply_week_methods_to_tanks() (which now only backfills tank rows, never
+air rows -- see its docstring for the bug this used to cause) both handle
+a split week correctly; nothing downstream re-derives or "fixes" a mixed
+week's methods on its own.
 """
 
 import argparse
