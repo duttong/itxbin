@@ -14,12 +14,17 @@ is only ever tagged cal12/cal1 in the same run that will actually recompute
 its mole_fraction (see cats_batch.py --fits); tagging untouched legacy rows
 would mislabel them as cal12-derived when they were never recomputed.
 
-Before assigning cal12/cal1 to an analyte, checks that the required cal
-tank(s) actually have a hats.scale_assignments entry for that parameter --
-some analytes may have never been calibrated on the cal tanks, and blindly
-tagging them cal12 leaves every mole_fraction NULL (no fit is ever
-computable). Those analytes are left/reset to ref (method 1) instead, with a
-printed note.
+Before assigning cal12/cal1/cal2 to an analyte, checks -- separately for each
+date sub-range in --start/--end -- that the cal tank(s) actually installed
+during that sub-range have a hats.scale_assignments entry for that
+parameter; blindly tagging a stretch cal12 with no assignment leaves every
+mole_fraction in it NULL (no fit is ever computable). The check follows
+cal-tank swaps within the window (via ng_port_info) and scale_assignments'
+own fill boundaries, so a --start back to 1998 with a well-covered history
+and only a recently-swapped, not-yet-measured current tank gets the
+requested method for the covered years and falls back to ref (method 1),
+with a printed note, only for the uncovered sub-range(s) -- it does not
+reject the whole window over one bad tank at the tail.
 
 Safe to run repeatedly (idempotent) -- intended as a daily pipeline step
 for newly-ingested rows (see cats_ingest.py).
@@ -46,7 +51,17 @@ week's methods on its own.
 import argparse
 from datetime import datetime
 
+import pandas as pd
+
 from logos_instruments import CATS_Instrument
+
+# Sentinel standing in for "open-ended" (no upper bound yet) across the
+# tank-occupancy and scale-assignment interval math below -- matches the
+# convention already used for a currently-installed tank / a still-current
+# fill (both have no real end date). Never emitted to SQL directly: any
+# segment whose end lands here is printed/queried as an open upper bound
+# instead (see _segment_date_filter).
+_OPEN_END = pd.Timestamp('2099-01-01', tz='UTC')
 
 
 def _parse_yyyymmdd(s):
@@ -65,15 +80,18 @@ def _parse_yyyymmdd(s):
     )
 
 
-def _date_filter(start_date, end_date=None):
-    """Return the analysis-time SQL clause for the requested date window."""
-    clauses = [f"AND a.analysis_time >= '{start_date}'"]
-    if end_date:
-        # analysis_time includes a time of day, so use the following midnight
-        # as an exclusive bound to include every row on --end.
-        clauses.append(
-            f"AND a.analysis_time < DATE_ADD('{end_date}', INTERVAL 1 DAY)"
-        )
+def _segment_date_filter(seg_start, seg_end):
+    """Return the analysis-time SQL clause for one [seg_start, seg_end) segment.
+
+    seg_start/seg_end are tz-aware pandas Timestamps (see _method_segments).
+    Snapped to calendar dates -- this tool has always operated at day
+    granularity (--start/--end are YYYYMMDD), so a tank swap or fill change
+    that lands mid-day is attributed whole to the day it falls on, same
+    coarseness as the rest of the tool.
+    """
+    clauses = [f"AND a.analysis_time >= '{seg_start.date()}'"]
+    if seg_end < _OPEN_END:
+        clauses.append(f"AND a.analysis_time < '{seg_end.date()}'")
     return '\n              '.join(clauses)
 
 
@@ -97,56 +115,159 @@ def _resolve_gas_channel(cats, gas_channel):
     return int(pnum), channel
 
 
-def _tank_serial(cats, port_num):
-    if cats.port_config is None:
-        return None
-    mask = (
-        (cats.port_config['site_num'] == cats.site_num)
-        & (cats.port_config['port_num'] == port_num)
-    )
-    rows = cats.port_config.loc[mask, 'label']
-    return rows.iat[0] if not rows.empty else None
-
-
-def _has_scale_assignment(cats, tank, pnum):
-    return tank is not None and cats.scale_assignments(tank, pnum) is not None
-
-
-def resolve_methods(cats, method_override=None):
-    """Return {pnum: method_num}, falling back to ref where the cal tank(s)
-    needed for the desired method have no scale_assignments.
-
-    method_override, if given, replaces default_mf_method(pnum) as the
-    desired method for every analyte (e.g. force cal2 instead of the default
-    cal12). Still validated per-method below -- cal2 needs the CAL2_PORT
-    tank's scale_assignments, cal1 needs CAL1_PORT's, cal12 needs both.
-    """
-    cal1_tank = _tank_serial(cats, cats.CAL1_PORT)
-    cal2_tank = _tank_serial(cats, cats.CAL2_PORT)
-
+def _all_pnums(cats):
     rows = cats.db.doquery(
         f"SELECT DISTINCT param_num FROM hats.analyte_list "
         f"WHERE inst_num = {cats.inst_num}"
     )
-    methods = {}
-    for r in rows:
-        pnum = int(r['param_num'])
-        desired = method_override if method_override is not None else cats.default_mf_method(pnum)
-        if desired == cats.MF_METHOD_CAL1:
-            ok = _has_scale_assignment(cats, cal1_tank, pnum)
-        elif desired == cats.MF_METHOD_CAL2:
-            ok = _has_scale_assignment(cats, cal2_tank, pnum)
-        elif desired == cats.MF_METHOD_CAL12:
-            ok = (_has_scale_assignment(cats, cal1_tank, pnum)
-                  and _has_scale_assignment(cats, cal2_tank, pnum))
+    return {int(r['param_num']) for r in rows}
+
+
+def _port_occupancy_segments(cats, port_num, start_ts, end_ts):
+    """Return [(tank_serial, seg_start, seg_end), ...] tiling [start_ts, end_ts)
+    with no gaps, from cats.port_config_history. Assumes port_config_history
+    covers the whole window (true for BRW/SPO back to their 1998 start); any
+    leading stretch with no history row at all is silently skipped rather
+    than raising, so a caller that hits this edge case sees no segment (and
+    therefore no NOTE/UPDATE) for it instead of a crash.
+    """
+    history = cats.port_config_history
+    if history is None or history.empty:
+        return []
+    sub = history.loc[
+        (history['site_num'] == cats.site_num) & (history['port_num'] == int(port_num))
+    ].dropna(subset=['start_datetime']).sort_values('start_datetime').reset_index(drop=True)
+    if sub.empty:
+        return []
+    segs = []
+    for i, row in sub.iterrows():
+        seg_start = row['start_datetime']
+        seg_end = sub['start_datetime'].iat[i + 1] if i + 1 < len(sub) else _OPEN_END
+        clipped_start = max(seg_start, start_ts)
+        clipped_end = min(seg_end, end_ts)
+        if clipped_start < clipped_end:
+            segs.append((row['label'], clipped_start, clipped_end))
+    return segs
+
+
+def _coverage_intervals(cats, port_num, pnum, start_ts, end_ts):
+    """Tile [start_ts, end_ts) into (seg_start, seg_end, covered, tank):
+    whether the tank installed on port_num at each moment has a
+    hats.scale_assignments entry for pnum covering that moment. Follows both
+    tank swaps (ng_port_info) and a tank's own refill/fill-code boundaries
+    (scale_assignment_history), so a mid-occupancy refill that only some
+    fills got measured for shows up as a real sub-range, not a blanket
+    ok/gap per tank.
+    """
+    intervals = []
+    for tank, occ_start, occ_end in _port_occupancy_segments(cats, port_num, start_ts, end_ts):
+        cov = []
+        for row in cats.scale_assignment_history(tank, pnum):
+            a_start = row.get('start_date')
+            if a_start is None:
+                continue
+            a_start = pd.Timestamp(a_start, tz='UTC')
+            a_end_raw = row.get('end_date')
+            a_end = pd.Timestamp(a_end_raw, tz='UTC') if a_end_raw else _OPEN_END
+            cs, ce = max(a_start, occ_start), min(a_end, occ_end)
+            if cs < ce:
+                cov.append([cs, ce])
+        cov.sort()
+        merged = []
+        for cs, ce in cov:
+            if merged and cs <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], ce)
+            else:
+                merged.append([cs, ce])
+        cursor = occ_start
+        for cs, ce in merged:
+            if cursor < cs:
+                intervals.append((cursor, cs, False, tank))
+            intervals.append((cs, ce, True, tank))
+            cursor = ce
+        if cursor < occ_end:
+            intervals.append((cursor, occ_end, False, tank))
+    return intervals
+
+
+def _combine_and(cal1_intervals, cal2_intervals):
+    """AND two (seg_start, seg_end, covered, tank) tilings of the same overall
+    span into (seg_start, seg_end, covered, note) -- covered iff both the
+    cal1 and cal2 tank in effect at that moment have coverage. note names
+    whichever tank(s) are the problem when not covered.
+    """
+    breakpoints = sorted(
+        {s for s, e, c, t in cal1_intervals} | {e for s, e, c, t in cal1_intervals}
+        | {s for s, e, c, t in cal2_intervals} | {e for s, e, c, t in cal2_intervals}
+    )
+
+    def _at(intervals, ts):
+        for s, e, c, t in intervals:
+            if s <= ts < e:
+                return c, t
+        return False, None
+
+    out = []
+    for i in range(len(breakpoints) - 1):
+        s, e = breakpoints[i], breakpoints[i + 1]
+        c1, t1 = _at(cal1_intervals, s)
+        c2, t2 = _at(cal2_intervals, s)
+        covered = c1 and c2
+        note = None
+        if not covered:
+            missing = []
+            if not c1:
+                missing.append(f"cal1 tank {t1}")
+            if not c2:
+                missing.append(f"cal2 tank {t2}")
+            note = " and ".join(missing) + " missing scale_assignments"
+        out.append((s, e, covered, note))
+    return out
+
+
+def _merge_segments(segments):
+    """Merge adjacent (seg_start, seg_end, method, note) tuples that share a
+    method into (seg_start, seg_end, method, notes) runs, collecting the
+    distinct notes seen across the run (in order, de-duplicated)."""
+    merged = []
+    for s, e, method, note in segments:
+        if merged and merged[-1][1] == s and merged[-1][2] == method:
+            prev_s, prev_e, prev_method, prev_notes = merged[-1]
+            notes = prev_notes if not note or note in prev_notes else prev_notes + [note]
+            merged[-1] = (prev_s, e, prev_method, notes)
         else:
-            ok = True
-        methods[pnum] = desired if ok else cats.MF_METHOD_REF
-        if not ok:
-            print(f"  NOTE: pnum={pnum} missing cal-tank scale_assignments; "
-                  f"leaving on ref (method {cats.MF_METHOD_REF}) instead of "
-                  f"{cats.MF_METHOD_LABELS[desired]}.")
-    return methods
+            merged.append((s, e, method, [note] if note else []))
+    return merged
+
+
+def _method_segments(cats, desired_method, pnum, start_ts, end_ts):
+    """Return merged [(seg_start, seg_end, method_num, notes), ...] tiling
+    [start_ts, end_ts): desired_method wherever the cal tank(s) it needs have
+    scale_assignments coverage for pnum, cats.MF_METHOD_REF (with a note
+    naming the uncovered tank) elsewhere. ref itself needs no cal tank, so it
+    always covers the whole window untouched.
+    """
+    if desired_method == cats.MF_METHOD_REF:
+        return [(start_ts, end_ts, cats.MF_METHOD_REF, [])]
+
+    if desired_method == cats.MF_METHOD_CAL1:
+        raw = [(s, e, c, (None if c else f"cal1 tank {t} has no scale_assignments"))
+               for s, e, c, t in _coverage_intervals(cats, cats.CAL1_PORT, pnum, start_ts, end_ts)]
+    elif desired_method == cats.MF_METHOD_CAL2:
+        raw = [(s, e, c, (None if c else f"cal2 tank {t} has no scale_assignments"))
+               for s, e, c, t in _coverage_intervals(cats, cats.CAL2_PORT, pnum, start_ts, end_ts)]
+    elif desired_method == cats.MF_METHOD_CAL12:
+        cal1 = _coverage_intervals(cats, cats.CAL1_PORT, pnum, start_ts, end_ts)
+        cal2 = _coverage_intervals(cats, cats.CAL2_PORT, pnum, start_ts, end_ts)
+        raw = _combine_and(cal1, cal2)
+    else:
+        raw = [(start_ts, end_ts, True, None)]
+
+    segments = [
+        (s, e, desired_method if covered else cats.MF_METHOD_REF, None if covered else note)
+        for s, e, covered, note in raw
+    ]
+    return _merge_segments(segments)
 
 
 def main():
@@ -185,8 +306,9 @@ def main():
     parser.add_argument('--method', type=str, default=None,
                         choices=['ref', 'cal1', 'cal2', 'cal12'],
                         help="Force this method instead of each analyte's default "
-                             "(cal12, or cal1 for CCl4). Still falls back to ref if "
-                             "the required cal tank(s) lack scale_assignments.")
+                             "(cal12, or cal1 for CCl4). Still falls back to ref, "
+                             "per date sub-range, wherever the cal tank(s) installed "
+                             "at that time lack scale_assignments coverage.")
     parser.add_argument('--dry-run', action='store_true',
                         help='Show counts only; do not update.')
     args = parser.parse_args()
@@ -201,13 +323,16 @@ def main():
     db = cats.db
     air_ports = cats.AIR_PORTS
     port_in = ', '.join(str(p) for p in air_ports)
-    date_filter = _date_filter(args.start_date, args.end)
+    start_ts = pd.Timestamp(args.start_date, tz='UTC')
+    end_ts = (pd.Timestamp(args.end, tz='UTC') + pd.Timedelta(days=1)
+              if args.end else _OPEN_END)
 
     method_override = None
     if args.method:
         name_to_num = {v: k for k, v in cats.MF_METHOD_LABELS.items()}
         method_override = name_to_num[args.method]
-    methods = resolve_methods(cats, method_override=method_override)
+
+    all_pnums = _all_pnums(cats)
 
     # pnum_channel[pnum] is the channel to restrict that pnum's UPDATE/COUNT
     # to, or None for "every channel this pnum reports on". --gas resolves
@@ -221,54 +346,63 @@ def main():
                 pnum, channel = _resolve_gas_channel(cats, gas_channel.strip())
             except ValueError as exc:
                 parser.error(str(exc))
-            if pnum not in methods:
+            if pnum not in all_pnums:
                 parser.error(f"Unknown parameter_num for {gas_channel!r} at "
                              f"{cats.inst_id} site {args.site}")
             pnum_channel[pnum] = channel
-        methods = {p: m for p, m in methods.items() if p in pnum_channel}
     else:
         if args.pnum:
             wanted = {int(p) for p in args.pnum.split(',')}
-            unknown = wanted - methods.keys()
+            unknown = wanted - all_pnums
             if unknown:
                 parser.error(f"Unknown parameter_num(s) for {cats.inst_id} site {args.site}: "
                              f"{sorted(unknown)}")
-            methods = {p: m for p, m in methods.items() if p in wanted}
-        pnum_channel = {p: args.channel for p in methods}
+        else:
+            wanted = all_pnums
+        pnum_channel = {p: args.channel for p in wanted}
 
-    for pnum, method in sorted(methods.items()):
+    for pnum in sorted(pnum_channel):
         channel = pnum_channel[pnum]
         channel_filter = f"AND mf.channel = '{channel}'" if channel else ""
-        count_sql = f"""
-            SELECT COUNT(*) AS n
-            FROM hats.ng_insitu_mole_fractions mf
-            JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
-            WHERE a.inst_num = {cats.inst_num}
-              AND a.port IN ({port_in})
-              AND mf.parameter_num = {pnum}
-              {channel_filter}
-              {date_filter}
-        """
-        n = db.doquery(count_sql)[0]['n']
         chan_label = channel or "all channels"
-        date_label = f"{args.start_date} to {args.end or 'now'}"
-        print(f"  pnum={pnum} ({chan_label}) {date_label} -> method {method} "
-              f"({cats.MF_METHOD_LABELS[method]}): {n:,} rows")
+        desired = method_override if method_override is not None else cats.default_mf_method(pnum)
 
-        if args.dry_run or n == 0:
-            continue
+        for seg_start, seg_end, method, notes in _method_segments(cats, desired, pnum, start_ts, end_ts):
+            end_label = seg_end.date() if seg_end < _OPEN_END else 'now'
+            for note in notes:
+                print(f"  NOTE: pnum={pnum} ({chan_label}) {seg_start.date()} to {end_label}: "
+                      f"{note}; using ref (method {cats.MF_METHOD_REF}) instead of "
+                      f"{cats.MF_METHOD_LABELS[desired]}.")
 
-        update_sql = f"""
-            UPDATE hats.ng_insitu_mole_fractions mf
-            JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
-            SET mf.mf_method_num = {method}
-            WHERE a.inst_num = {cats.inst_num}
-              AND a.port IN ({port_in})
-              AND mf.parameter_num = {pnum}
-              {channel_filter}
-              {date_filter}
-        """
-        db.doquery(update_sql)
+            date_filter = _segment_date_filter(seg_start, seg_end)
+            count_sql = f"""
+                SELECT COUNT(*) AS n
+                FROM hats.ng_insitu_mole_fractions mf
+                JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
+                WHERE a.inst_num = {cats.inst_num}
+                  AND a.port IN ({port_in})
+                  AND mf.parameter_num = {pnum}
+                  {channel_filter}
+                  {date_filter}
+            """
+            n = db.doquery(count_sql)[0]['n']
+            print(f"  pnum={pnum} ({chan_label}) {seg_start.date()} to {end_label} -> "
+                  f"method {method} ({cats.MF_METHOD_LABELS[method]}): {n:,} rows")
+
+            if args.dry_run or n == 0:
+                continue
+
+            update_sql = f"""
+                UPDATE hats.ng_insitu_mole_fractions mf
+                JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num
+                SET mf.mf_method_num = {method}
+                WHERE a.inst_num = {cats.inst_num}
+                  AND a.port IN ({port_in})
+                  AND mf.parameter_num = {pnum}
+                  {channel_filter}
+                  {date_filter}
+            """
+            db.doquery(update_sql)
 
     if args.dry_run:
         print("--dry-run: no changes made.")
