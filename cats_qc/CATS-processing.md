@@ -216,6 +216,78 @@ never resets, so an episode from one doesn't need to "come after" the
 other except by your own judgment about which fix should win where they'd
 overlap in time.
 
+### 2h. Viterbi method-per-period picker (alternative to 2f — detect + recommend only)
+
+A different way to answer the same question as 2f: instead of detecting
+local jumps against a trend window and greedily trying candidates per
+flagged episode, `cal_method_viterbi.py` looks at the *whole*
+record at once and picks the per-period method (cal12/cal2/cal1) that
+minimizes total first-derivative roughness of the resulting series —
+subject to a strong preference for cal12 and a switch cost that's cheap
+right at a real cal1/cal2 tank transition and expensive everywhere else.
+Validated against BRW CCl4(f)/N2O(q)/SF6(q): beats or matches the
+currently-persisted series' total roughness in all three, and
+independently lands on `cal12` through the N2O 2019-04-22 discontinuity
+that motivated 2f's own algorithm redesign — without being told. See the
+script's module docstring for the full DP formulation.
+
+```
+cd cats_qc
+python3 cal_method_viterbi.py --site <site> --gas <ANALYTE>_<channel> \
+    --start YYYYMMDD --output <site>_<analyte>_viterbi.csv --plot <site>_<analyte>_viterbi.png
+```
+
+Detect + recommend only, like 2f/2g — never writes to the database, and
+there is no `cats_apply_*`-style batch-apply script for its output yet
+(apply by hand: for each contiguous run of the same `chosen` method in the
+output CSV, `cats_set_mf_method.py --start <run_start> --method <chosen>`,
+oldest-first, same as 2f's apply pattern — see 2d). The printed summary
+reports total variation (blanket cal12 / currently persisted / DP-chosen),
+how many method changes landed on a real tank transition vs. not, and any
+period-to-period step still large even at the best available choice — the
+Viterbi analogue of 2f's `UNRESOLVED`.
+
+**Two known false leads, worth knowing before treating a divergence as a
+tank/method problem:**
+
+- A **single anomalous period** (e.g. a freshly-swapped tank's first,
+  still-settling reading) can look like strong evidence for switching away
+  from cal12 even though the tank is fine days later. `--smooth-window`
+  (default 3, a centered rolling median applied to each candidate before
+  the DP runs) exists specifically to wash this out without discarding the
+  long-run evidence needed to catch a candidate that's *actually* wrong for
+  its whole service life — see the script's docstring for the BRW
+  `CC456884` (settling, real) vs. `ALM069781` (persistently wrong, real,
+  fixed via a bad-fill-code split — see below) contrast that motivated this.
+- **A persistent divergence between candidates doesn't by itself tell you
+  which one is right** — both can be individually smooth. Before concluding
+  a tank's scale_assignments value is wrong, check whether the value is
+  independently corroborated (e.g. by `cats_cal_tank_health_qc.py`'s
+  per-tank noise/coverage signal, or by comparing to what's already
+  persisted in the database) — see the BRW N2O `ALM-052752` case (2023-06
+  to 2025-11: cal2 read ~1 ppb low the whole time, but the tank's assigned
+  value itself checked out fine against two independent M3 measurements
+  6 years apart) vs. the `ALM069781` case below (an *actually* bad
+  assignment, confirmed and fixed at the source).
+
+**Real bug this workflow found and fixed**: BRW's `ALM069781` (CATS cal1
+tank, 2004-2009) had its `reftank.fill` record lumping two distinct real
+fills under one fill code — 2003/2006 calibration points from the original
+fill, 2007/2009 points from an undocumented refill — so `caldrift.py` was
+fitting a spurious quadratic "drift" curve through what was actually a
+step change, corrupting the scale assignment for CCl4, CFC11, CFC12,
+CFC113, CHCl3, N2O, and SF6 alike (every gas measured on that tank). Fixed
+at the source: split `reftank.fill` into two fill codes at the true refill
+date, then re-ran `caldrift.py --mean` per gas per fill (`--fit_inst STDGC`
+for the CFC/CCl4 group, `--fit_inst M3` for CHCl3, `--database reftank` for
+N2O/SF6, which predate `hats.scale_assignments_view`). This is the
+general pattern for chasing a Viterbi- or 2f-flagged divergence back to its
+root cause rather than papering over it with a method choice — a bad
+scale_assignments value can look exactly like a discontinuity, and no
+method choice fixes it (2f would have reported this as `UNRESOLVED`, and
+did, historically, in an earlier `cats_cal_method_qc.py` run for this
+same tank/episode).
+
 ---
 
 ## 3. Tagging algorithms — quick reference
@@ -255,6 +327,12 @@ sequences these correctly):
   in `--reference-gas` mode (coverage+dropout only, combined across
   N2O_q/SF6_q/CFC11_f) for an analyte-independent verdict applied to every
   analyte via `cats_apply_cal_tank_health.py --gas all`. See 2g.
+- **Viterbi method-per-period picker** (`cal_method_viterbi.py`)
+  — alternative to `cal_method_qc`: picks the per-period method that
+  minimizes total roughness of the whole assembled series at once
+  (dynamic programming), instead of detecting local jumps and greedily
+  trying candidates per episode. Validated on BRW CCl4(f)/N2O(q)/SF6(q).
+  No batch-apply script yet — apply by hand per 2h. See 2h.
 
 **Manual / legacy (outside `cats_qc/`):**
 

@@ -20,12 +20,16 @@ cats_qc/*
 !cats_qc/cats_apply_cal_tank_health.py
 !cats_qc/cats_set_mf_method.py
 !cats_qc/cats_air_tagger.py
+!cats_qc/cal_method_viterbi.py
+!cats_qc/cats_apply_viterbi.py
 !cats_qc/test_cats_cal_step_qc.py
 !cats_qc/test_cats_cal_window_qc.py
 !cats_qc/test_cats_cal_method_qc.py
 !cats_qc/test_cats_apply_cal_method.py
 !cats_qc/test_cats_set_mf_method.py
 !cats_qc/test_cats_air_tagger.py
+!cats_qc/test_cal_method_viterbi.py
+!cats_qc/test_cats_apply_viterbi.py
 !cats_qc/README.md
 !cats_qc/CATS_QC_TODO.md
 !cats_qc/CATS-processing.md
