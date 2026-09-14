@@ -4003,15 +4003,15 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         """Assigned mole fraction (coef0) for a standard port in this week.
         Cal tanks (including CATS, where CAL2_PORT == STANDARD_PORT_NUM) use
         the dated fill active on week_start; a genuinely separate ref port
-        (IE3's port 5, never in coefs) falls back to ref_tank_coef0, which
-        only knows the *current* tank -- fine there since that port isn't
-        fill-tracked, but wrong for CATS's cal2/ref port. Returns None if
-        unavailable."""
+        (IE3's port 5, never in coefs) falls back to ref_tank_coef0, passing
+        week_start so it resolves the tank actually on port 5 at that date
+        (tank_serials_for_dates) rather than whatever is on it today. Returns
+        None if unavailable."""
         fills = (coefs or {}).get(port)
         if fills:
             return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'coef0')
         if port == self.instrument.STANDARD_PORT_NUM:
-            return self.instrument.ref_tank_coef0(pnum)
+            return self.instrument.ref_tank_coef0(pnum, when=week_start)
         return None
 
     def _ie3_tank_unc(self, port, pnum, coefs, week_start):
@@ -4022,7 +4022,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         if fills:
             return _ie3_fill_value_for_date(fills, pd.Timestamp(week_start), 'unc_c0')
         if port == self.instrument.STANDARD_PORT_NUM:
-            return self.instrument.ref_tank_unc_c0(pnum)
+            return self.instrument.ref_tank_unc_c0(pnum, when=week_start)
         return None
 
     @staticmethod
@@ -4209,7 +4209,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         slope = intercept = None
         if not self.instrument.uses_ng_response_fit(method):
             # method 1 (ref): mf = coef0(ref tank) * normalized_resp.
-            coef0 = self.instrument.ref_tank_coef0(pnum)
+            coef0 = self.instrument.ref_tank_coef0(pnum, when=week_start)
             if coef0 is not None:
                 slope, intercept = coef0, 0.0
                 fit_text = (f"method = {method_label}\n"

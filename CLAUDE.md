@@ -167,7 +167,8 @@ analyte list.
   `ng_insitu_mole_fractions` ⋈ `gmd.site` for unflagged air-port data;
   runs for IE3 (inst_num=236) and all CATS inst_nums (239-244)
 - Air ports: IE3 uses ports 3 & 7; CATS uses ports 4 & 8 (from `AIR_PORTS`
-  class attribute on each instrument)
+  class attribute on each instrument). Their cal/ref ports differ too — see
+  "IE3 vs. CATS port scheme" under CATS ingest pipeline below.
 - Channel is extracted from the analyte display name (e.g. `"CFC12 (b)"` →
   `channel='b'`) and applied as a SQL filter — avoids mixing channels that
   share a `parameter_num`
@@ -192,6 +193,26 @@ analyte list.
   port 8=air2; cal2 is near-ambient and used as the normalization reference
 - Mole fractions: `mf = normalized_resp × coef0` from `hats.scale_assignments`
   keyed on (cal2 serial number, parameter_num)
+
+**IE3 vs. CATS port scheme — do not conflate.** CATS's "cal2 = Ref" naming
+above is CATS-specific; IE3 (inst_num=236, standalone, not a per-site CATS
+instance) uses its own port layout with a distinct structural "Ref" port:
+- Query `hats.ng_port_info WHERE inst_num=236` for live port assignments;
+  `hats.ng_port_inlet_types` gives the port_type_num meanings (1=Air,
+  2=Ref, 3=Std, 4=Stop, 5=Off).
+- IE3's reference tank sits on `IE3_Instrument.STANDARD_PORT_NUM` (port 5,
+  port_type_num=2/Ref) — separate from its Std tanks (port_type_num=3,
+  currently ports 1 and 9). This is the tank
+  `IE3_Instrument.calc_mole_fraction()` resolves via `self.port_config` and
+  looks up in `hats.scale_assignments` (see `ref_tank_serial()` /
+  `ref_tank_coef0()` in `logosdata/logos_instruments_insitu.py`) — if that
+  tank has no `scale_assignments` row, mole fractions come back NaN for
+  every parameter on that instrument.
+- A tank's fill notes may casually label it "Cal-1"/"Cal-2" for a given
+  site/project — that's independent of its structural port_type in
+  `ng_port_info`. Always check `ng_port_info`/`ng_port_inlet_types` for the
+  actual Ref/Std role rather than trusting a fill-note label or assuming
+  the CATS cal1/cal2 convention applies to IE3.
 
 ## logos_data.py (GUI)
 

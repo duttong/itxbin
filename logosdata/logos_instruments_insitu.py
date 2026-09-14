@@ -574,9 +574,14 @@ class IE3_Instrument(HATS_DB_Functions):
     def calc_mole_fraction_scale_simple(self, df):
         """Compute mole_fraction = normalized_resp * coef0 from hats.scale_assignments.
 
-        Uses the tank on STANDARD_PORT_NUM (port 5) from port_config and looks up
-        coef0 for each parameter_num. This is a temporary calculation path until
-        a proper IE3 response calibration is in place.
+        Resolves the tank on STANDARD_PORT_NUM (port 5) *per row*, by date, via
+        tank_serials_for_dates() -- matching the CAL1_PORT/CAL2_PORT pattern in
+        _ie3_cal_tank_coefs_for_run(). port_config alone only ever names the
+        CURRENT tank on the port, which silently mis-assigns coef0 for any row
+        predating the most recent tank swap on port 5 (port 5 historically
+        never changed tanks, so this was latent until it first did). This is a
+        temporary calculation path until a proper IE3 response calibration is
+        in place.
         """
         if df.empty:
             df_out = df.copy()
@@ -585,39 +590,35 @@ class IE3_Instrument(HATS_DB_Functions):
 
         pnum = int(df['parameter_num'].iat[0])
 
-        # Resolve the standard tank serial number from port_config
-        ref_tank = None
-        if self.port_config is not None:
-            mask = (
-                (self.port_config['site_num'] == self.site_num)
-                & (self.port_config['port_num'] == self.STANDARD_PORT_NUM)
-            )
-            rows = self.port_config.loc[mask, 'label']
-            if not rows.empty:
-                ref_tank = rows.iat[0]
-
-        if ref_tank is None:
+        date_col = next(
+            (col for col in ('analysis_datetime', 'analysis_time', 'run_time')
+             if col in df.columns and df[col].notna().any()),
+            None,
+        )
+        if date_col is None:
             out = df.copy()
             out['mole_fraction'] = np.nan
             return out
 
-        # Pick the ref-tank fill in use over this batch of data. These rows are
-        # a single processing window, so a representative date is sufficient.
-        run_date = None
-        for col in ('analysis_datetime', 'analysis_time', 'run_time'):
-            if col in df.columns and df[col].notna().any():
-                run_date = pd.to_datetime(df[col]).max()
-                break
+        dates = pd.to_datetime(df[date_col], errors='coerce')
+        ref_tanks = self.tank_serials_for_dates(self.STANDARD_PORT_NUM, dates)
 
-        coefs = self.scale_assignments(ref_tank, pnum, run_date=run_date)
-        if coefs is None:
-            out = df.copy()
-            out['mole_fraction'] = np.nan
-            return out
-
-        coef0 = float(coefs['coef0'])
         out = df.copy()
-        out['mole_fraction'] = out['normalized_resp'] * coef0
+        out['mole_fraction'] = np.nan
+        for ref_tank in ref_tanks.dropna().unique():
+            rows_mask = ref_tanks == ref_tank
+            row_dates = dates.loc[rows_mask]
+            # One scale_assignments lookup per (tank, fill in effect) pair
+            # covering this batch, rather than per row.
+            for run_date in row_dates.dropna().unique():
+                coefs = self.scale_assignments(ref_tank, pnum, run_date=run_date)
+                if coefs is None:
+                    continue
+                coef0 = float(coefs['coef0'])
+                sub_mask = rows_mask & (dates == run_date)
+                out.loc[sub_mask, 'mole_fraction'] = (
+                    out.loc[sub_mask, 'normalized_resp'] * coef0
+                )
         return out
 
     def calc_mole_fraction(self, df):
@@ -883,8 +884,17 @@ class IE3_Instrument(HATS_DB_Functions):
             return True, self.CAL2_PORT
         return False, None
 
-    def ref_tank_serial(self):
-        """Serial number of the reference tank on STANDARD_PORT_NUM (port 5)."""
+    def ref_tank_serial(self, when=None):
+        """Serial number of the reference tank on STANDARD_PORT_NUM (port 5)
+        at *when* (latest/current tank by default).
+
+        Pass *when* (a date/Timestamp) to resolve the tank that was actually
+        installed at that time -- port 5 has changed tanks (e.g. CC736483
+        replacing the prior tank at SMO in 2026-09), so the current-tank
+        default is only correct for present-day lookups.
+        """
+        if when is not None:
+            return self.tank_serial_for_port(self.STANDARD_PORT_NUM, when=when)
         if self.port_config is None:
             return None
         mask = ((self.port_config['site_num'] == self.site_num)
@@ -892,24 +902,26 @@ class IE3_Instrument(HATS_DB_Functions):
         rows = self.port_config.loc[mask, 'label']
         return rows.iat[0] if not rows.empty else None
 
-    def ref_tank_coef0(self, pnum):
+    def ref_tank_coef0(self, pnum, when=None):
         """Reference-tank coef0 (assigned value) for this parameter, or None.
-        This is the slope of the method-1 (ref) scaling: mf = coef0 * resp."""
-        serial = self.ref_tank_serial()
+        This is the slope of the method-1 (ref) scaling: mf = coef0 * resp.
+        Pass *when* to resolve the tank/fill in effect at that date rather
+        than the current one -- see ref_tank_serial()."""
+        serial = self.ref_tank_serial(when=when)
         if serial is None:
             return None
-        coefs = self.scale_assignments(serial, pnum)
+        coefs = self.scale_assignments(serial, pnum, run_date=when)
         if not coefs or coefs.get('coef0') is None:
             return None
         return float(coefs['coef0'])
 
-    def ref_tank_unc_c0(self, pnum):
+    def ref_tank_unc_c0(self, pnum, when=None):
         """Reference-tank unc_c0 (uncertainty of the assigned coef0) for this
-        parameter, or None."""
-        serial = self.ref_tank_serial()
+        parameter, or None. Pass *when* as in ref_tank_coef0()."""
+        serial = self.ref_tank_serial(when=when)
         if serial is None:
             return None
-        coefs = self.scale_assignments(serial, pnum)
+        coefs = self.scale_assignments(serial, pnum, run_date=when)
         if not coefs or coefs.get('unc_c0') is None:
             return None
         return float(coefs['unc_c0'])
