@@ -45,7 +45,9 @@ import pandas as pd
 from logos_instruments import CATS_Instrument
 from ie3_cal_test import (
     filter_tanks,
+    fit_periods,
     weekly_cal_fits,
+    weekly_tank_data,
 )
 
 
@@ -270,63 +272,17 @@ class CATS_batch(CATS_Instrument):
     def _fit_periods(self, df: pd.DataFrame) -> pd.Series:
         """Return each row's fit-period start (tz-naive).
 
-        Normally a row's calendar week, but bumped to the most recent cal-port
-        (self._cal_ports()) tank swap if one falls inside that week -- so a
-        week straddling a swap splits into a pre- and post-swap period
-        instead of either blending two tanks' responses into one bad fit or
-        being dropped entirely (which used to leave every day after the swap
-        silently falling back to the prior week's now-stale fit). The swap
-        timestamps are shared across every cal port, not just the one that
-        changed, so both sides of a two-tank fit land in the same period.
+        Thin wrapper around the shared ie3_cal_test.fit_periods(), which IE3
+        needs too (its ref port is separate from its two cal ports, unlike
+        CATS where STANDARD_PORT_NUM == CAL2_PORT already) -- see that
+        function's docstring for the sub-week-split behavior.
         """
-        analysis_dt = pd.to_datetime(df['analysis_datetime'], utc=True).dt.tz_localize(None)
-        calendar_week = analysis_dt.dt.to_period('W-SUN').dt.start_time
-
-        cutpoints = []
-        history = getattr(self, 'port_config_history', None)
-        if history is not None and not history.empty:
-            for port in self._cal_ports():
-                rows = history.loc[
-                    (history['site_num'] == self.site_num) & (history['port_num'] == int(port))
-                ]
-                cutpoints.extend(
-                    pd.to_datetime(rows['start_datetime'], utc=True)
-                    .dt.tz_localize(None).tolist()
-                )
-        cutpoints = sorted(set(cutpoints))
-        if not cutpoints:
-            return calendar_week
-
-        cut_arr = np.array(cutpoints, dtype='datetime64[ns]')
-        dt_arr = analysis_dt.to_numpy()
-        wk_arr = calendar_week.to_numpy()
-        pos = np.searchsorted(cut_arr, dt_arr, side='right') - 1
-        candidate = np.where(pos >= 0, cut_arr[np.clip(pos, 0, None)], np.datetime64('NaT'))
-        period_start = np.where((pos >= 0) & (candidate > wk_arr), candidate, wk_arr)
-        return pd.Series(period_start, index=df.index)
+        return fit_periods(self, df, self._cal_ports())
 
     def _weekly_tank_data(self, tanks: pd.DataFrame) -> pd.DataFrame:
-        """Aggregate tank responses by fit period and the tank installed per row.
-
-        See _fit_periods() for how a period can be a sub-week slice when a
-        mid-week tank swap occurs.
-        """
-        tanks = tanks.copy()
-        tanks['tank_serial'] = None
-        for port in tanks['port'].dropna().unique():
-            mask = tanks['port'].eq(port)
-            tanks.loc[mask, 'tank_serial'] = self.tank_serials_for_dates(
-                int(port), tanks.loc[mask, 'analysis_datetime']
-            )
-        tanks = tanks.dropna(subset=['tank_serial']).copy()
-        if tanks.empty:
-            return tanks.assign(week_start=pd.Series(dtype='datetime64[ns]'))
-        tanks['week_start'] = self._fit_periods(tanks)
-        return (
-            tanks.groupby(['port', 'tank_serial', 'week_start'])['normalized_resp']
-            .agg(mean='mean', std='std', count='count')
-            .reset_index()
-        )
+        """Aggregate tank responses by fit period and the tank installed per
+        row. Thin wrapper around the shared ie3_cal_test.weekly_tank_data()."""
+        return weekly_tank_data(self, tanks, self._cal_ports())
 
     # ------------------------------------------------------------------
     def update_fits(

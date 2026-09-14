@@ -30,11 +30,10 @@ import pandas as pd
 
 from logos_instruments import IE3_Instrument
 from ie3_cal_test import (
-    cal_tank_coefs,
-    cal_tank_serials,
     filter_tanks,
-    weekly_aggregate,
+    fit_periods,
     weekly_cal_fits,
+    weekly_tank_data,
 )
 
 CCL4_PNUM = 37   # uses method 3 (single-point through origin, port 9)
@@ -81,13 +80,8 @@ class IE3_batch(IE3_Instrument):
         )
         return int(rows[0]['idx']) if rows else None
 
-    def _resolve_ref_serial(self):
-        pc = self.port_config
-        if pc is None:
-            return None
-        mask = (pc['site_num'] == self.site_num) & (pc['port_num'] == REF_PORT)
-        rows = pc.loc[mask, 'label']
-        return rows.iat[0] if not rows.empty else None
+    def _resolve_ref_serial(self, when=None):
+        return self.tank_serial_for_port(REF_PORT, when=when)
 
     # ------------------------------------------------------------------
     def update_fits(
@@ -126,22 +120,26 @@ class IE3_batch(IE3_Instrument):
                 print("No unflagged cal/ref port data; skipping fits.")
             return pd.DataFrame(), None, None, None
 
-        weekly = weekly_aggregate(tanks)
-
-        serials = cal_tank_serials(self)
-        if not serials:
-            print(f"  WARNING: no cal tank serials found for site={self.site}")
-            return pd.DataFrame(), None, None, None
-
-        coefs = cal_tank_coefs(self, pnum, serials)
-        if not coefs:
-            print("  WARNING: no scale_assignments found for cal tanks")
+        # cal_ports covers every port whose tank identity can define a fit
+        # period boundary: the two cal tanks AND the separate physical ref
+        # port (IE3's port 5 is not one of the cal ports, unlike CATS where
+        # STANDARD_PORT_NUM == CAL2_PORT already). weekly_tank_data() bumps
+        # a week's period start to the most recent swap on any of these
+        # ports, so a week straddling a ref/cal1/cal2 tank change splits
+        # into pre- and post-swap periods instead of blending two tanks'
+        # responses into one bad fit (see fit_periods() docstring).
+        cal_ports = tuple(sorted({self.CAL1_PORT, self.CAL2_PORT, self.STANDARD_PORT_NUM}))
+        weekly = weekly_tank_data(self, tanks, cal_ports)
+        if weekly.empty:
+            if verbose:
+                print("No dated cal/ref tank configuration found; skipping fits.")
             return pd.DataFrame(), None, None, None
 
         # Each week's calibration method is recorded per-analyte on its air rows
         # (get_week_mf_method). Fit each week according to its own method so a
         # --fits run never clobbers a method chosen in the GUI for that week.
         fit_rows = []
+        warned = set()
         for week_start, wk in weekly.groupby('week_start'):
             method = self.get_week_mf_method(pnum, channel, week_start)
             if not self.uses_ng_response_fit(method):
@@ -153,24 +151,38 @@ class IE3_batch(IE3_Instrument):
                           f"fit; skipping (handled by update_runs)")
                 continue
             force_zero, single_port = self.fit_params_for_method(method)
-            if force_zero:
-                if single_port not in coefs:
-                    if verbose:
-                        print(f"  week {week_start.date()}: method "
-                              f"{self.MF_METHOD_LABELS.get(method, method)} needs "
-                              f"port {single_port} coefs; skipping")
-                    continue
-                coefs_week = {single_port: coefs[single_port]}
-            else:
-                if len(coefs) < 2:
-                    if verbose:
-                        print(f"  week {week_start.date()}: cal12 needs both cal "
-                              f"tanks; skipping")
-                    continue
-                coefs_week = coefs
+            required_ports = (single_port,) if force_zero else (self.CAL1_PORT, self.CAL2_PORT)
+            coefs_week = {}
+            transition = False
+            for port in required_ports:
+                port_rows = wk.loc[wk['port'].eq(port)]
+                serials = port_rows['tank_serial'].dropna().unique()
+                if len(serials) != 1:
+                    transition = len(serials) > 1
+                    break
+                serial = serials[0]
+                fills = self.scale_assignment_history(serial, pnum)
+                if not fills:
+                    warning_key = (serial, pnum)
+                    if warning_key not in warned:
+                        print(f"  WARNING: no scale_assignments for tank {serial} "
+                              f"(port {port}), pnum {pnum}")
+                        warned.add(warning_key)
+                    break
+                coefs_week[port] = fills
+            if len(coefs_week) != len(required_ports):
+                if verbose:
+                    reason = "tank changed during week" if transition else "missing tank data/assignment"
+                    print(f"  week {week_start.date()}: {reason}; skipping fit")
+                continue
             wkfit = weekly_cal_fits(wk, coefs_week, force_zero=force_zero)
             if not wkfit.empty:
                 wkfit['method_num'] = method
+                ref_rows = wk.loc[wk['port'].eq(self.STANDARD_PORT_NUM), 'tank_serial']
+                wkfit['ref_serial'] = (
+                    ref_rows.iat[-1] if not ref_rows.empty
+                    else self._resolve_ref_serial(week_start)
+                )
                 fit_rows.append(wkfit)
 
         if not fit_rows:
@@ -180,16 +192,14 @@ class IE3_batch(IE3_Instrument):
 
         fits = pd.concat(fit_rows, ignore_index=True)
 
-        # sigma_ref: weekly std of port-5 normalized_resp from raw data
+        # sigma_ref: per-period std of ref-port normalized_resp from raw data.
+        # Uses the same period boundaries as the fit itself (fit_periods) so
+        # a split week's sigma_ref lines up with its split fit instead of
+        # falling back to 0.0 via a mismatched calendar-week key.
         ref_raw = tanks[tanks['port'] == REF_PORT][
             ['analysis_datetime', 'normalized_resp']
         ].copy()
-        ref_raw['week_start'] = (
-            ref_raw['analysis_datetime']
-            .dt.tz_localize(None)
-            .dt.to_period('W-SUN')
-            .dt.start_time
-        )
+        ref_raw['week_start'] = fit_periods(self, ref_raw, cal_ports)
         ref_weekly_std = (
             ref_raw.groupby('week_start')['normalized_resp']
             .std()
@@ -236,7 +246,7 @@ class IE3_batch(IE3_Instrument):
                 coef1=coef1,
                 unc_fit=unc_fit,
                 sigma_ref=sigma_ref,
-                serial_number=ref_serial,
+                serial_number=row.get('ref_serial') or ref_serial,
             )
             if verbose:
                 print(f"  upserted id={row_id} week={row['week_start']} "
