@@ -79,8 +79,10 @@ try:
     from ie3_cal_test import (
         cal_tank_coefs as _ie3_cal_tank_coefs,
         cal_tank_serials as _ie3_cal_tank_serials,
+        fit_periods as _ie3_fit_periods,
         weekly_aggregate as _ie3_weekly_aggregate,
         weekly_cal_fits as _ie3_weekly_cal_fits,
+        weekly_tank_data as _ie3_weekly_tank_data,
         _fill_value_for_date as _ie3_fill_value_for_date,
     )
     _IE3_CAL_AVAILABLE = True
@@ -3953,36 +3955,55 @@ class MainWindow(QMainWindow, TagCRUDMixin):
     def _ie3_week_fit(self, unflagged, pnum, method, weekly=None, coefs=None):
         """Compute the single-week cal fit for the given method from the
         unflagged cal/ref data. ``weekly`` and ``coefs`` may be passed in to
-        avoid recomputing them. Returns (fit_row or None, coefs dict)."""
+        avoid recomputing them (they must already be scoped to the same
+        sub-period picked below -- see callers).
+
+        A calendar week straddling a ref/cal1/cal2 tank swap is split into
+        sub-periods by weekly_tank_data()/fit_periods() (same machinery as
+        ie3_batch.py's update_fits()); this displays/saves the LAST such
+        sub-period within the loaded window, matching "this week's fit" for
+        a GUI that shows one week at a time -- for a non-boundary week
+        there's only one period, so behavior is unchanged. Returns
+        (fit_row or None, coefs dict for that period's tanks).
+        """
         if not _IE3_CAL_AVAILABLE or unflagged.empty:
             return None, (coefs or {})
         force_zero, single_port = self.instrument.fit_params_for_method(method)
         if weekly is None:
-            weekly = _ie3_weekly_aggregate(unflagged)
+            cal_ports = tuple(sorted({
+                self.instrument.CAL1_PORT, self.instrument.CAL2_PORT,
+                self.instrument.STANDARD_PORT_NUM,
+            }))
+            weekly = _ie3_weekly_tank_data(self.instrument, unflagged, cal_ports)
+        if weekly.empty:
+            return None, (coefs or {})
+        period_start = weekly['week_start'].max()
+        wk = weekly.loc[weekly['week_start'] == period_start]
         if coefs is None:
-            coefs = self._ie3_cal_tank_coefs_for_run(unflagged, pnum)
+            coefs = self._ie3_cal_tank_coefs_for_run(wk, pnum)
         if not coefs:
             return None, coefs
         if force_zero:
             if single_port not in coefs:
                 return None, coefs
             fits = _ie3_weekly_cal_fits(
-                weekly, {single_port: coefs[single_port]}, force_zero=True
+                wk, {single_port: coefs[single_port]}, force_zero=True
             )
         else:
             if len(coefs) < 2:
                 return None, coefs
-            fits = _ie3_weekly_cal_fits(weekly, coefs)
+            fits = _ie3_weekly_cal_fits(wk, coefs)
         if fits.empty:
             return None, coefs
         return fits.iloc[-1], coefs
 
     def _ie3_cal_tank_coefs_for_run(self, data, pnum):
-        """Resolve cal-tank assignment histories from the dated run itself.
-
-        CATS port labels change over decades, so the current ``port_config``
-        cannot identify a historical week's tanks.  A week spanning a tank
-        change is deliberately left without a fit.
+        """Resolve cal-tank assignment histories for the tank(s) present in
+        *data* (already scoped to one fit sub-period by the caller -- see
+        _ie3_week_fit). Requires exactly one serial per cal port within that
+        scope; a genuinely mixed-tank slice (should not happen once data is
+        period-scoped) is left without a fit for that port rather than
+        blending two tanks' responses.
         """
         coefs = {}
         for port in (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT):
@@ -4121,11 +4142,22 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         unflagged = self.run[self.run['rejected'].fillna(0).astype(int) == 0]
 
         # Resolve tank coef0 timelines once (reused for points and the fit).
+        # Scoped to the LAST fit sub-period within the loaded week (see
+        # _ie3_week_fit) so a week straddling a ref/cal1/cal2 tank swap
+        # shows/fits only the tank combination active as of that period,
+        # not a blend of both tanks' responses.
         coefs = {}
         weekly = None
         if _IE3_CAL_AVAILABLE and not unflagged.empty:
-            weekly = _ie3_weekly_aggregate(unflagged)
-            coefs = self._ie3_cal_tank_coefs_for_run(unflagged, pnum)
+            cal_ports = tuple(sorted({
+                self.instrument.CAL1_PORT, self.instrument.CAL2_PORT,
+                self.instrument.STANDARD_PORT_NUM,
+            }))
+            periods = _ie3_weekly_tank_data(self.instrument, unflagged, cal_ports)
+            if not periods.empty:
+                period_start = periods['week_start'].max()
+                weekly = periods.loc[periods['week_start'] == period_start]
+                coefs = self._ie3_cal_tank_coefs_for_run(weekly, pnum)
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
         # CATS defines CAL2_PORT == STANDARD_PORT_NUM (cal2 *is* the ref
@@ -4359,7 +4391,23 @@ class MainWindow(QMainWindow, TagCRUDMixin):
                 print(f"Could not compute {method_label} fit for this week; "
                       "check cal tank coverage.")
             return
-        ref_raw = unflagged[unflagged['port'] == self.instrument.STANDARD_PORT_NUM]
+
+        # row['week_start'] is the actual fit sub-period start chosen by
+        # _ie3_week_fit -- for a week straddling a ref/cal1/cal2 tank swap
+        # this is LATER than week_start (the calendar Monday), e.g.
+        # 2026-09-09 01:40:34 rather than 2026-09-07. Using week_start here
+        # instead would overwrite the pre-swap period's ng_response row
+        # (run_date=week_start) with the post-swap fit, destroying it rather
+        # than adding a second row -- so every date-scoped piece below
+        # (sigma_ref, ref_serial, the write itself) uses row['week_start'].
+        fit_period_start = row['week_start']
+        # fit_period_start is tz-naive (fit_periods() localizes it away);
+        # analysis_datetime is tz-aware (UTC) -- localize for the comparison.
+        period_start_utc = pd.Timestamp(fit_period_start).tz_localize('UTC')
+        ref_raw = unflagged[
+            (unflagged['port'] == self.instrument.STANDARD_PORT_NUM)
+            & (unflagged['analysis_datetime'] >= period_start_utc)
+        ]
         sigma_ref = float(ref_raw['normalized_resp'].std()) if len(ref_raw) > 1 else 0.0
 
         # 4. Upsert the fit
@@ -4372,19 +4420,14 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             return
         scale_num = int(scale_rows[0]['idx'])
 
-        pc = self.instrument.port_config
-        ref_serial = ''
-        if pc is not None:
-            mask = ((pc['site_num'] == self.instrument.site_num)
-                    & (pc['port_num'] == self.instrument.STANDARD_PORT_NUM))
-            rows = pc.loc[mask, 'label']
-            if not rows.empty:
-                ref_serial = rows.iat[0]
+        ref_serial = self.instrument.tank_serial_for_port(
+            self.instrument.STANDARD_PORT_NUM, when=fit_period_start
+        ) or ''
 
         row_id = self.instrument.upsert_ng_response(
             inst_num=self.instrument.inst_num,
             site=self.instrument.site,
-            run_date=week_start,
+            run_date=fit_period_start,
             channel=self.current_channel or '',
             scale_num=scale_num,
             coef0=float(row['intercept']),
@@ -4394,7 +4437,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             serial_number=ref_serial,
         )
         print(f"Saved {instrument_name} cal fit ({method_label}): ng_response id={row_id} "
-              f"week={week_start} slope={row['slope']:.4g} "
+              f"period={fit_period_start} slope={row['slope']:.4g} "
               f"intercept={row['intercept']:.4g}")
         week_end = (pd.Timestamp(week_start) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
         ch_arg = f" -c {self.current_channel}" if self.current_channel else ""
