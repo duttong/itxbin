@@ -261,8 +261,19 @@ class IE3_batch(IE3_Instrument):
         start_date=None,
         end_date=None,
         verbose: bool = False,
+        all_ports: bool = True,
     ) -> pd.DataFrame:
-        """Apply stored ng_response fits to IE3 air-port rows.
+        """Apply stored ng_response fits to IE3 rows.
+
+        By default (all_ports=True) computes mole_fraction for every loaded
+        port -- air AND the cal1/ref/cal2 ports -- so the diagnostic cal/ref
+        values (e.g. the ones shown in logos_data's Calibration view /
+        _ie3_cal_plot) are persisted once here instead of only ever being
+        computed on demand in the GUI (previously the GUI's live fill was
+        the only path writing these at all, and only when a user happened
+        to load+save that exact window, leaving DB coverage partial). Pass
+        all_ports=False to restrict to AIR_PORTS only, matching the old
+        behavior.
 
         Returns df with mole_fraction, unc, and ng_response_id populated.
         """
@@ -282,18 +293,21 @@ class IE3_batch(IE3_Instrument):
         if df.empty:
             return pd.DataFrame()
 
-        df = df.loc[df['port'].isin(self.AIR_PORTS)].copy()
-        if df.empty:
-            if verbose:
-                print("No air-port rows in loaded data.")
-            return pd.DataFrame()
+        if not all_ports:
+            df = df.loc[df['port'].isin(self.AIR_PORTS)].copy()
+            if df.empty:
+                if verbose:
+                    print("No air-port rows in loaded data.")
+                return pd.DataFrame()
 
         df = self.calc_mole_fraction(df)
         df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
 
         if verbose:
             n_ok = df['mole_fraction'].notna().sum()
+            n_air = df['port'].isin(self.AIR_PORTS).sum()
             print(f"  Mole fractions: {n_ok}/{len(df)} rows "
+                  f"({n_air} air-port, {len(df) - n_air} cal/ref-port) "
                   f"(elapsed {time.time() - self.t0:.1f}s)")
 
         return df
@@ -394,7 +408,7 @@ class IE3_batch(IE3_Instrument):
             verbose=args.verbose,
         )
         if df.empty:
-            print(f"  No air-port rows for pnum={pnum}.")
+            print(f"  No rows for pnum={pnum}.")
             return
 
         n_ok = df['mole_fraction'].notna().sum()
