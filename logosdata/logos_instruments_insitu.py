@@ -571,6 +571,30 @@ class IE3_Instrument(HATS_DB_Functions):
             """
             self.db.doquery(sql_del, [tag_num, *analysis_nums])
 
+    @staticmethod
+    def _scale_simple_fill_coef0(fills, date):
+        """Return coef0 from *fills* (scale_assignment_history() output) for
+        the fill active on *date*, or None if no fill covers it.
+
+        A fill is active only while start_date <= date <= end_date (no
+        end_date means still open/current) -- if the most-recent-by-
+        start_date applicable fill has already expired by *date*, that's a
+        real gap, not a reason to fall back to an older, less-relevant fill.
+        Same semantics as ie3_cal_test._fill_value_for_date(), inlined here
+        to avoid importing that module from logos_instruments_insitu (which
+        it itself imports IE3_Instrument from).
+        """
+        d = date.date() if hasattr(date, 'date') else date
+        for fill in reversed(fills):
+            if fill['start_date'] <= d:
+                end_date = fill.get('end_date')
+                if end_date is not None:
+                    end_d = end_date.date() if hasattr(end_date, 'date') else pd.Timestamp(end_date).date()
+                    if d > end_d:
+                        return None
+                return fill.get('coef0')
+        return None
+
     def calc_mole_fraction_scale_simple(self, df):
         """Compute mole_fraction = normalized_resp * coef0 from hats.scale_assignments.
 
@@ -579,9 +603,18 @@ class IE3_Instrument(HATS_DB_Functions):
         _ie3_cal_tank_coefs_for_run(). port_config alone only ever names the
         CURRENT tank on the port, which silently mis-assigns coef0 for any row
         predating the most recent tank swap on port 5 (port 5 historically
-        never changed tanks, so this was latent until it first did). This is a
-        temporary calculation path until a proper IE3 response calibration is
-        in place.
+        never changed tanks, so this was latent until it first did).
+
+        Coefficients come from scale_assignment_history() (cached per
+        (serial, pnum) for this instance's lifetime) plus an in-memory
+        fill lookup per row, rather than one scale_assignments() DB query
+        per row/timestamp -- the latter made a live GUI mole-fraction fill
+        of ~800 cal/ref-port rows take upwards of 40s (one query per unique
+        analysis timestamp, since ref-port data arrives at dense, almost
+        never-repeating timestamps).
+
+        This is a temporary calculation path until a proper IE3 response
+        calibration is in place.
         """
         if df.empty:
             df_out = df.copy()
@@ -607,18 +640,18 @@ class IE3_Instrument(HATS_DB_Functions):
         out['mole_fraction'] = np.nan
         for ref_tank in ref_tanks.dropna().unique():
             rows_mask = ref_tanks == ref_tank
+            fills = self.scale_assignment_history(ref_tank, pnum)
+            if not fills:
+                continue
             row_dates = dates.loc[rows_mask]
-            # One scale_assignments lookup per (tank, fill in effect) pair
-            # covering this batch, rather than per row.
-            for run_date in row_dates.dropna().unique():
-                coefs = self.scale_assignments(ref_tank, pnum, run_date=run_date)
-                if coefs is None:
-                    continue
-                coef0 = float(coefs['coef0'])
-                sub_mask = rows_mask & (dates == run_date)
-                out.loc[sub_mask, 'mole_fraction'] = (
-                    out.loc[sub_mask, 'normalized_resp'] * coef0
-                )
+            coef0_per_row = row_dates.map(
+                lambda d: self._scale_simple_fill_coef0(fills, d) if pd.notna(d) else None
+            )
+            valid = coef0_per_row.notna()
+            idx = row_dates.index[valid]
+            out.loc[idx, 'mole_fraction'] = (
+                out.loc[idx, 'normalized_resp'] * coef0_per_row.loc[idx].astype(float)
+            )
         return out
 
     def calc_mole_fraction(self, df):
