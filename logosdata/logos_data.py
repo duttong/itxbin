@@ -3999,20 +3999,20 @@ class MainWindow(QMainWindow, TagCRUDMixin):
 
     def _ie3_cal_tank_coefs_for_run(self, data, pnum):
         """Resolve cal-tank assignment histories for the tank(s) present in
-        *data* (already scoped to one fit sub-period by the caller -- see
-        _ie3_week_fit). Requires exactly one serial per cal port within that
-        scope; a genuinely mixed-tank slice (should not happen once data is
-        period-scoped) is left without a fit for that port rather than
-        blending two tanks' responses.
+        *data* -- a weekly_tank_data()/fit_periods() period table, already
+        scoped to one fit sub-period by the caller (see _ie3_week_fit) and
+        carrying a 'tank_serial' column per (port, period) row rather than
+        raw per-injection 'analysis_datetime'. Requires exactly one serial
+        per cal port within that scope; a genuinely mixed-tank slice (should
+        not happen once data is period-scoped) is left without a fit for
+        that port rather than blending two tanks' responses.
         """
         coefs = {}
         for port in (self.instrument.CAL1_PORT, self.instrument.CAL2_PORT):
             rows = data.loc[data['port'].eq(port)]
             if rows.empty:
                 continue
-            serials = self.instrument.tank_serials_for_dates(
-                port, rows['analysis_datetime']
-            ).dropna().unique()
+            serials = rows['tank_serial'].dropna().unique()
             if len(serials) != 1:
                 continue
             history = self.instrument.scale_assignment_history(serials[0], pnum)
