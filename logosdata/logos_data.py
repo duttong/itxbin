@@ -4158,6 +4158,12 @@ class MainWindow(QMainWindow, TagCRUDMixin):
                 period_start = periods['week_start'].max()
                 weekly = periods.loc[periods['week_start'] == period_start]
                 coefs = self._ie3_cal_tank_coefs_for_run(weekly, pnum)
+                # Scope the raw data used for diagnostic points/means and the
+                # ref-predicted point to this same period -- otherwise those
+                # still average/plot the whole calendar week, blending two
+                # tanks' responses even though the fit line above is correct.
+                period_start_utc = pd.Timestamp(period_start).tz_localize('UTC')
+                unflagged = unflagged[unflagged['analysis_datetime'] >= period_start_utc]
 
         # Always plot the cal2 / ref / cal1 tank means ± std (diagnostic).
         # CATS defines CAL2_PORT == STANDARD_PORT_NUM (cal2 *is* the ref
