@@ -675,7 +675,8 @@ class TimeseriesFigure(TagCRUDMixin):
 
     def _draw_method_change_lines(self, ax):
         """Vertical line at each mf_method_num transition for the single
-        active site. Only drawn with exactly one site active -- each site
+        active site, plus one at the record's first data point marking the
+        initial method. Only drawn with exactly one site active -- each site
         has its own independent method history, so showing several at once
         would clutter the plot rather than inform it."""
         sites = self.parent_widget.get_active_sites()
@@ -686,7 +687,7 @@ class TimeseriesFigure(TagCRUDMixin):
         if df.empty:
             return
         changed = df['mf_method_num'] != df['mf_method_num'].shift()
-        changed.iloc[0] = False  # first row is the starting method, not a transition
+        changed.iloc[0] = True  # also mark the first point, showing the initial method
         for t in df.loc[changed, 'analysis_time']:
             line = ax.axvline(t, color='dimgray', linestyle='--', linewidth=1.2,
                                alpha=0.6, zorder=1, picker=5)
