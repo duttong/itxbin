@@ -747,7 +747,11 @@ class TimeseriesFigure(TagCRUDMixin):
         pnum = self.parent_widget._resolve_pnum(self.analyte)
         if pnum is None:
             return
-        rows = offsets.loc[offsets['parameter_num'] == pnum]
+        # instrument.analytes values come back from analyte_list as whatever
+        # type the DB driver hands back (str for CATS) -- offsets['parameter_num']
+        # is int64 (from _load_mf_offsets()), so an unconverted pnum compares
+        # false against every row and silently draws nothing.
+        rows = offsets.loc[offsets['parameter_num'] == int(pnum)]
         if self.channel:
             rows = rows.loc[rows['channel'].isna() | (rows['channel'] == self.channel)]
         if rows.empty:
