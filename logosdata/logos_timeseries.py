@@ -441,6 +441,7 @@ class TimeseriesFigure(TagCRUDMixin):
             data_xlim = self._ax.get_xlim()
             self._draw_method_change_lines(self._ax)
             self._draw_cal_tank_change_lines(self._ax)
+            self._draw_mf_offset_lines(self._ax)
             self._draw_change_legend(self._ax)
             self._ax.set_xlim(data_xlim)
 
@@ -727,9 +728,43 @@ class TimeseriesFigure(TagCRUDMixin):
                                    alpha=0.6, zorder=1, picker=5)
                 line._change_time = t_naive
 
+    def _draw_mf_offset_lines(self, ax):
+        """Vertical red line at each hats.ng_insitu_mf_offsets boundary
+        (start, and end too if not open-ended) for the analyte/channel
+        currently displayed at the single active site. Same single-site
+        gating as the method/cal-tank change lines, plus a pnum/channel
+        filter those don't need -- offsets are analyte-specific (a mole
+        sieve swap can affect one channel's baseline without affecting a
+        different channel sharing the same parameter_num), unlike a
+        physical cal-tank swap, which is instrument-wide."""
+        sites = self.parent_widget.get_active_sites()
+        if len(sites) != 1:
+            return
+        instrument = self.parent_widget.instrument
+        offsets = getattr(instrument, 'mf_offsets', None)
+        if offsets is None or offsets.empty:
+            return
+        pnum = self.parent_widget._resolve_pnum(self.analyte)
+        if pnum is None:
+            return
+        rows = offsets.loc[offsets['parameter_num'] == pnum]
+        if self.channel:
+            rows = rows.loc[rows['channel'].isna() | (rows['channel'] == self.channel)]
+        if rows.empty:
+            return
+        for _, row in rows.iterrows():
+            for t in (row['start_datetime'], row['end_datetime']):
+                if pd.isna(t):
+                    continue
+                t_naive = pd.Timestamp(t).tz_localize(None)
+                line = ax.axvline(t_naive, color='red', linestyle='--', linewidth=1.3,
+                                   alpha=0.7, zorder=1, picker=5)
+                line._offset_row = row
+
     def _draw_change_legend(self, ax):
-        """Small in-axes legend explaining the method/cal-tank change lines.
-        Only meaningful when those lines are actually drawn (single site)."""
+        """Small in-axes legend explaining the method/cal-tank/offset change
+        lines. Only meaningful when those lines are actually drawn (single
+        site)."""
         if len(self.parent_widget.get_active_sites()) != 1:
             return
         handles = [
@@ -739,6 +774,8 @@ class TimeseriesFigure(TagCRUDMixin):
                           label='Cal1 tank change'),
             mlines.Line2D([], [], color='darkorange', linestyle=':', linewidth=1.3,
                           label='Cal2 tank change'),
+            mlines.Line2D([], [], color='red', linestyle='--', linewidth=1.3,
+                          label='Offset applied'),
         ]
         legend = ax.legend(handles=handles, loc='upper left', fontsize=7,
                             framealpha=0.85, borderaxespad=0.5)
@@ -788,6 +825,33 @@ class TimeseriesFigure(TagCRUDMixin):
                     method_labels = getattr(instrument, 'MF_METHOD_LABELS', {})
                     lines.append(f"<b>Method:</b> {method_labels.get(int(m), int(m))}")
 
+        QToolTip.showText(QCursor.pos(), "<br>".join(lines))
+
+    def _show_offset_tooltip(self, artist):
+        """Tooltip for a clicked manual offset boundary line -- the period,
+        the applied correction, and (most importantly) the documented
+        reason it exists. See hats.ng_insitu_mf_offsets / cats_set_mf_offset.py."""
+        row = artist._offset_row
+        start = pd.Timestamp(row['start_datetime'])
+        end = row['end_datetime']
+        end_str = pd.Timestamp(end).strftime('%Y-%m-%d %H:%M') if pd.notna(end) else 'open-ended'
+        if row['offset_type'] == 'multiplicative':
+            offset_str = f"×{row['offset_value']:g}"
+        else:
+            offset_str = f"{row['offset_value']:+g}"
+        chan_label = row['channel'] or 'all channels'
+        lines = [
+            "<b>Manual offset</b>",
+            f"<b>Period:</b> {start.strftime('%Y-%m-%d %H:%M')} &rarr; {end_str}",
+            f"<b>Channel:</b> {chan_label}",
+            f"<b>Offset:</b> {offset_str} ({row['offset_type']})",
+            f"<b>Reason:</b> {row['reason']}",
+        ]
+        operator = row.get('operator')
+        entry_date = row.get('entry_date')
+        if operator or pd.notna(entry_date):
+            entry_str = pd.Timestamp(entry_date).strftime('%Y-%m-%d') if pd.notna(entry_date) else ''
+            lines.append(f"<b>Entered by:</b> {operator or '?'} {entry_str}".rstrip())
         QToolTip.showText(QCursor.pos(), "<br>".join(lines))
 
     def _draw_10day_mean_artists(self, ax, site_colors):
@@ -1701,6 +1765,11 @@ class TimeseriesFigure(TagCRUDMixin):
                 # Enforce site x dataset visibility
                 self._apply_visibility()
                 return
+
+        # ─── Manual offset boundary line tooltip (left click only) ───
+        if hasattr(artist, "_offset_row") and event.mouseevent.button == 1:
+            self._show_offset_tooltip(artist)
+            return
 
         # ─── Method/cal-tank change line tooltip (left click only) ───
         if hasattr(artist, "_change_time") and event.mouseevent.button == 1:

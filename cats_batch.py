@@ -267,7 +267,13 @@ class CATS_batch(CATS_Instrument):
         # The direct_mask (ref) rows above already went through
         # calc_mole_fraction_scale_simple, which applies this same guard
         # internally; this covers the cal-fit (merge_asof) rows set here.
-        return self._null_mole_fraction_for_zero_height(out)
+        # This whole method is a bypass of the base class's calc_mole_fraction
+        # dispatch (see that method's docstring for why -- the --fits path
+        # needs an in-memory fit table, not one read back from ng_response),
+        # so hats.ng_insitu_mf_offsets corrections must be (re)applied here
+        # too, same as the normal dispatch path does -- see
+        # IE3_Instrument._apply_mf_offsets()'s docstring.
+        return self._apply_mf_offsets(self._null_mole_fraction_for_zero_height(out))
 
     def _fit_periods(self, df: pd.DataFrame) -> pd.Series:
         """Return each row's fit-period start (tz-naive).

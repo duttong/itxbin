@@ -105,6 +105,8 @@ class IE3_Instrument(HATS_DB_Functions):
         self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
         # scale_assignment_history() cache -- see that method's docstring.
         self._scale_assignment_cache: dict = {}
+        # Manual mole-fraction corrections -- see _load_mf_offsets()'s docstring.
+        self.mf_offsets = self._load_mf_offsets()
 
     def get_valid_sites(self):
         """ Returns a dictionary of valid IE3 site codes and site numbers. """
@@ -133,6 +135,86 @@ class IE3_Instrument(HATS_DB_Functions):
         ].copy()
         config = df.drop_duplicates(subset=['site_num', 'port_num'], keep='last')
         return config[['site_num', 'port_num', 'label']]
+
+    def _load_mf_offsets(self):
+        """Load this instrument's manual mole-fraction corrections from
+        hats.ng_insitu_mf_offsets, cached for the lifetime of this instance
+        (same staleness tolerance already used for port_config_history and
+        scale_assignment_history -- these change rarely and never mid-run).
+
+        Each row is a documented, human-entered correction for a period
+        where the instrument's response was known to be off by a fixed
+        amount for reasons no cal-tank/method choice can fix (the tank(s)
+        used were themselves fine; only the response during that window
+        was wrong) -- e.g. a mole-sieve trap swap or a detector repair that
+        shifted sensitivity without a compensating recalibration. See
+        cats_set_mf_offset.py to add/list/remove rows.
+
+        channel=NULL applies to every channel of that parameter_num.
+        end_datetime=NULL means still in effect (open-ended).
+        """
+        rows = self.db.doquery(f"""
+            SELECT num, parameter_num, channel, start_datetime, end_datetime,
+                   offset_value, offset_type, reason, operator, entry_date
+            FROM hats.ng_insitu_mf_offsets
+            WHERE inst_num = {self.inst_num}
+            ORDER BY parameter_num, start_datetime
+        """) or []
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return df
+        df['start_datetime'] = pd.to_datetime(df['start_datetime'], utc=True)
+        df['end_datetime'] = pd.to_datetime(df['end_datetime'], utc=True)
+        return df
+
+    def _apply_mf_offsets(self, df):
+        """Apply any hats.ng_insitu_mf_offsets correction covering each row's
+        analysis time, added on top of whichever method calc_mole_fraction
+        routed the row through (scale_simple/cal_fit/ref alike) -- the
+        correction is independent of computation method by design, since
+        it's compensating for the instrument's own response being off, not
+        for a wrong tank/fit choice.
+
+        Called from calc_mole_fraction() below for the normal dispatch path.
+        CATS_batch.calc_mole_fraction_from_fits() (cats_batch.py) bypasses
+        that dispatch entirely for its own --fits in-memory-fit-table path,
+        so it calls this directly too -- any future alternate mole-fraction
+        computation path needs the same call, or offsets silently stop
+        applying for it."""
+        if df.empty or 'mole_fraction' not in df.columns:
+            return df
+        offsets = getattr(self, 'mf_offsets', None)
+        if offsets is None or offsets.empty:
+            return df
+
+        date_col = next(
+            (col for col in ('analysis_datetime', 'analysis_time', 'run_time')
+             if col in df.columns and df[col].notna().any()),
+            None,
+        )
+        if date_col is None:
+            return df
+
+        df = df.copy()
+        dates = pd.to_datetime(df[date_col], errors='coerce', utc=True)
+        pnums = pd.to_numeric(df['parameter_num'], errors='coerce') if 'parameter_num' in df.columns else None
+        channels = df['channel'] if 'channel' in df.columns else None
+
+        for _, row in offsets.iterrows():
+            mask = dates.notna() & (dates >= row['start_datetime'])
+            if pd.notna(row['end_datetime']):
+                mask &= dates < row['end_datetime']
+            if pnums is not None:
+                mask &= pnums.eq(row['parameter_num'])
+            if row['channel'] and channels is not None:
+                mask &= channels.eq(row['channel'])
+            if not mask.any():
+                continue
+            if row['offset_type'] == 'multiplicative':
+                df.loc[mask, 'mole_fraction'] = df.loc[mask, 'mole_fraction'] * row['offset_value']
+            else:
+                df.loc[mask, 'mole_fraction'] = df.loc[mask, 'mole_fraction'] + row['offset_value']
+        return df
 
     def tank_serials_for_dates(self, port_num, dates):
         """Return the tank/label installed on *port_num* at each timestamp."""
@@ -676,7 +758,7 @@ class IE3_Instrument(HATS_DB_Functions):
 
         method_nums = df['mf_method_num'].unique()
         if len(method_nums) == 1 and method_nums[0] == 1:
-            return self.calc_mole_fraction_scale_simple(df)
+            return self._apply_mf_offsets(self.calc_mole_fraction_scale_simple(df))
 
         parts = []
         for method, grp in df.groupby('mf_method_num'):
@@ -684,7 +766,7 @@ class IE3_Instrument(HATS_DB_Functions):
                 parts.append(self.calc_mole_fraction_scale_simple(grp))
             else:
                 parts.append(self.calc_mole_fraction_cal_fit(grp))
-        return pd.concat(parts).sort_values('analysis_datetime')
+        return self._apply_mf_offsets(pd.concat(parts).sort_values('analysis_datetime'))
 
     def calc_mole_fraction_cal_fit(self, df):
         """Compute mole_fraction from a stored ng_response weekly cal fit.
@@ -1208,6 +1290,8 @@ class CATS_Instrument(IE3_Instrument):
         self.norm = Normalizing(self.inst_id, self.STANDARD_PORT_NUM, 'port', self.response_type)
         # scale_assignment_history() cache -- see that method's docstring.
         self._scale_assignment_cache: dict = {}
+        # Manual mole-fraction corrections -- see _load_mf_offsets()'s docstring.
+        self.mf_offsets = self._load_mf_offsets()
 
     def _site_num_for(self, site: str) -> int:
         rows = self.db.doquery(
