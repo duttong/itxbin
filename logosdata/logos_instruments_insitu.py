@@ -1314,8 +1314,9 @@ class CATS_Instrument(IE3_Instrument):
 
     def _null_mole_fraction_for_zero_height(self, df):
         """CATS-only guard: force mole_fraction/unc to NaN for any row with
-        height==0, OR whose computed mole_fraction came out non-finite
-        (inf/-inf), regardless of what the raw calculation produced.
+        height==0, an extreme normalized_resp outlier, OR whose computed
+        mole_fraction came out non-finite (inf/-inf), regardless of what the
+        raw calculation produced.
 
         height==0 means no peak was integrated at all -- not a real
         measurement -- so that row's own mole_fraction is nulled directly.
@@ -1332,6 +1333,27 @@ class CATS_Instrument(IE3_Instrument):
         a downstream median-based statistic with -inf rather than just
         being absent data.
 
+        merge_smoothed_data()'s max_ref_gap_multiplier only rejects a
+        reference gap by TIME (nearest valid reference too far away in
+        clock time); it doesn't catch a reference that's *recovering* from
+        an outage and produces real, nonzero, but still-abnormally-low
+        readings right at the edge of the gap -- close enough in time to
+        pass the gap check, but far too small in magnitude to be a valid
+        baseline. Confirmed for NWR SF6 (q), 2005-05: an 18-day cal2
+        (port 6) height==0 dropout resolved into several hours of
+        still-ramping-up low readings (34-57 vs a normal ~150-190 there),
+        which the gap check accepted as "close enough" and produced finite
+        but absurd mole fractions up to ~6900 ppt (vs a ~5.5 ppt baseline).
+        normalized_resp is dimensionless and self-calibrating around ~1
+        (air and reference are always within a similar concentration range
+        by network design), so a robust (median/MAD) outlier check on it
+        catches this magnitude-based corruption without needing a
+        per-species ppt threshold -- real single-injection noise/pollution
+        events sit within roughly +-25% of the median in this data; the
+        confirmed corrupted rows were 30-1900x away. Skipped below min_n
+        (needs enough points for a stable MAD; a handful of legitimately
+        noisy rows shouldn't get flagged as their own outliers).
+
         Called from every CATS mole-fraction computation path (this class's
         calc_mole_fraction/calc_mole_fraction_scale_simple and
         CATS_batch.calc_mole_fraction_from_fits) so the guard applies
@@ -1345,6 +1367,18 @@ class CATS_Instrument(IE3_Instrument):
         invalid = ~np.isfinite(mf) & mf.notna()  # inf/-inf only; leave real NaN alone
         if 'height' in df.columns:
             invalid = invalid | pd.to_numeric(df['height'], errors='coerce').eq(0)
+        if 'normalized_resp' in df.columns:
+            min_n = 20
+            outlier_k = 20  # multiples of robust sigma; see docstring
+            nr = pd.to_numeric(df['normalized_resp'], errors='coerce')
+            valid_nr = nr[nr.notna() & (nr > 0)]
+            if len(valid_nr) >= min_n:
+                med = valid_nr.median()
+                mad = (valid_nr - med).abs().median()
+                if mad > 0:
+                    robust_sigma = 1.4826 * mad
+                    outlier = (nr - med).abs() > (outlier_k * robust_sigma)
+                    invalid = invalid | outlier.fillna(False)
         if invalid.any():
             df = df.copy()
             df.loc[invalid, 'mole_fraction'] = np.nan
