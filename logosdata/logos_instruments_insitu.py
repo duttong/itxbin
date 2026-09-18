@@ -1163,28 +1163,33 @@ class IE3_Instrument(HATS_DB_Functions):
         return df.sort_values('analysis_datetime')
 
     def add_port_labels(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add simple port labels and colors based on port number."""
-        
-        if self.port_config is not None:
-            # Merge into main dataframe
-            df = df.merge(
-                self.port_config,
-                left_on=['site_num', 'port'],
-                right_on=['site_num', 'port_num'],
-                how='left'
-            )
-            
-            # Format port_label
-            df['port_label'] = df.apply(
-                lambda row: f"{row['label']} ({int(row['port'])})" if pd.notna(row['label']) else str(int(row['port'])),
-                axis=1
-            )
-            df = df.drop(columns=['port_num', 'label'])
-        else:
-            df['port_label'] = df['port'].astype(int).astype(str)
+        """Add simple port labels and colors based on port number.
 
+        Resolves each row's tank label as of its own analysis_datetime via
+        tank_serials_for_dates() (the same date-aware lookup calc_mole_fraction
+        uses), not a single "most recent" snapshot. self.port_config collapses
+        ng_port_info to the latest row per port -- fine for "what's on this
+        port right now", but wrong as a label for historical rows: once a
+        port has a retirement 'Stop' row (see the CATS-SUM/NWR close-out
+        pattern), it becomes the "latest" row for every date, so old merge-
+        based logic would show every historical point as "Stop" too, even
+        though the mole fractions (computed via the date-aware path) stay
+        correct throughout.
+        """
         df['port_idx'] = df['port'].astype(int)
         df['port_marker'] = 'o'
+
+        tank_label = pd.Series(pd.NA, index=df.index, dtype='object')
+        history = getattr(self, 'port_config_history', None)
+        if history is not None and not history.empty:
+            for port_num, group in df.groupby('port_idx'):
+                tank_label.loc[group.index] = self.tank_serials_for_dates(
+                    port_num, group['analysis_datetime']
+                )
+
+        port_str = df['port_idx'].astype(str)
+        labeled = tank_label.astype(str) + ' (' + port_str + ')'
+        df['port_label'] = labeled.where(tank_label.notna(), port_str)
         df['port_info'] = df['port_label']  # for compatibility with normalization and tooltips
 
         # Assign colors to ports using a colormap
