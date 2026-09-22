@@ -2240,7 +2240,7 @@ class TimeseriesWidget(QWidget):
 
         instrument_analytes = self.instrument.analytes if self.instrument else {}
         self.force_preferred_channel = bool(
-            self.instrument and self.instrument.inst_id == 'cats'
+            self.instrument and self.instrument.inst_id in ('cats', 'ie3')
         )
         if self.force_preferred_channel:
             # Processing exposes real channel pairs; time series exposes one
@@ -2923,10 +2923,19 @@ class TimeseriesWidget(QWidget):
         return df.copy() if not df.empty else df
 
     def query_insitu_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """SQL-side monthly-mean equivalent of query_insitu_data(): same joins,
-        rejection/port/channel/parameter filters, but GROUP BY site, month is
-        computed server-side instead of transferring raw per-injection rows.
-        Always live (no caching) since staleness must never be a concern here."""
+        """Monthly mean/std/n of in-situ (IE3/CATS) mole fractions for the
+        selected analyte and date range, one row per site per month.
+
+        The date-aware preferred-channel case (the common one -- see
+        _uses_forced_preferred_channel) is served from the pre-aggregated
+        hats.ng_insitu_monthly_means table (refreshed periodically by
+        insitu_monthly_means_batch.py) instead of aggregating the full
+        per-injection history live -- that live aggregation is what made
+        long in-situ time series slow to load. An explicit channel suffix
+        on `analyte` (e.g. a popup viewing one channel specifically) still
+        falls back to _query_insitu_monthly_mean_data_live(), since the
+        batch table only stores the preferred-channel result, not a
+        per-channel breakdown."""
         insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
             if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
         if self.instrument.inst_num not in insitu_inst_nums:
@@ -2948,11 +2957,35 @@ class TimeseriesWidget(QWidget):
             channel = analyte.split("(", 1)[1].strip(") ")
         use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
 
-        ch_filter = (
-            self._preferred_channel_filter_sql("mf.channel", "mf.parameter_num", "a.analysis_time")
-            if use_preferred_channel
-            else (f"AND mf.channel = '{channel}'" if channel else "")
-        )
+        if not use_preferred_channel:
+            return self._query_insitu_monthly_mean_data_live(pnum, channel, start, end, sites)
+
+        sql = f"""
+        SELECT UPPER(s.code) AS site,
+            m.month AS month_start,
+            m.mean AS monthly_avg,
+            m.std AS monthly_std,
+            m.n AS n
+        FROM hats.ng_insitu_monthly_means m
+        JOIN gmd.site s ON s.num = m.site_num
+        WHERE m.inst_num = {self.instrument.inst_num}
+          AND m.parameter_num = {pnum}
+          AND UPPER(s.code) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(m.month) BETWEEN {start} AND {end}
+        ORDER BY site, month_start;
+        """
+        df = pd.DataFrame(self.instrument.doquery(sql, sites))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
+
+    def _query_insitu_monthly_mean_data_live(
+        self, pnum: int, channel: str | None, start: int, end: int, sites: list[str]
+    ) -> pd.DataFrame:
+        """Live per-injection aggregation for an explicit-channel request
+        (see query_insitu_monthly_mean_data) -- same joins/filters as
+        query_insitu_data(), GROUP BY site, month computed server-side."""
+        ch_filter = f"AND mf.channel = '{channel}'" if channel else ""
         # Hide the pre-production test window (IE3 only; None for CATS).
         data_floor = getattr(self.instrument, "DATA_START_DATE", None)
         floor_clause = f"AND a.analysis_time >= '{data_floor}'" if data_floor else ""
