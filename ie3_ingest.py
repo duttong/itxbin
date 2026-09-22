@@ -39,6 +39,16 @@ def ingest(
             except Exception as e:
                 typer.secho(f"Warning: could not copy {src.name}: {e}", fg=typer.colors.YELLOW, err=True)
 
+    # 2b. Load the operator cylinder-pressure log into hats.ng_cylinder_pressures
+    # (read by the omi field-cylinders dashboard). Warn only; it must not block
+    # GC data processing.
+    cyl_cmd = [str(bin_dir / "ie3_cylinders2db.py"), "--site", site]
+    typer.secho(f"Running: {' '.join(cyl_cmd)}", fg=typer.colors.BLUE)
+    try:
+        subprocess.run(cyl_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Warning: ie3_cylinders2db.py failed: {e}", fg=typer.colors.YELLOW, err=True)
+
     # 3. Export from GCwerks and load into database. The --flagged path writes
     # GCwerks flags to hats.ng_insitu_mole_fraction_tags.
     load_cmd = [str(bin_dir / "ie3_gcwerks2db.py"), site, "--flagged"]
