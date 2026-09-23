@@ -10,10 +10,12 @@ to /hats/gc/{site}/logs/ by ie3_ingest.py.
   type "ALM-064967" as "ALM064967" or vice versa).
 - 'N2' and 'CO2' rows are utility cylinders (carrier / dopant); see
   hats.ng_cylinder_types.
+- serial_number is the physical tank serial: the same as cylinder for cal
+  tanks; left NULL for utility cylinders (the log doesn't record their serials).
 - Rows are upserted on (inst_num, cylinder, reading_datetime).  When the log has
   the same cylinder twice in one minute the last line wins, matching an operator
-  re-save.  Only `pressure` is updated on conflict, so `rejected` and `comment`
-  set in the DB are never overwritten.
+  re-save.  Only `pressure` (and a blank serial_number) is updated on conflict,
+  so `rejected`, `comment` and serials set in the DB are never overwritten.
 - Raw readings are stored as logged; the "re-entered within 60 minutes"
   correction rule is applied by readers (dashboard / display.py), not here.
 
@@ -92,7 +94,8 @@ def main(
         if cylinder is None:
             unknown.add(name)
             cylinder = name
-        params.append((inst_num, site_num, type_num, cylinder, when.strftime('%Y-%m-%d %H:%M:00'), psi))
+        serial = cylinder if type_num == CAL_TYPE else None
+        params.append((inst_num, site_num, type_num, cylinder, serial, when.strftime('%Y-%m-%d %H:%M:00'), psi))
 
     print(f'{path}: {len(params)} readings, {skipped} unparseable row(s) skipped')
     if unknown:
@@ -102,9 +105,10 @@ def main(
 
     sql = """
         INSERT INTO hats.ng_cylinder_pressures
-            (inst_num, site_num, cylinder_type_num, cylinder, reading_datetime, pressure)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE pressure = VALUES(pressure)
+            (inst_num, site_num, cylinder_type_num, cylinder, serial_number, reading_datetime, pressure)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE pressure = VALUES(pressure),
+                                serial_number = COALESCE(serial_number, VALUES(serial_number))
     """
     db.doMultiInsert(sql, params, all=True)
     n = db.doquery('SELECT COUNT(*) AS n FROM hats.ng_cylinder_pressures WHERE inst_num = %s', [inst_num])[0]['n']
