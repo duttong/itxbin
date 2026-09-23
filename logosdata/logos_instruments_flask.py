@@ -67,7 +67,9 @@ class M4_Instrument(HATS_DB_Functions):
         """
         
         if end_date is None:
-            end_date = datetime.today()
+            # run_time is stored in UTC; local today() would drop the last
+            # ~6-7 hours of runs from the default window.
+            end_date = datetime.now(timezone.utc).replace(tzinfo=None)
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
@@ -617,7 +619,9 @@ class FE3_Instrument(HATS_DB_Functions):
         t0 = time.time()
         
         if end_date is None:
-            end_date = datetime.today()
+            # run_time is stored in UTC; local today() would drop the last
+            # ~6-7 hours of runs from the default window.
+            end_date = datetime.now(timezone.utc).replace(tzinfo=None)
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
