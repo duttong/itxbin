@@ -42,6 +42,17 @@
 - `hats.ng_insitu_data_view` — IE3 analysis/mole-fraction view with
   `rejected`, `rej_flags`, `background`, and `mf_num`
   (`ng_insitu_mole_fractions.num`); used by `IE3_Instrument.load_data()`
+- `hats.ng_analysis.test_num` — equipment test number for Test runs
+  (`run_type_num=10`), joins to `ccgg_equip.equip_tests_view.test_num` (that
+  view has one row per test event, so use `SELECT DISTINCT` for test-level
+  fields); `0` for non-test rows. FE3 fills it in `fe3_gcwerks2db.py` from the
+  run's `testinfo_*.json` (falling back to `meta_*.json`'s 5th element). For
+  Test runs `port_info` holds the operator-entered per-injection `sample_id`
+  (e.g. `100-MM` on a spare port) and bypasses `split_pairid_flaskid()`, so
+  `pair_id_num`/`flask_id` stay 0. testinfo covers only the Main sequence;
+  it is placed in the full SSV sequence by a unique substring match (or a
+  `main_offset` key if the FE3 app ever writes one). DDL in
+  `ng_analysis_test_num.sql`.
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions

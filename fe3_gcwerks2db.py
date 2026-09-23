@@ -36,6 +36,54 @@ class FE3_Prepare(fe3_inst):
         dt = pd.to_datetime(m[5:20])
         return dt
 
+    @staticmethod
+    def read_test_info(metafile, meta, run_type):
+        """ Returns (test_num, labels) for a Test run.
+
+            test_num is the ccgg_equip.equip_tests_view test number (0 if none).
+            labels has one entry per character of the full SSV sequence: the
+            operator-entered sample_id from testinfo_*.json for Main-sequence
+            injections, None elsewhere (warmup/post chars, or no testinfo file).
+        """
+        if run_type != 'test':
+            return 0, None
+
+        extra = meta[4] if len(meta) > 4 and isinstance(meta[4], dict) else {}
+        info_path = metafile.with_name('testinfo_' + metafile.name[5:])
+        info = {}
+        if info_path.exists():
+            try:
+                info = json.loads(info_path.read_text())
+            except Exception as e:
+                logging.warning("Failed to parse %r: %s", info_path, e)
+
+        test_id = str(info.get('test_id') or extra.get('test_id') or '').strip()
+        test_num = int(test_id) if test_id.isdigit() else 0
+
+        injections = info.get('injections') or []
+        if not injections:
+            return test_num, None
+
+        # testinfo covers only the Main sequence (x repeats); locate it inside the
+        # full sequence, which also carries the warmup prefix and post suffix.
+        seq = meta[0]
+        main = ''.join(str(inj.get('position', '')) for inj in injections)
+        offset = info.get('main_offset')
+        if offset is None:
+            hits = [i for i in range(len(seq) - len(main) + 1) if seq.startswith(main, i)]
+            if len(hits) != 1:
+                logging.warning("Cannot place test injections %r in sequence %r for %s (%d matches); "
+                                "port_info falls back to cal ports.", main, seq, metafile.name, len(hits))
+                return test_num, None
+            offset = hits[0]
+
+        labels = [None] * len(seq)
+        for k, inj in enumerate(injections):
+            sample = str(inj.get('sample_id') or '').strip()
+            if sample and offset + k < len(seq):
+                labels[offset + k] = sample
+        return test_num, labels
+
     def two_digit_year(self, year) -> str:
         """Return the last two digits of a year as a zero-padded string.
 
@@ -86,13 +134,17 @@ class FE3_Prepare(fe3_inst):
             except Exception as e:
                 logging.warning("Failed to parse %r: %s", path, e)
                 return None
+            run_type = data[3] if len(data)>3 else self.run_type(data[0])
+            test_num, test_labels = self.read_test_info(path, data, run_type)
             return {
                 'time':    self.return_datetime(path),
                 'dir':     path.name[5:20],
                 'seq':     data[0],
                 'flasks':  list(data[1].values()),
                 'ports':   list(data[2].values()),
-                'type':    data[3] if len(data)>3 else self.run_type(data[0]),
+                'type':    run_type,
+                'test_num':    test_num,
+                'test_labels': test_labels,
             }
 
         paths = list(incoming.rglob('meta_*.json'))
@@ -203,6 +255,15 @@ class FE3_Prepare(fe3_inst):
 
             logging.debug("Adjusted seq lists for run %s: gc rows=%d, port entries=%d, flask entries=%d", run_id, n, len(des), len(idx))
 
+        # Test runs: per-injection sample IDs from testinfo_*.json replace the
+        # cal-port/flask description (e.g. a spare port 7 with no tank assigned).
+        labels = df['test_labels'].iat[0] if 'test_labels' in df.columns else None
+        if labels is not None and not isinstance(labels, (str, float)):
+            labels = list(labels)[1:] if drop_initial else list(labels)
+            for i, label in enumerate(labels[:n]):
+                if label:
+                    des[i] = label
+
         return des, idx
 
     @staticmethod
@@ -263,11 +324,17 @@ class FE3_Prepare(fe3_inst):
         t = self.run_type_num()
         clean['run_type_num'] = clean['type'].astype(str).map(t).astype(int)
     
-        splits = clean['port_id'].apply(self.split_pairid_flaskid)
+        # Test-run sample IDs (e.g. '100-MM') are not PairID-FlaskID strings,
+        # so keep them whole in port_info.
+        is_test = clean['type'].astype(str).eq('test')
+        splits = [(None, None, pid) if test else self.split_pairid_flaskid(pid)
+                  for pid, test in zip(clean['port_id'], is_test)]
+        clean['test_num'] = (pd.to_numeric(clean['test_num'], errors='coerce').fillna(0).astype(int)
+                             if 'test_num' in clean.columns else 0)
 
-        # turn the Series of 3-tuples into a DataFrame with the same index
+        # turn the list of 3-tuples into a DataFrame with the same index
         split_df = pd.DataFrame(
-            splits.tolist(),
+            splits,
             index=clean.index,
             columns=['pair_id_num','flask_id','port_info']
         )
@@ -285,7 +352,7 @@ class FE3_Prepare(fe3_inst):
         inserting new rows and updating any changed fields.
         Assumes df has columns:
           time, run_time, run_type_num, port, port_info,
-          flask_port, pair_id_num, flask_id,
+          flask_port, pair_id_num, flask_id, test_num,
         plus for each molecule fields: <mol>_ht, <mol>_area, <mol>_rt.
         """
         # 1) Prepare DataFrame and format datetime fields as strings
@@ -294,7 +361,8 @@ class FE3_Prepare(fe3_inst):
         df['analysis_time_str'] = df['time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         df['run_time_str']      = df['run_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
         # replace NaN or empty strings with defaults for numeric columns
-        df['port_info']    = df['port_info'].fillna('').astype(str)
+        df['port_info']    = df['port_info'].fillna('').astype(str).str[:45]   # varchar(45)
+        df['test_num']     = pd.to_numeric(df.get('test_num', 0), errors='coerce').fillna(0).astype(int)
         df['flask_port']   = pd.to_numeric(df['flask_port'], errors='coerce').fillna(0).astype(int)
         df['pair_id_num']  = pd.to_numeric(df['pair_id_num'], errors='coerce').fillna(0).astype(int)
         df['flask_id']     = pd.to_numeric(df['flask_id'], errors='coerce').fillna(0).astype(int)
@@ -324,6 +392,7 @@ class FE3_Prepare(fe3_inst):
                 update_params.append((
                     r.run_time_str, int(r.run_type_num),
                     r.port_info, r.flask_port, int(r.pair_id_num), int(r.flask_id),
+                    int(r.test_num),
                     existing[key],
                 ))
             else:
@@ -331,6 +400,7 @@ class FE3_Prepare(fe3_inst):
                     r.analysis_time_str, self.inst_num, r.run_time_str,
                     int(r.run_type_num), int(r.port), r.port_info,
                     r.flask_port, int(r.pair_id_num), int(r.flask_id),
+                    int(r.test_num),
                 ))
 
         if update_params:
@@ -341,7 +411,8 @@ class FE3_Prepare(fe3_inst):
                        port_info    = %s,
                        flask_port   = %s,
                        pair_id_num  = %s,
-                       flask_id     = %s
+                       flask_id     = %s,
+                       test_num     = %s
                  WHERE num = %s
             """
             for i in range(0, len(update_params), batch_size):
@@ -351,8 +422,8 @@ class FE3_Prepare(fe3_inst):
             insert_sql = """
                 INSERT INTO hats.ng_analysis (
                     analysis_time, inst_num, run_time, run_type_num, port,
-                    port_info, flask_port, pair_id_num, flask_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    port_info, flask_port, pair_id_num, flask_id, test_num
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             for i in range(0, len(insert_params), batch_size):
                 self.db.doMultiInsert(insert_sql, insert_params[i:i+batch_size], all=True)
