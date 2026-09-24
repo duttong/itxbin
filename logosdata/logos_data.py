@@ -1521,6 +1521,24 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             additional_label = QLabel(" Additional (d): ")
             _add_toolbar_widgets(additional_label, self.additional_data_cb)
             self._setup_additional_data_shortcuts()
+
+        # Hide/show the left pane so the plot can use the full window width.
+        # Placed at the toolbar's left end, next to the pane it controls.
+        self.left_pane_btn = QPushButton("◀ Hide Panel")
+        self.left_pane_btn.setCheckable(True)
+        self.left_pane_btn.setToolTip(
+            "Hide/show the left panel (w). Shortcuts like r/t/m, d, a, g, s and "
+            "Ctrl+Shift+arrows still work while it is hidden."
+        )
+        self.left_pane_btn.toggled.connect(self._on_left_pane_toggled)
+        first_action = self.toolbar.actions()[0] if self.toolbar.actions() else None
+        if first_action is not None:
+            self.toolbar.insertWidget(first_action, self.left_pane_btn)
+            self.toolbar.insertSeparator(first_action)
+        else:
+            self.toolbar.addWidget(self.left_pane_btn)
+        self._left_pane_shortcut = QShortcut(QKeySequence("W"), self)
+        self._left_pane_shortcut.activated.connect(self.left_pane_btn.toggle)
         right_layout.addWidget(self.toolbar)
         self.right_placeholder = right_placeholder
 
@@ -3218,6 +3236,11 @@ class MainWindow(QMainWindow, TagCRUDMixin):
     def on_additional_data_changed(self, _index):
         """Redraw the GC plot with/without the additional-data panel,
         keeping the current x/y view."""
+        self._redraw_gc_plot_keep_view()
+
+    def _redraw_gc_plot_keep_view(self):
+        """Rebuild the Response/Ratio/Mole Fraction plot at the current x/y
+        view (a full redraw also re-fits the legend margin)."""
         run = getattr(self, "run", None)
         if self.current_plot_type not in (0, 1, 2) or run is None or run.empty:
             return
@@ -6001,6 +6024,19 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         n = cb.count()
         if n > 1:
             cb.setCurrentIndex((cb.currentIndex() + step) % n)
+
+    def _on_left_pane_toggled(self, hidden: bool):
+        """Hide or show the left pane (tabs and Processing controls). Only
+        reachable from the Processing tab: the toolbar lives in its plot area,
+        and with the pane hidden no other tab can be selected."""
+        if hidden and self.tabs.currentWidget() is not self.processing_pane:
+            self.left_pane_btn.setChecked(False)
+            return
+        self.left_container.setVisible(not hidden)
+        self.left_pane_btn.setText("▶ Show Panel" if hidden else "◀ Hide Panel")
+        # Redraw once the layout has resized the canvas so the legend margin
+        # is re-fit to the new width.
+        QTimer.singleShot(0, self._redraw_gc_plot_keep_view)
 
     def _setup_additional_data_shortcuts(self):
         """'d' steps forward through the Additional data panel variables,

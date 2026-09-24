@@ -238,6 +238,15 @@ of "Hide Rejected Data". Used to uncover a point obscured by other ports.
   `clear_plot()` and at the top of `calibration_plot()` so stale artist refs
   can't match a pick on a non-GC plot.
 
+## Hide Panel (`w`)
+
+The plot toolbar's leftmost button, **◀ Hide Panel** (shortcut `w`), hides
+`left_container` (tabs and Processing controls) so the plot fills the window.
+`_on_left_pane_toggled()` only allows hiding on the Processing tab, then
+redraws via `_redraw_gc_plot_keep_view()` so the legend margin re-fits the new
+width. The window-level QShortcuts (r/t/m, d, a, g, s, Ctrl+Shift+arrows) keep
+working while the pane is hidden.
+
 ## "Additional" data panel (GC plot)
 
 The plot toolbar (next to Chrom View) has an **Additional:** combo box. Picking a
