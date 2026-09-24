@@ -171,6 +171,16 @@ def _ie3_chunk_for_timestamp(ts, period: str):
     return (f"{month_start:%Y-%m}", month_start, next_month)
 
 
+def _compact_combo(cb, chars):
+    """Let a QComboBox be narrower than its longest item (the closed box
+    shows ~`chars` characters) while the popup list still fits every item.
+    Keeps long tag/smoothing labels from dictating the left pane's width."""
+    cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    cb.setMinimumContentsLength(chars)
+    view = cb.view()
+    view.setMinimumWidth(view.sizeHintForColumn(0) + 2 * view.frameWidth() + 24)
+
+
 def _ie3_parse_chunk_label(label: str):
     """Return (start_ts, end_exclusive_ts) for a label like '2026-04' or '2026-04 a'."""
     base = (label or '').strip()
@@ -904,6 +914,11 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         processing_layout.setContentsMargins(4, 4, 4, 4)
         processing_layout.setSpacing(6)
         processing_pane.setLayout(processing_layout)
+        # Narrower side padding than the app-wide QGroupBox style: boxes nest
+        # two deep here and every level's padding adds to the pane's width.
+        processing_pane.setStyleSheet(
+            "QGroupBox { padding-left: 6px; padding-right: 6px; }"
+        )
 
         # ── DATE RANGE SELECTION ──
         date_gb = QGroupBox("DATE RANGE (BY MONTH)")
@@ -950,10 +965,10 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         date_row1.addWidget(QLabel("From:"))
         date_row1.addWidget(self.start_year_cb)
         date_row1.addWidget(self.start_month_cb)
+        date_row1.addStretch()  # From hugs the left edge, To the right
         date_row1.addWidget(QLabel("To:"))
         date_row1.addWidget(self.end_year_cb)
         date_row1.addWidget(self.end_month_cb)
-        date_row1.addWidget(self.apply_date_btn)
         date_layout.addLayout(date_row1)
 
         # Row 2: month-step buttons
@@ -966,6 +981,10 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             btn.setStyleSheet(_step_style)
             btn.clicked.connect(lambda _, m=months: self._set_end_from_start(m))
             date_row2.addWidget(btn)
+        # Apply sits between the step buttons rather than on the From/To row,
+        # which keeps that row (and so the left pane) narrower.
+        date_row2.addStretch()
+        date_row2.addWidget(self.apply_date_btn)
         date_row2.addStretch()
         for months in (1, 2, 6):
             btn = QPushButton(f"-{months}M")
@@ -1038,6 +1057,9 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.prev_btn.clicked.connect(self.on_prev_run)
         self.next_btn = QPushButton("▶")
         self.next_btn.clicked.connect(self.on_next_run)
+        # Single-glyph buttons: cap their width so the run label gets the room.
+        for b in (self.prev_btn, self.next_btn):
+            b.setMaximumWidth(44)
         self.run_cb = QComboBox()
         self.run_cb.setMinimumWidth(200)
         self.run_cb.currentIndexChanged.connect(self.on_run_changed)
@@ -1135,19 +1157,21 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.fit_method_cb.currentIndexChanged.connect(self.on_fit_method_changed)
 
         # ── CALIBRATION ROW ──
-        cal_row = QHBoxLayout()
-        cal_row.addWidget(self.calibration_rb)
-        cal_row.addSpacing(6)
-        cal_row.addWidget(QLabel("Fit:"))
-        cal_row.addWidget(self.fit_method_cb, 1)  # stretch so it hugs the right
-        self.plot_layout.addLayout(cal_row)
+        # Fit sits on its own indented row under the radio (not beside it)
+        # to keep this box -- and so the left pane -- narrow.
+        self.plot_layout.addWidget(self.calibration_rb)
+        fit_row = QHBoxLayout()
+        fit_row.addSpacing(12)  # indent under the calibration radio
+        fit_row.addWidget(QLabel("Fit:"))
+        fit_row.addWidget(self.fit_method_cb, 1)
+        self.plot_layout.addLayout(fit_row)
 
         # ── EXTRA OPTIONS ROW ──
         self.draw2zero_cb.setEnabled(False)    # start disabled
         self.oldcurves_cb.setEnabled(False)    # start disabled
 
         cal_row2 = QHBoxLayout()
-        cal_row2.addSpacing(24)  # indent to align with calibration radio
+        cal_row2.addSpacing(12)  # indent under the calibration radio
         cal_row2.addWidget(self.draw2zero_cb)
         cal_row2.addWidget(self.oldcurves_cb)
         cal_row2.addStretch(1)   # push them left
@@ -1180,7 +1204,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             "this week and reload from the database."
         )
         cal_row3 = QHBoxLayout()
-        cal_row3.addSpacing(24)
+        cal_row3.addSpacing(12)
         cal_row3.addWidget(self.ie3_update_btn)
         cal_row3.addWidget(self.ie3_revert_btn)
         cal_row3.addStretch(1)
@@ -1215,6 +1239,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             "Lowess ~10 points",        # 5
         ])
         self.smoothing_cb.setCurrentIndex(2)  # show "Lowess 5 points" by default
+        _compact_combo(self.smoothing_cb, 14)
 
         options_layout.addWidget(self.smoothing_label)
         options_layout.addWidget(self.smoothing_cb)
@@ -1282,16 +1307,15 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             self._chromatogram_viewer_available
         )
 
-        # Combine plot_gb and options_gb into a single group box
-        combined_gb = QGroupBox("PLOT AND OPTIONS")
+        # plot_gb and options_gb side by side. No outer frame: both boxes
+        # carry their own titles, and a wrapper box's padding would widen
+        # the left pane.
         combined_layout = QHBoxLayout()
-        combined_layout.setSpacing(12)
-        combined_gb.setLayout(combined_layout)
-
+        combined_layout.setSpacing(6)
         combined_layout.addWidget(plot_gb, stretch=1)
         combined_layout.addWidget(options_gb, stretch=1)
 
-        processing_layout.addWidget(combined_gb)
+        processing_layout.addLayout(combined_layout)
 
         # Tagging controls. The toolbar button still controls tag mode; this
         # selector controls which tag is applied to picked points.
@@ -1304,6 +1328,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.tag_select_cb.currentIndexChanged.connect(self.on_tag_selection_changed)
         self.tag_select_cb.activated.connect(self._apply_tag_combobox_color)
         self.tag_select_cb.setItemDelegate(_TagComboDelegate(self.tag_select_cb))
+        _compact_combo(self.tag_select_cb, 24)
         tag_layout.addWidget(self.tag_select_cb)
 
         _btn_style = """
@@ -1364,6 +1389,15 @@ class MainWindow(QMainWindow, TagCRUDMixin):
 
         # Stretch to push everything to the top
         processing_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+        # Cap the group boxes' left/right layout margins (Qt's default is
+        # ~11px): with boxes nested two deep, they add up across the pane.
+        for gb in processing_pane.findChildren(QGroupBox):
+            lay = gb.layout()
+            if lay is not None:
+                m = lay.contentsMargins()
+                lay.setContentsMargins(min(m.left(), 4), m.top(),
+                                       min(m.right(), 4), m.bottom())
 
         # ── TABS ──
         _visible_tabs_raw = self._inst_cfg.get(
@@ -1558,7 +1592,10 @@ class MainWindow(QMainWindow, TagCRUDMixin):
                 self.processing_pane.width(),
             )
         else:
-            width = max(current.sizeHint().width(), current.minimumSizeHint().width())
+            # Size to what the pane actually needs (combos can elide), but
+            # never narrower than the tab bar.
+            width = max(current.minimumSizeHint().width(),
+                        self.tabs.tabBar().sizeHint().width() + 4)
             if width <= 0:
                 width = current.minimumWidth() or current.width() or 420
         self.left_container.setFixedWidth(width)
@@ -5700,6 +5737,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             self.analyte_next_btn = QPushButton("▶")
             self.analyte_prev_btn.setToolTip("Previous analyte")
             self.analyte_next_btn.setToolTip("Next analyte")
+            for b in (self.analyte_prev_btn, self.analyte_next_btn):
+                b.setMaximumWidth(44)
             self.analyte_prev_btn.clicked.connect(self.on_prev_analyte)
             self.analyte_next_btn.clicked.connect(self.on_next_analyte)
 
