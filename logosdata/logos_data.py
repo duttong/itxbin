@@ -1476,14 +1476,17 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         for col in getattr(self.instrument, 'ADDITIONAL_DATA_COLUMNS', ()):
             self.additional_data_cb.addItem(col, col)
         self.additional_data_cb.setToolTip(
-            "Show an additional per-injection value in a small panel above the plot"
+            "Show an additional per-injection value in a small panel above the plot\n"
+            "d: next variable (past the last one turns the panel off)\n"
+            "Shift+D: previous variable"
         )
         self.additional_data_cb.currentIndexChanged.connect(
             self.on_additional_data_changed
         )
         if self.additional_data_cb.count() > 1:
-            additional_label = QLabel(" Additional: ")
+            additional_label = QLabel(" Additional (d): ")
             _add_toolbar_widgets(additional_label, self.additional_data_cb)
+            self._setup_additional_data_shortcuts()
         right_layout.addWidget(self.toolbar)
         self.right_placeholder = right_placeholder
 
@@ -5951,6 +5954,26 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         sc = QShortcut(QKeySequence("A"), self)
         sc.activated.connect(self._cycle_autoscale_mode)
         self.autoscale_shortcuts.append(sc)
+
+    def _step_additional_data(self, step: int) -> None:
+        """Step the "Additional" combo by `step`, wrapping through "None"
+        (index 0), so repeated presses cycle off -> each variable -> off."""
+        cb = self.additional_data_cb
+        n = cb.count()
+        if n > 1:
+            cb.setCurrentIndex((cb.currentIndex() + step) % n)
+
+    def _setup_additional_data_shortcuts(self):
+        """'d' steps forward through the Additional data panel variables,
+        Shift+D steps back. Only set up when the instrument offers any."""
+        for sc in getattr(self, "additional_data_shortcuts", []):
+            sc.setParent(None)
+        self.additional_data_shortcuts = []
+
+        for seq, step in (("D", 1), ("Shift+D", -1)):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.activated.connect(lambda s=step: self._step_additional_data(s))
+            self.additional_data_shortcuts.append(sc)
 
     def _save_current_gas_action(self) -> None:
         """Save the current gas only when the legend button is active.

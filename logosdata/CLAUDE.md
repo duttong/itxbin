@@ -257,6 +257,10 @@ hollow, or hidden with "Hide Rejected Data"; hidden legend ports hide too).
   move onto the panel.
 - `_adjust_layout_for_legend()` widens the left margin when y tick labels would
   clip, and lines up the two y-labels.
+- Keyboard: `d` steps to the next variable and `Shift+D` to the previous one,
+  wrapping through "None" (panel off). Set up by
+  `_setup_additional_data_shortcuts()` only when the combo has choices. (`a` is
+  already the autoscale cycle.)
 - The panel is display-only: no tagging or selection. Its scatters use
   `picker=False`, both RectangleSelectors attach to `axes[0]` only, and
   `_on_click_tooltip` ignores clicks in `self._ax_additional` so they can't
