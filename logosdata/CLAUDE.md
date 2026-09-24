@@ -238,6 +238,26 @@ of "Hide Rejected Data". Used to uncover a point obscured by other ports.
   `clear_plot()` and at the top of `calibration_plot()` so stale artist refs
   can't match a pick on a non-GC plot.
 
+## "Additional" data panel (GC plot)
+
+The plot toolbar (next to Chrom View) has an **Additional:** combo box. Picking a
+column draws a small panel (1:4 height, `sharex`) above the Response/Ratio/Mole
+Fraction plot showing that per-injection value in port colors (rejected points
+hollow, or hidden with "Hide Rejected Data"; hidden legend ports hide too).
+
+- Options come from the instrument's `ADDITIONAL_DATA_COLUMNS` class attribute
+  (empty in `LOGOS_Instruments` → combo not shown). Currently only M4 sets it,
+  to the `ng_data_processing_view` engineering columns (`init_p`, `net_pressure`,
+  `cryocount`, `pfp_press1`, ...), which `load_data`'s `SELECT *` already loads.
+  Add it to another instrument to enable it there. Columns missing from
+  `self.run` are ignored.
+- The main axes is created first so `self.figure.axes[0]` is still the main
+  plot, and `figure.sca(ax)` keeps `gca()` on it (tagging, tooltips, highlights
+  and y-lock depend on this). With the panel on, the title and sub_info banner
+  move onto the panel.
+- `_adjust_layout_for_legend()` widens the left margin when y tick labels would
+  clip, and lines up the two y-labels.
+
 ## IE3 Calibration view (`_ie3_cal_plot`)
 
 Shown when the Calibration radio is selected and the loaded run is a weekly

@@ -28,6 +28,9 @@ class LOGOS_Instruments:
             'BLD', 'MKO']
     
     BASE_MARKER_SIZE = 60   # for scatter plots. Can override in subclasses.
+    # Columns of self.run offered in logos_data's "Additional" toolbar combo,
+    # drawn as a small panel above the main GC plot. Empty = combo hidden.
+    ADDITIONAL_DATA_COLUMNS = ()
 
     def __init__(self):
         # gcwerks-3 path

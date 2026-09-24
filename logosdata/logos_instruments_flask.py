@@ -23,6 +23,13 @@ class M4_Instrument(HATS_DB_Functions):
     STANDARD_RUN_TYPE = 8
     CAL_RUN_TYPES = {7}  # run_type_num values written to hats.calibrations
     EXCLUDE = [6, 7]     # run_type_num to exclude from autoscaling (zero air and tank runs)
+    # Per-injection engineering columns from ng_data_processing_view
+    # (already loaded by load_data's SELECT *).
+    ADDITIONAL_DATA_COLUMNS = (
+        'init_p', 'final_p', 'net_pressure', 'initp_rsd', 'finalp_rsd',
+        'low_flow', 'cryocount', 'loflocount', 'last_flow', 'last_vflow',
+        'pfpopen', 'pfpclose', 'pfp_press1', 'pfp_press2', 'pfp_press3',
+    )
     # Require >=3 unrejected injections for a calibration row, matching FE3.
     # A num=1/2 group has too few injections for a meaningful stddev and
     # can silently skew a caldrift fit even though it's excluded from the

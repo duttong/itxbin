@@ -1445,24 +1445,45 @@ class MainWindow(QMainWindow, TagCRUDMixin):
 
         # Add a NavigationToolbar for the figure
         self.toolbar = FastNavigationToolbar(self.canvas, self)
-        if self._chromatogram_viewer_available:
-            location_action = next(
-                (
-                    action
-                    for action in self.toolbar.actions()
-                    if self.toolbar.widgetForAction(action)
-                    is getattr(self.toolbar, "locLabel", None)
-                ),
-                None,
-            )
+        location_action = next(
+            (
+                action
+                for action in self.toolbar.actions()
+                if self.toolbar.widgetForAction(action)
+                is getattr(self.toolbar, "locLabel", None)
+            ),
+            None,
+        )
+
+        def _add_toolbar_widgets(*widgets):
+            # Insert just before the cursor-location readout when present.
             if location_action is not None:
                 self.toolbar.insertSeparator(location_action)
-                self.toolbar.insertWidget(
-                    location_action, self.chromatogram_viewer_btn
-                )
+                for w in widgets:
+                    self.toolbar.insertWidget(location_action, w)
             else:
                 self.toolbar.addSeparator()
-                self.toolbar.addWidget(self.chromatogram_viewer_btn)
+                for w in widgets:
+                    self.toolbar.addWidget(w)
+
+        if self._chromatogram_viewer_available:
+            _add_toolbar_widgets(self.chromatogram_viewer_btn)
+
+        # "Additional" data panel selector: a small panel above the main
+        # Response/Ratio/Mole Fraction plot showing a per-injection column.
+        self.additional_data_cb = QComboBox()
+        self.additional_data_cb.addItem("None", None)
+        for col in getattr(self.instrument, 'ADDITIONAL_DATA_COLUMNS', ()):
+            self.additional_data_cb.addItem(col, col)
+        self.additional_data_cb.setToolTip(
+            "Show an additional per-injection value in a small panel above the plot"
+        )
+        self.additional_data_cb.currentIndexChanged.connect(
+            self.on_additional_data_changed
+        )
+        if self.additional_data_cb.count() > 1:
+            additional_label = QLabel(" Additional: ")
+            _add_toolbar_widgets(additional_label, self.additional_data_cb)
         right_layout.addWidget(self.toolbar)
         self.right_placeholder = right_placeholder
 
@@ -1505,7 +1526,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
 
         self.figure.tight_layout(rect=[0, 0, 1.05, 1])
         self.canvas.draw_idle()
-        self.gc_plot(self._current_yparam)
+        self.gc_plot(getattr(self, "_current_yparam", "resp"))
         self._on_tab_changed(self.tabs.currentIndex())
 
     def _on_tab_changed(self, _idx: int):
@@ -2578,8 +2599,20 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         # Sort legend handles alphabetically by their label
         legend_handles = sorted(legend_handles, key=lambda h: h.get_label())
 
+        extra_col = self._additional_data_column()
         self.figure.clear()
-        ax = self.figure.add_subplot(111)
+        if extra_col:
+            # Main axes is created first so self.figure.axes[0] stays the
+            # main plot (tagging, tooltips, highlights all rely on that).
+            gs = self.figure.add_gridspec(
+                nrows=2, ncols=1, height_ratios=[1, 4], hspace=0.05
+            )
+            ax = self.figure.add_subplot(gs[1, 0])
+            ax_extra = self.figure.add_subplot(gs[0, 0], sharex=ax)
+            self.figure.sca(ax)
+        else:
+            ax = self.figure.add_subplot(111)
+            ax_extra = None
         # scatter artists themselves are wiped by figure.clear() above, but
         # this list of references to them is not -- without resetting it here,
         # every plot (parameter switch, month navigation, etc.) accumulates
@@ -2736,11 +2769,16 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             top_line,
             f"{tlabel}: {self._current_analyte_name()} ({self.current_pnum})",
         ])
-        ax.set_title(main_title, pad=16)
+        title_ax = ax_extra if ax_extra is not None else ax
+        title_ax.set_title(main_title, pad=16)
+        if ax_extra is not None:
+            self._draw_additional_panel(ax_extra, extra_col, hide_flagged, rejected)
         if sub_info:
-            ax.text(
-                0.5, .965, sub_info,
-                transform=ax.transAxes, ha='center', va='bottom',
+            title_ax.text(
+                # Same absolute offset below the axes top in both layouts
+                # (the panel is 1/4 the main axes' height).
+                0.5, 0.86 if ax_extra is not None else .965, sub_info,
+                transform=title_ax.transAxes, ha='center', va='bottom',
                 fontsize=9, color='white', clip_on=False,
                 bbox=dict(
                     boxstyle='round,pad=0.25',
@@ -3125,6 +3163,73 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         if not hasattr(self, "_click_tooltip_cid"):
             self._click_tooltip_cid = self.canvas.mpl_connect("button_press_event", self._on_click_tooltip)
                         
+    def _additional_data_column(self):
+        """Column selected in the "Additional" toolbar combo, or None."""
+        cb = getattr(self, 'additional_data_cb', None)
+        if cb is None:
+            return None
+        col = cb.currentData()
+        if not col or col not in self.run.columns:
+            return None
+        return col
+
+    def on_additional_data_changed(self, _index):
+        """Redraw the GC plot with/without the additional-data panel,
+        keeping the current x/y view."""
+        run = getattr(self, "run", None)
+        if self.current_plot_type not in (0, 1, 2) or run is None or run.empty:
+            return
+        if self.figure.axes:
+            ax = self.figure.axes[0]
+            self._pending_xlim = ax.get_xlim()
+            self._pending_ylim = ax.get_ylim()
+        self.gc_plot(getattr(self, "_current_yparam", "resp"))
+
+    def _draw_additional_panel(self, ax, col, hide_flagged, rejected):
+        """Small panel above the main plot: one per-injection column, in
+        port colors, rejected points hollow (or hidden with hide_flagged)."""
+        yvals = pd.to_numeric(self.run[col], errors='coerce')
+        visible = ~self.run['port_idx'].isin(self._hidden_ports) & yvals.notna()
+        good = visible & (rejected == 0)
+        size = self.instrument.BASE_MARKER_SIZE * 0.5
+
+        for _port, subset in self.run.loc[good].groupby('port_idx'):
+            ax.scatter(
+                subset['analysis_datetime'],
+                yvals.loc[subset.index],
+                marker=subset['port_marker'].iloc[0],
+                c=subset['port_color'],
+                s=size,
+                edgecolors='none',
+                zorder=2,
+                picker=False,
+            )
+        if not hide_flagged:
+            rej = self.run.loc[visible & (rejected != 0)]
+            if not rej.empty:
+                ax.scatter(
+                    rej['analysis_datetime'],
+                    yvals.loc[rej.index],
+                    marker='o',
+                    facecolors='whitesmoke',
+                    edgecolors=rej['port_color'],
+                    linewidths=1.0,
+                    s=size,
+                    zorder=3,
+                    picker=False,
+                )
+        if not visible.any():
+            ax.text(0.5, 0.5, f"No {col} data", transform=ax.transAxes,
+                    ha='center', va='center', fontsize=9, color='gray')
+
+        ax.set_ylabel(col, fontsize=9)
+        ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='x', labelbottom=False)
+        ax.grid(True, linewidth=0.5, linestyle='--', alpha=0.8)
+        ax.format_coord = lambda x, y: (
+            f"{mdates.num2date(x).strftime('%Y-%m-%d %H:%M:%S')}  {col}={y:.4g}"
+        )
+
     def _reattach_rect_selector(self):
         """Ensure RectangleSelector follows the current axes after a redraw."""
         if self._rect_selector is not None:
@@ -3189,8 +3294,26 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         except Exception:
             right = 0.8
 
+        # Widen the left margin if any y-axis label/ticks would be clipped
+        # (e.g. wide tick labels on the "Additional" data panel).
+        left = 0.08
+        try:
+            if len(self.figure.axes) > 1:
+                self.figure.align_ylabels(self.figure.axes)
+            x0 = min(
+                a.get_tightbbox(renderer).transformed(
+                    self.figure.transFigure.inverted()).x0
+                for a in self.figure.axes
+            )
+            # x0 was measured at the figure's current left margin, which a
+            # previous plot may already have widened.
+            needed = self.figure.subplotpars.left - x0 + 0.005
+            left = min(0.2, max(left, needed))
+        except Exception:
+            pass
+
         # Apply margins and redraw
-        self.figure.subplots_adjust(right=right, left=0.08, bottom=0.12, top=0.88)
+        self.figure.subplots_adjust(right=right, left=left, bottom=0.12, top=0.88)
         self.canvas.draw_idle()
 
     def clear_plot(self, message="No data available"):
@@ -3707,7 +3830,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             self._pending_ylim = ax.get_ylim()
         self.run = self.instrument.norm.merge_smoothed_data(self.run)
         self.run = self.instrument.calc_mole_fraction(self.run)
-        self.gc_plot(self._current_yparam)
+        self.gc_plot(getattr(self, "_current_yparam", "resp"))
 
     def _sync_rejected_state(self, idxs):
         """Re-query the DB and update run['rejected'] for the given DataFrame indices."""
@@ -3885,7 +4008,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.run = self.instrument.calc_mole_fraction(self.run)
 
         # Redraw
-        self.gc_plot(self._current_yparam)
+        self.gc_plot(getattr(self, "_current_yparam", "resp"))
         
     def on_calcurve_selected(self, index):
         
@@ -5216,7 +5339,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             if ax is not None:
                 self._pending_xlim = ax.get_xlim()
                 self._pending_ylim = ax.get_ylim()
-            self.gc_plot(self._current_yparam)
+            self.gc_plot(getattr(self, "_current_yparam", "resp"))
             return
 
         if not isinstance(art, mtext.Text):
