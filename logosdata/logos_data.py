@@ -2613,6 +2613,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         else:
             ax = self.figure.add_subplot(111)
             ax_extra = None
+        # Display-only panel: clicks in it are ignored (no tagging/selection).
+        self._ax_additional = ax_extra
         # scatter artists themselves are wiped by figure.clear() above, but
         # this list of references to them is not -- without resetting it here,
         # every plot (parameter switch, month navigation, etc.) accumulates
@@ -3663,6 +3665,12 @@ class MainWindow(QMainWindow, TagCRUDMixin):
 
         if self._is_ie3_cal_plot_active():
             self._ie3_cal_tooltip_click(event)
+            return
+
+        # The "Additional" data panel is display-only; don't let a click
+        # there count as an empty-space click that clears a selection.
+        extra_ax = getattr(self, '_ax_additional', None)
+        if extra_ax is not None and event.inaxes is extra_ax:
             return
 
         # Find which artist was clicked

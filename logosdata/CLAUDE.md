@@ -257,6 +257,10 @@ hollow, or hidden with "Hide Rejected Data"; hidden legend ports hide too).
   move onto the panel.
 - `_adjust_layout_for_legend()` widens the left margin when y tick labels would
   clip, and lines up the two y-labels.
+- The panel is display-only: no tagging or selection. Its scatters use
+  `picker=False`, both RectangleSelectors attach to `axes[0]` only, and
+  `_on_click_tooltip` ignores clicks in `self._ax_additional` so they can't
+  clear a Multi-Tag selection.
 
 ## IE3 Calibration view (`_ie3_cal_plot`)
 
