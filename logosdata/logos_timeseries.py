@@ -187,11 +187,34 @@ class ExportPreviewFigure:
     # ── shortcuts ────────────────────────────────────────────────────────────
 
     def _setup_shortcuts(self):
-        """Ctrl+Shift+Up/Down step the analyte, matching the main figure."""
-        self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
+        """Analyte stepping and Save, scoped to this window.
+
+        Every shortcut is parented to the canvas, so it only fires while this
+        figure has focus and never from the Timeseries panel.
+
+        matplotlib binds both ``s`` and ``ctrl+s`` to "save the figure image",
+        which would otherwise open a second dialog alongside the export save, so
+        its default key handling is detached from this figure. The toolbar's
+        floppy-disk button still saves a PNG.
+        """
+        canvas = self._fig.canvas
+        handler_id = getattr(getattr(canvas, 'manager', None),
+                             'key_press_handler_id', None)
+        if handler_id is not None:
+            canvas.mpl_disconnect(handler_id)
+
+        self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), canvas)
         self.prev_shortcut.activated.connect(self._prev_analyte)
-        self.next_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Down"), self._fig.canvas)
+        self.next_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Down"), canvas)
         self.next_shortcut.activated.connect(self._next_analyte)
+
+        # QKeySequence.Save is the platform's own: Ctrl+S here, Cmd+S if this
+        # ever runs natively on macOS. "s" matches the Processing tab's save.
+        self.save_shortcuts = []
+        for seq in (QKeySequence.Save, QKeySequence("S")):
+            sc = QShortcut(seq, canvas)
+            sc.activated.connect(self._on_save)
+            self.save_shortcuts.append(sc)
 
     def _prev_analyte(self):
         idx = self.analyte_combo.currentIndex()
@@ -247,8 +270,9 @@ class ExportPreviewFigure:
         self.reload_btn.clicked.connect(self.reload)
         layout.addWidget(self.reload_btn)
 
-        self.save_btn = QPushButton("Save")
-        self.save_btn.setToolTip("Write this data to a file, as the export button does")
+        self.save_btn = QPushButton("Save (s)")
+        self.save_btn.setToolTip(
+            "Write this data to a file, as the export button does  —  s or Ctrl+S")
         self.save_btn.clicked.connect(self._on_save)
         layout.addWidget(self.save_btn)
 

@@ -379,6 +379,22 @@ The preview's toolbar carries a **year range**, an **analyte** combo,
   discrete event rather than a run of them.
 - **Ctrl+Shift+Up / Ctrl+Shift+Down** step the analyte, the same sequences the
   main figure uses, so they reload too.
+- **`s` or Ctrl+S** saves, and the button reads `Save (s)`. `QKeySequence.Save`
+  is the platform's own — Ctrl+S here, since logos_data runs on the Linux host
+  even when displayed on a Mac over X11; it becomes Cmd+S only if the app is
+  ever run natively on macOS.
+- Every shortcut is parented to **`self._fig.canvas`**, so it fires only while
+  that figure has focus, never from the Timeseries panel.
+- matplotlib binds `s` *and* `ctrl+s` to "save the figure image", so
+  `_setup_shortcuts()` detaches its default key handling
+  (`mpl_disconnect(manager.key_press_handler_id)`) from preview figures —
+  otherwise both dialogs open. That also drops matplotlib's other default keys
+  (`g` grid, `l` log, …) in preview windows; the toolbar's floppy-disk button
+  still saves a PNG.
+- **Note on testing:** a bare-letter `QShortcut` cannot be triggered by
+  `QTest.keyClick` under the offscreen platform (Ctrl+S can). That's a test
+  harness limit, not a bug — `logos_data.py:6141` uses the same
+  `QShortcut(QKeySequence("S"))` for the Processing tab's save.
 
 Overrides go through `from_timeseries_widget(..., analyte=, start_year=,
 end_year=)`, so the Timeseries tab's own selection is **left untouched**. An
