@@ -870,6 +870,111 @@ class TimeseriesFigure(TagCRUDMixin):
             lines.append(f"<b>Entered by:</b> {operator or '?'} {entry_str}".rstrip())
         QToolTip.showText(QCursor.pos(), "<br>".join(lines))
 
+    @staticmethod
+    def _tag_errorbar(container, site, label, visible):
+        """Flatten an ErrorbarContainer and tag every artist for the legends.
+
+        ``_site`` and ``_dataset_label`` are what ``_apply_visibility`` and the
+        site/dataset legends key off; ``_site_artists`` is rebuilt by rescanning
+        the axes for ``_site``, so tagging is all the registration needed.
+        """
+        parts = []
+        for child in container:
+            if isinstance(child, (list, tuple)):
+                parts.extend(child)
+            else:
+                parts.append(child)
+        for p in parts:
+            if hasattr(p, "set_visible"):
+                p._site = site
+                p._dataset_label = label
+                p.set_visible(visible)
+        return parts
+
+    def _draw_binned_means(self, ax, df, label, site_colors, *, x_col, mean_col,
+                           std_col, marker, brightness=0.9, markersize=6,
+                           capsize=3, visible=False):
+        """Draw a binned-mean dataset as one errorbar per site.
+
+        One vectorised errorbar call per site rather than one per row.  The two
+        look identical, but a 30-year record drew thousands of single-point
+        errorbars -- three artists each -- and building them dominated the
+        figure's open time even while the dataset was hidden.  Per site it is
+        three artists total.
+
+        Rows with a non-finite mean or standard deviation are dropped, as the
+        per-row version skipped them.
+        """
+        handles = {}
+        if df.empty:
+            return handles
+        mean = pd.to_numeric(df[mean_col], errors="coerce")
+        std = pd.to_numeric(df[std_col], errors="coerce")
+        df = df[np.isfinite(mean) & np.isfinite(std)]
+        if df.empty:
+            return handles
+        for site, grp in df.groupby("site", sort=False):
+            color = adjust_brightness(site_colors.get(site, "gray"), brightness)
+            container = ax.errorbar(
+                grp[x_col].to_numpy(),
+                pd.to_numeric(grp[mean_col]).to_numpy(),
+                yerr=pd.to_numeric(grp[std_col]).to_numpy(),
+                marker=marker, linestyle="",
+                color=color, markersize=markersize, capsize=capsize, alpha=0.9,
+                mfc="none", mec=color, label=label,
+            )
+            handles.setdefault(label, []).extend(
+                self._tag_errorbar(container, site, label, visible))
+        return handles
+
+    def _insitu_binned_frame(self, period):
+        """Per-(port, site, bin) mean/std of the in-situ air data.
+
+        *period* is a Series of bin start times aligned to ``self.insitu_df``.
+        Bins holding a single value are dropped -- they have no spread to draw.
+        """
+        sites = self.parent_widget.get_active_sites()
+        insitu = self.insitu_df[
+            self.insitu_df["site"].isin(sites) & (self.insitu_df["rejected"] == 0)
+        ].copy()
+        if insitu.empty:
+            return insitu
+        insitu["_period"] = period.loc[insitu.index]
+        agg = (insitu.groupby(["port", "site", "_period"])["mole_fraction"]
+                     .agg(["mean", "std", "count"]).reset_index())
+        agg = agg[(agg["count"] >= 2) & np.isfinite(agg["std"])]
+        return agg
+
+    def _draw_insitu_binned(self, ax, agg, label, site_colors, *, marker,
+                            markersize, capsize, visible):
+        """Draw the in-situ binned means, one errorbar per (port, site)."""
+        handles = {}
+        if agg.empty:
+            return handles
+        _air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
+        PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
+        PORT_SHADE = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
+        for (port, site), grp in agg.groupby(["port", "site"], sort=False):
+            port_label = PORT_LABELS.get(port, f"Air(port {port})")
+            color = adjust_brightness(site_colors.get(site, "gray"),
+                                      PORT_SHADE.get(port_label, 1.0))
+            container = ax.errorbar(
+                grp["_period"].to_numpy(), grp["mean"].to_numpy(),
+                yerr=grp["std"].to_numpy(),
+                marker=marker, linestyle="",
+                color=color, markersize=markersize, capsize=capsize, alpha=0.9,
+                mfc="none", mec=color, label=label,
+            )
+            handles.setdefault(label, []).extend(
+                self._tag_errorbar(container, site, label, visible))
+        return handles
+
+    @staticmethod
+    def _merge_handles(into, new):
+        for label, artists in new.items():
+            into.setdefault(label, []).extend(artists)
+        return into
+
     def _draw_10day_mean_artists(self, ax, site_colors):
         """Draw 10-day mean ± std for flask and insitu data; return dataset_handles entries.
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month."""
@@ -877,76 +982,23 @@ class TimeseriesFigure(TagCRUDMixin):
         visible = self.dataset_visibility.get("10-day mean", False)
 
         # ── Flask 10-day means (via ng_pair_avg_view, DB-aggregated) ───
-        tenday_df = self.parent_widget.query_10day_mean_data(self.analyte)
-        if not tenday_df.empty:
-            for _, row in tenday_df.iterrows():
-                site = row["site"]
-                mean = row["period_avg"]
-                std  = row["period_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                mid = row["period_start"]
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.9)
-                container = ax.errorbar(
-                    [mid], [mean], yerr=[std],
-                    marker="v", linestyle="",
-                    color=color, markersize=6, capsize=3, alpha=0.9,
-                    mfc="none", mec=color, label="10-day mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "10-day mean"
-                        p.set_visible(visible)
-                handles.setdefault("10-day mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_10day_mean_data(self.analyte),
+            "10-day mean", site_colors,
+            x_col="period_start", mean_col="period_avg", std_col="period_std",
+            marker="v", brightness=0.9, markersize=6, capsize=3, visible=visible))
 
         # ── Insitu 10-day means ─────────────────────────────────────
         if not self.insitu_df.empty:
-            _air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
-            PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
-            PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
-            sites = self.parent_widget.get_active_sites()
-            insitu = self.insitu_df[self.insitu_df["site"].isin(sites) & (self.insitu_df["rejected"] == 0)].copy()
-            month_start = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
-            day = insitu["analysis_time"].dt.day
+            month_start = self.insitu_df["analysis_time"].dt.to_period("M").dt.to_timestamp()
+            day = self.insitu_df["analysis_time"].dt.day
             offset = pd.to_timedelta(
                 np.where(day <= 10, 0, np.where(day <= 20, 10, 20)), unit="D"
             )
-            insitu["_period"] = month_start + offset
-            for (port, site, period), grp in insitu.groupby(["port", "site", "_period"]):
-                vals = grp["mole_fraction"].dropna()
-                if len(vals) < 2:
-                    continue
-                port_label = PORT_LABELS.get(port, f"Air(port {port})")
-                color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE.get(port_label, 1.0))
-                mean = vals.mean()
-                std  = vals.std()
-                if not np.isfinite(std):
-                    continue
-                container = ax.errorbar(
-                    [period], [mean], yerr=[std],
-                    marker="v", linestyle="",
-                    color=color, markersize=6, capsize=3, alpha=0.9,
-                    mfc="none", mec=color, label="10-day mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "10-day mean"
-                        p.set_visible(visible)
-                handles.setdefault("10-day mean", []).extend(parts)
+            agg = self._insitu_binned_frame(month_start + offset)
+            self._merge_handles(handles, self._draw_insitu_binned(
+                ax, agg, "10-day mean", site_colors,
+                marker="v", markersize=6, capsize=3, visible=visible))
 
         return handles
 
@@ -956,72 +1008,19 @@ class TimeseriesFigure(TagCRUDMixin):
         visible = self.dataset_visibility.get("Monthly mean", False)
 
         # ── Flask monthly means (via ng_pair_avg_view, DB-aggregated) ───
-        pair_df = self.parent_widget.query_monthly_mean_data(self.analyte)
-        if not pair_df.empty:
-            for _, row in pair_df.iterrows():
-                site = row["site"]
-                mean = row["monthly_avg"]
-                std  = row["monthly_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                mid = row["month_start"]
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.9)
-                container = ax.errorbar(
-                    [mid], [mean], yerr=[std],
-                    marker="D", linestyle="",
-                    color=color, markersize=7, capsize=4, alpha=0.9,
-                    mfc="none", mec=color, label="Monthly mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Monthly mean"
-                        p.set_visible(visible)
-                handles.setdefault("Monthly mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_monthly_mean_data(self.analyte),
+            "Monthly mean", site_colors,
+            x_col="month_start", mean_col="monthly_avg", std_col="monthly_std",
+            marker="D", brightness=0.9, markersize=7, capsize=4, visible=visible))
 
         # ── Insitu monthly means ─────────────────────────────────
         if not self.insitu_df.empty:
-            _air_ports = getattr(self.parent_widget.instrument, "AIR_PORTS", [3, 7])
-            PORT_LABELS = dict(zip(_air_ports, [f"Air{i+1}" for i in range(len(_air_ports))]))
-            PORT_SHADE  = dict(zip(PORT_LABELS.values(), [1.0, 0.65, 0.45, 0.30]))
-            sites = self.parent_widget.get_active_sites()
-            insitu = self.insitu_df[self.insitu_df["site"].isin(sites) & (self.insitu_df["rejected"] == 0)].copy()
-            insitu["_month"] = insitu["analysis_time"].dt.to_period("M").dt.to_timestamp()
-            for (port, site, month), grp in insitu.groupby(["port", "site", "_month"]):
-                vals = grp["mole_fraction"].dropna()
-                if len(vals) < 2:
-                    continue
-                port_label = PORT_LABELS.get(port, f"Air(port {port})")
-                color = adjust_brightness(site_colors.get(site, "gray"), PORT_SHADE.get(port_label, 1.0))
-                mid  = month
-                mean = vals.mean()
-                std  = vals.std()
-                if not np.isfinite(std):
-                    continue
-                container = ax.errorbar(
-                    [mid], [mean], yerr=[std],
-                    marker="D", linestyle="",
-                    color=color, markersize=7, capsize=4, alpha=0.9,
-                    mfc="none", mec=color, label="Monthly mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Monthly mean"
-                        p.set_visible(visible)
-                handles.setdefault("Monthly mean", []).extend(parts)
+            month_start = self.insitu_df["analysis_time"].dt.to_period("M").dt.to_timestamp()
+            agg = self._insitu_binned_frame(month_start)
+            self._merge_handles(handles, self._draw_insitu_binned(
+                ax, agg, "Monthly mean", site_colors,
+                marker="D", markersize=7, capsize=4, visible=visible))
 
         return handles
 
@@ -1047,64 +1046,20 @@ class TimeseriesFigure(TagCRUDMixin):
                 handles.setdefault("Mstar pair mean", []).append(line)
 
         # ── Mstar 10-day mean ───────────────────────────────────────
-        tenday_df = self.parent_widget.query_mstar_10day_mean_data(self.analyte)
-        visible_10d = self.dataset_visibility.get("Mstar 10-day mean", False)
-        if not tenday_df.empty:
-            for _, row in tenday_df.iterrows():
-                site = row["site"]
-                mean = row["period_avg"]
-                std  = row["period_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
-                container = ax.errorbar(
-                    [row["period_start"]], [mean], yerr=[std],
-                    marker="<", linestyle="",
-                    color=color, markersize=6, capsize=3, alpha=0.9,
-                    mfc="none", mec=color, label="Mstar 10-day mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Mstar 10-day mean"
-                        p.set_visible(visible_10d)
-                handles.setdefault("Mstar 10-day mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_mstar_10day_mean_data(self.analyte),
+            "Mstar 10-day mean", site_colors,
+            x_col="period_start", mean_col="period_avg", std_col="period_std",
+            marker="<", brightness=0.75, markersize=6, capsize=3,
+            visible=self.dataset_visibility.get("Mstar 10-day mean", False)))
 
         # ── Mstar monthly mean ──────────────────────────────────────
-        monthly_df = self.parent_widget.query_mstar_monthly_mean_data(self.analyte)
-        visible_mo = self.dataset_visibility.get("Mstar monthly mean", False)
-        if not monthly_df.empty:
-            for _, row in monthly_df.iterrows():
-                site = row["site"]
-                mean = row["monthly_avg"]
-                std  = row["monthly_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
-                container = ax.errorbar(
-                    [row["month_start"]], [mean], yerr=[std],
-                    marker="h", linestyle="",
-                    color=color, markersize=7, capsize=4, alpha=0.9,
-                    mfc="none", mec=color, label="Mstar monthly mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Mstar monthly mean"
-                        p.set_visible(visible_mo)
-                handles.setdefault("Mstar monthly mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_mstar_monthly_mean_data(self.analyte),
+            "Mstar monthly mean", site_colors,
+            x_col="month_start", mean_col="monthly_avg", std_col="monthly_std",
+            marker="h", brightness=0.75, markersize=7, capsize=4,
+            visible=self.dataset_visibility.get("Mstar monthly mean", False)))
 
         return handles
 
@@ -1130,64 +1085,20 @@ class TimeseriesFigure(TagCRUDMixin):
                 handles.setdefault("Otto pair mean", []).append(line)
 
         # ── Otto 10-day mean ────────────────────────────────────────
-        tenday_df = self.parent_widget.query_otto_10day_mean_data(self.analyte)
-        visible_10d = self.dataset_visibility.get("Otto 10-day mean", False)
-        if not tenday_df.empty:
-            for _, row in tenday_df.iterrows():
-                site = row["site"]
-                mean = row["period_avg"]
-                std  = row["period_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
-                container = ax.errorbar(
-                    [row["period_start"]], [mean], yerr=[std],
-                    marker="<", linestyle="",
-                    color=color, markersize=6, capsize=3, alpha=0.9,
-                    mfc="none", mec=color, label="Otto 10-day mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Otto 10-day mean"
-                        p.set_visible(visible_10d)
-                handles.setdefault("Otto 10-day mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_otto_10day_mean_data(self.analyte),
+            "Otto 10-day mean", site_colors,
+            x_col="period_start", mean_col="period_avg", std_col="period_std",
+            marker="<", brightness=0.75, markersize=6, capsize=3,
+            visible=self.dataset_visibility.get("Otto 10-day mean", False)))
 
         # ── Otto monthly mean ───────────────────────────────────────
-        monthly_df = self.parent_widget.query_otto_monthly_mean_data(self.analyte)
-        visible_mo = self.dataset_visibility.get("Otto monthly mean", False)
-        if not monthly_df.empty:
-            for _, row in monthly_df.iterrows():
-                site = row["site"]
-                mean = row["monthly_avg"]
-                std  = row["monthly_std"]
-                if not np.isfinite(mean) or not np.isfinite(std):
-                    continue
-                color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
-                container = ax.errorbar(
-                    [row["month_start"]], [mean], yerr=[std],
-                    marker="h", linestyle="",
-                    color=color, markersize=7, capsize=4, alpha=0.9,
-                    mfc="none", mec=color, label="Otto monthly mean"
-                )
-                parts = []
-                for child in container:
-                    if isinstance(child, (list, tuple)):
-                        parts.extend(child)
-                    else:
-                        parts.append(child)
-                for p in parts:
-                    if hasattr(p, "set_visible"):
-                        p._site = site
-                        p._dataset_label = "Otto monthly mean"
-                        p.set_visible(visible_mo)
-                handles.setdefault("Otto monthly mean", []).extend(parts)
+        self._merge_handles(handles, self._draw_binned_means(
+            ax, self.parent_widget.query_otto_monthly_mean_data(self.analyte),
+            "Otto monthly mean", site_colors,
+            x_col="month_start", mean_col="monthly_avg", std_col="monthly_std",
+            marker="h", brightness=0.75, markersize=7, capsize=4,
+            visible=self.dataset_visibility.get("Otto monthly mean", False)))
 
         return handles
 
