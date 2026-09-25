@@ -2351,14 +2351,13 @@ class TimeseriesWidget(QWidget):
                 "header states it in full."
             )
 
-            self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites and Time")
+            self.export_mstar_all_btn = QPushButton("All Sites and Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
-            self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites and Time")
+            self.export_mstar_sel_btn = QPushButton("Selected Sites and Time")
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
-            self.export_mstar_monthly_btn = QPushButton(
-                "Export M* Data -- Selected Sites, Times, Monthly Means")
+            self.export_mstar_monthly_btn = QPushButton("Selected Sites, Times, Monthly Means")
             self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
-            self.export_mstar_global_btn = QPushButton("Export M* Data -- Global Means")
+            self.export_mstar_global_btn = QPushButton("Global Means")
             self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
 
             _all_sites = lambda: [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
