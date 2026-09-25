@@ -180,8 +180,28 @@ class ExportPreviewFigure:
 
         self._fig, self._ax = plt.subplots(figsize=(11, 5.5))
         self._setup_toolbar_widgets()
+        self._setup_shortcuts()
         self.reload()
         self._fig.show()
+
+    # ── shortcuts ────────────────────────────────────────────────────────────
+
+    def _setup_shortcuts(self):
+        """Ctrl+Shift+Up/Down step the analyte, matching the main figure."""
+        self.prev_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Up"), self._fig.canvas)
+        self.prev_shortcut.activated.connect(self._prev_analyte)
+        self.next_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Down"), self._fig.canvas)
+        self.next_shortcut.activated.connect(self._next_analyte)
+
+    def _prev_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx > 0:
+            self.analyte_combo.setCurrentIndex(idx - 1)
+
+    def _next_analyte(self):
+        idx = self.analyte_combo.currentIndex()
+        if idx < self.analyte_combo.count() - 1:
+            self.analyte_combo.setCurrentIndex(idx + 1)
 
     # ── toolbar ──────────────────────────────────────────────────────────────
 
@@ -216,7 +236,10 @@ class ExportPreviewFigure:
         idx = self.analyte_combo.findText(w.analyte_combo.currentText(), Qt.MatchExactly)
         if idx >= 0:
             self.analyte_combo.setCurrentIndex(idx)
-        self.analyte_combo.currentTextChanged.connect(self._mark_pending)
+        # An analyte change is one discrete event rather than a run of them, so
+        # it reloads straight away as the main figure does. Only the year range
+        # stages, that being where stepping a spinbox fired a query per step.
+        self.analyte_combo.currentTextChanged.connect(self.reload)
         layout.addWidget(self.analyte_combo)
 
         self.reload_btn = QPushButton("Reload")

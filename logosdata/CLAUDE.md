@@ -370,11 +370,15 @@ button does and plots its own `query_data()`, so the preview cannot drift from
 the file.
 
 The preview's toolbar carries a **year range**, an **analyte** combo,
-**Reload** and **Save**, mirroring the main figure's toolbar. The controls
-**stage** a selection — `_mark_pending()` — and **Reload** applies it; nothing
-re-queries on a spinbox step, since walking a year range otherwise fired one
-query per step (12 steps = 12 queries, several seconds each for global means).
-Reload highlights pale yellow while a change is staged.
+**Reload** and **Save**, mirroring the main figure's toolbar.
+
+- The **year range stages** (`_mark_pending()`) and **Reload** applies it.
+  Walking the spinboxes otherwise fired one query per step — 12 steps = 12
+  queries, seconds each for global means. Reload goes pale yellow while staged.
+- An **analyte change reloads immediately**, as in the main figure: it's one
+  discrete event rather than a run of them.
+- **Ctrl+Shift+Up / Ctrl+Shift+Down** step the analyte, the same sequences the
+  main figure uses, so they reload too.
 
 Overrides go through `from_timeseries_widget(..., analyte=, start_year=,
 end_year=)`, so the Timeseries tab's own selection is **left untouched**. An
