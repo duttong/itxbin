@@ -133,6 +133,69 @@ def adjust_brightness(color, factor=1.0):
     return (r, g, b, a)
 
 
+class ExportPreviewFigure:
+    """A standalone window showing what an export would write.
+
+    Deliberately thin: the exporter is asked for its own series via
+    ``preview_series()``, so the preview tracks whatever the file format
+    actually contains rather than re-deriving it here. Sites are coloured with
+    the palette the main timeseries figure uses, so the two read alike.
+    """
+
+    def __init__(self, parent_widget, exporter, df, palette="Latitude"):
+        self.parent_widget = parent_widget
+        self.exporter = exporter
+        self._fig, ax = plt.subplots(figsize=(11, 5.5))
+
+        series = exporter.preview_series(df)
+        sites = [s['site'] for s in series if s.get('site')]
+        colors = build_site_colors(parent_widget.sites_by_lat or sites, palette)
+
+        for spec in series:
+            colour = spec.get('colour') or colors.get(spec.get('site'), 'gray')
+            if spec.get('background'):
+                colour = adjust_brightness(colour, 0.9) if isinstance(colour, tuple) else colour
+            x, y = spec['x'], spec['y']
+            yerr = spec.get('yerr')
+            bg = spec.get('background', False)
+            common = dict(marker=spec.get('marker', 'o'),
+                          linestyle=spec.get('linestyle', ''),
+                          linewidth=spec.get('linewidth', 1.0),
+                          color=colour,
+                          markersize=spec.get('markersize', 4),
+                          alpha=0.30 if bg else 0.9,
+                          zorder=spec.get('zorder', 3),
+                          label=spec['label'])
+            if yerr is not None and np.isfinite(pd.to_numeric(yerr, errors='coerce')).any():
+                ax.errorbar(x, y, yerr=yerr, capsize=2, ecolor=colour,
+                            elinewidth=0.8,
+                            mfc='none' if bg else colour, mec=colour, **common)
+            else:
+                ax.plot(x, y, **common)
+
+        ax.set_title(exporter.preview_title(), fontsize=12)
+        ax.set_xlabel("Sample datetime")
+        ax.set_ylabel("Mole fraction")
+        ax.grid(True, linestyle=':', alpha=0.4)
+        rows = len(df)
+        try:
+            # FecdDataExporter names a file per site, so it needs an argument.
+            name = exporter.default_filename()
+        except TypeError:
+            name = 'one file per site'
+        self._fig.text(0.01, 0.01, f'{rows} rows — would be written to {name}',
+                       fontsize=8, color='0.35')
+        ncol = 2 if len(series) > 12 else 1
+        ax.legend(fontsize=7, ncol=ncol, loc='upper left',
+                  bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0, frameon=False)
+        self._fig.tight_layout(rect=[0, 0.02, 0.87, 1])
+        self._fig.canvas.manager.set_window_title(exporter.preview_title())
+        self._fig.show()
+
+    def close(self):
+        plt.close(self._fig)
+
+
 class TimeseriesFigure(TagCRUDMixin):
     """Manages a single interactive matplotlib figure for timeseries data."""
 
@@ -2298,10 +2361,21 @@ class TimeseriesWidget(QWidget):
             self.export_mstar_global_btn = QPushButton("Export M* Data -- Global Means")
             self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
 
-            save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
-            save_layout.addLayout(self._export_row(self.export_mstar_sel_btn, _tip_sel))
-            save_layout.addLayout(self._export_row(self.export_mstar_monthly_btn, _tip_monthly))
-            save_layout.addLayout(self._export_row(self.export_mstar_global_btn, _tip_global))
+            _all_sites = lambda: [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
+            save_layout.addLayout(self._export_row(
+                self.export_mstar_all_btn, _tip_all,
+                on_plot=lambda: self._preview_export(_all_sites(), all_time=True)))
+            save_layout.addLayout(self._export_row(
+                self.export_mstar_sel_btn, _tip_sel,
+                on_plot=lambda: self._preview_export(self.get_active_sites())))
+            save_layout.addLayout(self._export_row(
+                self.export_mstar_monthly_btn, _tip_monthly,
+                on_plot=lambda: self._preview_export(self.get_active_sites(),
+                                                     exporter_cls=MstarMonthlyExporter)))
+            save_layout.addLayout(self._export_row(
+                self.export_mstar_global_btn, _tip_global,
+                on_plot=lambda: self._preview_export(None,
+                                                     exporter_cls=MstarGlobalMeansExporter)))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -2330,8 +2404,16 @@ class TimeseriesWidget(QWidget):
             self.export_fecd_sel_btn = QPushButton("Export fECD Data -- Selected Sites and Time")
             self.export_fecd_sel_btn.clicked.connect(self._export_fecd_data_selected_sites)
 
-            save_layout.addLayout(self._export_row(self.export_fecd_all_btn, _tip_fecd_all))
-            save_layout.addLayout(self._export_row(self.export_fecd_sel_btn, _tip_fecd_sel))
+            _fecd_all = lambda: [s for s in self.sites_by_lat if s not in PFP_SITES]
+            _fecd_sel = lambda: [s for s in self.get_active_sites() if s not in PFP_SITES]
+            save_layout.addLayout(self._export_row(
+                self.export_fecd_all_btn, _tip_fecd_all,
+                on_plot=lambda: self._preview_export(_fecd_all(), all_time=True,
+                                                     exporter_cls=FecdDataExporter)))
+            save_layout.addLayout(self._export_row(
+                self.export_fecd_sel_btn, _tip_fecd_sel,
+                on_plot=lambda: self._preview_export(_fecd_sel(),
+                                                     exporter_cls=FecdDataExporter)))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -2339,8 +2421,12 @@ class TimeseriesWidget(QWidget):
         self.setLayout(controls)
 
     # --- Helpers ---
-    def _export_row(self, btn: QPushButton, tooltip_html: str):
-        """Return a QHBoxLayout with *btn* and a press-and-hold info icon."""
+    def _export_row(self, btn: QPushButton, tooltip_html: str, on_plot=None):
+        """Return a QHBoxLayout with *btn*, an optional Plot button and an info icon.
+
+        *on_plot* previews exactly what the export beside it would write, so the
+        file can be checked before it is created.
+        """
         icon_path = Path(__file__).parent / 'assets' / 'icons8-info-30.png'
         info_btn = QPushButton()
         info_btn.setFixedSize(22, 22)
@@ -2365,6 +2451,13 @@ class TimeseriesWidget(QWidget):
         row = QHBoxLayout()
         row.setSpacing(4)
         row.addWidget(btn, stretch=1)
+        if on_plot is not None:
+            plot_btn = QPushButton("Plot")
+            plot_btn.setFixedWidth(44)
+            plot_btn.setToolTip("Preview the data this export would write, "
+                                "without creating a file")
+            plot_btn.clicked.connect(lambda _=False: on_plot())
+            row.addWidget(plot_btn, stretch=0)
         row.addWidget(info_btn, stretch=0)
         return row
 
@@ -2596,6 +2689,26 @@ class TimeseriesWidget(QWidget):
         """
         self._run_mstar_export(sites=None, all_time=False,
                                exporter_cls=MstarGlobalMeansExporter)
+
+    def _preview_export(self, sites: list[str] | None, all_time: bool = False,
+                        exporter_cls=MstarDataExporter):
+        """Open a window showing what the matching export would write.
+
+        Builds the exporter exactly as the export button does and plots its own
+        query, so the preview cannot drift from the file.
+        """
+        exporter = exporter_cls.from_timeseries_widget(self, sites=sites, all_time=all_time)
+        df = exporter.query_data()
+        if df.empty:
+            QMessageBox.warning(self, "Preview export",
+                                "No data found for the current selection.")
+            return
+        fig = ExportPreviewFigure(self, exporter, df, palette=self._preview_palette())
+        self.open_figures.append(fig)
+
+    def _preview_palette(self) -> str:
+        """Match whatever palette the timeseries figures are using."""
+        return getattr(self, '_palette', 'Latitude') or 'Latitude'
 
     def _run_mstar_export(self, sites: list[str] | None, all_time: bool = False,
                           exporter_cls=MstarDataExporter):

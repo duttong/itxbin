@@ -300,6 +300,33 @@ class MstarDataExporter:
 
     # ── export ────────────────────────────────────────────────────────────────
 
+    # ── preview ───────────────────────────────────────────────────────────────
+
+    def preview_series(self, df: pd.DataFrame) -> list[dict]:
+        """Describe what a preview plot should draw, one entry per series.
+
+        Each entry is ``{label, site, x, y, yerr, marker}``; *site* lets the
+        caller colour a series the same way the main timeseries figure does, and
+        is None for a series that is not a single site.  Subclasses override
+        this to describe their own layout, so the preview always shows the
+        columns that would actually be written.
+        """
+        out = []
+        site_col = 'export_site' if 'export_site' in df.columns else 'site'
+        for site, grp in df.groupby(site_col, sort=True):
+            out.append({
+                'label': str(site).lower(),
+                'site': str(site).upper(),
+                'x': grp['sample_datetime'],
+                'y': pd.to_numeric(grp['pair_avg'], errors='coerce'),
+                'yerr': pd.to_numeric(grp.get('pair_stdv'), errors='coerce'),
+                'marker': 'o',
+            })
+        return out
+
+    def preview_title(self) -> str:
+        return f'{self.parameter} — flask pair means ({self.start_year}–{self.end_year})'
+
     def default_filename(self) -> str:
         """Return a sensible default output filename."""
         return f'{self.parameter}_GCMS_flasks.txt'
@@ -473,6 +500,23 @@ class MstarMonthlyExporter(MstarDataExporter):
         return lines
 
     # ── export ────────────────────────────────────────────────────────────────
+
+    def preview_series(self, df: pd.DataFrame) -> list[dict]:
+        """One series per site: the monthly mean with its floored sd."""
+        out = []
+        for site, grp in df.groupby('site', sort=True):
+            out.append({
+                'label': str(site).lower(),
+                'site': str(site).upper(),
+                'x': grp['month_start'],
+                'y': pd.to_numeric(grp['monthly_avg'], errors='coerce'),
+                'yerr': pd.to_numeric(grp['monthly_std'], errors='coerce'),
+                'marker': 'D',
+            })
+        return out
+
+    def preview_title(self) -> str:
+        return f'{self.parameter} — monthly means ({self.start_year}–{self.end_year})'
 
     def default_filename(self) -> str:
         """Return a sensible default output filename."""
@@ -713,6 +757,40 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         return lines
 
     # ── export ────────────────────────────────────────────────────────────────
+
+    def preview_series(self, df: pd.DataFrame) -> list[dict]:
+        """Site means faintly behind, then SH, NH and Global picked out.
+
+        The background sites are drawn so the means can be read against the
+        data they come from -- the whole point of the file.
+        """
+        out = []
+        for col in sorted(c for c in df.columns
+                          if not c.endswith(('_sd', '_n'))
+                          and c not in ('date',) + tuple(_MEAN_COL_ORDER)):
+            out.append({
+                'label': col, 'site': col.upper(),
+                'x': df['date'], 'y': pd.to_numeric(df[col], errors='coerce'),
+                'yerr': None, 'marker': '.', 'markersize': 2.5,
+                'background': True, 'zorder': 1,
+            })
+        for col, colour in (('SH', 'tab:blue'), ('NH', 'tab:red'),
+                            ('Global', 'black')):
+            if col not in df.columns:
+                continue
+            out.append({
+                'label': col, 'site': None, 'colour': colour,
+                'x': df['date'], 'y': pd.to_numeric(df[col], errors='coerce'),
+                'yerr': pd.to_numeric(df.get(f'{col}_sd'), errors='coerce'),
+                'marker': '', 'linestyle': '-',
+                'linewidth': 2.2 if col == 'Global' else 1.4,
+                'zorder': 5 if col == 'Global' else 4,
+            })
+        return out
+
+    def preview_title(self) -> str:
+        return (f'{self.parameter} — global and hemispheric means '
+                f'({self.start_year}–{self.end_year})')
 
     def default_filename(self) -> str:
         return f'{self.parameter}_GCMS_global_means.txt'
@@ -999,6 +1077,37 @@ class FecdDataExporter:
         return lines
 
     # ── export ────────────────────────────────────────────────────────────────
+
+    def query_data(self) -> pd.DataFrame:
+        """All selected sites in one frame, for the preview.
+
+        The export itself writes a file per site; this is only used to show what
+        those files would contain.
+        """
+        frames = []
+        for site in self.sites:
+            d = self.query_site_data(site)
+            if not d.empty:
+                frames.append(d.assign(site=site.upper()))
+        return _concat_frames(frames)
+
+    def preview_series(self, df: pd.DataFrame) -> list[dict]:
+        """One series per site; OTTO and FE3 share it, as they do in the file."""
+        out = []
+        for site, grp in df.groupby('site', sort=True):
+            out.append({
+                'label': str(site).lower(),
+                'site': str(site).upper(),
+                'x': grp['sample_datetime'],
+                'y': pd.to_numeric(grp['pair_avg'], errors='coerce'),
+                'yerr': pd.to_numeric(grp['pair_stdv'], errors='coerce'),
+                'marker': 'o',
+            })
+        return out
+
+    def preview_title(self) -> str:
+        return (f'{self.parameter_name} — fECD flask pair means '
+                f'({self.start_year}–{self.end_year})')
 
     def default_filename(self, site: str) -> str:
         return f'{self._short_code()}_{site.upper()}_NOAAflaskECD_All.txt'

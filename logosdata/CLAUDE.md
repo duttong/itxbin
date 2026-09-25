@@ -343,6 +343,33 @@ Instrument-specific; built in `TimeseriesWidget.__init__` and handled by
 FE3 gets two fECD buttons (`FecdDataExporter`), which prompt for a directory
 and write one file per site.
 
+### Preview ("Plot") buttons
+
+Each export row is `[Export] [Plot] [ⓘ]`. **Plot** opens an
+`ExportPreviewFigure` showing exactly what that export would write, without
+creating a file — built by `_preview_export()`, which constructs the exporter
+the same way the export button does and plots its own `query_data()`, so the
+preview cannot drift from the file.
+
+Each exporter describes its own preview through two hooks, keeping the shape
+knowledge with the format rather than in the plotting code:
+
+- `preview_series(df)` → `[{label, site, x, y, yerr, marker, …}]`. `site` lets
+  the figure colour a series with `build_site_colors()`, matching the main
+  timeseries figure; it is None for a series that isn't one site (Global/NH/SH).
+  Optional keys: `colour`, `linestyle`, `linewidth`, `markersize`, `zorder`,
+  `background` (drawn faint and behind).
+- `preview_title()` → the window title and axes title.
+
+The global-means preview draws the background sites faintly with the three
+means as lines on top, so the means can be read against the data behind them.
+`FecdDataExporter` gained a `query_data()` that concatenates its per-site
+frames purely for this — its export still writes one file per site, and the
+preview footer says so.
+
+An empty selection warns and opens no window. Adding an export means adding
+those two hooks and passing `on_plot=` to `_export_row()`.
+
 `mstar_header.txt` holds the shared GML header for the first three; its
 COLUMN DESCRIPTIONS block is a `{columns}` placeholder filled from
 `mstar_columns_pairs.txt` or `mstar_columns_monthly.txt`. The standalone
