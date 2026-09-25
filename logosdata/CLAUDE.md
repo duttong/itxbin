@@ -351,12 +351,22 @@ Each export row is `[Export] [Plot] [ⓘ]`. **Plot** opens an
 button does and plots its own `query_data()`, so the preview cannot drift from
 the file.
 
-The preview's toolbar carries a **year range**, an **analyte** combo and
-**Save**, mirroring the main figure's toolbar. Changing the range or analyte
-rebuilds the exporter and redraws, **leaving the Timeseries tab's own selection
-untouched** — the overrides go through `from_timeseries_widget(..., analyte=,
-start_year=, end_year=)`, which every exporter accepts. An all-time export has
-no range to pick, so its spinboxes are omitted (`start_year is None`).
+The preview's toolbar carries a **year range**, an **analyte** combo,
+**Reload** and **Save**, mirroring the main figure's toolbar. The controls
+**stage** a selection — `_mark_pending()` — and **Reload** applies it; nothing
+re-queries on a spinbox step, since walking a year range otherwise fired one
+query per step (12 steps = 12 queries, several seconds each for global means).
+Reload highlights amber while a change is staged, using the same styling as
+`_set_button_loading_state`.
+
+Overrides go through `from_timeseries_widget(..., analyte=, start_year=,
+end_year=)`, so the Timeseries tab's own selection is **left untouched**. An
+all-time export has no range to pick, so its spinboxes are omitted
+(`start_year is None`).
+
+**Save applies a staged change first** (`_on_save` calls `reload()` when
+`_pending`), so it can never write a different selection from the one drawn —
+the plot, the footer and the file always agree.
 
 `_preview_export()` takes the sites as a **callable**, not a list, so each
 reload re-reads the site checkboxes rather than freezing them at open time.

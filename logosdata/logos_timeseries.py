@@ -158,6 +158,8 @@ class ExportPreviewFigure:
         self._palette = palette
         self._title = title
         self.exporter = None
+        self._df = None
+        self._pending = False
 
         self._fig, self._ax = plt.subplots(figsize=(11, 5.5))
         self._setup_toolbar_widgets()
@@ -188,8 +190,8 @@ class ExportPreviewFigure:
             layout.addWidget(QLabel("–"))
             layout.addWidget(self.end_year)
             layout.addSpacing(8)
-            self.start_year.valueChanged.connect(self.reload)
-            self.end_year.valueChanged.connect(self.reload)
+            self.start_year.valueChanged.connect(self._mark_pending)
+            self.end_year.valueChanged.connect(self._mark_pending)
 
         self.analyte_combo = QComboBox()
         names = [w.analyte_combo.itemText(i) for i in range(w.analyte_combo.count())]
@@ -197,8 +199,13 @@ class ExportPreviewFigure:
         idx = self.analyte_combo.findText(w.analyte_combo.currentText(), Qt.MatchExactly)
         if idx >= 0:
             self.analyte_combo.setCurrentIndex(idx)
-        self.analyte_combo.currentTextChanged.connect(self.reload)
+        self.analyte_combo.currentTextChanged.connect(self._mark_pending)
         layout.addWidget(self.analyte_combo)
+
+        self.reload_btn = QPushButton("Reload")
+        self.reload_btn.setToolTip("Re-query with the selected years and analyte")
+        self.reload_btn.clicked.connect(self.reload)
+        layout.addWidget(self.reload_btn)
 
         self.save_btn = QPushButton("Save")
         self.save_btn.setToolTip("Write this data to a file, as the export button does")
@@ -225,19 +232,47 @@ class ExportPreviewFigure:
             end_year=None if self._all_time else self.end_year.value(),
         )
 
+    def _mark_pending(self, *_):
+        """Note that the controls no longer match what is drawn.
+
+        Re-querying on every spinbox step meant walking a year range fired one
+        database query per step, so the controls only stage a selection now and
+        Reload applies it. The plot and the footer keep describing the data
+        actually loaded, so what is shown stays what would be written.
+        """
+        self._pending = True
+        if getattr(self, 'reload_btn', None) is not None:
+            self.reload_btn.setStyleSheet(
+                "QPushButton { background-color: #f6e7a1;"
+                " border: 1px solid #c5ae45; color: #3f3200; padding: 3px 6px; }")
+
+    def _clear_pending(self):
+        self._pending = False
+        if getattr(self, 'reload_btn', None) is not None:
+            self.reload_btn.setStyleSheet("")
+
     def reload(self, *_):
         """Re-query with the toolbar's current selection and redraw."""
-        self.exporter = self._build_exporter()
+        btn = getattr(self, 'reload_btn', None)
+        if btn is not None:
+            self.parent_widget._set_button_loading_state(btn, True, "Reload")
         try:
-            df = self.exporter.query_data()
-        except Exception as exc:                      # a bad analyte/site combination
-            self._draw_message(f"Could not build the export:\n{exc}")
-            return
-        self._df = df
-        if df.empty:
-            self._draw_message("No data for this selection.")
-            return
-        self._draw(df)
+            self.exporter = self._build_exporter()
+            try:
+                df = self.exporter.query_data()
+            except Exception as exc:                  # a bad analyte/site combination
+                self._df = None
+                self._draw_message(f"Could not build the export:\n{exc}")
+                return
+            self._df = df
+            if df.empty:
+                self._draw_message("No data for this selection.")
+                return
+            self._draw(df)
+        finally:
+            if btn is not None:
+                self.parent_widget._set_button_loading_state(btn, False, "Reload")
+            self._clear_pending()
 
     # ── drawing ──────────────────────────────────────────────────────────────
 
@@ -301,6 +336,10 @@ class ExportPreviewFigure:
     # ── save ─────────────────────────────────────────────────────────────────
 
     def _on_save(self):
+        # Apply any staged control change first, so Save can never write a
+        # different selection from the one on screen.
+        if getattr(self, '_pending', False):
+            self.reload()
         if self.exporter is None or getattr(self, '_df', None) is None or self._df.empty:
             QMessageBox.warning(self.parent_widget, self._title,
                                 "No data to save for this selection.")
