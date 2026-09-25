@@ -346,10 +346,26 @@ and write one file per site.
 ### Preview ("Plot") buttons
 
 Each export row is `[Export] [Plot] [ⓘ]`. **Plot** opens an
-`ExportPreviewFigure` showing exactly what that export would write, without
-creating a file — built by `_preview_export()`, which constructs the exporter
-the same way the export button does and plots its own `query_data()`, so the
-preview cannot drift from the file.
+`ExportPreviewFigure` showing exactly what that export would write — built by
+`_preview_export()`, which constructs the exporter the same way the export
+button does and plots its own `query_data()`, so the preview cannot drift from
+the file.
+
+The preview's toolbar carries a **year range**, an **analyte** combo and
+**Save**, mirroring the main figure's toolbar. Changing the range or analyte
+rebuilds the exporter and redraws, **leaving the Timeseries tab's own selection
+untouched** — the overrides go through `from_timeseries_widget(..., analyte=,
+start_year=, end_year=)`, which every exporter accepts. An all-time export has
+no range to pick, so its spinboxes are omitted (`start_year is None`).
+
+`_preview_export()` takes the sites as a **callable**, not a list, so each
+reload re-reads the site checkboxes rather than freezing them at open time.
+
+**Save** calls `TimeseriesWidget.save_exporter()`, the same path the export
+button uses, so saving from a preview and pressing Export are identical.
+`save_exporter()` dispatches on the exporter's `WRITES_DIRECTORY` class
+attribute — False writes one file via `export()`, True prompts for a directory
+and calls `export_all()` (fECD only).
 
 Each exporter describes its own preview through two hooks, keeping the shape
 knowledge with the format rather than in the plotting code:

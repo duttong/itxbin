@@ -346,9 +346,14 @@ class MstarDataExporter:
 
     # ── factory ──────────────────────────────────────────────────────────────
 
+    # True when the export writes a directory of files rather than one file.
+    WRITES_DIRECTORY = False
+
     @classmethod
     def from_timeseries_widget(
-        cls, widget, sites: list[str] | None = None, all_time: bool = False
+        cls, widget, sites: list[str] | None = None, all_time: bool = False,
+        analyte: str | None = None, start_year: int | None = None,
+        end_year: int | None = None,
     ) -> 'MstarDataExporter':
         """Construct from a ``TimeseriesWidget`` using its current UI state.
 
@@ -356,16 +361,23 @@ class MstarDataExporter:
         (e.g. to export all sites regardless of which checkboxes are checked).
         Pass *all_time=True* to export all available years regardless of the
         year-range spinboxes.
+
+        *analyte*, *start_year* and *end_year* override the widget too, which is
+        what lets the preview window re-query without disturbing the main tab.
         """
-        analyte = widget.analyte_combo.currentText()
+        analyte = analyte or widget.analyte_combo.currentText()
         pnum = widget.analytes.get(analyte)
+        if start_year is None:
+            start_year = 1990 if all_time else widget.start_year.value()
+        if end_year is None:
+            end_year = datetime.now().year if all_time else widget.end_year.value()
         return cls(
             instrument=widget.instrument,
             parameter=analyte,
             parameter_num=pnum,
             sites=sites if sites is not None else widget.get_active_sites(),
-            start_year=1990 if all_time else widget.start_year.value(),
-            end_year=datetime.now().year if all_time else widget.end_year.value(),
+            start_year=start_year,
+            end_year=end_year,
         )
 
 
@@ -811,20 +823,26 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
 
     @classmethod
     def from_timeseries_widget(
-        cls, widget, sites: list[str] | None = None, all_time: bool = False
+        cls, widget, sites: list[str] | None = None, all_time: bool = False,
+        analyte: str | None = None, start_year: int | None = None,
+        end_year: int | None = None,
     ) -> 'MstarGlobalMeansExporter':
         """Construct from a TimeseriesWidget.
 
         *sites* is accepted for signature compatibility with the sibling
         exporters and ignored: the background sites come from the config.
         """
-        analyte = widget.analyte_combo.currentText()
+        analyte = analyte or widget.analyte_combo.currentText()
+        if start_year is None:
+            start_year = 1990 if all_time else widget.start_year.value()
+        if end_year is None:
+            end_year = datetime.now().year if all_time else widget.end_year.value()
         return cls(
             instrument=widget.instrument,
             parameter=analyte,
             parameter_num=widget.analytes.get(analyte),
-            start_year=1990 if all_time else widget.start_year.value(),
-            end_year=datetime.now().year if all_time else widget.end_year.value(),
+            start_year=start_year,
+            end_year=end_year,
         )
 
 
@@ -885,6 +903,8 @@ class FecdDataExporter:
     """
 
     FE3_INST_NUM = 193
+    # The export writes one file per site, so it asks for a directory.
+    WRITES_DIRECTORY = True
 
     def __init__(
         self,
@@ -1146,17 +1166,24 @@ class FecdDataExporter:
         widget,
         sites: list[str] | None = None,
         all_time: bool = False,
+        analyte: str | None = None,
+        start_year: int | None = None,
+        end_year: int | None = None,
     ) -> 'FecdDataExporter':
         """Construct from a TimeseriesWidget (FE3 only)."""
-        analyte = widget.analyte_combo.currentText()
+        analyte = analyte or widget.analyte_combo.currentText()
         # Strip channel suffix to get the bare parameter name, e.g. "CFC11 (c)" -> "CFC11"
         param_name = analyte.split('(')[0].strip() if '(' in analyte else analyte.strip()
         pnum = widget.analytes.get(analyte)
+        if start_year is None:
+            start_year = 1990 if all_time else widget.start_year.value()
+        if end_year is None:
+            end_year = datetime.now().year if all_time else widget.end_year.value()
         return cls(
             instrument=widget.instrument,
             parameter_num=pnum,
             parameter_name=param_name,
             sites=sites if sites is not None else widget.get_active_sites(),
-            start_year=1990 if all_time else widget.start_year.value(),
-            end_year=datetime.now().year if all_time else widget.end_year.value(),
+            start_year=start_year,
+            end_year=end_year,
         )

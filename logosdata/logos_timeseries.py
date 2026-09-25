@@ -134,30 +134,133 @@ def adjust_brightness(color, factor=1.0):
 
 
 class ExportPreviewFigure:
-    """A standalone window showing what an export would write.
+    """A window showing what an export would write, and able to write it.
 
     Deliberately thin: the exporter is asked for its own series via
     ``preview_series()``, so the preview tracks whatever the file format
     actually contains rather than re-deriving it here. Sites are coloured with
     the palette the main timeseries figure uses, so the two read alike.
+
+    The toolbar carries a year range, an analyte picker and Save. Changing the
+    range or analyte rebuilds the exporter and redraws, leaving the Timeseries
+    tab's own selection alone; Save writes through
+    :meth:`TimeseriesWidget.save_exporter`, the same path as the export button
+    beside which this was opened. An all-time export has no year range to pick,
+    so the spinboxes are omitted for it.
     """
 
-    def __init__(self, parent_widget, exporter, df, palette="Latitude"):
+    def __init__(self, parent_widget, exporter_cls, sites_fn, all_time=False,
+                 palette="Latitude", title="Export"):
         self.parent_widget = parent_widget
-        self.exporter = exporter
-        self._fig, ax = plt.subplots(figsize=(11, 5.5))
+        self.exporter_cls = exporter_cls
+        self._sites_fn = sites_fn
+        self._all_time = all_time
+        self._palette = palette
+        self._title = title
+        self.exporter = None
 
-        series = exporter.preview_series(df)
+        self._fig, self._ax = plt.subplots(figsize=(11, 5.5))
+        self._setup_toolbar_widgets()
+        self.reload()
+        self._fig.show()
+
+    # ── toolbar ──────────────────────────────────────────────────────────────
+
+    def _setup_toolbar_widgets(self):
+        w = self.parent_widget
+        row = QWidget()
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.start_year = self.end_year = None
+        if not self._all_time:
+            self.start_year = QSpinBox()
+            self.start_year.setRange(1990, 2030)
+            self.start_year.setValue(w.start_year.value())
+            self.start_year.setFixedWidth(60)
+            self.end_year = QSpinBox()
+            self.end_year.setRange(1990, 2030)
+            self.end_year.setValue(w.end_year.value())
+            self.end_year.setFixedWidth(60)
+            layout.addWidget(QLabel("Years:"))
+            layout.addWidget(self.start_year)
+            layout.addWidget(QLabel("–"))
+            layout.addWidget(self.end_year)
+            layout.addSpacing(8)
+            self.start_year.valueChanged.connect(self.reload)
+            self.end_year.valueChanged.connect(self.reload)
+
+        self.analyte_combo = QComboBox()
+        names = [w.analyte_combo.itemText(i) for i in range(w.analyte_combo.count())]
+        self.analyte_combo.addItems(names or [w.analyte_combo.currentText()])
+        idx = self.analyte_combo.findText(w.analyte_combo.currentText(), Qt.MatchExactly)
+        if idx >= 0:
+            self.analyte_combo.setCurrentIndex(idx)
+        self.analyte_combo.currentTextChanged.connect(self.reload)
+        layout.addWidget(self.analyte_combo)
+
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setToolTip("Write this data to a file, as the export button does")
+        self.save_btn.clicked.connect(self._on_save)
+        layout.addWidget(self.save_btn)
+
+        row.setLayout(layout)
+        toolbar = getattr(getattr(self._fig.canvas, "manager", None), "toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "addWidget"):
+            spacer = QWidget()
+            spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            toolbar.addWidget(spacer)
+            toolbar.addWidget(row)
+
+    # ── data ─────────────────────────────────────────────────────────────────
+
+    def _build_exporter(self):
+        return self.exporter_cls.from_timeseries_widget(
+            self.parent_widget,
+            sites=self._sites_fn() if self._sites_fn else None,
+            all_time=self._all_time,
+            analyte=self.analyte_combo.currentText(),
+            start_year=None if self._all_time else self.start_year.value(),
+            end_year=None if self._all_time else self.end_year.value(),
+        )
+
+    def reload(self, *_):
+        """Re-query with the toolbar's current selection and redraw."""
+        self.exporter = self._build_exporter()
+        try:
+            df = self.exporter.query_data()
+        except Exception as exc:                      # a bad analyte/site combination
+            self._draw_message(f"Could not build the export:\n{exc}")
+            return
+        self._df = df
+        if df.empty:
+            self._draw_message("No data for this selection.")
+            return
+        self._draw(df)
+
+    # ── drawing ──────────────────────────────────────────────────────────────
+
+    def _draw_message(self, text):
+        self._ax.clear()
+        self._ax.set_axis_off()
+        self._ax.text(0.5, 0.5, text, ha="center", va="center",
+                      fontsize=11, color="0.4", transform=self._ax.transAxes)
+        self._ax.set_title(self.exporter.preview_title(), fontsize=12)
+        self._fig.canvas.draw_idle()
+
+    def _draw(self, df):
+        ax = self._ax
+        ax.clear()
+        ax.set_axis_on()
+        series = self.exporter.preview_series(df)
         sites = [s['site'] for s in series if s.get('site')]
-        colors = build_site_colors(parent_widget.sites_by_lat or sites, palette)
+        colors = build_site_colors(self.parent_widget.sites_by_lat or sites, self._palette)
 
         for spec in series:
             colour = spec.get('colour') or colors.get(spec.get('site'), 'gray')
-            if spec.get('background'):
-                colour = adjust_brightness(colour, 0.9) if isinstance(colour, tuple) else colour
-            x, y = spec['x'], spec['y']
-            yerr = spec.get('yerr')
             bg = spec.get('background', False)
+            yerr = spec.get('yerr')
             common = dict(marker=spec.get('marker', 'o'),
                           linestyle=spec.get('linestyle', ''),
                           linewidth=spec.get('linewidth', 1.0),
@@ -167,30 +270,42 @@ class ExportPreviewFigure:
                           zorder=spec.get('zorder', 3),
                           label=spec['label'])
             if yerr is not None and np.isfinite(pd.to_numeric(yerr, errors='coerce')).any():
-                ax.errorbar(x, y, yerr=yerr, capsize=2, ecolor=colour,
-                            elinewidth=0.8,
-                            mfc='none' if bg else colour, mec=colour, **common)
+                ax.errorbar(spec['x'], spec['y'], yerr=yerr, capsize=2, ecolor=colour,
+                            elinewidth=0.8, mfc='none' if bg else colour, mec=colour,
+                            **common)
             else:
-                ax.plot(x, y, **common)
+                ax.plot(spec['x'], spec['y'], **common)
 
-        ax.set_title(exporter.preview_title(), fontsize=12)
+        ax.set_title(self.exporter.preview_title(), fontsize=12)
         ax.set_xlabel("Sample datetime")
         ax.set_ylabel("Mole fraction")
         ax.grid(True, linestyle=':', alpha=0.4)
-        rows = len(df)
-        try:
-            # FecdDataExporter names a file per site, so it needs an argument.
-            name = exporter.default_filename()
-        except TypeError:
-            name = 'one file per site'
-        self._fig.text(0.01, 0.01, f'{rows} rows — would be written to {name}',
-                       fontsize=8, color='0.35')
         ncol = 2 if len(series) > 12 else 1
         ax.legend(fontsize=7, ncol=ncol, loc='upper left',
                   bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0, frameon=False)
         self._fig.tight_layout(rect=[0, 0.02, 0.87, 1])
-        self._fig.canvas.manager.set_window_title(exporter.preview_title())
-        self._fig.show()
+        self._update_footer(len(df))
+        self._fig.canvas.draw_idle()
+
+    def _update_footer(self, rows):
+        for txt in list(self._fig.texts):
+            txt.remove()
+        try:
+            # FecdDataExporter names a file per site, so it needs an argument.
+            name = self.exporter.default_filename()
+        except TypeError:
+            name = 'one file per site'
+        self._fig.text(0.01, 0.01, f'{rows} rows — would be written to {name}',
+                       fontsize=8, color='0.35')
+
+    # ── save ─────────────────────────────────────────────────────────────────
+
+    def _on_save(self):
+        if self.exporter is None or getattr(self, '_df', None) is None or self._df.empty:
+            QMessageBox.warning(self.parent_widget, self._title,
+                                "No data to save for this selection.")
+            return
+        self.parent_widget.save_exporter(self.exporter, title=self._title)
 
     def close(self):
         plt.close(self._fig)
@@ -2357,19 +2472,19 @@ class TimeseriesWidget(QWidget):
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
             self.export_mstar_monthly_btn = QPushButton("Selected Sites, Times, Monthly Means")
             self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
-            self.export_mstar_global_btn = QPushButton("Global Means")
+            self.export_mstar_global_btn = QPushButton("Global Means at Selected Time")
             self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
 
             _all_sites = lambda: [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
             save_layout.addLayout(self._export_row(
                 self.export_mstar_all_btn, _tip_all,
-                on_plot=lambda: self._preview_export(_all_sites(), all_time=True)))
+                on_plot=lambda: self._preview_export(_all_sites, all_time=True)))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_sel_btn, _tip_sel,
-                on_plot=lambda: self._preview_export(self.get_active_sites())))
+                on_plot=lambda: self._preview_export(self.get_active_sites)))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_monthly_btn, _tip_monthly,
-                on_plot=lambda: self._preview_export(self.get_active_sites(),
+                on_plot=lambda: self._preview_export(self.get_active_sites,
                                                      exporter_cls=MstarMonthlyExporter)))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_global_btn, _tip_global,
@@ -2398,21 +2513,23 @@ class TimeseriesWidget(QWidget):
                 "You will be prompted to choose an output directory."
             )
 
-            self.export_fecd_all_btn = QPushButton("Export fECD Data -- All Sites and Time")
+            self.export_fecd_all_btn = QPushButton("All Sites and Time")
             self.export_fecd_all_btn.clicked.connect(self._export_fecd_data_all_sites)
-            self.export_fecd_sel_btn = QPushButton("Export fECD Data -- Selected Sites and Time")
+            self.export_fecd_sel_btn = QPushButton("Selected Sites and Time")
             self.export_fecd_sel_btn.clicked.connect(self._export_fecd_data_selected_sites)
 
             _fecd_all = lambda: [s for s in self.sites_by_lat if s not in PFP_SITES]
             _fecd_sel = lambda: [s for s in self.get_active_sites() if s not in PFP_SITES]
             save_layout.addLayout(self._export_row(
                 self.export_fecd_all_btn, _tip_fecd_all,
-                on_plot=lambda: self._preview_export(_fecd_all(), all_time=True,
-                                                     exporter_cls=FecdDataExporter)))
+                on_plot=lambda: self._preview_export(_fecd_all, all_time=True,
+                                                     exporter_cls=FecdDataExporter,
+                                                     title="Export fECD Data")))
             save_layout.addLayout(self._export_row(
                 self.export_fecd_sel_btn, _tip_fecd_sel,
-                on_plot=lambda: self._preview_export(_fecd_sel(),
-                                                     exporter_cls=FecdDataExporter)))
+                on_plot=lambda: self._preview_export(_fecd_sel,
+                                                     exporter_cls=FecdDataExporter,
+                                                     title="Export fECD Data")))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -2689,20 +2806,17 @@ class TimeseriesWidget(QWidget):
         self._run_mstar_export(sites=None, all_time=False,
                                exporter_cls=MstarGlobalMeansExporter)
 
-    def _preview_export(self, sites: list[str] | None, all_time: bool = False,
-                        exporter_cls=MstarDataExporter):
+    def _preview_export(self, sites_fn, all_time: bool = False,
+                        exporter_cls=MstarDataExporter, title: str = "Export M* Data"):
         """Open a window showing what the matching export would write.
 
-        Builds the exporter exactly as the export button does and plots its own
-        query, so the preview cannot drift from the file.
+        *sites_fn* is a callable so the preview re-reads the site checkboxes on
+        every reload rather than freezing them at open time. The window builds
+        the exporter exactly as the export button does, so the preview cannot
+        drift from the file, and can save it from there.
         """
-        exporter = exporter_cls.from_timeseries_widget(self, sites=sites, all_time=all_time)
-        df = exporter.query_data()
-        if df.empty:
-            QMessageBox.warning(self, "Preview export",
-                                "No data found for the current selection.")
-            return
-        fig = ExportPreviewFigure(self, exporter, df, palette=self._preview_palette())
+        fig = ExportPreviewFigure(self, exporter_cls, sites_fn, all_time=all_time,
+                                  palette=self._preview_palette(), title=title)
         self.open_figures.append(fig)
 
     def _preview_palette(self) -> str:
@@ -2712,18 +2826,42 @@ class TimeseriesWidget(QWidget):
     def _run_mstar_export(self, sites: list[str] | None, all_time: bool = False,
                           exporter_cls=MstarDataExporter):
         """Shared logic: build exporter, prompt for path, write file."""
-        exporter = exporter_cls.from_timeseries_widget(self, sites=sites, all_time=all_time)
-        default_name = exporter.default_filename()
+        self.save_exporter(exporter_cls.from_timeseries_widget(
+            self, sites=sites, all_time=all_time))
+
+    def save_exporter(self, exporter, title: str = "Export M* Data"):
+        """Prompt for a destination and write *exporter*.
+
+        The preview window's Save button calls this with its own exporter, so
+        saving from a preview and pressing the export button beside it are the
+        same code path.
+        """
+        if getattr(exporter, 'WRITES_DIRECTORY', False):
+            output_dir = QFileDialog.getExistingDirectory(
+                self, f"Select Output Directory for {title}")
+            if not output_dir:
+                return
+            results = exporter.export_all(output_dir)
+            if not results:
+                QMessageBox.warning(self, title, "No data found for the current selection.")
+            else:
+                QMessageBox.information(
+                    self, title,
+                    f"Wrote {sum(results.values())} records across "
+                    f"{len(results)} file(s) in:\n{output_dir}")
+            return
+
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export M* Data", default_name, "Text files (*.txt);;All files (*)"
+            self, title, exporter.default_filename(),
+            "Text files (*.txt);;All files (*)"
         )
         if not path:
             return
         n = exporter.export(path)
         if n == 0:
-            QMessageBox.warning(self, "Export M* Data", "No data found for the current selection.")
+            QMessageBox.warning(self, title, "No data found for the current selection.")
         else:
-            QMessageBox.information(self, "Export M* Data", f"Wrote {n} records to {path}")
+            QMessageBox.information(self, title, f"Wrote {n} records to {path}")
 
     def _export_fecd_data_all_sites(self):
         """Export fECD data for all sites and all time to a user-chosen directory."""
@@ -2737,23 +2875,9 @@ class TimeseriesWidget(QWidget):
 
     def _run_fecd_export(self, sites: list[str], all_time: bool = False):
         """Shared logic: build fECD exporter, prompt for output dir, write per-site files."""
-        exporter = FecdDataExporter.from_timeseries_widget(self, sites=sites, all_time=all_time)
-        output_dir = QFileDialog.getExistingDirectory(
-            self, "Select Output Directory for fECD Data"
-        )
-        if not output_dir:
-            return
-        results = exporter.export_all(output_dir)
-        if not results:
-            QMessageBox.warning(self, "Export fECD Data",
-                                "No data found for the current selection.")
-        else:
-            total = sum(results.values())
-            files = len(results)
-            QMessageBox.information(
-                self, "Export fECD Data",
-                f"Wrote {total} records across {files} file(s) in:\n{output_dir}"
-            )
+        self.save_exporter(
+            FecdDataExporter.from_timeseries_widget(self, sites=sites, all_time=all_time),
+            title="Export fECD Data")
 
     def query_rel_stddev_data(self, analyte=None):
         """Query data for the relative standard deviation plot."""
