@@ -9,6 +9,9 @@ MstarDataExporter
 MstarMonthlyExporter
     Export M-system (M1/M3/M4) monthly means of those flask pair averages,
     with a continuous month series per site.
+MstarGlobalMeansExporter
+    Export monthly global, hemispheric and semi-hemispheric means of the
+    M-system flask pair data, with the background-site means behind them.
 FecdDataExporter
     Export fECD (OTTO + FE3) flask pair-average mole fraction data to
     GML-format text files, one file per site.
@@ -22,6 +25,8 @@ from typing import Optional
 
 import pandas as pd
 
+from global_means import GlobalMeansCalculator, GlobalMeansConfig
+
 
 def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
     non_empty = [f for f in frames if not f.empty]
@@ -33,9 +38,46 @@ def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
         warnings.simplefilter('ignore', FutureWarning)
         return pd.concat(non_empty, ignore_index=True)
 
-# Pseudo-sites are populated from ng_data_processing_view. They have no rows
-# in ng_pair_avg_view because PFP processing rows have no pair ID.
-_PFP_SITES = {'MLO_PFP', 'MKO_PFP'}
+# PFP pseudo-sites, mapped to the base site they are stored under.
+#
+# PFP (programmable flask package) samples are a different kind of flask: they
+# carry a ccgg_event_num instead of a pair_id_num.  ng_pair_avg_view admits them
+# through the `ccgg_event_num > 0` branch of its WHERE clause, but files them
+# under the base site, so MLO's rows are a mix of programmatic HatsFlask pairs
+# and PFP pairs.  The view exposes no run_type_num, so the pseudo-site the GUI
+# shows has to be rebuilt from pair_id_num instead: because the view only admits
+# a row when `pair_id_num > 0 OR ccgg_event_num > 0`, `pair_id_num = 0` inside it
+# necessarily means a CCGG event flask.  Only MLO and MKO carry such rows (M3 and
+# M4 only), which is why the relabelling is scoped to them.
+#
+# Background: PFPs were deployed at MLO in 2021 and became the only sampling
+# there after the Nov 2022 Mauna Loa eruption cut power and access to the
+# observatory (no programmatic flask analyses at all in 2023-2024).  Programmatic
+# flasks resumed in 2025, so the two run concurrently again.
+_PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
+
+
+def _base_sites(sites: list[str]) -> list[str]:
+    """Map pseudo-site names onto the base sites actually stored in the view."""
+    out = []
+    for site in sites:
+        base = _PFP_SITES.get(site.upper(), site).upper()
+        if base not in out:
+            out.append(base)
+    return out
+
+
+def _site_label_sql(column: str = 'site', pair_id: str = 'pair_id_num') -> str:
+    """SQL CASE expression relabelling PFP rows onto their pseudo-site name.
+
+    Rows of a base site with no pair_id_num are CCGG event (PFP) flasks; every
+    other row keeps its own site code.
+    """
+    whens = ' '.join(
+        f"WHEN UPPER({column}) = '{base}' AND {pair_id} = 0 THEN '{pseudo}'"
+        for pseudo, base in _PFP_SITES.items()
+    )
+    return f'CASE {whens} ELSE UPPER({column}) END'
 
 
 HEADER_FILE = Path(__file__).parent / 'mstar_header.txt'
@@ -44,6 +86,11 @@ COLUMNS_PAIRS_FILE = Path(__file__).parent / 'mstar_columns_pairs.txt'
 COLUMNS_MONTHLY_FILE = Path(__file__).parent / 'mstar_columns_monthly.txt'
 MISSING = 'nd'
 MONTHLY_MISSING = 'nan'
+# Column order for the global-means export: means before the site columns.
+_MEAN_COL_ORDER = ['Global', 'NH', 'SH', 'HN', 'LN', 'LS', 'HS']
+# The global-means product follows GML_means' 3-decimal convention; 2 would
+# round away the propagated uncertainties, which are often a few hundredths.
+GLOBAL_MEANS_DECIMALS = 3
 MF_DECIMALS = 2
 SD_DECIMALS = 2
 
@@ -117,27 +164,34 @@ class MstarDataExporter:
     def query_data(self) -> pd.DataFrame:
         """Query ng_pair_avg_view for all M* instruments, returning a DataFrame.
 
-        PFP pseudo-sites are omitted because they have no pair-average rows.
+        PFP rows are relabelled onto their pseudo-site (MLO -> MLO_PFP), so a
+        request for MLO returns programmatic flask pairs only.  The relabelled
+        code lands in ``export_site``; ``site`` keeps the view's own value.
         """
         insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
-        sites = [s for s in self.sites if s not in _PFP_SITES]
-        if not sites:
+        if not self.sites:
             return pd.DataFrame()
-        site_list = ', '.join(f"'{s}'" for s in sites)
+        base_list = ', '.join(f"'{s}'" for s in _base_sites(self.sites))
+        want_list = ', '.join(f"'{s}'" for s in self.sites)
+        # The relabelling has to happen before it can be filtered on, hence the
+        # subquery: MySQL cannot reference a SELECT alias from WHERE.
         sql = f"""
-        SELECT *
-        FROM hats.ng_pair_avg_view
-        WHERE inst_id IN ({insts})
-          AND parameter_num = %s
-          AND UPPER(site) IN ({site_list})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        ORDER BY site, sample_datetime
+        SELECT * FROM (
+            SELECT v.*, {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_id IN ({insts})
+              AND v.parameter_num = %s
+              AND UPPER(v.site) IN ({base_list})
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        ) t
+        WHERE t.export_site IN ({want_list})
+        ORDER BY t.export_site, t.sample_datetime
         """
         rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
         if not df.empty:
             df['sample_datetime'] = pd.to_datetime(df['sample_datetime'])
-            df = df.sort_values(['site', 'sample_datetime'])
+            df = df.sort_values(['export_site', 'sample_datetime'])
         return df
 
     # ── format ───────────────────────────────────────────────────────────────
@@ -167,7 +221,7 @@ class MstarDataExporter:
             sd_str = f'{sd:.{SD_DECIMALS}f}' if sd is not None else str(MISSING)
 
             lines.append('\t'.join([
-                str(row['site']).lower(),
+                str(row.get('export_site', row['site'])).lower(),
                 dec,
                 dt_str,
                 wind_dir,
@@ -242,23 +296,30 @@ class MstarMonthlyExporter(MstarDataExporter):
         inserts them.
         """
         insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
-        sites = [s for s in self.sites if s not in _PFP_SITES]
-        if not sites:
+        if not self.sites:
             return pd.DataFrame()
-        site_list = ', '.join(f"'{s}'" for s in sites)
+        base_list = ', '.join(f"'{s}'" for s in _base_sites(self.sites))
+        want_list = ', '.join(f"'{s}'" for s in self.sites)
+        # PFP rows are grouped under their own pseudo-site, so a site's monthly
+        # mean never blends programmatic flask pairs with PFP pairs.
         sql = f"""
-        SELECT UPPER(site) AS site,
-               DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+        SELECT export_site AS site, month_start,
                AVG(pair_avg)    AS monthly_avg,
                STDDEV(pair_avg) AS monthly_std,
                COUNT(pair_avg)  AS monthly_n
-        FROM hats.ng_pair_avg_view
-        WHERE inst_id IN ({insts})
-          AND parameter_num = %s
-          AND UPPER(site) IN ({site_list})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, month_start
-        ORDER BY site, month_start
+        FROM (
+            SELECT {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site,
+                   DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+                   v.pair_avg
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_id IN ({insts})
+              AND v.parameter_num = %s
+              AND UPPER(v.site) IN ({base_list})
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        ) t
+        WHERE t.export_site IN ({want_list})
+        GROUP BY export_site, month_start
+        ORDER BY export_site, month_start
         """
         rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -334,6 +395,276 @@ class MstarMonthlyExporter(MstarDataExporter):
     def default_filename(self) -> str:
         """Return a sensible default output filename."""
         return f'{self.parameter}_GCMS_flasks_monthly.txt'
+
+
+class MstarGlobalMeansExporter(MstarMonthlyExporter):
+    """Export monthly hemispheric and global means of M-system flask pair data.
+
+    One row per month holding the global, hemispheric and semi-hemispheric
+    means with propagated uncertainties, followed by the monthly mean, standard
+    deviation and pair count of every background site they are built from.
+    The site list and the weighting rules come from
+    ``gml_global_means_config.yaml``; the Timeseries site checkboxes are not
+    consulted, so the file always contains everything behind the means.
+
+    See :mod:`global_means` for the math.
+    """
+
+    def __init__(self, instrument, parameter: str, parameter_num: int,
+                 start_year: int, end_year: int,
+                 config: 'GlobalMeansConfig | None' = None):
+        self.config = config or GlobalMeansConfig.load()
+        self.calculator = GlobalMeansCalculator(parameter, config=self.config)
+        # Populated by query_data(); reported in the file header.
+        self.sites_without_data: list[str] = []
+        super().__init__(
+            instrument=instrument,
+            parameter=parameter,
+            parameter_num=parameter_num,
+            sites=self.config.sites_for(parameter),
+            start_year=start_year,
+            end_year=end_year,
+        )
+
+    # ── site metadata ────────────────────────────────────────────────────────
+
+    def site_latitudes(self) -> dict[str, float]:
+        """Return {site: lat} for the configured background sites.
+
+        PFP pseudo-sites are absent from gmd.site, so they inherit their base
+        site's latitude -- the PFPs sample the same place.  That does mean a
+        location running both flask and PFP concurrently carries twice the
+        weight of a single-programme site in its band; see the note in
+        gml_global_means_config.yaml.
+        """
+        if not self.sites:
+            return {}
+        base = _base_sites(self.sites)
+        placeholders = ', '.join(['%s'] * len(base))
+        rows = self.instrument.doquery(
+            f'SELECT code, lat FROM gmd.site WHERE code IN ({placeholders})', base
+        )
+        lats = {r['code'].lower(): float(r['lat']) for r in rows or []}
+        for pseudo, base_site in _PFP_SITES.items():
+            if base_site.lower() in lats:
+                lats[pseudo.lower()] = lats[base_site.lower()]
+        return lats
+
+    # ── data query ───────────────────────────────────────────────────────────
+
+    def query_site_months(self) -> pd.DataFrame:
+        """Per-site monthly means of the M* flask pair averages.
+
+        ``sd`` is the spread of the pair means in the month, falling back to the
+        single pair's own within-pair standard deviation when only one pair was
+        collected — a month of one pair has no spread of its own, and the
+        propagated uncertainties need a value there.
+        """
+        insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
+        if not self.sites:
+            return pd.DataFrame()
+        base_list = ', '.join(f"'{s}'" for s in _base_sites(self.sites))
+        want_list = ', '.join(f"'{s}'" for s in self.sites)
+        sql = f"""
+        SELECT LOWER(export_site) AS site, date,
+               AVG(pair_avg)    AS mf,
+               STDDEV(pair_avg) AS sd_spread,
+               AVG(pair_stdv)   AS sd_pair,
+               COUNT(pair_avg)  AS n
+        FROM (
+            SELECT {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site,
+                   DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS date,
+                   v.pair_avg, v.pair_stdv
+            FROM hats.ng_pair_avg_view v
+            WHERE v.inst_id IN ({insts})
+              AND v.parameter_num = %s
+              AND UPPER(v.site) IN ({base_list})
+              AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+        ) t
+        WHERE t.export_site IN ({want_list})
+        GROUP BY export_site, date
+        ORDER BY date, export_site
+        """
+        rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
+        df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        if df.empty:
+            return df
+        df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d')
+        for col in ('mf', 'sd_spread', 'sd_pair'):
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['n'] = df['n'].astype(int)
+        df['sd'] = df['sd_spread'].where(df['n'] >= 2, df['sd_pair'])
+        return df[['site', 'date', 'mf', 'sd', 'n']]
+
+    def query_data(self) -> pd.DataFrame:
+        """Return the assembled means frame, means first then the site columns."""
+        site_df = self.query_site_months()
+        if site_df.empty:
+            return pd.DataFrame()
+
+        lats = self.site_latitudes()
+        # Site columns come from the same gap-filled frame the means used, so an
+        # interpolated month shows the value that fed them, with n = 0.
+        prepared = self.calculator.prepare(site_df, lats)
+        means = self.calculator.compute_prepared(prepared)
+        if means.empty:
+            return pd.DataFrame()
+
+        # Configured sites that yielded nothing -- absent from gmd.site, filtered
+        # as a PFP pseudo-site, or simply never run on an M-system instrument.
+        self.sites_without_data = sorted(
+            {s.lower() for s in self.sites} - set(prepared['site'])
+        )
+
+        wide = prepared.pivot_table(index='date', columns='site',
+                                    values=['mf', 'sd', 'n'], sort=True)
+        site_cols = {}
+        for site in sorted({s for _, s in wide.columns}):
+            site_cols[site] = wide[('mf', site)]
+            site_cols[f'{site}_sd'] = wide[('sd', site)]
+            site_cols[f'{site}_n'] = wide[('n', site)]
+        sites_df = pd.DataFrame(site_cols)
+
+        out = means.join(sites_df, how='outer')
+        out.index.name = 'date'
+        return out.reset_index()
+
+    # ── header ────────────────────────────────────────────────────────────────
+
+    def build_header(self, filename: str) -> str:
+        """Fill the config's global-means header template."""
+        skipped = sorted(set(self.sites_without_data))
+        used = [s.lower() for s in self.sites if s.lower() not in skipped]
+        skipped_note = (
+            f'# Listed background sites with no M-system data, omitted:\n'
+            f'#   {", ".join(skipped)}' if skipped else '#'
+        )
+        interp_note = self._interpolation_note()
+        psa_lat = self.calculator.weight_lats.get('psa')
+        psa_note = (
+            f'\n#   For {self.parameter} PSA is also moved, weighted as '
+            f'{abs(psa_lat):.0f}S instead of its\n#   true ~64S.' if psa_lat else ''
+        )
+        source_note = (
+            '#\n#   Note: GML publishes this gas from blended fECD and MSD\n'
+            '#   measurements.  This file is M-system only, so it will not\n'
+            '#   reproduce the published global means exactly.'
+            if self.config.is_combined_source(self.parameter) else '#'
+        )
+        phi = f'{self.config.phi:g}'
+        return (self.config.header_template
+                .replace('{filename}', filename)
+                .replace('{param}', self.parameter)
+                .replace('{generated_on}', datetime.now().strftime('%Y-%m-%d'))
+                .replace('{phi}', phi)
+                .replace('{background_sites}', ', '.join(used))
+                .replace('{skipped_sites}', skipped_note)
+                .replace('{psa_note}', psa_note)
+                .replace('{interp_note}', interp_note)
+                .replace('{source_note}', source_note))
+
+    def _interpolation_note(self) -> str:
+        """Comment block describing how gaps were filled, per the active config."""
+        if not self.config.interpolate_site_gaps:
+            return ('#   Months with no accepted flask pair are left blank; nothing\n'
+                    '#   is interpolated or modelled.')
+        cap = self.config.max_interpolation_months
+        if self.config.interpolation_method == 'seasonal':
+            how = ('#   Interior gaps in a site\'s record are filled from an additive\n'
+                   '#   Holt-Winters fit of that site\'s own series -- level, trend and\n'
+                   '#   a 12-month seasonal term -- taking the model value only where an\n'
+                   '#   observation is missing; observed months are never replaced.  A\n'
+                   '#   site with fewer than two full seasonal cycles falls back to\n'
+                   '#   linear interpolation.  The standard deviation is interpolated in\n'
+                   '#   time rather than modelled.')
+        else:
+            how = ('#   Interior gaps in a site\'s record are filled by linear\n'
+                   '#   interpolation in time.')
+        note = (f'{how}\n'
+                '#   Filled months carry n = 0.  A run of more than '
+                f'{cap} consecutive\n'
+                '#   missing months is left empty rather than bridged, so a long\n'
+                '#   outage is never inferred.')
+        # MLO's programmatic flask record has a multi-year hole that mlo_pfp
+        # covers; without this the blank mlo column looks like an error.
+        if any(s.upper() == 'MLO_PFP' for s in self.sites):
+            note += (
+                '\n#\n'
+                '#   mlo and mlo_pfp are separate sites here.  PFPs (programmable\n'
+                '#   flask packages) are a different kind of flask, deployed at MLO\n'
+                '#   in 2021 and the only sampling there from Dec 2022 to Aug 2025\n'
+                '#   after the Nov 2022 eruption cut power and access to the\n'
+                '#   observatory.  mlo is blank over that outage by design: the gap\n'
+                '#   is too long to bridge, and mlo_pfp carries the record.'
+            )
+        return note
+
+    # ── format ───────────────────────────────────────────────────────────────
+
+    def format_lines(self, df: pd.DataFrame) -> list[str]:
+        """Return tab-separated data lines, means columns first then per-site."""
+        mean_cols, site_cols = [], []
+        for col in df.columns:
+            if col == 'date':
+                continue
+            (mean_cols if col.split('_')[0] in _MEAN_COL_ORDER else site_cols).append(col)
+        mean_cols.sort(key=lambda c: (_MEAN_COL_ORDER.index(c.split('_')[0]),
+                                      c.endswith('_sd')))
+
+        lines = ['\t'.join(['yyyy', 'mm', 'dec_date'] + mean_cols + site_cols)]
+        for _, row in df.iterrows():
+            dt = row['date']
+            if not isinstance(dt, datetime):
+                dt = pd.Timestamp(dt).to_pydatetime()
+            fields = [f'{dt.year}', f'{dt.month}',
+                      f'{self.month_mid_decimal_year(dt):.5f}']
+            for col in mean_cols + site_cols:
+                val = row.get(col)
+                if col.endswith('_n'):
+                    fields.append('0' if val is None or val != val else str(int(val)))
+                elif val is None or val != val:
+                    fields.append(MONTHLY_MISSING)
+                else:
+                    fields.append(f'{val:.{GLOBAL_MEANS_DECIMALS}f}')
+            lines.append('\t'.join(fields))
+        return lines
+
+    # ── export ────────────────────────────────────────────────────────────────
+
+    def default_filename(self) -> str:
+        return f'{self.parameter}_GCMS_global_means.txt'
+
+    def export(self, output_path: str | Path) -> int:
+        """Query, compute and write.  Returns the number of monthly records."""
+        df = self.query_data()
+        if df.empty:
+            return 0
+        # format_lines first: build_header reports the sites the means actually
+        # used, which prepare() only records once it has run.
+        lines = self.format_lines(df)
+        header = self.build_header(Path(output_path).name)
+        Path(output_path).write_text(header + '\n'.join(lines) + '\n')
+        return len(lines) - 1
+
+    # ── factory ──────────────────────────────────────────────────────────────
+
+    @classmethod
+    def from_timeseries_widget(
+        cls, widget, sites: list[str] | None = None, all_time: bool = False
+    ) -> 'MstarGlobalMeansExporter':
+        """Construct from a TimeseriesWidget.
+
+        *sites* is accepted for signature compatibility with the sibling
+        exporters and ignored: the background sites come from the config.
+        """
+        analyte = widget.analyte_combo.currentText()
+        return cls(
+            instrument=widget.instrument,
+            parameter=analyte,
+            parameter_num=widget.analytes.get(analyte),
+            start_year=1990 if all_time else widget.start_year.value(),
+            end_year=datetime.now().year if all_time else widget.end_year.value(),
+        )
 
 
 FECD_HEADER_FILE = Path(__file__).parent / 'fecd_header.txt'

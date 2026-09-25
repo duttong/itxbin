@@ -14,6 +14,9 @@ logosdata/
   logos_instruments_flask.py  # M4_Instrument, FE3_Instrument, Perseus_Instrument
   logos_instruments_insitu.py # IE3_Instrument, CATS_Instrument, BLD1_Instrument
   logos_timeseries.py  # TimeseriesWidget and TimeseriesFigure
+  data_export.py       # Mstar/Fecd file exporters used by the Timeseries tab
+  global_means.py      # cos(lat)-weighted hemispheric and global mean math
+  gml_global_means_config.yaml  # background sites and weighting rules for it
   logos_tanks.py       # TanksWidget — tank history and reference tank UI
   logos_ai_agent.py    # LOGOSChatAgent — free-form chat agent
   logos_agent_tools.py # LOGOSDataAgentTools — read-only DB query helpers
@@ -274,6 +277,149 @@ hollow, or hidden with "Hide Rejected Data"; hidden legend ports hide too).
   `picker=False`, both RectangleSelectors attach to `axes[0]` only, and
   `_on_click_tooltip` ignores clicks in `self._ax_additional` so they can't
   clear a Multi-Tag selection.
+
+## Timeseries tab export buttons (SAVE group)
+
+Instrument-specific; built in `TimeseriesWidget.__init__` and handled by
+`_run_mstar_export()` / `_run_fecd_export()`. The M* buttons all share
+`_run_mstar_export()`, which takes an `exporter_cls` argument.
+
+| Button (M4) | Exporter | Output |
+|---|---|---|
+| All Sites and Time | `MstarDataExporter` | one file, per-pair rows, all sites |
+| Selected Sites and Time | `MstarDataExporter` | same, checked sites + year range |
+| Selected Sites, Times, Monthly Means | `MstarMonthlyExporter` | one file, one row per site per month |
+| Global Means | `MstarGlobalMeansExporter` | one file, monthly global/hemispheric means + the site means behind them |
+
+FE3 gets two fECD buttons (`FecdDataExporter`), which prompt for a directory
+and write one file per site.
+
+`mstar_header.txt` holds the shared GML header for the first three; its
+COLUMN DESCRIPTIONS block is a `{columns}` placeholder filled from
+`mstar_columns_pairs.txt` or `mstar_columns_monthly.txt`. The standalone
+`mstar-export.py` reads the same pair of files — update both readers if the
+placeholder changes.
+
+### PFP pseudo-sites in the M* exports
+
+PFP (programmable flask package) samples are a **different kind of flask**: they
+carry a `ccgg_event_num` instead of a `pair_id_num`. `ng_pair_avg_view` admits
+them through the `ccgg_event_num > 0` branch of its `WHERE` clause — they are
+*not* missing from the view, contrary to what older comments said — but files
+them under the **base site**, so raw `MLO` rows blend programmatic HatsFlask
+pairs with PFP pairs.
+
+The view exposes no `run_type_num`, so the pseudo-site the Timeseries plot shows
+(`TimeseriesWidget.query_data()` relabels `run_type_num = 5`) cannot be rebuilt
+the same way in the exporters. `_site_label_sql()` in `data_export.py` keys off
+`pair_id_num = 0` instead. That is sound rather than empirical: the view only
+admits a row when `pair_id_num > 0 OR ccgg_event_num > 0`, so `pair_id_num = 0`
+*inside the view* necessarily means a CCGG event flask.
+
+- Scoped to `_PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}` — only MLO and
+  MKO carry such rows, on M3/M4 only. OTTO/FE3 have none, so the fECD exporter
+  is unaffected.
+- All three M* exports split them. `_base_sites()` expands pseudo-sites to the
+  base site for the `WHERE`, then a subquery filters on the relabelled
+  `export_site` (MySQL can't reference a SELECT alias from `WHERE`).
+- The split is **conservative**: relabelling only. Verified row-for-row —
+  `mlo` 1903 → `mlo` 1243 + `mlo_pfp` 660, `mko` 467 → `mko_pfp` 467, all 18
+  other sites byte-identical, 16177 rows in and out.
+- MKO is 100% PFP, which is why `MSTAR_EXPORT_EXCLUDE` holds `MKO_PFP`; after
+  the split plain `MKO` has no rows at all.
+
+**Why it matters:** PFP runs ~0.45 ppt below programmatic flask at MLO (median
+−0.50, sd 0.74 for HFC-134a) and outnumbers it ~3:1, so a blended monthly mean
+is pulled toward PFP. Splitting shifts the global mean by −0.077 ppt on average
+(max 0.21, 0.06% of signal) and moves agreement with the published GML product
+slightly *closer* (HFC-134a 0.021 → 0.015 ppt).
+
+**History:** PFPs were deployed at MLO in 2021 and became the only sampling
+there after the Nov 2022 Mauna Loa eruption cut power and access to the
+observatory — no programmatic flask analyses at all in 2023–2024. They resumed
+in 2025, so the two programmes run concurrently again.
+
+**Open question:** a pseudo-site inherits its base site's latitude, so during
+the concurrent stretches (2021–22, 2025 onward) the MLO location contributes two
+weighted values to the LN band. Whether to instead prefer the flask value and
+drop `mlo_pfp` where both exist is undecided — see the note in
+`gml_global_means_config.yaml`. Nothing implements it yet.
+
+### Global Means export
+
+The math follows <https://github.com/duttong/GML_means>
+(`gml_annualmeans.py`'s `semi_hemispheric_means`), but runs off
+`ng_pair_avg_view` instead of the published GML website files and stops at
+monthly resolution:
+
+- Sites are bucketed into `HN / LN / LS / HS` at ±`phi` (30°) and averaged with
+  `cos(lat)` weights; `Global` is the unweighted mean of the four bands, NaN
+  unless all four are present that month.
+- `weight_lat_overrides` move SPO to −65 (and PSA to −80 for the gases listed
+  in `gas_weight_lat_overrides`) **for the weights only** — Steve's method.
+  The data and `gmd.site` are untouched.
+- `_sd` columns propagate the site standard deviations through the same
+  weights (`var = Σ (wᵢ/Σw)² sdᵢ²`), which GML_means does not report. A site
+  month whose own sd is unknown contributes 0.
+- A site's monthly sd is the spread of its pair means, falling back to the
+  single pair's own `pair_stdv` when `n = 1` (a one-pair month has no spread).
+- Interior gaps in a site's monthly series are filled when
+  `interpolate_site_gaps` is on; those months carry `n = 0`. Leading/trailing
+  gaps are never extrapolated.
+- **`interpolation_method` (`seasonal`)** fits additive Holt–Winters per site —
+  level, trend, 12-month seasonal term (`statsmodels ExponentialSmoothing`) — and
+  takes the model value *only* where an observation is missing; observed months
+  are never replaced. This is what the GML_means loader uses for MSD gases (only
+  its `oldgc` program uses linear). Falls back to linear for a series under
+  `MIN_SEASONAL_POINTS` (24, two cycles) or a fit that won't converge. `sd` is
+  always time-interpolated, never modelled — a seasonal cycle in the mole
+  fraction says nothing about a month's pair scatter. Costs ~3s vs ~1s per
+  export. Set to `linear` to revert without code changes.
+- **`max_interpolation_months` (3) caps the bridge.** A longer run of missing
+  months is left empty rather than straight-lined, all-or-nothing per run — note
+  pandas' own `limit` would instead fill the first N months of a longer gap.
+  Without the cap, MLO's 33-month eruption outage (2022-12 → 2025-08) was filled
+  with a linear ramp biased up to 3.4 ppt above the real co-located `mlo_pfp`
+  measurement, and then weighted in LN *alongside* it — double-counting MLO with
+  one value fabricated. Capping costs nothing in coverage (Global still 382/391
+  months for HFC-134a) because the surrogate covers the outage. Every run the cap
+  suppresses is long: 5, 6, 7, 13, 16, 25, 33, 42 months; short operational gaps
+  are unaffected.
+- Note `MstarMonthlyExporter` does **not** interpolate — its gaps are written as
+  `nan` with `n = 0`. Only the global-means path fills.
+- **Divergence from upstream:** the seasonal fit is now ported, so the only
+  remaining difference is that GML_means fills arbitrarily long gaps while the cap
+  here refuses them. Agreement with the published product across the three
+  configurations (mean |diff|, ppt):
+
+  | analyte | linear, uncapped | linear + cap | seasonal + cap |
+  |---|---|---|---|
+  | HFC-134a | 0.015 | 0.018 | 0.017 |
+  | HCFC-22 | 0.046 | 0.061 | 0.052 |
+  | CH3Br | 0.027 | 0.030 | 0.027 |
+  | CFC-11 | 0.437 | 0.442 | 0.423 |
+  | HFC-152a | 0.035 | 0.072 | 0.071 |
+
+  The seasonal fit recovers most of what the cap cost; HFC-152a's residual is the
+  cap refusing long holes (kum has a 42-month gap), which no method choice
+  recovers. Neither change touches the mlo/mlo_pfp double-weighting, which
+  upstream has too and which remains the open question above.
+- Seasonal vs linear changes filled site-months by mean 0.006 ppt (max 2.07 where
+  a chord cut across a seasonal turn) and the global mean by mean 0.007 ppt
+  (max 0.18). Coverage is identical either way.
+- **The site checkboxes are ignored** — the site list comes from
+  `background_sites` / `gas_background_overrides` in the yaml, so the file
+  always contains every site feeding the means. `ush` is in that list but has no
+  M* data; it's dropped and named in the file header. (`mlo_pfp` also used to
+  be dropped, until the PFP split above gave it its own rows.)
+- Config keys use GML gas names (`HFC134a`); analytes are display names
+  (`HFC-134a`). `GlobalMeansConfig.gas_key()` matches by stripping hyphens,
+  with `analyte_aliases` for the rest (`PCE` → `C2Cl4`).
+- Verified against the published `GML_jul_annual_means.csv` by rolling the
+  monthly output up to calendar-year means: MSD-sourced gases agree to
+  0.03–0.8%. Gases in `combined_source_gases` (CFC11/12/113, CCl4, SF6) are
+  published from blended fECD+MSD data, so an M*-only file won't match them
+  exactly — the header says so.
 
 ## IE3 Calibration view (`_ie3_cal_plot`)
 

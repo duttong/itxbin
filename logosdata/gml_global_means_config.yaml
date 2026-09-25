@@ -1,0 +1,241 @@
+# Configuration for the hemispheric and global mean calculation used by the
+# Timeseries tab's "Export M* Data -- Global Means" action.
+#
+# Adapted from gml_config.yaml in https://github.com/duttong/GML_means, which
+# computes the same semi-hemispheric means for the annual-mean products.  The
+# gas list, data_source mapping and annual-mean header templates from that file
+# are not repeated here: this config drives a monthly product built from the
+# HATS database rather than from the published GML website files.
+
+# Latitude cutoff (degrees) between the "low" and "high" semi-hemispheres.
+phi: 30.0
+
+# Background sites used for every gas, as lower-case site codes.
+# Sites with no M-system flask pair data are skipped with a note (mlo_pfp has
+# no rows in ng_pair_avg_view because PFP processing rows carry no pair ID,
+# and ush is OTTO/fECD-only), so the list can stay identical to GML_means.
+background_sites: [alt, sum, brw, cgo, kum, mhd, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+
+# Override the background sites for specific gases.
+# For the HFCs and CH2Cl2 don't use mhd; for HFC236fa don't use spo, whose
+# data are all tagged for contamination.
+gas_background_overrides:
+  CH2Cl2: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+  HFC32: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa, spo]
+  HFC125: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa, spo]
+  HFC134a: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+  HFC143a: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa, spo]
+  HFC152a: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+  HFC227ea: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+  HFC365mfc: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
+  HFC236fa: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa]
+
+# PFP pseudo-sites and double weighting -- OPEN QUESTION
+#
+# mlo_pfp is listed above as a background site in its own right, matching
+# GML_means.  PFP (programmable flask package) samples are a different kind of
+# flask; they were deployed at MLO in 2021 and became the only sampling there
+# after the Nov 2022 Mauna Loa eruption cut power and access to the observatory
+# (no programmatic flask analyses at all in 2023-2024).  Programmatic flasks
+# resumed in 2025.
+#
+# A pseudo-site inherits its base site's latitude, so while both programmes run
+# concurrently -- 2021-2022 and 2025 onward -- the MLO location contributes two
+# weighted values to the LN band instead of one, giving it roughly double the
+# weight of a single-programme site.  During 2023-2024 only mlo_pfp has data, so
+# the weighting is unaffected there.
+#
+# Measured effect on the global mean of splitting them (HFC-134a, 2021 onward):
+# -0.077 ppt on average, 0.21 ppt at worst, about 0.06% of signal.
+#
+# Still to decide: whether to prefer the programmatic flask value and drop
+# mlo_pfp in months where both exist, rather than weighting both.  Nothing
+# implements that yet.
+
+# Latitudes used *only* for the cos(latitude) weights (Steve's method).  The
+# underlying data and the site metadata are untouched.
+#
+# spo (true lat ~ -90) is moved to -65 so it doesn't carry a near-zero weight
+# in the high-southern band, which would effectively drop it out of the HS mean.
+weight_lat_overrides:
+  spo: -65.0
+
+# psa (true lat ~ -64) is moved to -80 for selected short-lived or
+# interhemispherically uneven gases, so its NH-leaning signal doesn't dominate
+# the HS band.
+gas_weight_lat_overrides:
+  psa:
+    lat: -80.0
+    gases: [CH2Cl2, HFC32, HFC125, HFC134a, HFC143a, HFC152a,
+            HFC227ea, HFC365mfc, HFC236fa]
+
+# Fill interior gaps in a site's monthly series by linear interpolation in time
+# before the means are computed (loosely the equivalent of the GML_means loader's
+# gapfill=True, though that uses a seasonal fit for MSD gases rather than a
+# straight line).  Leading and trailing gaps are never extrapolated.
+# Interpolated months are written with n = 0.
+interpolate_site_gaps: true
+
+# How a gap is filled: 'seasonal' or 'linear'.
+#
+# 'seasonal' fits additive Holt-Winters (level + trend + a 12-month seasonal
+# term) and takes the model value only where an observation is missing; real
+# observations are never replaced.  This is what the GML_means loader uses for
+# MSD gases -- only its 'oldgc' program uses a straight line.  A series with
+# fewer than two full seasonal cycles, or a fit that will not converge, falls
+# back to linear automatically.
+#
+# The standard deviation is always time-interpolated rather than modelled: a
+# seasonal cycle in the mole fraction says nothing useful about the scatter of
+# a given month's flask pairs.
+interpolation_method: seasonal
+
+# Longest run of consecutive missing months that will be bridged.  A longer run
+# is left empty rather than straight-lined.
+#
+# This matters most where a co-located surrogate is running: MLO's programmatic
+# flask record has a 33-month hole from the Nov 2022 eruption outage
+# (2022-12 to 2025-08) that mlo_pfp covers.  Without a cap, mlo is filled with a
+# confident-looking ramp -- biased up to 3.4 ppt above the real PFP measurement
+# at the same location -- and then weighted in the LN band *alongside* mlo_pfp,
+# double-counting MLO with one of the two values fabricated.
+#
+# Capping costs nothing in coverage: with the cap the global mean is still
+# defined in 382 of 391 months for HFC-134a, exactly as without it, because the
+# surrogate already covers the outage.
+max_interpolation_months: 3
+
+# Gases whose published GML product blends fECD and MSD measurements
+# (data_source.combined in gml_config.yaml).  This export is M-system only, so
+# for these gases it will not reproduce the published global means exactly --
+# the published values also carry OTTO/FE3 data.  Gases outside this list are
+# MSD-only upstream too, and do reproduce closely.
+combined_source_gases: [CFC11, CFC12, CFC113, CCl4, SF6]
+
+# The keys above use GML gas names; logos_data analytes use display names from
+# hats.analyte_list.  Matching is done by stripping hyphens and ignoring case,
+# so "CFC-11" finds CFC11 and "HFC-134a" finds HFC134a.  Only names that rule
+# cannot reach need an entry here.
+analyte_aliases:
+  PCE: C2Cl4          # perchloroethylene / tetrachloroethylene
+  DCE12: CH2ClCH2Cl   # 1,2-dichloroethane -- confirm before relying on it
+
+# Header written at the top of the exported file.  {param}, {generated_on},
+# {phi}, {background_sites}, {skipped_sites}, {psa_note}, {interp_note} and
+# {source_note} are substituted by the exporter.
+global_means_file_header: |
+  # File: {filename}
+  # Date: {generated_on}
+  #
+  # -------------------------------------------------------------------------
+  # NOAA Global Monitoring Laboratory (GML), Boulder, Colorado, USA
+  # Long-lived Greenhouse Gases and Ozone-Depleting Substances (LOGOS) group
+  # https://gml.noaa.gov/hats/
+  #
+  # Monthly hemispheric and global mean mole fractions of {param}, with the
+  # background-site monthly means they are built from.
+  #
+  # Measurements are from paired flask samples analysed by gas chromatography
+  # with mass spectrometric detection (instruments M1, M3 and M4).
+  {source_note}
+  #
+  # Principal Investigator:
+  #   Stephen A. Montzka  NOAA/GML  stephen.a.montzka@noaa.gov
+  # Co-Investigators:
+  #   Isaac Vimont        NOAA/GML  isaac.vimont@noaa.gov
+  #   Geoff Dutton        NOAA/GML  geoff.dutton@noaa.gov
+  #
+  # -------------------------------------------------------------------------
+  # USE OF DATA
+  #
+  # For the NOAA/GML/LOGOS data use policy see:
+  #   https://gml.noaa.gov/hats/hats_datause.html
+  #
+  # Please contact the principal investigator before using these data in a
+  # presentation, publication, or report.
+  #
+  # -------------------------------------------------------------------------
+  # METHOD
+  #
+  # Site monthly means
+  #   Each site's monthly value is the unweighted mean of its accepted flask
+  #   pair means in that month.  <site>_sd is the standard deviation of those
+  #   pair means; in a month holding a single pair it is instead that pair's
+  #   own within-pair standard deviation.  <site>_n counts the pairs averaged.
+  {interp_note}
+  #
+  # Semi-hemispheric means (HN, LN, LS, HS)
+  #   Sites are grouped by latitude and averaged with cos(latitude) weights:
+  #
+  #       band = sum(w_i * x_i) / sum(w_i),     w_i = cos(lat_i)
+  #
+  #   where x_i is site i's monthly mean.  Bands are split at {phi} degrees:
+  #     HN  lat >= {phi}N
+  #     LN  0 <= lat < {phi}N
+  #     LS  {phi}S < lat < 0
+  #     HS  lat <= {phi}S
+  #   Two latitudes are moved before the weights are computed so a station
+  #   does not fall out of its band; only the weights change, not the data.
+  #   SPO is weighted as 65S instead of ~90S, where its true cos(lat) would
+  #   be near zero.{psa_note}
+  #
+  # Hemispheric and global means
+  #   NH = (HN + LN) / 2
+  #   SH = (LS + HS) / 2
+  #   Global = (HN + LN + LS + HS) / 4
+  #   A mean is left blank unless every band it needs has a value that month,
+  #   so Global requires all four bands.
+  #
+  # Uncertainties (the _sd columns on the band, hemispheric and global means)
+  #   Site standard deviations are propagated through the same weights,
+  #   treating the sites as independent:
+  #
+  #       var(band) = sum( (w_i / sum(w))^2 * sd_i^2 )
+  #       sd(band)  = sqrt( var(band) )
+  #
+  #   and combined across bands as
+  #
+  #       sd(NH)     = sqrt( var(HN) + var(LN) ) / 2
+  #       sd(SH)     = sqrt( var(LS) + var(HS) ) / 2
+  #       sd(Global) = sqrt( var(HN) + var(LN) + var(LS) + var(HS) ) / 4
+  #
+  #   These are propagated measurement scatter: they describe how well the
+  #   sampled sites pin down each mean, not how much the regions differ from
+  #   one another.  A site contributes nothing to the sum in a month where its
+  #   own standard deviation is unknown.
+  #
+  # Background sites used for {param}:
+  #   {background_sites}
+  {skipped_sites}
+  #
+  # -------------------------------------------------------------------------
+  # COLUMN DESCRIPTIONS
+  #
+  # yyyy         Year (UTC)
+  # mm           Month, 1-12 (UTC)
+  # dec_date     Mid-month decimal year (UTC)
+  # Global       Global mean dry-air mole fraction (pmol/mol, ppt)
+  # Global_sd    Propagated 1-sigma uncertainty of the global mean
+  # NH, SH       Northern and Southern Hemisphere means, and their _sd
+  # HN, LN,      Semi-hemispheric means (see METHOD above), and their _sd
+  #   LS, HS
+  # <site>       Site monthly mean mole fraction
+  # <site>_sd    Standard deviation of that site's monthly mean
+  # <site>_n     Number of flask pairs in that site's monthly mean
+  #
+  # Months run continuously from the first to the last month with data.
+  # Missing values are reported as nan.  Mole fractions and standard deviations
+  # are written to three decimal places.
+  #
+  # -------------------------------------------------------------------------
+  # REFERENCES
+  #
+  # Montzka, S.A., J.H. Butler, J.W. Elkins, T.M. Thompson, A.D. Clarke,
+  #   and L.T. Lock, Present and future trends in the atmospheric burden of
+  #   ozone-depleting halogens, Nature, 398, 690-694, 1999.
+  #
+  # Montzka, S.A., B.D. Hall, J.W. Elkins, Accelerated increases observed for
+  #   hydrochlorofluorocarbons since 2004 in the global atmosphere,
+  #   Geophys. Res. Lett., 36, L03804, doi:10.1029/2008GL036475, 2009.
+  #
+  # -------------------------------------------------------------------------

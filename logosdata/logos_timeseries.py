@@ -19,7 +19,8 @@ import time
 
 from pathlib import Path
 
-from data_export import MstarDataExporter, MstarMonthlyExporter, FecdDataExporter
+from data_export import (MstarDataExporter, MstarMonthlyExporter,
+                         MstarGlobalMeansExporter, FecdDataExporter)
 from logos_tagging import TagCRUDMixin, MultiTagPanel
 
 import configparser
@@ -90,8 +91,12 @@ LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'BLD', 'MLO_PFP', 'MKO_PFP']
 
 # Pseudo-site names that represent PFP-only subsets of the named base site.
-# These do not exist in gmd.site. Processing-view queries use run_type_num=5;
-# ng_pair_avg_view has no PFP rows because PFP processing rows have no pair ID.
+# These do not exist in gmd.site. Processing-view queries use run_type_num=5.
+# ng_pair_avg_view *does* carry PFP rows -- they enter through the
+# `ccgg_event_num > 0` branch of its WHERE clause -- but files them under the
+# base site, and exposes no run_type_num to split them back out. The exporters
+# in data_export.py rebuild the pseudo-site from `pair_id_num = 0` instead;
+# see the _PFP_SITES comment there.
 PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 
 # Sites only shown when FE3 is active (OTTO predecessor data only).
@@ -2375,6 +2380,25 @@ class TimeseriesWidget(QWidget):
                 "<tt>nan</tt> with <tt>n&nbsp;=&nbsp;0</tt>."
             )
 
+            _tip_global = (
+                "<b>Export M* Data — Global Means</b><br><br>"
+                "Writes monthly <b>global, hemispheric and semi-hemispheric "
+                "means</b> of the M-system (M1/M3/M4) flask pair data, followed "
+                "by the monthly mean, standard deviation and pair count of every "
+                "background site behind them.<br><br>"
+                "Sites are grouped by latitude into HN / LN / LS / HS, averaged "
+                "with cos(latitude) weights, and the global mean is the average "
+                "of the four bands. The <tt>_sd</tt> columns propagate the site "
+                "standard deviations through the same weights.<br><br>"
+                "<b>Sites:</b> the background list in "
+                "<tt>gml_global_means_config.yaml</tt> — the site checkboxes "
+                "above are <b>not</b> used. "
+                "<b>Year range:</b> set by the Start / End spinboxes above."
+                "<br><br>The method follows "
+                "<tt>github.com/duttong/GML_means</tt>; the written file's "
+                "header states it in full."
+            )
+
             self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites and Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
             self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites and Time")
@@ -2382,10 +2406,13 @@ class TimeseriesWidget(QWidget):
             self.export_mstar_monthly_btn = QPushButton(
                 "Export M* Data -- Selected Sites, Times, Monthly Means")
             self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
+            self.export_mstar_global_btn = QPushButton("Export M* Data -- Global Means")
+            self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
 
             save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
             save_layout.addLayout(self._export_row(self.export_mstar_sel_btn, _tip_sel))
             save_layout.addLayout(self._export_row(self.export_mstar_monthly_btn, _tip_monthly))
+            save_layout.addLayout(self._export_row(self.export_mstar_global_btn, _tip_global))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -2673,7 +2700,15 @@ class TimeseriesWidget(QWidget):
         self._run_mstar_export(sites=self.get_active_sites(), all_time=False,
                                exporter_cls=MstarMonthlyExporter)
 
-    def _run_mstar_export(self, sites: list[str], all_time: bool = False,
+    def _export_mstar_global_means(self):
+        """Export monthly global/hemispheric means over the selected year range.
+
+        The background sites come from the config, not the site checkboxes.
+        """
+        self._run_mstar_export(sites=None, all_time=False,
+                               exporter_cls=MstarGlobalMeansExporter)
+
+    def _run_mstar_export(self, sites: list[str] | None, all_time: bool = False,
                           exporter_cls=MstarDataExporter):
         """Shared logic: build exporter, prompt for path, write file."""
         exporter = exporter_cls.from_timeseries_widget(self, sites=sites, all_time=all_time)
