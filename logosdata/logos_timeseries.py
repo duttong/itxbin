@@ -175,7 +175,14 @@ class TimeseriesFigure(TagCRUDMixin):
         self.dataset_handles = {}
         # When FE3 has no data (e.g. OTTO-only sites like ITN/USH), show OTTO pair by default.
         fe3_empty = df.empty and parent_widget.instrument.inst_num == 193
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": False, "Mstar 10-day mean": False, "Mstar monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
+        # M4 only runs from 2022; M1 covers 1991-2009 and M3 2009-2023, so the
+        # M4-only series is the last four years of a 32-year record. Show the M*
+        # pair means by default or the figure opens almost empty -- the x-axis
+        # already spans the full M* range, because hidden artists still count
+        # toward the axes' dataLim. The M* 10-day and monthly overlays stay off;
+        # they are aggregates of the same data and cost thousands of artists.
+        show_mstar = parent_widget.instrument.inst_num == 192
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": show_mstar, "Mstar 10-day mean": False, "Mstar monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
         self.legend_label_map = {
             "Mstar pair mean": "M* pair",
             "Mstar 10-day mean": "M* 10-day",
