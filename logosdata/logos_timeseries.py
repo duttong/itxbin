@@ -395,16 +395,39 @@ class ExportPreviewFigure:
 
     # ── save ─────────────────────────────────────────────────────────────────
 
+    def _window(self):
+        """This figure's top-level window, if the backend exposes one."""
+        return getattr(getattr(self._fig.canvas, 'manager', None), 'window', None)
+
+    def _raise(self):
+        """Bring this figure back to the front and give the canvas focus.
+
+        Closing a modal dialog returns focus to its owner's window; even with
+        the dialog parented here, the main panel can end up in front on some
+        window managers, so this is explicit rather than assumed.
+        """
+        win = self._window()
+        if win is not None:
+            win.raise_()
+            win.activateWindow()
+        self._fig.canvas.setFocus()
+
     def _on_save(self):
         # Apply any staged control change first, so Save can never write a
         # different selection from the one on screen.
         if getattr(self, '_pending', False):
             self.reload()
+        owner = self._window() or self.parent_widget
         if self.exporter is None or getattr(self, '_df', None) is None or self._df.empty:
-            QMessageBox.warning(self.parent_widget, self._title,
+            QMessageBox.warning(owner, self._title,
                                 "No data to save for this selection.")
+            self._raise()
             return
-        self.parent_widget.save_exporter(self.exporter, title=self._title)
+        try:
+            self.parent_widget.save_exporter(self.exporter, title=self._title,
+                                             parent=owner)
+        finally:
+            self._raise()
 
     def close(self):
         plt.close(self._fig)
@@ -2943,39 +2966,45 @@ class TimeseriesWidget(QWidget):
         self.save_exporter(exporter_cls.from_timeseries_widget(
             self, sites=sites, all_time=all_time))
 
-    def save_exporter(self, exporter, title: str = "Export M* Data"):
+    def save_exporter(self, exporter, title: str = "Export M* Data", parent=None):
         """Prompt for a destination and write *exporter*.
 
         The preview window's Save button calls this with its own exporter, so
         saving from a preview and pressing the export button beside it are the
         same code path.
+
+        *parent* owns the dialogs. A preview passes its own window, because a
+        dialog parented to this panel hands focus back to the main window when
+        it closes, dropping the figure behind it.
         """
+        owner = parent if parent is not None else self
+
         if getattr(exporter, 'WRITES_DIRECTORY', False):
             output_dir = QFileDialog.getExistingDirectory(
-                self, f"Select Output Directory for {title}")
+                owner, f"Select Output Directory for {title}")
             if not output_dir:
                 return
             results = exporter.export_all(output_dir)
             if not results:
-                QMessageBox.warning(self, title, "No data found for the current selection.")
+                QMessageBox.warning(owner, title, "No data found for the current selection.")
             else:
                 QMessageBox.information(
-                    self, title,
+                    owner, title,
                     f"Wrote {sum(results.values())} records across "
                     f"{len(results)} file(s) in:\n{output_dir}")
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, title, exporter.default_filename(),
+            owner, title, exporter.default_filename(),
             "Text files (*.txt);;All files (*)"
         )
         if not path:
             return
         n = exporter.export(path)
         if n == 0:
-            QMessageBox.warning(self, title, "No data found for the current selection.")
+            QMessageBox.warning(owner, title, "No data found for the current selection.")
         else:
-            QMessageBox.information(self, title, f"Wrote {n} records to {path}")
+            QMessageBox.information(owner, title, f"Wrote {n} records to {path}")
 
     def _export_fecd_data_all_sites(self):
         """Export fECD data for all sites and all time to a user-chosen directory."""

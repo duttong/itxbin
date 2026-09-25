@@ -414,6 +414,14 @@ button uses, so saving from a preview and pressing Export are identical.
 attribute — False writes one file via `export()`, True prompts for a directory
 and calls `export_all()` (fECD only).
 
+`save_exporter(..., parent=)` names the dialogs' owner. **A preview passes its
+own window**: a dialog parented to the Timeseries panel hands focus back to the
+main window when it closes, which left the figure buried behind it. `_on_save()`
+also calls `_raise()` in a `finally` — `raise_()`, `activateWindow()` and
+`canvas.setFocus()` — so the figure comes forward and the `s` shortcut keeps
+working after a save. The export buttons still parent to the panel, as they
+should.
+
 Each exporter describes its own preview through two hooks, keeping the shape
 knowledge with the format rather than in the plotting code:
 
