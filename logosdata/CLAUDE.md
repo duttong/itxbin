@@ -347,6 +347,14 @@ n=5 → 0.538), which is the tell.
 - **Floor = mean of the usable monthly sds over the trailing 12 months** (the
   month itself plus the 11 before it), per site. `SD_FLOOR_WINDOW`/
   `SD_FLOOR_MIN_MONTHS` in `data_export.py`.
+- **Only months with n ≤ 2 are floored** (`SD_FLOOR_MAX_N`). Tested, not
+  assumed: at n=2 a month's sd barely predicts the next month's (lag-1
+  correlation of log sd 0.20–0.41 across analytes) — it's sampling noise. At
+  n ≥ 3 it does (0.32–0.73), so flooring would discard real information. It
+  would also bias the record upward, since a floor raises and never lowers:
+  flooring every month inflates the mean sd **21–33%** across analytes, versus
+  **5–12%** confined to thin months. An earlier revision floored everything;
+  55% of what it moved was n ≥ 3.
 - **Averaging spreads, not recomputing an sd across the window**, is what keeps
   it trend-free. A recomputed 12-month sd is ~1.5 ppt for HFC-134a purely
   because the gas rises ~5 ppt/yr, and would raise 100% of months. The mean of
@@ -366,10 +374,13 @@ n=5 → 0.538), which is the tell.
 - **Watch the NaN-floor case.** `sd.where(sd >= floor, floor)` looks right but
   silently NaNs the measurement when the floor is NaN, since any comparison with
   NaN is False. It is written `sd.where(~(sd < floor), floor)` for that reason.
-- Effect on the global product: the mean is **unchanged** (the floor only touches
-  sd); `Global_sd` median 0.232 → 0.281, `NH_sd` 0.374 → 0.467, `SH_sd`
-  0.197 → 0.266, with 95% of months widening. The global path no longer uses the
-  old `AVG(pair_stdv)` fallback for n=1.
+- Effect on the global product: the mean is **unchanged** (verified — the floor
+  writes only `sd`/`sd_floor`, leaving `mf` and `n` identical on key). Against an
+  unfloored `Global_sd` median of 0.233, flooring n ≤ 2 gives 0.239 and flooring
+  everything gave 0.282. The global path no longer uses the old
+  `AVG(pair_stdv)` fallback for n=1.
+- A caution when comparing rules: `apply_sd_floor` sorts by site, so positional
+  comparisons of the in/out frames misalign. Merge on `(site, date)`.
 
 ### PFP pseudo-sites in the M* exports
 

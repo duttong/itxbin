@@ -15,11 +15,16 @@
 #
 # A month built from one or two flask pairs reports a standard deviation near
 # zero whenever those pairs happen to agree.  That is an artefact of the sample
-# size, not a statement that the month was tightly constrained, so the reported
-# value is floored at the recent typical scatter for the same site: the mean of
-# the usable monthly standard deviations over the trailing 12 months, being the
+# size, not a statement that the month was tightly constrained, so such months
+# are floored at the recent typical scatter for the same site: the mean of the
+# usable monthly standard deviations over the trailing 12 months, being the
 # month itself and the 11 before it.  Where the measured standard deviation
 # already exceeds that floor it is reported unchanged.
+#
+# Only months of one or two flask pairs are floored.  A month of three or more
+# measures its own spread well enough to keep it, and flooring it would both
+# discard that information and bias the record upward, since a floor raises a
+# value and never lowers one.
 #
 # Averaging the existing monthly spreads, rather than recomputing a standard
 # deviation across the 12-month window, keeps the floor independent of the

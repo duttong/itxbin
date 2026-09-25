@@ -161,20 +161,27 @@ global_means_file_header: |
   #   Each site's monthly value is the unweighted mean of its accepted flask
   #   pair means in that month.  <site>_n counts the pairs averaged.
   #
-  #   <site>_sd is the standard deviation of those pair means, floored at the
-  #   recent typical scatter for the same site: the mean of the usable monthly
-  #   standard deviations over the trailing 12 months, being the month itself
-  #   and the 11 before it.  A month of one or two pairs otherwise reports a
-  #   standard deviation near zero whenever those pairs happen to agree, which
-  #   is an artefact of the sample size rather than a tightly constrained
-  #   month, and would understate the propagated uncertainties below.  Where
-  #   the measured standard deviation already exceeds the floor it is used
-  #   unchanged.  Averaging existing spreads, rather than recomputing a
-  #   standard deviation across the window, keeps the floor independent of the
-  #   trend.  Single-pair months are left out of the window average but are
-  #   assigned the floor; where the window rests on fewer than three usable
-  #   months no floor is formed.  This is the same standard deviation the
-  #   monthly-means export reports, so a site-month reads alike in both.
+  #   <site>_sd is the standard deviation of those pair means.  A month of one
+  #   or two pairs reports a standard deviation near zero whenever those pairs
+  #   happen to agree -- an artefact of the sample size rather than a tightly
+  #   constrained month, which would understate the propagated uncertainties
+  #   below.  Those months are therefore floored at the recent typical scatter
+  #   for the same site: the mean of the usable monthly standard deviations
+  #   over the trailing 12 months, being the month itself and the 11 before
+  #   it.  Where the measured value already exceeds the floor it is used
+  #   unchanged.
+  #
+  #   Months of three or more pairs are never floored.  They measure their own
+  #   spread well enough to keep it, and flooring them would discard that
+  #   information and bias the record upward, a floor being able to raise a
+  #   value but never lower one.
+  #
+  #   Averaging existing spreads, rather than recomputing a standard deviation
+  #   across the window, keeps the floor independent of the trend.  Single-pair
+  #   months are left out of the window average but are assigned the floor;
+  #   where the window rests on fewer than three usable months no floor is
+  #   formed.  This is the same standard deviation the monthly-means export
+  #   reports, so a site-month reads alike in both.
   {interp_note}
   #
   # Semi-hemispheric means (HN, LN, LS, HS)

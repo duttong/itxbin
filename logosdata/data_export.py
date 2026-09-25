@@ -97,11 +97,12 @@ SD_DECIMALS = 2
 
 SD_FLOOR_WINDOW = 12      # the month itself plus the 11 before it
 SD_FLOOR_MIN_MONTHS = 3   # fewest usable months a floor may rest on
+SD_FLOOR_MAX_N = 2        # only months at or below this pair count are floored
 
 
 def apply_sd_floor(df, *, site_col='site', date_col='date', sd_col='sd',
                    n_col='n', window=SD_FLOOR_WINDOW,
-                   min_months=SD_FLOOR_MIN_MONTHS):
+                   min_months=SD_FLOOR_MIN_MONTHS, max_n=SD_FLOOR_MAX_N):
     """Floor each month's standard deviation at the recent typical scatter.
 
     A month built from one or two flask pairs reports a standard deviation near
@@ -115,11 +116,21 @@ def apply_sd_floor(df, *, site_col='site', date_col='date', sd_col='sd',
     several ppt a year would otherwise be given a floor reflecting its rise
     rather than the precision of the measurement.
 
-    Single-pair months are left out of that average -- a lone pair has no spread
-    of its own, so counting its zero would drag the floor down -- but they are
-    assigned the floor, the only standard deviation available to them.  Months
-    with no data keep NaN, and a window resting on fewer than *min_months*
-    usable months yields no floor, so the measured value passes through.
+    Only months of *max_n* pairs or fewer are floored.  A month of three or more
+    pairs measures its own spread well enough to keep it: month to month its
+    standard deviation persists (lag-1 correlation of log sd around 0.3-0.7,
+    against 0.2-0.4 at two pairs), so flooring it would discard real
+    information.  It would also bias the record upward, since a floor raises
+    and never lowers -- flooring every month inflates the mean standard
+    deviation by 21-33% across analytes, against 5-12% when confined to the
+    thinly sampled ones.
+
+    Single-pair months are left out of the window average -- a lone pair has no
+    spread of its own, so counting its zero would drag the floor down -- but
+    they are assigned the floor, the only standard deviation available to them.
+    Months with no data keep NaN, and a window resting on fewer than
+    *min_months* usable months yields no floor, so the measured value passes
+    through.
 
     The rolling window is calendar-based: each site is placed on a continuous
     monthly index internally so a gap costs a month rather than being skipped.
@@ -140,7 +151,8 @@ def apply_sd_floor(df, *, site_col='site', date_col='date', sd_col='sd',
         # Written as "not below" rather than ">= floor" so that a month whose
         # window yielded no floor keeps its measured value: any comparison with
         # NaN is False, and `sd >= floor` would hand back the NaN instead.
-        floored = sd.where(~(sd < floor), floor)
+        thin = (n > 0) & (n <= max_n)
+        floored = sd.where(~(thin & (sd < floor)), floor)
         floored = floored.where(n != 1, floor)   # a lone pair takes the floor
         floored = floored.where(n > 0)           # no data, no value
 
