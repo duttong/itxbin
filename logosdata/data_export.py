@@ -95,6 +95,61 @@ MF_DECIMALS = 2
 SD_DECIMALS = 2
 
 
+SD_FLOOR_WINDOW = 12      # the month itself plus the 11 before it
+SD_FLOOR_MIN_MONTHS = 3   # fewest usable months a floor may rest on
+
+
+def apply_sd_floor(df, *, site_col='site', date_col='date', sd_col='sd',
+                   n_col='n', window=SD_FLOOR_WINDOW,
+                   min_months=SD_FLOOR_MIN_MONTHS):
+    """Floor each month's standard deviation at the recent typical scatter.
+
+    A month built from one or two flask pairs reports a standard deviation near
+    zero whenever those pairs happen to agree -- an artefact of the sample size,
+    not a statement that the month was tightly constrained.  The floor is the
+    **mean of the usable monthly standard deviations over the trailing window**
+    (the month itself and the 11 before it), computed per site.
+
+    Averaging existing spreads, rather than recomputing a standard deviation
+    across the window, is what keeps the floor free of the trend: a gas moving
+    several ppt a year would otherwise be given a floor reflecting its rise
+    rather than the precision of the measurement.
+
+    Single-pair months are left out of that average -- a lone pair has no spread
+    of its own, so counting its zero would drag the floor down -- but they are
+    assigned the floor, the only standard deviation available to them.  Months
+    with no data keep NaN, and a window resting on fewer than *min_months*
+    usable months yields no floor, so the measured value passes through.
+
+    The rolling window is calendar-based: each site is placed on a continuous
+    monthly index internally so a gap costs a month rather than being skipped.
+    Rows are never added -- the result carries exactly the input's rows, with
+    *sd_col* replaced and ``sd_floor`` added.
+    """
+    if df.empty:
+        return df
+    out = []
+    for site, grp in df.groupby(site_col, sort=True):
+        grp = grp.set_index(date_col).sort_index().copy()
+        full = pd.date_range(grp.index.min(), grp.index.max(), freq='MS')
+        sd = pd.to_numeric(grp[sd_col], errors='coerce').reindex(full)
+        n = pd.to_numeric(grp[n_col], errors='coerce').reindex(full).fillna(0)
+
+        usable = sd.where(n >= 2)
+        floor = usable.rolling(window, min_periods=min_months).mean()
+        # Written as "not below" rather than ">= floor" so that a month whose
+        # window yielded no floor keeps its measured value: any comparison with
+        # NaN is False, and `sd >= floor` would hand back the NaN instead.
+        floored = sd.where(~(sd < floor), floor)
+        floored = floored.where(n != 1, floor)   # a lone pair takes the floor
+        floored = floored.where(n > 0)           # no data, no value
+
+        grp['sd_floor'] = floor.reindex(grp.index)
+        grp[sd_col] = floored.reindex(grp.index)
+        out.append(grp.rename_axis(date_col).reset_index())
+    return _concat_frames(out)
+
+
 class MstarDataExporter:
     """Export M-system (M1/M3/M4) flask pair-average mole fraction data to GML format.
 
@@ -282,9 +337,13 @@ class MstarMonthlyExporter(MstarDataExporter):
     each row is one calendar month at one site.  Months run continuously from
     each site's first to its last sampled month; a month with no accepted
     flask pair is written as ``nan`` with ``n = 0``.
+
+    The reported standard deviation carries a floor -- see
+    :func:`apply_sd_floor`.
     """
 
     COLUMNS_FILE = COLUMNS_MONTHLY_FILE
+
 
     # ── data query ───────────────────────────────────────────────────────────
 
@@ -328,7 +387,7 @@ class MstarMonthlyExporter(MstarDataExporter):
         df['month_start'] = pd.to_datetime(df['month_start'])
         # STDDEV() is NULL for a single-pair month; COUNT() never is.
         df['monthly_n'] = df['monthly_n'].astype(int)
-        return self.fill_month_gaps(df)
+        return self.add_sd_floor(self.fill_month_gaps(df))
 
     @staticmethod
     def fill_month_gaps(df: pd.DataFrame) -> pd.DataFrame:
@@ -346,6 +405,16 @@ class MstarMonthlyExporter(MstarDataExporter):
             grp['monthly_n'] = grp['monthly_n'].fillna(0).astype(int)
             filled.append(grp.rename_axis('month_start').reset_index())
         return _concat_frames(filled)
+
+    @classmethod
+    def add_sd_floor(cls, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply :func:`apply_sd_floor` using this frame's column names.
+
+        The same floor the global-means export uses, so a site-month's standard
+        deviation reads the same in both products.
+        """
+        return apply_sd_floor(df, site_col='site', date_col='month_start',
+                              sd_col='monthly_std', n_col='monthly_n')
 
     # ── format ───────────────────────────────────────────────────────────────
 
@@ -374,9 +443,10 @@ class MstarMonthlyExporter(MstarDataExporter):
             sd = row['monthly_std']
             n = int(row['monthly_n'])
             mf_str = MONTHLY_MISSING if mf is None or mf != mf else f'{mf:.{MF_DECIMALS}f}'
-            # STDDEV() of a single pair is 0, which would read as perfect
-            # agreement rather than "no spread measurable".
-            sd_str = (MONTHLY_MISSING if n < 2 or sd is None or sd != sd
+            # add_sd_floor() has already replaced the raw STDDEV() -- including
+            # the 0 a single pair would otherwise report -- with the floored
+            # value, so what is left NaN here is genuinely absent.
+            sd_str = (MONTHLY_MISSING if sd is None or sd != sd
                       else f'{sd:.{SD_DECIMALS}f}')
 
             lines.append('\t'.join([
@@ -455,10 +525,12 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
     def query_site_months(self) -> pd.DataFrame:
         """Per-site monthly means of the M* flask pair averages.
 
-        ``sd`` is the spread of the pair means in the month, falling back to the
-        single pair's own within-pair standard deviation when only one pair was
-        collected — a month of one pair has no spread of its own, and the
-        propagated uncertainties need a value there.
+        ``sd`` is the spread of the pair means in the month, floored by
+        :func:`apply_sd_floor` — the same standard deviation the monthly-means
+        export reports, so a site-month reads the same in both products.  The
+        floor also supplies the value for a single-pair month, which has no
+        spread of its own and would otherwise contribute nothing to the
+        propagated uncertainties.
         """
         insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
         if not self.sites:
@@ -468,13 +540,12 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         sql = f"""
         SELECT LOWER(export_site) AS site, date,
                AVG(pair_avg)    AS mf,
-               STDDEV(pair_avg) AS sd_spread,
-               AVG(pair_stdv)   AS sd_pair,
+               STDDEV(pair_avg) AS sd,
                COUNT(pair_avg)  AS n
         FROM (
             SELECT {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site,
                    DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS date,
-                   v.pair_avg, v.pair_stdv
+                   v.pair_avg
             FROM hats.ng_pair_avg_view v
             WHERE v.inst_id IN ({insts})
               AND v.parameter_num = %s
@@ -490,10 +561,10 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         if df.empty:
             return df
         df['date'] = pd.to_datetime(df['date'], format='%Y-%m-%d')
-        for col in ('mf', 'sd_spread', 'sd_pair'):
+        for col in ('mf', 'sd'):
             df[col] = pd.to_numeric(df[col], errors='coerce')
         df['n'] = df['n'].astype(int)
-        df['sd'] = df['sd_spread'].where(df['n'] >= 2, df['sd_pair'])
+        df = apply_sd_floor(df)
         return df[['site', 'date', 'mf', 'sd', 'n']]
 
     def query_data(self) -> pd.DataFrame:

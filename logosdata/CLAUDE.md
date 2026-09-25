@@ -334,6 +334,43 @@ COLUMN DESCRIPTIONS block is a `{columns}` placeholder filled from
 `mstar-export.py` reads the same pair of files — update both readers if the
 placeholder changes.
 
+### Standard-deviation floor (`apply_sd_floor`)
+
+Shared by the **monthly-means** and **global-means** exports, so a site-month's
+sd reads the same in both (verified: 3,844/3,844 identical for HFC-134a).
+
+A month of one or two flask pairs reports `STDDEV` near zero whenever those
+pairs happen to agree — an artefact of sample size, not a tightly constrained
+month. Median sd scales straight with n (n=2 → 0.198, n=3 → 0.285, n=4 → 0.395,
+n=5 → 0.538), which is the tell.
+
+- **Floor = mean of the usable monthly sds over the trailing 12 months** (the
+  month itself plus the 11 before it), per site. `SD_FLOOR_WINDOW`/
+  `SD_FLOOR_MIN_MONTHS` in `data_export.py`.
+- **Averaging spreads, not recomputing an sd across the window**, is what keeps
+  it trend-free. A recomputed 12-month sd is ~1.5 ppt for HFC-134a purely
+  because the gas rises ~5 ppt/yr, and would raise 100% of months. The mean of
+  spreads gives HFC-134a (+4.57/yr) 0.365 and CFC-11 (−1.72/yr) 0.358 — opposite
+  trends, same floor. It tracks the measurement, not the signal.
+- **Mean, not median** (user's choice). Mean sits above median on a right-skewed
+  sd distribution, so the floor is slightly conservative: raises ~61% of months,
+  median 1.11×, p75 1.79×, with 5.7% above 5× (the near-zero ones).
+- **Single-pair months are excluded from the window average** — a lone pair has
+  no spread, and counting its zero would drag the floor toward zero, defeating
+  the point. They still *receive* the floor, which is the only sd available to
+  them. Months with no data keep NaN; a window under `SD_FLOOR_MIN_MONTHS`
+  yields no floor and the measured value passes through untouched.
+- The rolling window is **calendar-based**: each site is reindexed to continuous
+  months internally so a gap costs a month rather than being skipped. Rows are
+  never added — the result carries exactly the input's rows.
+- **Watch the NaN-floor case.** `sd.where(sd >= floor, floor)` looks right but
+  silently NaNs the measurement when the floor is NaN, since any comparison with
+  NaN is False. It is written `sd.where(~(sd < floor), floor)` for that reason.
+- Effect on the global product: the mean is **unchanged** (the floor only touches
+  sd); `Global_sd` median 0.232 → 0.281, `NH_sd` 0.374 → 0.467, `SH_sd`
+  0.197 → 0.266, with 95% of months widening. The global path no longer uses the
+  old `AVG(pair_stdv)` fallback for n=1.
+
 ### PFP pseudo-sites in the M* exports
 
 PFP (programmable flask package) samples are a **different kind of flask**: they

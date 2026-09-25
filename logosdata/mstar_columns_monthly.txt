@@ -4,13 +4,34 @@
 # dec_date     Mid-month decimal year (UTC)
 # {param}     Dry-air mole fraction (pmol/mol, ppt) — mean of the flask pair
 #              means collected at this site during the month
-# {param}_sd  1 standard deviation of the flask pair means in the month
+# {param}_sd  1 standard deviation of the flask pair means in the month,
+#              subject to the floor described below
 # {param}_n   Number of flask pairs contributing to the monthly mean
 #
 # Months run continuously from each site's first to its last sampled month.
-# A month with no accepted flask pair is reported as nan with n = 0, and a
-# month containing a single flask pair has no measurable spread, so its
-# standard deviation is also reported as nan.
+# A month with no accepted flask pair is reported as nan with n = 0.
+#
+# STANDARD DEVIATION FLOOR
+#
+# A month built from one or two flask pairs reports a standard deviation near
+# zero whenever those pairs happen to agree.  That is an artefact of the sample
+# size, not a statement that the month was tightly constrained, so the reported
+# value is floored at the recent typical scatter for the same site: the mean of
+# the usable monthly standard deviations over the trailing 12 months, being the
+# month itself and the 11 before it.  Where the measured standard deviation
+# already exceeds that floor it is reported unchanged.
+#
+# Averaging the existing monthly spreads, rather than recomputing a standard
+# deviation across the 12-month window, keeps the floor independent of the
+# trend.  A gas moving several ppt per year would otherwise be given a floor
+# that reflects its rise rather than the precision of the measurement.
+#
+# Months holding a single flask pair have no spread of their own.  They are
+# left out of the window average, so their zero cannot drag the floor down, but
+# they are assigned the floor as their standard deviation -- it is the only one
+# available for them.  Where the trailing window rests on fewer than three
+# usable months no floor is formed: the measured standard deviation is reported
+# as it stands, or as nan for a single-pair month.
 #
 # Flask pairs with a statistically discernible difference at the 90–95%
 # confidence level are excluded.  Additional culling is applied based on
