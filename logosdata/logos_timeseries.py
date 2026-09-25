@@ -175,16 +175,14 @@ class TimeseriesFigure(TagCRUDMixin):
         self.dataset_handles = {}
         # When FE3 has no data (e.g. OTTO-only sites like ITN/USH), show OTTO pair by default.
         fe3_empty = df.empty and parent_widget.instrument.inst_num == 193
-        # M4 only runs from 2022; M1 covers 1991-2009 and M3 2009-2023, so the
-        # M4-only series is the last four years of a 32-year record. Show the M*
-        # pair means by default or the figure opens almost empty -- the x-axis
-        # already spans the full M* range, because hidden artists still count
-        # toward the axes' dataLim. The M* 10-day and monthly overlays stay off;
-        # they are aggregates of the same data and cost thousands of artists.
-        show_mstar = parent_widget.instrument.inst_num == 192
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": show_mstar, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
+        # "All samples" carries the finest per-sample data available across the
+        # whole M-system: M4 injections from 2022, and M1/M3 flask pair means
+        # before that, M4 being the only one of the three with per-injection rows
+        # in ng_data_processing_view. One toggle therefore clears the raw record,
+        # which is what you want when reading the binned means. The granularity
+        # does change across 2022, so the two are drawn with different markers.
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
         self.legend_label_map = {
-            "Mstar pair mean": "M* pair",
             "Otto pair mean": "OTTO pair",
             "Otto 10-day mean": "OTTO 10-day",
             "Otto monthly mean": "OTTO monthly",
@@ -482,11 +480,8 @@ class TimeseriesFigure(TagCRUDMixin):
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
         tenday_entries  = ["10-day mean"] if has_data else []
         monthly_entries = ["Monthly mean"] if has_data else []
-        mstar_entries   = ["Mstar pair mean"] if (is_m4 and has_data) else []
         otto_entries    = ["Otto pair mean", "Otto 10-day mean", "Otto monthly mean"] if is_fe3 else []
 
-        _mstar_markers = {"Mstar pair mean": "P"}
-        _mstar_color = "dimgray"
         _otto_markers = {"Otto pair mean": "P", "Otto 10-day mean": "<", "Otto monthly mean": "h"}
         _otto_color = "dimgray"
 
@@ -501,22 +496,6 @@ class TimeseriesFigure(TagCRUDMixin):
             if not self.dataset_visibility.get(label, True):
                 dummy.set_alpha(0.4)
             legend_handles.append(dummy)
-
-        if mstar_entries:
-            divider = mlines.Line2D([], [], color="lightgray", linestyle="-",
-                                    linewidth=1.5, markersize=0, label="──────────")
-            divider._is_dataset_legend = True
-            legend_handles.append(divider)
-            for label in mstar_entries:
-                dummy = mlines.Line2D([], [], color=_mstar_color,
-                                      marker=_mstar_markers[label],
-                                      linestyle="", markersize=6,
-                                      label=self.legend_label_map.get(label, label))
-                dummy._is_dataset_legend = True
-                dummy._dataset_key = label
-                if not self.dataset_visibility.get(label, True):
-                    dummy.set_alpha(0.4)
-                legend_handles.append(dummy)
 
         if otto_entries:
             divider = mlines.Line2D([], [], color="lightgray", linestyle="-",
@@ -1023,12 +1002,18 @@ class TimeseriesFigure(TagCRUDMixin):
         return handles
 
     def _draw_mstar_artists(self, ax, site_colors):
-        """Draw the M1+M3 pair means (M4 only); return dataset_handles entries."""
+        """Draw the M1+M3 pair means as the pre-2022 half of "All samples".
+
+        M4 is the only M-system instrument with per-injection rows in
+        ng_data_processing_view, so before 2022 the finest data available is the
+        flask pair mean.  These carry the "All samples" dataset label and so
+        follow that toggle, letting one click clear the whole raw record.  They
+        keep their own marker, since the granularity really does change.
+        """
         handles = {}
 
-        # ── Mstar pair mean ─────────────────────────────────────────
         pair_df = self.parent_widget.query_mstar_pair_data(self.analyte)
-        visible_pair = self.dataset_visibility.get("Mstar pair mean", False)
+        visible_pair = self.dataset_visibility.get("All samples", True)
         if not pair_df.empty:
             for site, grp in pair_df.groupby("site"):
                 color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
@@ -1036,12 +1021,12 @@ class TimeseriesFigure(TagCRUDMixin):
                     grp["sample_datetime"], grp["pair_avg"],
                     marker="P", linestyle="",
                     color=color, markersize=5, alpha=0.6,
-                    mfc=color, mec=color, label="Mstar pair mean"
+                    mfc=color, mec=color, label="All samples"
                 )
                 line._site = site
-                line._dataset_label = "Mstar pair mean"
+                line._dataset_label = "All samples"
                 line.set_visible(visible_pair)
-                handles.setdefault("Mstar pair mean", []).append(line)
+                handles.setdefault("All samples", []).append(line)
 
         # The 10-day and monthly aggregates are not drawn here: the "10-day mean"
         # and "Monthly mean" datasets already pool M1/M3/M4 (see

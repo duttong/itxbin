@@ -286,10 +286,25 @@ M4-only shows the last four years of a 32-year record.
 
 | Dataset | Source | Coverage |
 |---|---|---|
-| All samples | `ng_data_processing_view`, inst_num=192 | M4 only, per injection |
-| Flask mean / Pair mean | same | M4 only |
+| All samples | `ng_data_processing_view` (M4 injections) **+** `query_mstar_pair_data()` (M1/M3 pair means) | **1991-2026** |
+| Flask mean / Pair mean | `ng_data_processing_view`, inst_num=192 | M4 only |
 | 10-day mean / Monthly mean | `ng_pair_avg_view` via `_binned_inst_filter()` | **M1+M3+M4** |
-| M* pair | `query_mstar_pair_data()`, `inst_id IN ('M1','M3')` | 1991-2023, pair means |
+
+**`All samples` spans the whole M-system**, carrying the finest per-sample data
+available at each date: M4 injections from 2022, M1/M3 flask pair means before
+that. M4 is the only one of the three with per-injection rows in
+`ng_data_processing_view`, so before 2022 the pair mean *is* the raw datum. The
+two halves are drawn with different markers (`o` vs `P`, the M* half dimmed to
+0.75 brightness) because the granularity genuinely changes, but they share the
+`_dataset_label` so **one legend click clears the entire raw record** — which is
+the point, when you want to read the binned means. `_draw_mstar_artists()`
+appends into the existing `All samples` handle list via `setdefault().extend()`.
+
+There was briefly a separate `M* pair` legend entry. It meant toggling off
+`All samples` still left the pre-2022 scatter on the plot, which is not what
+anyone wants. Note M* pair means are conceptually closer to `Pair mean` than to
+`All samples`; they sit here because they are the only raw data that exists
+before 2022, not because they are per-injection.
 
 - `_binned_inst_filter()` returns `inst_id IN ('M1','M3','M4')` for M4 and
   `inst_num = %s` for everything else, so the binned aggregates pool the whole
