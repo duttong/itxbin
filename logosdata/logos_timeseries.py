@@ -124,6 +124,23 @@ def build_site_colors(sites, palette="Latitude"):
     cmap = plt.cm.get_cmap(palette)
     return {site: cmap(i % cmap.N) for i, site in enumerate(sites)}
 
+# Amber: an action has been asked for but not yet applied, or is running.
+_PENDING_STYLE = (
+    "QPushButton {"
+    "background-color: #f6e7a1;"
+    "border: 1px solid #c5ae45;"
+    "color: #3f3200;"
+    "padding: 3px 6px;"
+    "}"
+)
+
+
+def set_button_pending(button, pending: bool):
+    """Amber *button* while its action is staged or running, plain otherwise."""
+    if button is not None:
+        button.setStyleSheet(_PENDING_STYLE if pending else "")
+
+
 def adjust_brightness(color, factor=1.0):
     """Darken/lighten an RGBA color. factor < 1 darkens, > 1 lightens."""
     r, g, b, a = color
@@ -241,15 +258,11 @@ class ExportPreviewFigure:
         actually loaded, so what is shown stays what would be written.
         """
         self._pending = True
-        if getattr(self, 'reload_btn', None) is not None:
-            self.reload_btn.setStyleSheet(
-                "QPushButton { background-color: #f6e7a1;"
-                " border: 1px solid #c5ae45; color: #3f3200; padding: 3px 6px; }")
+        set_button_pending(getattr(self, 'reload_btn', None), True)
 
     def _clear_pending(self):
         self._pending = False
-        if getattr(self, 'reload_btn', None) is not None:
-            self.reload_btn.setStyleSheet("")
+        set_button_pending(getattr(self, 'reload_btn', None), False)
 
     def reload(self, *_):
         """Re-query with the toolbar's current selection and redraw."""
@@ -1325,8 +1338,14 @@ class TimeseriesFigure(TagCRUDMixin):
             self.parent_widget._set_button_loading_state(self.reload_btn, False, default_text)
 
     def _on_year_changed(self):
+        """Stage the new range; Reload applies it.
+
+        Nothing re-queries here, so the plot keeps showing the range it was
+        drawn for. Marking Reload says the two no longer agree.
+        """
         self.parent_widget.start_year.setValue(self.fig_start_year.value())
         self.parent_widget.end_year.setValue(self.fig_end_year.value())
+        set_button_pending(getattr(self, 'reload_btn', None), True)
 
     def _rebuild_preserving_view(self):
         """Clear+rebuild the plot without losing the current x/y zoom.
@@ -2611,7 +2630,17 @@ class TimeseriesWidget(QWidget):
             plot_btn.setFixedWidth(44)
             plot_btn.setToolTip("Preview the data this export would write, "
                                 "without creating a file")
-            plot_btn.clicked.connect(lambda _=False: on_plot())
+
+            def _run_plot(_=False, btn=plot_btn, fn=on_plot):
+                # Querying and rendering can take seconds; the button is too
+                # narrow for "Loading...", so it keeps its label and just ambers.
+                self._set_button_loading_state(btn, True, "Plot", loading_text="Plot")
+                try:
+                    fn()
+                finally:
+                    self._set_button_loading_state(btn, False, "Plot")
+
+            plot_btn.clicked.connect(_run_plot)
             row.addWidget(plot_btn, stretch=0)
         row.addWidget(info_btn, stretch=0)
         return row
@@ -2619,21 +2648,20 @@ class TimeseriesWidget(QWidget):
     def _save_year_range(self):
         _save_timeseries_years(self.start_year.value(), self.end_year.value())
 
-    def _set_button_loading_state(self, button, loading: bool, default_text: str):
+    def _set_button_loading_state(self, button, loading: bool, default_text: str,
+                                  loading_text: str = "Loading..."):
+        """Amber and disable *button* while its action runs.
+
+        *loading_text* can be left as the button's own label where the button is
+        too narrow to show anything longer.
+        """
         if loading:
-            button.setText("Loading...")
-            button.setStyleSheet(
-                "QPushButton {"
-                "background-color: #f6e7a1;"
-                "border: 1px solid #c5ae45;"
-                "color: #3f3200;"
-                "padding: 3px 6px;"
-                "}"
-            )
+            button.setText(loading_text)
+            set_button_pending(button, True)
             button.setEnabled(False)
         else:
             button.setText(default_text)
-            button.setStyleSheet("")
+            set_button_pending(button, False)
             button.setEnabled(True)
 
         QApplication.processEvents()

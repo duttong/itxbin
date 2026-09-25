@@ -327,6 +327,24 @@ before 2022, not because they are per-injection.
   `ng_pair_avg_view`. Same reason the Relative Stddev figure and right-click
   navigation don't work for M*.
 
+## Pale-yellow "staged or running" cue
+
+`_PENDING_STYLE` / `set_button_pending()` in `logos_timeseries.py` are the one
+definition of the `#f6e7a1` pale yellow, used wherever a button's action has
+been asked for but not yet applied, or is running. A test asserts the literal
+appears exactly once, so it stays that way.
+
+- `_set_button_loading_state()` uses it for "Loading..." states. Its
+  `loading_text` argument keeps the label where a button is too narrow for
+  anything longer — the **Plot** buttons pass `loading_text="Plot"` and just
+  change colour, restored in a `finally` so a failed preview can't strand them.
+- `TimeseriesFigure._on_year_changed()` marks **Reload** when the year range is
+  staged, since nothing re-queries there and the plot would otherwise disagree
+  with the spinboxes silently. `_on_reload_clicked()` clears it via the loading
+  state's own reset.
+- `ExportPreviewFigure._mark_pending()` / `_clear_pending()` do the same for the
+  preview window.
+
 ## Timeseries tab export buttons (SAVE group)
 
 Instrument-specific; built in `TimeseriesWidget.__init__` and handled by
@@ -356,8 +374,7 @@ The preview's toolbar carries a **year range**, an **analyte** combo,
 **stage** a selection — `_mark_pending()` — and **Reload** applies it; nothing
 re-queries on a spinbox step, since walking a year range otherwise fired one
 query per step (12 steps = 12 queries, several seconds each for global means).
-Reload highlights amber while a change is staged, using the same styling as
-`_set_button_loading_state`.
+Reload highlights pale yellow while a change is staged.
 
 Overrides go through `from_timeseries_widget(..., analyte=, start_year=,
 end_year=)`, so the Timeseries tab's own selection is **left untouched**. An
