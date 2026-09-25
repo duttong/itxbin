@@ -182,11 +182,9 @@ class TimeseriesFigure(TagCRUDMixin):
         # toward the axes' dataLim. The M* 10-day and monthly overlays stay off;
         # they are aggregates of the same data and cost thousands of artists.
         show_mstar = parent_widget.instrument.inst_num == 192
-        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": show_mstar, "Mstar 10-day mean": False, "Mstar monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
+        self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Mstar pair mean": show_mstar, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
         self.legend_label_map = {
             "Mstar pair mean": "M* pair",
-            "Mstar 10-day mean": "M* 10-day",
-            "Mstar monthly mean": "M* monthly",
             "Otto pair mean": "OTTO pair",
             "Otto 10-day mean": "OTTO 10-day",
             "Otto monthly mean": "OTTO monthly",
@@ -484,10 +482,10 @@ class TimeseriesFigure(TagCRUDMixin):
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
         tenday_entries  = ["10-day mean"] if has_data else []
         monthly_entries = ["Monthly mean"] if has_data else []
-        mstar_entries   = ["Mstar pair mean", "Mstar 10-day mean", "Mstar monthly mean"] if (is_m4 and has_data) else []
+        mstar_entries   = ["Mstar pair mean"] if (is_m4 and has_data) else []
         otto_entries    = ["Otto pair mean", "Otto 10-day mean", "Otto monthly mean"] if is_fe3 else []
 
-        _mstar_markers = {"Mstar pair mean": "P", "Mstar 10-day mean": "<", "Mstar monthly mean": "h"}
+        _mstar_markers = {"Mstar pair mean": "P"}
         _mstar_color = "dimgray"
         _otto_markers = {"Otto pair mean": "P", "Otto 10-day mean": "<", "Otto monthly mean": "h"}
         _otto_color = "dimgray"
@@ -1025,7 +1023,7 @@ class TimeseriesFigure(TagCRUDMixin):
         return handles
 
     def _draw_mstar_artists(self, ax, site_colors):
-        """Draw M1+M3 pair, 10-day, and monthly means (M4 only); return dataset_handles entries."""
+        """Draw the M1+M3 pair means (M4 only); return dataset_handles entries."""
         handles = {}
 
         # ── Mstar pair mean ─────────────────────────────────────────
@@ -1045,21 +1043,9 @@ class TimeseriesFigure(TagCRUDMixin):
                 line.set_visible(visible_pair)
                 handles.setdefault("Mstar pair mean", []).append(line)
 
-        # ── Mstar 10-day mean ───────────────────────────────────────
-        self._merge_handles(handles, self._draw_binned_means(
-            ax, self.parent_widget.query_mstar_10day_mean_data(self.analyte),
-            "Mstar 10-day mean", site_colors,
-            x_col="period_start", mean_col="period_avg", std_col="period_std",
-            marker="<", brightness=0.75, markersize=6, capsize=3,
-            visible=self.dataset_visibility.get("Mstar 10-day mean", False)))
-
-        # ── Mstar monthly mean ──────────────────────────────────────
-        self._merge_handles(handles, self._draw_binned_means(
-            ax, self.parent_widget.query_mstar_monthly_mean_data(self.analyte),
-            "Mstar monthly mean", site_colors,
-            x_col="month_start", mean_col="monthly_avg", std_col="monthly_std",
-            marker="h", brightness=0.75, markersize=7, capsize=4,
-            visible=self.dataset_visibility.get("Mstar monthly mean", False)))
+        # The 10-day and monthly aggregates are not drawn here: the "10-day mean"
+        # and "Monthly mean" datasets already pool M1/M3/M4 (see
+        # _binned_inst_filter), so a separate M*-only pair would duplicate them.
 
         return handles
 
@@ -2996,6 +2982,24 @@ class TimeseriesWidget(QWidget):
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
+    # M4 (inst_num=192) only runs from 2022; M1 covers 1991-2009 and M3
+    # 2009-2023. The M-system aggregates therefore span all three, matching what
+    # the Export M* Data buttons write. Compared like for like -- same site, same
+    # month -- M4 and M3 agree to 0.02 ppt over their 2022-2023 overlap, so
+    # pooling them introduces no instrument step.
+    MSTAR_INST_IDS = ("M1", "M3", "M4")
+
+    def _binned_inst_filter(self, col_prefix="v."):
+        """Return (sql_fragment, params) selecting this instrument's rows.
+
+        For M4 that is the whole M-system; every other instrument stays on its
+        own inst_num.
+        """
+        if self.instrument.inst_num == 192:
+            ids = ", ".join(f"'{i}'" for i in self.MSTAR_INST_IDS)
+            return f"{col_prefix}inst_id IN ({ids})", []
+        return f"{col_prefix}inst_num = %s", [self.instrument.inst_num]
+
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
@@ -3030,16 +3034,17 @@ class TimeseriesWidget(QWidget):
                 ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
             END"""
 
+        inst_sql, inst_params = self._binned_inst_filter()
         sql = f"""
-        SELECT v.site, {_period_expr} AS period_start,
+        SELECT UPPER(v.site) AS site, {_period_expr} AS period_start,
             AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
         FROM hats.ng_pair_avg_view v
-        WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-          AND v.site IN ({",".join(["%s"] * len(sites))})
+        WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-        GROUP BY v.site, period_start ORDER BY v.site, period_start;
+        GROUP BY site, period_start ORDER BY site, period_start;
         """
-        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        params = inst_params + [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["period_start"] = pd.to_datetime(df["period_start"])
@@ -3074,16 +3079,17 @@ class TimeseriesWidget(QWidget):
         if not sites:
             return pd.DataFrame()
 
+        inst_sql, inst_params = self._binned_inst_filter()
         sql = f"""
-        SELECT v.site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+        SELECT UPPER(v.site) AS site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
             AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
         FROM hats.ng_pair_avg_view v
-        WHERE v.inst_num = %s AND v.parameter_num = %s {ch_filter}
-          AND v.site IN ({",".join(["%s"] * len(sites))})
+        WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-        GROUP BY v.site, month_start ORDER BY v.site, month_start;
+        GROUP BY site, month_start ORDER BY site, month_start;
         """
-        params = [self.instrument.inst_num, pnum] + sites + [start, end]
+        params = inst_params + [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["month_start"] = pd.to_datetime(df["month_start"])
@@ -3324,78 +3330,6 @@ class TimeseriesWidget(QWidget):
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
-        return df
-
-    def query_mstar_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query M1+M3 10-day binned means from ng_pair_avg_view (M4 only)."""
-        if self.instrument.inst_num != 192:
-            return pd.DataFrame()
-        analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
-        if pnum is None:
-            return pd.DataFrame()
-        start = self.start_year.value()
-        end   = self.end_year.value()
-        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
-        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
-        if not sites:
-            return pd.DataFrame()
-        sql = f"""
-        SELECT
-            UPPER(site) AS site,
-            CASE
-                WHEN DAY(sample_datetime) <= 10 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-01')
-                WHEN DAY(sample_datetime) <= 20 THEN DATE_FORMAT(sample_datetime, '%%Y-%%m-11')
-                ELSE DATE_FORMAT(sample_datetime, '%%Y-%%m-21')
-            END AS period_start,
-            AVG(pair_avg)    AS period_avg,
-            STDDEV(pair_avg) AS period_std
-        FROM hats.ng_pair_avg_view
-        WHERE inst_id IN ('M1', 'M3')
-          AND parameter_num = %s
-          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, period_start
-        ORDER BY site, period_start
-        """
-        params = [pnum] + sites + [start, end]
-        df = pd.DataFrame(self.instrument.doquery(sql, params))
-        if not df.empty:
-            df["period_start"] = pd.to_datetime(df["period_start"])
-        return df
-
-    def query_mstar_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query M1+M3 monthly means from ng_pair_avg_view (M4 only)."""
-        if self.instrument.inst_num != 192:
-            return pd.DataFrame()
-        analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
-        if pnum is None:
-            return pd.DataFrame()
-        start = self.start_year.value()
-        end   = self.end_year.value()
-        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
-        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
-        if not sites:
-            return pd.DataFrame()
-        sql = f"""
-        SELECT
-            UPPER(site) AS site,
-            DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
-            AVG(pair_avg)    AS monthly_avg,
-            STDDEV(pair_avg) AS monthly_std
-        FROM hats.ng_pair_avg_view
-        WHERE inst_id IN ('M1', 'M3')
-          AND parameter_num = %s
-          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, month_start
-        ORDER BY site, month_start
-        """
-        params = [pnum] + sites + [start, end]
-        df = pd.DataFrame(self.instrument.doquery(sql, params))
-        if not df.empty:
-            df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
     def query_otto_pair_data(self, analyte: str | None = None) -> pd.DataFrame:

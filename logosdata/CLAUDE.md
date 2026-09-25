@@ -278,6 +278,40 @@ hollow, or hidden with "Hide Rejected Data"; hidden legend ports hide too).
   `_on_click_tooltip` ignores clicks in `self._ax_additional` so they can't
   clear a Multi-Tag selection.
 
+## Timeseries figure datasets (M4)
+
+The Mole Fractions figure's dataset legend toggles these. M4 (inst_num=192)
+only runs from **2022**; M1 covers 1991-2009 and M3 2009-2023, so anything
+M4-only shows the last four years of a 32-year record.
+
+| Dataset | Source | Coverage |
+|---|---|---|
+| All samples | `ng_data_processing_view`, inst_num=192 | M4 only, per injection |
+| Flask mean / Pair mean | same | M4 only |
+| 10-day mean / Monthly mean | `ng_pair_avg_view` via `_binned_inst_filter()` | **M1+M3+M4** |
+| M* pair | `query_mstar_pair_data()`, `inst_id IN ('M1','M3')` | 1991-2023, pair means |
+
+- `_binned_inst_filter()` returns `inst_id IN ('M1','M3','M4')` for M4 and
+  `inst_num = %s` for everything else, so the binned aggregates pool the whole
+  M-system and match what the Export M* Data buttons write. FE3/IE3/CATS are
+  unaffected.
+- There used to be separate `Mstar 10-day mean` / `Mstar monthly mean` datasets
+  (M1/M3 only) alongside M4-only `10-day mean` / `Monthly mean`. Toggling
+  "Monthly mean" then showed nothing before 2022, which reads as a bug. They
+  were merged; the two M*-only queries were deleted.
+- Pooling M3 and M4 is safe: compared like for like (same site, same month) they
+  agree to **-0.02 ppt mean, sd 0.37** over their 2022-2023 overlap. A naive
+  pooled-across-sites comparison suggests a -7.6 ppt step, but that is a
+  site-mix artifact -- early M4 has 1-4 pairs/month from different sites than
+  M3's 13-22.
+- Only 3 site-months have both M3 and M4 for a given analyte, so merging changes
+  almost nothing structurally (1489 rows across the two old datasets -> 1486
+  pooled). Four more site-months overlap M1/M3, but those were already pooled.
+- **`All samples` stays M4-only** and can't be extended: M1/M3 have no
+  per-injection rows in `ng_data_processing_view`, only pair averages in
+  `ng_pair_avg_view`. Same reason the Relative Stddev figure and right-click
+  navigation don't work for M*.
+
 ## Timeseries tab export buttons (SAVE group)
 
 Instrument-specific; built in `TimeseriesWidget.__init__` and handled by
