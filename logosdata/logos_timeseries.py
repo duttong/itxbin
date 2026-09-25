@@ -19,7 +19,7 @@ import time
 
 from pathlib import Path
 
-from data_export import MstarDataExporter, FecdDataExporter
+from data_export import MstarDataExporter, MstarMonthlyExporter, FecdDataExporter
 from logos_tagging import TagCRUDMixin, MultiTagPanel
 
 import configparser
@@ -2362,13 +2362,30 @@ class TimeseriesWidget(QWidget):
                 "<b>Year range:</b> set by the Start / End spinboxes above."
             )
 
+            _tip_monthly = (
+                "<b>Export M* Data — Selected Sites, Times, Monthly Means</b><br><br>"
+                "Writes a GML-format text file of <b>monthly means</b> of the "
+                "M-system (M1/M3/M4) flask pair means, one row per site per "
+                "month, with the 1-σ standard deviation of the pair means in "
+                "that month and the number of pairs averaged.<br><br>"
+                "<b>Sites:</b> those checked above. "
+                "<b>Year range:</b> set by the Start / End spinboxes above.<br><br>"
+                "Months run continuously from each site's first to its last "
+                "sampled month; months with no data are written as "
+                "<tt>nan</tt> with <tt>n&nbsp;=&nbsp;0</tt>."
+            )
+
             self.export_mstar_all_btn = QPushButton("Export M* Data -- All Sites and Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
             self.export_mstar_sel_btn = QPushButton("Export M* Data -- Selected Sites and Time")
             self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
+            self.export_mstar_monthly_btn = QPushButton(
+                "Export M* Data -- Selected Sites, Times, Monthly Means")
+            self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
 
             save_layout.addLayout(self._export_row(self.export_mstar_all_btn, _tip_all))
             save_layout.addLayout(self._export_row(self.export_mstar_sel_btn, _tip_sel))
+            save_layout.addLayout(self._export_row(self.export_mstar_monthly_btn, _tip_monthly))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -2651,9 +2668,15 @@ class TimeseriesWidget(QWidget):
         """Export M* data for the currently checked sites and the selected year range."""
         self._run_mstar_export(sites=self.get_active_sites(), all_time=False)
 
-    def _run_mstar_export(self, sites: list[str], all_time: bool = False):
+    def _export_mstar_monthly_means(self):
+        """Export M* monthly means for the checked sites and the selected year range."""
+        self._run_mstar_export(sites=self.get_active_sites(), all_time=False,
+                               exporter_cls=MstarMonthlyExporter)
+
+    def _run_mstar_export(self, sites: list[str], all_time: bool = False,
+                          exporter_cls=MstarDataExporter):
         """Shared logic: build exporter, prompt for path, write file."""
-        exporter = MstarDataExporter.from_timeseries_widget(self, sites=sites, all_time=all_time)
+        exporter = exporter_cls.from_timeseries_widget(self, sites=sites, all_time=all_time)
         default_name = exporter.default_filename()
         path, _ = QFileDialog.getSaveFileName(
             self, "Export M* Data", default_name, "Text files (*.txt);;All files (*)"

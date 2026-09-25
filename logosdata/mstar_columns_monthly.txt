@@ -1,0 +1,18 @@
+# site         Station code (see above)
+# yyyy         Year of the monthly mean (UTC)
+# mm           Month of the monthly mean, 1-12 (UTC)
+# dec_date     Mid-month decimal year (UTC)
+# {param}     Dry-air mole fraction (pmol/mol, ppt) — mean of the flask pair
+#              means collected at this site during the month
+# {param}_sd  1 standard deviation of the flask pair means in the month
+# {param}_n   Number of flask pairs contributing to the monthly mean
+#
+# Months run continuously from each site's first to its last sampled month.
+# A month with no accepted flask pair is reported as nan with n = 0, and a
+# month containing a single flask pair has no measurable spread, so its
+# standard deviation is also reported as nan.
+#
+# Flask pairs with a statistically discernible difference at the 90–95%
+# confidence level are excluded.  Additional culling is applied based on
+# relative within-pair differences.  Results are from simultaneously filled
+# stainless steel or glass flask pairs.

@@ -6,6 +6,9 @@ Classes
 MstarDataExporter
     Export M-system (M1/M3/M4) flask pair-average mole fraction data to
     GML-format text files.  Adapted from mstar-export.py.
+MstarMonthlyExporter
+    Export M-system (M1/M3/M4) monthly means of those flask pair averages,
+    with a continuous month series per site.
 FecdDataExporter
     Export fECD (OTTO + FE3) flask pair-average mole fraction data to
     GML-format text files, one file per site.
@@ -36,7 +39,11 @@ _PFP_SITES = {'MLO_PFP', 'MKO_PFP'}
 
 
 HEADER_FILE = Path(__file__).parent / 'mstar_header.txt'
+# Column-description blocks substituted into {columns} in mstar_header.txt.
+COLUMNS_PAIRS_FILE = Path(__file__).parent / 'mstar_columns_pairs.txt'
+COLUMNS_MONTHLY_FILE = Path(__file__).parent / 'mstar_columns_monthly.txt'
 MISSING = 'nd'
+MONTHLY_MISSING = 'nan'
 MF_DECIMALS = 2
 SD_DECIMALS = 2
 
@@ -59,6 +66,7 @@ class MstarDataExporter:
     """
 
     INSTRUMENTS = ('M1', 'M3', 'M4')
+    COLUMNS_FILE = COLUMNS_PAIRS_FILE
 
     def __init__(
         self,
@@ -97,9 +105,10 @@ class MstarDataExporter:
     # ── header ────────────────────────────────────────────────────────────────
 
     def build_header(self, filename: str) -> str:
-        """Fill {filename} and {date} placeholders in mstar_header.txt."""
+        """Fill the {columns}, {filename} and {date} placeholders in mstar_header.txt."""
         template = HEADER_FILE.read_text()
         return (template
+                .replace('{columns}', self.COLUMNS_FILE.read_text().rstrip('\n'))
                 .replace('{filename}', filename)
                 .replace('{date}', datetime.now().strftime('%Y-%m-%d')))
 
@@ -210,6 +219,121 @@ class MstarDataExporter:
             start_year=1990 if all_time else widget.start_year.value(),
             end_year=datetime.now().year if all_time else widget.end_year.value(),
         )
+
+
+class MstarMonthlyExporter(MstarDataExporter):
+    """Export M-system (M1/M3/M4) monthly means of flask pair averages.
+
+    Same single-file, tab-separated layout as :class:`MstarDataExporter`, but
+    each row is one calendar month at one site.  Months run continuously from
+    each site's first to its last sampled month; a month with no accepted
+    flask pair is written as ``nan`` with ``n = 0``.
+    """
+
+    COLUMNS_FILE = COLUMNS_MONTHLY_FILE
+
+    # ── data query ───────────────────────────────────────────────────────────
+
+    def query_data(self) -> pd.DataFrame:
+        """Return per-site monthly means of pair_avg, aggregated in the DB.
+
+        Columns: site, month_start, monthly_avg, monthly_std, monthly_n.
+        Months with no data are not returned here; :meth:`fill_month_gaps`
+        inserts them.
+        """
+        insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
+        sites = [s for s in self.sites if s not in _PFP_SITES]
+        if not sites:
+            return pd.DataFrame()
+        site_list = ', '.join(f"'{s}'" for s in sites)
+        sql = f"""
+        SELECT UPPER(site) AS site,
+               DATE_FORMAT(sample_datetime, '%%Y-%%m-01') AS month_start,
+               AVG(pair_avg)    AS monthly_avg,
+               STDDEV(pair_avg) AS monthly_std,
+               COUNT(pair_avg)  AS monthly_n
+        FROM hats.ng_pair_avg_view
+        WHERE inst_id IN ({insts})
+          AND parameter_num = %s
+          AND UPPER(site) IN ({site_list})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s
+        GROUP BY site, month_start
+        ORDER BY site, month_start
+        """
+        rows = self.instrument.doquery(sql, [self.parameter_num, self.start_year, self.end_year])
+        df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        if df.empty:
+            return df
+        df['month_start'] = pd.to_datetime(df['month_start'])
+        # STDDEV() is NULL for a single-pair month; COUNT() never is.
+        df['monthly_n'] = df['monthly_n'].astype(int)
+        return self.fill_month_gaps(df)
+
+    @staticmethod
+    def fill_month_gaps(df: pd.DataFrame) -> pd.DataFrame:
+        """Reindex each site onto a continuous monthly series.
+
+        Gap months get NaN mean/std and n = 0, so the month-year sequence is
+        unbroken between each site's first and last sampled month.
+        """
+        filled = []
+        for site, grp in df.groupby('site', sort=True):
+            grp = grp.set_index('month_start').sort_index()
+            months = pd.date_range(grp.index.min(), grp.index.max(), freq='MS')
+            grp = grp.reindex(months)
+            grp['site'] = site
+            grp['monthly_n'] = grp['monthly_n'].fillna(0).astype(int)
+            filled.append(grp.rename_axis('month_start').reset_index())
+        return _concat_frames(filled)
+
+    # ── format ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def month_mid_decimal_year(dt: datetime) -> float:
+        """Decimal year of the midpoint of *dt*'s calendar month."""
+        start = datetime(dt.year, dt.month, 1)
+        end = datetime(dt.year + 1, 1, 1) if dt.month == 12 \
+            else datetime(dt.year, dt.month + 1, 1)
+        mid = start + (end - start) / 2
+        return MstarDataExporter.decimal_year(mid)
+
+    def format_lines(self, df: pd.DataFrame) -> list[str]:
+        """Return a list of tab-separated data lines (including the column header)."""
+        col_mf = self.parameter
+        col_line = '\t'.join([
+            'site', 'yyyy', 'mm', 'dec_date', col_mf, f'{col_mf}_sd', f'{col_mf}_n',
+        ])
+        lines = [col_line]
+        for _, row in df.iterrows():
+            dt = row['month_start']
+            if not isinstance(dt, datetime):
+                dt = pd.Timestamp(dt).to_pydatetime()
+
+            mf = row['monthly_avg']
+            sd = row['monthly_std']
+            n = int(row['monthly_n'])
+            mf_str = MONTHLY_MISSING if mf is None or mf != mf else f'{mf:.{MF_DECIMALS}f}'
+            # STDDEV() of a single pair is 0, which would read as perfect
+            # agreement rather than "no spread measurable".
+            sd_str = (MONTHLY_MISSING if n < 2 or sd is None or sd != sd
+                      else f'{sd:.{SD_DECIMALS}f}')
+
+            lines.append('\t'.join([
+                str(row['site']).lower(),
+                f'{dt.year}',
+                f'{dt.month}',
+                f'{self.month_mid_decimal_year(dt):.5f}',
+                mf_str,
+                sd_str,
+                str(n),
+            ]))
+        return lines
+
+    # ── export ────────────────────────────────────────────────────────────────
+
+    def default_filename(self) -> str:
+        """Return a sensible default output filename."""
+        return f'{self.parameter}_GCMS_flasks_monthly.txt'
 
 
 FECD_HEADER_FILE = Path(__file__).parent / 'fecd_header.txt'

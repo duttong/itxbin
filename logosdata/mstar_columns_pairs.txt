@@ -1,0 +1,14 @@
+# site         Station code (see above)
+# dec_date     Sample date and time as decimal year (UTC)
+# yyyymmdd     Sample date and time as yyyymmdd hhmmss (UTC)
+#   hhmmss     Note: time is exact only for samples collected after Nov 1994;
+#              earlier records use 0000 UTC for the time component.
+# wind_dir     Wind direction (degrees) at time of sampling; -99 = missing
+# wind_spd     Wind speed (m/s) at time of sampling; -99 = missing
+# {param}     Dry-air mole fraction (pmol/mol, ppt) — mean of flask pair
+# {param}_sd  1 standard deviation of the flask pair mean
+#
+# Flask pairs with a statistically discernible difference at the 90–95%
+# confidence level are excluded.  Additional culling is applied based on
+# relative within-pair differences.  Results are from simultaneously filled
+# stainless steel or glass flask pairs.

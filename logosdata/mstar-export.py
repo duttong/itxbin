@@ -40,6 +40,7 @@ MISSING = -99          # fill value for missing met data
 MF_DECIMALS = 2        # mole fraction decimal places
 SD_DECIMALS = 2
 HEADER_FILE = Path(__file__).parent / 'mstar_header.txt'
+COLUMNS_FILE = Path(__file__).parent / 'mstar_columns_pairs.txt'
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -61,9 +62,10 @@ def fmt_float(val, max_decimals: int) -> str:
 
 
 def build_header(filename: str) -> str:
-    """Read mstar_header.txt and fill in {filename} and {date} placeholders."""
+    """Read mstar_header.txt and fill in {columns}, {filename} and {date}."""
     template = HEADER_FILE.read_text()
     return (template
+            .replace('{columns}', COLUMNS_FILE.read_text().rstrip('\n'))
             .replace('{filename}', filename)
             .replace('{date}', datetime.now().strftime('%Y-%m-%d')))
 
