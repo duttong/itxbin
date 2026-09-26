@@ -46,7 +46,7 @@ class IE3_Instrument(HATS_DB_Functions):
     # row directly with no override needed. Scoped to these tank/fill/pnum
     # entries deliberately -- do not widen to a blanket 114->29 fallback;
     # add another explicit entry here if the same gap recurs for another
-    # tank/fill. The three MLO cal tank/fills below are the same case: no
+    # tank/fill. The MLO and SMO cal tank/fills below are the same case: no
     # stdgc/FE3 CFC-11 (pnum 114) measurement on that fill, only m3 (pnum 29).
     SCALE_ASSIGNMENT_SOURCE_OVERRIDES = {
         ('CC487772', 'A', 114): 29,
@@ -54,6 +54,8 @@ class IE3_Instrument(HATS_DB_Functions):
         ('CC487791', 'A', 114): 29,    # MLO cal1 2020-2022
         ('ALMX067992', 'A', 114): 29,  # MLO cal2 2005-2007
         ('AAL073347', 'B', 114): 29,   # MLO cal2 2019-2022
+        ('DT0024636', 'A', 114): 29,   # SMO cal1 2020-2022
+        ('CC479743', 'A', 114): 29,    # SMO cal2 2020-2022
     }
 
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
