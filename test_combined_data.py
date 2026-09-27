@@ -1,3 +1,4 @@
+import dataclasses
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ from combined_data import (  # noqa: E402
     combine_programs,
     loess_site_series,
     pairwise_log_ratios,
+    program_noise,
     programs_bitstring,
     smooth_series,
     solve_offsets,
@@ -117,6 +119,23 @@ class OffsetEstimateTests(unittest.TestCase):
         self.assertAlmostEqual(level['B'], -1.0)
 
 
+class ProgramNoiseTests(unittest.TestCase):
+    def test_three_cornered_hat_recovers_noise(self):
+        rng = np.random.default_rng(1)
+        idx = pd.MultiIndex.from_product(
+            [['brw', 'mlo'], pd.date_range('1990-01-01', periods=600, freq='MS')],
+            names=['site', 'date'])
+        truth = pd.Series(np.linspace(100, 200, len(idx)), index=idx)
+        sigma = {'A': 0.2, 'B': 0.3, 'C': 0.4}
+        series = {k: truth + 5.0 * (k == 'C') + rng.normal(0, s, len(idx))
+                  for k, s in sigma.items()}
+
+        noise = program_noise(series)
+
+        for k, s in sigma.items():
+            self.assertAlmostEqual(noise[k], s, delta=0.15 * s)
+
+
 class BuilderUnitTests(unittest.TestCase):
     def setUp(self):
         self.cfg = CombinedConfig.load()
@@ -138,8 +157,9 @@ class BuilderUnitTests(unittest.TestCase):
         np.testing.assert_allclose(b.apply_offsets('MSD', df), [101.0, 100.0])
         np.testing.assert_allclose(b.apply_offsets('fECD', df), [100.0, 100.0])
 
-    def test_standard_errors(self):
+    def test_standard_errors_igor(self):
         b = self._builder({'se_cap': {'fECD': 0.7}})
+        b.config = dataclasses.replace(self.cfg, se_method='igor')
         df = pd.DataFrame({'site': ['brw', 'smo', 'brw'], 'sd': [2.0, 2.0, np.nan],
                            'n': [4, 4, 1]})
         se = b.standard_errors('fECD', df)

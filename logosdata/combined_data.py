@@ -25,6 +25,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yaml
+from scipy.optimize import nnls
 from scipy.signal import savgol_filter
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
@@ -51,6 +52,8 @@ class CombinedConfig:
     site_se_scale: dict[str, float]
     gases: dict[str, dict] = field(default_factory=dict)
     pfp_sites: dict[str, str] = field(default_factory=dict)
+    se_method: str = 'igor'
+    se_fallback: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> 'CombinedConfig':
@@ -71,6 +74,8 @@ class CombinedConfig:
                            for k, v in (cfg.get('site_se_scale') or {}).items()},
             gases=cfg['gases'],
             pfp_sites={k.lower(): v.lower() for k, v in (cfg.get('pfp_sites') or {}).items()},
+            se_method=str(cfg.get('se_method', 'igor')),
+            se_fallback=dict(cfg.get('se_fallback') or {}),
         )
 
     @property
@@ -236,6 +241,45 @@ def solve_offsets(pairs: pd.DataFrame, reference: str) -> pd.Series:
     return pd.Series({reference: 0.0, **dict(zip(free, x))})
 
 
+def program_noise(series: dict[str, pd.Series], min_overlap: int = 24) -> pd.Series:
+    """Each program's monthly-mean noise from how it differs from the others.
+
+    *series* maps a program to mole fractions indexed by (site, date).  For
+    two programs at the same site-months, var(a - b) = s_a^2 + s_b^2 when
+    their errors are independent (a three-cornered hat).  Each pair's
+    difference has its median per site removed (constant offsets are not
+    noise) and its variance taken robustly (1.4826 x MAD)^2; the s^2 are then
+    solved by non-negative least squares on relative residuals, weighted by
+    the square root of the shared site-months.
+    Programs with no pair of at least *min_overlap* site-months are left out.
+    """
+    keys = list(series)
+    rows = []
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            j = pd.concat([series[a], series[b]], axis=1, keys=['a', 'b'], join='inner').dropna()
+            if len(j) < min_overlap:
+                continue
+            d = j['a'] - j['b']
+            d = d - d.groupby(level='site').transform('median')
+            var = (1.4826 * (d - d.median()).abs().median()) ** 2
+            rows.append((a, b, var, len(j)))
+    used = sorted({k for r in rows for k in r[:2]}, key=keys.index)
+    if not rows:
+        return pd.Series(dtype=float)
+    col = {k: i for i, k in enumerate(used)}
+    A = np.zeros((len(rows), len(used)))
+    y = np.zeros(len(rows))
+    w = np.zeros(len(rows))
+    for r, (a, b, var, n) in enumerate(rows):
+        A[r, col[a]] = A[r, col[b]] = 1.0
+        # Relative residuals, so the large variances of the early programs
+        # don't swamp the small ones.
+        y[r], w[r] = var, np.sqrt(n) / max(var, 1e-12)
+    s2, _ = nnls(A * w[:, None], y * w)
+    return pd.Series(np.sqrt(s2), index=used)
+
+
 class CombinedDataBuilder:
     """Build one combined data set.
 
@@ -259,11 +303,19 @@ class CombinedDataBuilder:
         self.gm_config = self.config.global_means_config()
         self.calculator = GlobalMeansCalculator(gas, config=self.gm_config)
         self.program_data: dict[str, pd.DataFrame] = {}
+        self._loaded: dict[str, pd.DataFrame] = {}
+        self._noise: Optional[pd.Series] = None
 
     # ── loading ──────────────────────────────────────────────────────────────
 
     def pnum_for(self, program: str) -> int:
         return int((self.gas_cfg.get('pnums') or {}).get(program, self.gas_cfg['parameter_num']))
+
+    def program_monthly(self, program: str) -> pd.DataFrame:
+        """load_program(), read once per builder."""
+        if program not in self._loaded:
+            self._loaded[program] = self.load_program(program)
+        return self._loaded[program].copy()
 
     def load_program(self, program: str) -> pd.DataFrame:
         """Monthly mean/sd/n per site for one program: columns site, date,
@@ -410,13 +462,83 @@ class CombinedDataBuilder:
 
     # ── per-program processing ───────────────────────────────────────────────
 
+    def program_noise(self) -> pd.Series:
+        """Monthly-mean noise for each program piece of this gas (keys as in
+        offset_segments(), so OTTO and FE3, M1 and M3/M4 get their own), from
+        the offset-corrected measured months (see program_noise()).  A piece
+        with too little overlap, or solved as zero, takes the mean of its
+        program's other pieces, else the latest piece of its se_fallback
+        program."""
+        if self._noise is None:
+            series, program_of = {}, {}
+            for key, program, start, end in self.offset_segments():
+                df = self.program_monthly(program)
+                if start:
+                    df = df[df['date'] >= pd.Timestamp(start)]
+                if end:
+                    df = df[df['date'] <= pd.Timestamp(end)]
+                if not df.empty:
+                    series[key] = df.assign(mf=self.apply_offsets(program, df)).set_index(
+                        ['site', 'date'])['mf']
+                    program_of[key] = program
+            # A zero means the overlaps can't separate this piece's noise from
+            # its partners' (few or one-sided pairs), not that it has none.
+            noise = program_noise(series)
+            noise = noise[noise > 0]
+            for key, program in program_of.items():
+                if key in noise:
+                    continue
+                same = [noise[k] for k, p in program_of.items() if p == program and k in noise]
+                other = self.config.se_fallback.get(program)
+                borrowed = [noise[k] for k, p in program_of.items() if p == other and k in noise]
+                if same or borrowed:
+                    noise[key] = float(np.mean(same)) if same else borrowed[-1]
+            self._noise = noise
+        return self._noise
+
+    def _row_noise(self, program: str, dates: pd.Series) -> pd.Series:
+        """program_noise() for each row, by the program piece its date is in."""
+        noise = self.program_noise()
+        out = pd.Series(np.nan, index=dates.index)
+        for key, prog, start, end in self.offset_segments():
+            if prog != program or key not in noise:
+                continue
+            mask = pd.Series(True, index=dates.index)
+            if start:
+                mask &= dates >= pd.Timestamp(start)
+            if end:
+                mask &= dates <= pd.Timestamp(end)
+            out[mask] = noise[key]
+        return out
+
     def standard_errors(self, program: str, df: pd.DataFrame) -> pd.Series:
-        """se for each row of one program's monthly frame."""
-        divisor = self.config.programs[program].get('se_divisor', 1)
-        if divisor == 'sqrt_n':
-            se = df['sd'] / np.sqrt(df['n'].where(df['n'] > 0))
+        """se for each row of one program's monthly frame.
+
+        se_method 'igor': sd divided by the program's se_divisor.
+        se_method 'overlap': sqrt(sampling^2 + floor^2), where sampling is
+        sd / sqrt(n) (n capped at the program's max_n for autocorrelated in
+        situ data) and the floor is set so the program's median se equals its
+        measured monthly-mean noise (program_noise()).
+        """
+        spec = self.config.programs[program]
+        if self.config.se_method == 'overlap':
+            n = df['n'].where(df['n'] > 0)
+            if spec.get('max_n'):
+                n = n.clip(upper=float(spec['max_n']))
+            se = (df['sd'] / np.sqrt(n)).where(lambda x: x > 0)
+            se = se.fillna(se.groupby(df['site']).transform('median')).fillna(se.median())
+            # Floor per program piece, so its median se equals its noise.
+            noise = self._row_noise(program, df['date'])
+            for level in noise.dropna().unique():
+                piece = noise == level
+                floor2 = max(level ** 2 - float(np.nanmedian(se[piece] ** 2)), 0.0)
+                se[piece] = np.sqrt(se[piece] ** 2 + floor2)
         else:
-            se = df['sd'] / float(divisor)
+            divisor = spec.get('se_divisor', 1)
+            if divisor == 'sqrt_n':
+                se = df['sd'] / np.sqrt(df['n'].where(df['n'] > 0))
+            else:
+                se = df['sd'] / float(divisor)
         cap = (self.gas_cfg.get('se_cap') or {}).get(program)
         if cap is not None:
             se = se.clip(upper=float(cap))
@@ -445,7 +567,7 @@ class CombinedDataBuilder:
 
     def prepare_program(self, program: str) -> dict[str, pd.DataFrame]:
         """{site: frame(mf, se, n) indexed by month} after gap filling."""
-        df = self.load_program(program)
+        df = self.program_monthly(program)
         self.program_data[program] = df
         if df.empty:
             return {}
@@ -498,7 +620,7 @@ class CombinedDataBuilder:
         reference = self.gas_cfg.get('offset_reference')
         if reference not in self.gas_cfg['programs']:
             raise ValueError(f"{self.gas}: offset_reference must be one of its programs")
-        raw = {p: self.load_program(p) for p in self.gas_cfg['programs']}
+        raw = {p: self.program_monthly(p) for p in self.gas_cfg['programs']}
         series = {}
         meta = {}
         for key, program, start, end in self.offset_segments():

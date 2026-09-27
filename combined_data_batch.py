@@ -168,6 +168,9 @@ def main():
         loaded = ', '.join(f"{p}:{len(df)}" for p, df in builder.program_data.items())
         print(f"{gas}: {len(result)} rows, Global {span} ({time.time() - t0:.1f}s)")
         print(f"  program site-months loaded: {loaded}")
+        if config.se_method == 'overlap':
+            noise = ', '.join(f"{p}:{v:.3g}" for p, v in builder.program_noise().items())
+            print(f"  monthly-mean noise per program ({config.gases[gas]['units']}): {noise}")
 
         if args.csv:
             out = Path(args.csv)
