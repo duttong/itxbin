@@ -71,13 +71,19 @@ from logos_instruments import (  # noqa: E402
 
 # CATS has one instrument per site; matches CATS_Instrument.INST_NUM_BY_SITE.
 CATS_SITES = ["brw", "sum", "nwr", "mlo", "smo", "spo"]
+# RITS (1987-2001, CATS's predecessor) also has one instrument per site. It has
+# no instrument class or loader: its published values are imported by
+# rits_aftp2db.py and read straight from hats.ng_insitu_monthly_means.
+RITS_INST_NUM_BY_SITE = {"brw": 246, "nwr": 247, "mlo": 248, "smo": 249, "spo": 250}
 
 PROGRAMS = {
     "mstar": {"label": "M*", "inst_id": "m4", "inst_num": 192, "loader": "m4"},
     "fecd": {"label": "fECD", "inst_id": "fe3", "inst_num": 193, "loader": "fe3"},
     "insitu": {
         "label": "insitu",
-        "inst_nums": [236] + [CATS_Instrument.INST_NUM_BY_SITE[s] for s in CATS_SITES],
+        "inst_nums": [236]
+        + [CATS_Instrument.INST_NUM_BY_SITE[s] for s in CATS_SITES]
+        + list(RITS_INST_NUM_BY_SITE.values()),
         "loaders": ["ie3"] + [f"cats_{s}" for s in CATS_SITES],
     },
     "pr1": {"label": "PRS", "inst_id": "pr1", "inst_num": 58, "loader": "pr1"},
@@ -116,7 +122,7 @@ PROGRAM_YEAR_LIMITS = {"m2": (1994, 2015)}
 PROGRAM_DATA_RANGES = {
     "mstar":  (1991, None),
     "fecd":   (1994, None),
-    "insitu": (1998, None),
+    "insitu": (1987, None),
     "pr1":    (1994, None),
     "m2":     (1994, 2015),
 }
@@ -171,6 +177,34 @@ def _combine_monthly_mean_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _average_instrument_monthly_means(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Combine in-situ instruments' monthly means with equal weight per instrument.
+
+    Where two instruments measured the same site in the same month (RITS/CATS
+    handovers around 1998-2001, CATS/IE3 at SMO), the combined value is the
+    simple average of their monthly means. Weighting by sample count would let
+    whichever instrument ran more often dominate, and RITS publishes no
+    measurement uncertainty to weight by. The std is the root-mean-square of
+    the instruments' monthly stds, and n is the total sample count.
+    """
+    nonempty = [frame for frame in frames if not frame.empty]
+    if not nonempty:
+        return pd.DataFrame(columns=["site", "month_start", "monthly_avg", "monthly_std", "n"])
+
+    data = pd.concat(nonempty, ignore_index=True).copy()
+    for col in ("monthly_avg", "monthly_std", "n"):
+        data[col] = pd.to_numeric(data[col], errors="coerce")
+    data = data.dropna(subset=["site", "month_start", "monthly_avg"])
+    data["std_sq"] = data["monthly_std"].pow(2)
+    out = data.groupby(["site", "month_start"], sort=True).agg(
+        monthly_avg=("monthly_avg", "mean"),
+        std_sq=("std_sq", "mean"),
+        n=("n", "sum"),
+    ).reset_index()
+    out["monthly_std"] = np.sqrt(out.pop("std_sq"))
+    return out[["site", "month_start", "monthly_avg", "monthly_std", "n"]]
 
 
 ANALYTE_CATEGORIES = [
@@ -998,10 +1032,13 @@ class LogosCompareWindow(QMainWindow):
     def _query_insitu_combined_monthly_mean_data(
         self, selection: ProgramSelection, sites: list[str]
     ) -> pd.DataFrame:
-        """Union IE3 with every CATS site loader for the "insitu" program,
-        each queried through its own instrument object since IE3 and CATS use
-        different inst_nums/air ports, with monthly aggregation pushed into
-        SQL per instrument (query_insitu_monthly_mean_data)."""
+        """Combine IE3, every CATS site and every RITS site for the "insitu"
+        program. IE3 and CATS are queried through their own instrument
+        objects (different inst_nums/air ports), with monthly aggregation
+        pushed into SQL per instrument (query_insitu_monthly_mean_data); RITS
+        is read straight from hats.ng_insitu_monthly_means. Months covered by
+        more than one instrument are averaged with equal weight
+        (_average_instrument_monthly_means)."""
         meta = PROGRAMS[selection.key]
         frames = []
         for loader_key in meta["loaders"]:
@@ -1016,15 +1053,45 @@ class LogosCompareWindow(QMainWindow):
             df = loader.query_insitu_monthly_mean_data(analyte_key)
             if not df.empty:
                 frames.append(df)
-        if not frames:
+        frames.append(self._query_rits_monthly_mean_data(selection, sites))
+        combined = _average_instrument_monthly_means(frames)
+        if combined.empty:
             return pd.DataFrame(columns=["site", "month", "value", "std", "n"])
-        combined = pd.concat(frames, ignore_index=True)
         out = combined.rename(
             columns={"month_start": "month", "monthly_avg": "value", "monthly_std": "std"}
         ).copy()
         out["site"] = out["site"].astype(str).str.upper()
         out["month"] = pd.to_datetime(out["month"])
         return out[["site", "month", "value", "std", "n"]]
+
+    def _query_rits_monthly_mean_data(
+        self, selection: ProgramSelection, sites: list[str]
+    ) -> pd.DataFrame:
+        """RITS monthly means for the selected sites, from
+        hats.ng_insitu_monthly_means (insitu_monthly_means_batch.py rits)."""
+        inst_nums = [RITS_INST_NUM_BY_SITE[s.lower()] for s in sites
+                     if s.lower() in RITS_INST_NUM_BY_SITE]
+        if not inst_nums:
+            return pd.DataFrame()
+        sql = f"""
+        SELECT UPPER(s.code) AS site,
+            m.month AS month_start,
+            m.mean AS monthly_avg,
+            m.std AS monthly_std,
+            m.n AS n
+        FROM hats.ng_insitu_monthly_means m
+        JOIN gmd.site s ON s.num = m.site_num
+        WHERE m.inst_num IN ({",".join(["%s"] * len(inst_nums))})
+          AND m.parameter_num = %s
+          AND YEAR(m.month) BETWEEN %s AND %s
+        ORDER BY site, month_start;
+        """
+        params = inst_nums + [int(selection.parameter_num),
+                              self.start_year.value(), self.end_year.value()]
+        df = pd.DataFrame(self.loaders["ie3"].instrument.doquery(sql, params))
+        if not df.empty:
+            df["month_start"] = pd.to_datetime(df["month_start"])
+        return df
 
     def _draw_comparison(self, df: pd.DataFrame, selections: list[ProgramSelection]) -> None:
         self.figure.clear()

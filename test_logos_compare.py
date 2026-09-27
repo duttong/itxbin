@@ -7,6 +7,7 @@ import pandas as pd
 from logosdata.logos_compare.logos_compare import (
     LogosCompareWindow,
     ProgramSelection,
+    _average_instrument_monthly_means,
     _combine_monthly_mean_frames,
 )
 
@@ -92,3 +93,65 @@ class LogosCompareQueryTests(unittest.TestCase):
 
         self.assertEqual(result.iloc[0]["n"], 5)
         self.assertEqual(result.iloc[0]["monthly_avg"], 106.0)
+
+
+class InsituCombineTests(unittest.TestCase):
+    def test_overlapping_instruments_get_equal_weight(self):
+        rits = pd.DataFrame(
+            [{"site": "BRW", "month_start": pd.Timestamp("1998-10-01"), "monthly_avg": 100.0,
+              "monthly_std": 3.0, "n": 700}]
+        )
+        cats = pd.DataFrame(
+            [{"site": "BRW", "month_start": pd.Timestamp("1998-10-01"), "monthly_avg": 110.0,
+              "monthly_std": 4.0, "n": 50},
+             {"site": "BRW", "month_start": pd.Timestamp("1998-11-01"), "monthly_avg": 111.0,
+              "monthly_std": 2.0, "n": 60}]
+        )
+
+        result = _average_instrument_monthly_means([rits, cats, pd.DataFrame()])
+
+        overlap = result.iloc[0]
+        self.assertEqual(overlap["monthly_avg"], 105.0)
+        self.assertAlmostEqual(overlap["monthly_std"], np.sqrt(12.5))
+        self.assertEqual(overlap["n"], 750)
+        self.assertEqual(result.iloc[1]["monthly_avg"], 111.0)
+        self.assertEqual(len(result), 2)
+
+    def test_all_empty_returns_empty_frame(self):
+        result = _average_instrument_monthly_means([pd.DataFrame(), pd.DataFrame()])
+        self.assertTrue(result.empty)
+        self.assertIn("monthly_avg", result.columns)
+
+    def test_rits_query_maps_sites_to_inst_nums(self):
+        db = _FakeDB(
+            [{"site": "BRW", "month_start": "1990-01-01", "monthly_avg": 308.0,
+              "monthly_std": 0.5, "n": 600}]
+        )
+        harness = SimpleNamespace(
+            start_year=_Value(1987),
+            end_year=_Value(2001),
+            loaders={"ie3": SimpleNamespace(instrument=db)},
+        )
+
+        result = LogosCompareWindow._query_rits_monthly_mean_data(
+            harness, ProgramSelection("insitu", "N2O", 5), ["BRW", "SUM", "SPO"]
+        )
+
+        sql, params = db.calls[0]
+        self.assertIn("hats.ng_insitu_monthly_means", sql)
+        self.assertEqual(params, [246, 250, 5, 1987, 2001])
+        self.assertEqual(result.iloc[0]["month_start"], pd.Timestamp("1990-01-01"))
+
+    def test_rits_query_skips_sites_without_rits(self):
+        db = _FakeDB([])
+        harness = SimpleNamespace(
+            start_year=_Value(1987), end_year=_Value(2001),
+            loaders={"ie3": SimpleNamespace(instrument=db)},
+        )
+
+        result = LogosCompareWindow._query_rits_monthly_mean_data(
+            harness, ProgramSelection("insitu", "N2O", 5), ["SUM"]
+        )
+
+        self.assertTrue(result.empty)
+        self.assertEqual(db.calls, [])

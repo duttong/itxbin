@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refresh hats.ng_insitu_monthly_means: monthly mean/std/n mole-fraction
-rollups for IE3 and CATS, so logos_compare doesn't have to aggregate the
-full in-situ history live on every plot.
+rollups for IE3, CATS and RITS, so logos_compare doesn't have to aggregate
+the full in-situ history live on every plot.
 
 Aggregation mirrors TimeseriesWidget.query_insitu_monthly_mean_data()
 (logosdata/logos_timeseries.py): unrejected (rejected=0), air-port rows from
@@ -24,10 +24,16 @@ since been rejected.
 Meant to run on a periodic cron/cli cadence (e.g. weekly), not after every
 ingest.
 
+RITS (inst_num 246-250, 1987-2001) holds only published values imported by
+rits_aftp2db.py and never changes, so it only needs one refresh after an
+import. Its monthly std is the scatter of the hourly values in the month --
+the published files carry no measurement uncertainty.
+
 Usage:
   python3 insitu_monthly_means_batch.py ie3 -i
   python3 insitu_monthly_means_batch.py cats brw -i
   python3 insitu_monthly_means_batch.py cats brw nwr mlo -i
+  python3 insitu_monthly_means_batch.py rits -i
   python3 insitu_monthly_means_batch.py --all -i
 
 Omit -i for a dry run (prints row counts, no DB writes).
@@ -43,25 +49,55 @@ from logos_instruments import CATS_Instrument, IE3_Instrument
 
 CATS_SITES = ['brw', 'sum', 'nwr', 'mlo', 'smo', 'spo']
 
+# RITS site -> inst_num; matches rits_aftp2db.RITS_SITES.
+RITS_INST_NUM_BY_SITE = {'brw': 246, 'nwr': 247, 'mlo': 248, 'smo': 249, 'spo': 250}
+
+
+class RITSSource:
+    """The few attributes compute_monthly_means()/refresh() read from an
+    instrument, for a RITS site. RITS has no instrument class: its rows are
+    published values on a single air port with no channel."""
+
+    inst_id = 'rits'
+    AIR_PORTS = [1]  # rits_aftp2db.RITS_AIR_PORT
+    DATA_START_DATE = None
+
+    def __init__(self, site: str, db):
+        self.site = site
+        self.inst_num = RITS_INST_NUM_BY_SITE[site]
+        self.db = db
+
 
 def _instrument_label(inst) -> str:
     label = inst.inst_id.upper()
-    if inst.inst_id == 'cats':
+    if inst.inst_id in ('cats', 'rits'):
         label += f"-{inst.site.upper()}"
     return label
 
 
+def _rits_sources(sites) -> list:
+    db = IE3_Instrument().db
+    return [RITSSource(s, db) for s in sites]
+
+
 def _build_instruments(args) -> list:
     if args.all:
-        return [IE3_Instrument()] + [CATS_Instrument(site=s) for s in CATS_SITES]
+        return ([IE3_Instrument()] + [CATS_Instrument(site=s) for s in CATS_SITES]
+                + _rits_sources(RITS_INST_NUM_BY_SITE))
     if args.instrument == 'ie3':
         if args.sites:
-            raise SystemExit("Site codes are only valid with 'cats'.")
+            raise SystemExit("Site codes are only valid with 'cats' or 'rits'.")
         return [IE3_Instrument()]
     if args.instrument == 'cats':
         sites = args.sites or CATS_SITES
         return [CATS_Instrument(site=s) for s in sites]
-    raise SystemExit("Specify 'ie3', 'cats [sites...]', or --all.")
+    if args.instrument == 'rits':
+        sites = args.sites or list(RITS_INST_NUM_BY_SITE)
+        unknown = set(sites) - set(RITS_INST_NUM_BY_SITE)
+        if unknown:
+            raise SystemExit(f"Unknown RITS site(s): {', '.join(sorted(unknown))}")
+        return _rits_sources(sites)
+    raise SystemExit("Specify 'ie3', 'cats [sites...]', 'rits [sites...]', or --all.")
 
 
 def compute_monthly_means(inst) -> pd.DataFrame:
@@ -168,13 +204,13 @@ def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('instrument', nargs='?', choices=['ie3', 'cats'],
+    parser.add_argument('instrument', nargs='?', choices=['ie3', 'cats', 'rits'],
                          help="Instrument to refresh.")
     parser.add_argument('sites', nargs='*', metavar='site',
-                         help="CATS site codes (brw, sum, nwr, mlo, smo, spo); "
-                              "omit to refresh all 6.")
+                         help="CATS site codes (brw, sum, nwr, mlo, smo, spo) or RITS "
+                              "site codes (brw, nwr, mlo, smo, spo); omit for all.")
     parser.add_argument('--all', action='store_true',
-                         help="Refresh IE3 and every CATS site.")
+                         help="Refresh IE3 and every CATS and RITS site.")
     parser.add_argument('-i', '--insert', action='store_true',
                          help="Write results to DB (default: dry run).")
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -182,7 +218,7 @@ def main():
     args = parser.parse_args()
 
     if not args.all and not args.instrument:
-        parser.error("Specify 'ie3', 'cats [sites...]', or --all.")
+        parser.error("Specify 'ie3', 'cats [sites...]', 'rits [sites...]', or --all.")
 
     t0 = time.time()
     for inst in _build_instruments(args):

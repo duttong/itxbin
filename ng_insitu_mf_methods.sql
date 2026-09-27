@@ -5,6 +5,8 @@
 --   2  cal12  2-point calibration (ports 1 & 9)
 --   3  cal1   Single-point calibration (port 9)
 --   4  cal2   Single-point calibration (port 1)
+--   5  published  Published /aftp value, never recalculated (RITS; added
+--                 2026-09-26 by rits_aftp2db.py)
 
 CREATE TABLE hats.ng_insitu_mf_methods (
     num  INT(11)     NOT NULL AUTO_INCREMENT,

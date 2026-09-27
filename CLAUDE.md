@@ -29,6 +29,7 @@
 | CATS-MLO | 242 | `cats` (site=mlo) |
 | CATS-SMO | 243 | `cats` (site=smo) |
 | CATS-SPO | 244 | `cats` (site=spo) |
+| RITS-BRW/NWR/MLO/SMO/SPO | 246/247/248/249/250 | none (published data only) |
 
 | Compound | parameter_num |
 |---|---|
@@ -188,6 +189,30 @@ analyte list.
 - `TimeseriesWidget` defaults to the site passed via `--site` (stored as
   `instrument.site`); other instruments default to BRW/MLO/SMO/SPO
 - Right-click a point → navigates main window to that GC `run_time`
+
+## RITS (pre-CATS in-situ GCs, 1987-2001)
+
+RITS (Radiatively Important Trace Species) ran one in-situ GC per site before
+CATS: inst_num 246 BRW, 247 NWR, 248 MLO, 249 SMO, 250 SPO (defined in
+`ccgg.inst_description`, ids AGI-011..015 until renamed RITS-01..05).
+
+- Only the published hourly values survive, in
+  `/aftp/hats/{gas dir}/insituGCs/RITS/hourly/{site}_{N2O,F12,F11,CCl4,MC}_All.dat`
+  (time + mole fraction, no sd, port or channel). They are already on the
+  current scales. There is no RITS CFC-113, SF6 or halon data.
+- `rits_aftp2db.py` imports them (dry run by default, `--insert` to write):
+  one `ng_insitu_analysis` row per sample time on port 1 (the single air
+  inlet), one `ng_insitu_mole_fractions` row per gas with `channel=''` and
+  `mf_method_num` = the `published` method (5), so no batch recalc touches
+  them. It also creates the `analyte_list` rows and the `ng_port_info` Air
+  row for each instrument; each also has a Stop row at its last sample.
+- `insitu_monthly_means_batch.py rits -i` fills `ng_insitu_monthly_means`. RITS
+  never changes, so it only needs rerunning after a re-import.
+- logos_compare's "insitu" program includes RITS alongside IE3 and CATS
+  (`_query_rits_monthly_mean_data()`, reading the monthly-means table). Where
+  two instruments cover the same site-month, their monthly means are averaged
+  with equal weight (`_average_instrument_monthly_means()`); RITS publishes no
+  uncertainty to weight by.
 
 ## CATS ingest pipeline
 
