@@ -51,8 +51,16 @@ weight_lat_overrides:
   spo: -65.0
 
 # Gap filling of each program/site monthly series before programs are combined.
+# Igor filled every interior gap.  A 12-month cap recovers most of the Global
+# months that a 3-month cap loses (mostly before 1990, when a gap at one
+# southern oldGC site empties a band) with little change in agreement with the
+# published files (2026-09-26: CFC11 Global mean |diff| 0.357 -> 0.372 ppt,
+# N2O 0.090 -> 0.106 ppb).  Longer breaks stay unfilled: MLO's 33-month
+# eruption outage (mlo_pfp covers it), fECD's ~2013-2019 N2O/SF6 break
+# (CCGG covers it), CATS-SPO CFC12 2010-2024.  24 months would match Igor's
+# coverage almost exactly.
 interpolation_method: seasonal
-max_interpolation_months: 3
+max_interpolation_months: 12
 
 # Savitzky-Golay smoothing of each site's combined series (Igor
 # Station_smooth: Smooth/E=3/S=4 7).  Runs shorter than the window are left
