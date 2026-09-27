@@ -1,0 +1,111 @@
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'logosdata'))
+
+from combined_data import (  # noqa: E402
+    CombinedConfig,
+    CombinedDataBuilder,
+    add_mismatch,
+    combine_programs,
+    programs_bitstring,
+    smooth_series,
+)
+
+MONTHS = pd.date_range('2000-01-01', periods=3, freq='MS', name='date')
+
+
+def _frame(mf, se):
+    return pd.DataFrame({'mf': mf, 'se': se}, index=MONTHS)
+
+
+class CombineProgramsTests(unittest.TestCase):
+    def test_inverse_se_weighting(self):
+        a = _frame([100.0, 100.0, np.nan], [1.0, 1.0, 1.0])
+        b = _frame([103.0, np.nan, 103.0], [2.0, 2.0, 2.0])
+
+        out = combine_programs({'A': a, 'B': b})
+
+        # weights 1 and 0.5: (100*1 + 103*0.5) / 1.5 = 101
+        self.assertAlmostEqual(out['mf'].iloc[0], 101.0)
+        self.assertAlmostEqual(out['sd'].iloc[0], 2 / 1.5)
+        self.assertEqual(out['mf'].iloc[1], 100.0)
+        self.assertEqual(out['mf'].iloc[2], 103.0)
+        self.assertEqual(out['programs'].iloc[0], {'A', 'B'})
+        self.assertEqual(out['programs'].iloc[2], {'B'})
+
+    def test_mismatch_adds_excess_disagreement(self):
+        a = _frame([100.0, 100.0, 100.0], [0.1, 0.1, 0.1])
+        b = _frame([100.0, 110.0, 100.0], [0.1, 0.1, 0.1])
+        combined = combine_programs({'A': a, 'B': b})
+
+        sd = add_mismatch(combined, {'A': a, 'B': b})
+
+        # month 1: mean 105, base sd 0.1; each program is 5 away, allowing 0.2
+        self.assertAlmostEqual(sd.iloc[1], 0.1 + 2 * (5 - 0.2))
+        self.assertAlmostEqual(sd.iloc[0], 0.1)
+
+    def test_bitstring(self):
+        self.assertEqual(programs_bitstring({'CATS', 'MSD'}, ['oldGC', 'CATS', 'MSD']), '011')
+
+
+class SmoothSeriesTests(unittest.TestCase):
+    def test_short_runs_and_endpoints_untouched(self):
+        idx = pd.date_range('2000-01-01', periods=12, freq='MS')
+        vals = [1, 5, 2, 6, 3, 7, 4, 8, np.nan, 10, 11, 12]
+        s = pd.Series(vals, index=idx, dtype=float)
+
+        out = smooth_series(s, 7, 4)
+
+        self.assertEqual(out.iloc[0], 1)
+        self.assertEqual(out.iloc[7], 8)
+        self.assertTrue(np.isnan(out.iloc[8]))
+        pd.testing.assert_series_equal(out.iloc[9:], s.iloc[9:])
+        self.assertNotEqual(out.iloc[3], 6)
+
+    def test_window_zero_is_noop(self):
+        s = pd.Series([1.0, 2.0, 3.0])
+        self.assertIs(smooth_series(s, 0, 4), s)
+
+
+class BuilderUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = CombinedConfig.load()
+
+    def _builder(self, gas_cfg):
+        b = CombinedDataBuilder.__new__(CombinedDataBuilder)
+        b.config = self.cfg
+        b.gas_cfg = gas_cfg
+        return b
+
+    def test_offsets_scalar_and_ranged(self):
+        b = self._builder({'offsets_pct': {
+            'CATS': -2.0,
+            'MSD': [{'pct': 1.0, 'end': '2009-12-31'}],
+        }})
+        df = pd.DataFrame({'date': pd.to_datetime(['2005-01-01', '2015-01-01']),
+                           'mf': [100.0, 100.0]})
+        np.testing.assert_allclose(b.apply_offsets('CATS', df), [98.0, 98.0])
+        np.testing.assert_allclose(b.apply_offsets('MSD', df), [101.0, 100.0])
+        np.testing.assert_allclose(b.apply_offsets('fECD', df), [100.0, 100.0])
+
+    def test_standard_errors(self):
+        b = self._builder({'se_cap': {'fECD': 0.7}})
+        df = pd.DataFrame({'site': ['brw', 'smo', 'brw'], 'sd': [2.0, 2.0, np.nan],
+                           'n': [4, 4, 1]})
+        se = b.standard_errors('fECD', df)
+        # sqrt_n: 2/2 = 1 -> capped 0.7; smo doubled; the NaN gets brw's median
+        np.testing.assert_allclose(se, [0.7, 1.4, 0.7])
+
+    def test_pfp_label(self):
+        b = self._builder({})
+        sql = b._pfp_label_sql()
+        self.assertIn("WHEN LOWER(v.site) = 'mlo' AND v.pair_id_num = 0 THEN 'mlo_pfp'", sql)
+
+
+if __name__ == '__main__':
+    unittest.main()

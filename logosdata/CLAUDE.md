@@ -17,6 +17,8 @@ logosdata/
   data_export.py       # Mstar/Fecd file exporters used by the Timeseries tab
   global_means.py      # cos(lat)-weighted hemispheric and global mean math
   gml_global_means_config.yaml  # background sites and weighting rules for it
+  combined_data.py     # multi-program combined data sets (replaces Igor "HATS combined")
+  combined_data_config.yaml     # roadmap: programs, sources and rules per gas
   logos_tanks.py       # TanksWidget — tank history and reference tank UI
   logos_ai_agent.py    # LOGOSChatAgent — free-form chat agent
   logos_agent_tools.py # LOGOSDataAgentTools — read-only DB query helpers

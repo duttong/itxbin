@@ -190,6 +190,30 @@ analyte list.
   `instrument.site`); other instruments default to BRW/MLO/SMO/SPO
 - Right-click a point → navigates main window to that GC `run_time`
 
+## Combined data sets (hats.ng_logos_combined_data)
+
+Python replacement for the Igor "HATS combined" products
+(`/aftp/hats/<gas>/combined/HATS_global_*.txt`; Igor code in
+github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
+
+- `logosdata/combined_data_config.yaml` is the roadmap: the programs per gas
+  (oldGC, RITS, fECD = OTTO+FE3, CATS, IE3, CCGG, MSD = M1/M3/M4), where
+  each is read from, and how it differs from Igor.
+- `combined_data_batch.py [gases] [--compare] [--csv DIR] [-i]` builds
+  CFC11, CFC12, CFC113, CCl4, SF6 and N2O, compares with the published /aftp
+  files, and replaces each gas's rows in `hats.ng_logos_combined_data`
+  (site rows plus Global/NH/SH/HN/LN/LS/HS; DDL in `ng_logos_combined_data.sql`).
+- Per site, programs are combined with Igor's 1/se weights and mismatch error,
+  then Savitzky-Golay smoothed; band/hemispheric/global means reuse
+  `global_means.py` (GML_means semi-hemispheric bands). MLO PFP pairs are
+  their own site, `mlo_pfp`.
+- oldGC exists only as /aftp monthly files; CCGG comes from
+  `ccgg.flask_data_view`.
+- Igor's per-program scale offsets are not applied yet (`offsets_pct` in the
+  config is empty). CFC12 and CFC113 differ from the published files by about
+  0.3% and 0.9% because of it. CATS input is provisional until the cal-tank
+  fill-code fixes and recalcs are done.
+
 ## RITS (pre-CATS in-situ GCs, 1987-2001)
 
 RITS (Radiatively Important Trace Species) ran one in-situ GC per site before

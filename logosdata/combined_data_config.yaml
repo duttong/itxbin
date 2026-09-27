@@ -1,0 +1,180 @@
+# Roadmap for the LOGOS combined data sets (logosdata/combined_data.py,
+# combined_data_batch.py).
+#
+# A combined data set blends several measurement programs into one monthly
+# record per background site, then into semi-hemispheric, hemispheric and
+# global means.  It replaces the Igor Pro "HATS combined" calculation
+# (HATS-Igor-code/CATS/Global Means.ipf: calcHATScombinedData ->
+# Global_Mean), whose output is published as
+# /aftp/hats/<gas dir>/combined/HATS_global_<igor name>.txt.
+#
+# Differences from the Igor version, by design:
+#   * Hemispheric and global means use the GML_means semi-hemispheric bands
+#     (see global_means.py and gml_global_means_config.yaml) instead of Igor's
+#     cos(lat) weights divided by latitude-bin counts.
+#   * No per-program scale offsets are applied (Igor's root:offsets table).
+#   * Gaps in each program/site series are filled with the Holt-Winters
+#     seasonal fill used by the M* global-means export (max 3 months), not
+#     Igor's Monte Carlo poly4+harmonics ensemble, and nothing is extrapolated
+#     past a program's last month (Igor extended OTTO 6 months).
+#   * IE3 joins the in-situ programs.
+#
+# Steps for each gas:
+#   1. Load each program's per-site monthly mean, sd and n.
+#   2. Turn sd into a standard error (se_divisor, se_cap, site_se_scale).
+#   3. Fill interior gaps in each program/site series.
+#   4. Combine the programs at each site, weighting by 1/se (Igor
+#      WeightedMean_ofasite): mean = sum(x/se)/sum(1/se), sd = N/sum(1/se),
+#      plus a mismatch term where programs disagree by more than their errors.
+#   5. Smooth each site with a Savitzky-Golay filter.
+#   6. Band, hemispheric and global means with cos(lat) weights.
+
+# Background sites in the combined products (Igor AllBKsitesOTTO), plus the
+# MLO PFP pseudo-site.
+sites: [alt, sum, brw, mhd, thd, nwr, kum, mlo, mlo_pfp, smo, cgo, psa, spo]
+
+# PFP pseudo-sites: flask pairs at the base site with no pair ID (pair_id_num
+# = 0) are CCGG PFP samples and are kept apart under the pseudo-site name, at
+# the base site's latitude.  PFPs replaced programmatic flasks at MLO after the
+# Nov 2022 Mauna Loa eruption (no flask analyses 2023-2024) and have run
+# alongside them in 2021-2022 and from 2025.  Only the M* instruments (M3/M4)
+# measured them.  As in the M* global-means export, both are weighted while
+# they run concurrently, so the MLO location counts twice in the LN band then
+# (an open question -- see gml_global_means_config.yaml).
+pfp_sites:
+  mlo_pfp: mlo
+
+# Semi-hemispheric bands and weighting latitudes, as in
+# gml_global_means_config.yaml.
+phi: 30.0
+weight_lat_overrides:
+  spo: -65.0
+
+# Gap filling of each program/site monthly series before programs are combined.
+interpolation_method: seasonal
+max_interpolation_months: 3
+
+# Savitzky-Golay smoothing of each site's combined series (Igor
+# Station_smooth: Smooth/E=3/S=4 7).  Runs shorter than the window are left
+# unsmoothed.  Set window to 0 to turn smoothing off.
+smoothing:
+  window: 7
+  order: 4
+
+# Measurement programs.  Order is the order of the bits in the 'programs'
+# string stored with every row (1 = the program contributed that month).
+#
+# source types:
+#   aftp_oldgc  published monthly files; path uses {site} (upper case) and
+#               {file_gas}.  Columns: yr mon m sd n.
+#   insitu      hats.ng_insitu_monthly_means for the listed inst_nums
+#               (insitu_monthly_means_batch.py).
+#   pairs       hats.ng_pair_avg_view flask pair means for the listed inst_ids,
+#               aggregated to monthly mean/sd/n.  PFP pairs go to their
+#               pseudo-site (pfp_sites).  OTTO rows get site and date from
+#               hats.hatsflask_pair_info.
+#   ccgg        ccgg.flask_data_view, CCGG surface flasks, unflagged
+#               ('..%'); pair means per event time, then monthly mean/sd, with
+#               sd = sqrt(sd^2 + mean(unc)^2) (as ~/CCGG/N2O_comparison.py).
+#
+# se_divisor turns the monthly sd into a standard error: a number, or
+# 'sqrt_n' to divide by sqrt(n).  Igor's values: CATS 14, RITS 2, MSD 4,
+# CCGG 2, oldGC 1.  Igor's OTTO files were already standard errors; the
+# pair-mean sd here is not, hence sqrt_n.  A missing se (one-sample month)
+# gets the median se of that program/site series.
+programs:
+  oldGC:
+    source: aftp_oldgc
+    path: /aftp/hats/{gas_dir}/flasks/OldGC/monthly/{SITE}_{file_gas}_MM.dat
+    se_divisor: 1
+  RITS:
+    source: insitu
+    inst_nums: [246, 247, 248, 249, 250]
+    se_divisor: 2
+  fECD:
+    source: pairs
+    inst_ids: [OTTO, FE3]
+    se_divisor: sqrt_n
+  CATS:
+    source: insitu
+    inst_nums: [239, 240, 241, 242, 243, 244]
+    se_divisor: 14
+  IE3:
+    source: insitu
+    inst_nums: [236]
+    se_divisor: 14
+  CCGG:
+    source: ccgg
+    se_divisor: 2
+  MSD:
+    source: pairs
+    inst_ids: [M1, M3, M4]
+    se_divisor: 4
+
+# Igor doubled the standard error at SMO for every program.
+site_se_scale:
+  smo: 2.0
+
+# The combined data sets.  Programs and their order come from Igor
+# calcHATScombinedData, plus IE3 wherever CATS is used.
+#   parameter_num  the pnum stored in ng_logos_combined_data
+#   pnums          per-program parameter_num where it differs
+#   gas_dir        /aftp/hats directory (oldGC files and the published file)
+#   file_gas       gas name in the oldGC and published file names
+#   se_cap         per-program cap on the standard error (Igor capped the
+#                  OTTO N2O standard error at 0.7 ppb)
+#   drop_if_only   site-months supported only by these programs are dropped,
+#                  so the record ends where the flask data does (Igor
+#                  Filter_ifCATSonlyProgram, used for the CFCs)
+#   offsets_pct    per-program scale offset in percent, applied as
+#                  mf * (100 + pct) / 100 (Igor ReturnOffset).  Either a
+#                  number, or a list of {pct, start, end} (YYYY-MM-DD, either
+#                  end open) for an offset that applies to part of the record.
+#                  None are set yet.  Measured median differences from the
+#                  published combined site values (2026-09-26) suggest:
+#                    CFC113  CATS about +2.0 to +2.7%, fECD +1.7 to +2.4%
+#                            (published follows MSD)
+#                    CFC12   RITS -1.1 to -1.6%, MSD -0.5 to -0.75% before
+#                            2010 (published follows oldGC/fECD/CATS)
+gases:
+  CFC11:
+    parameter_num: 114
+    units: ppt
+    gas_dir: cfcs/cfc11
+    file_gas: F11
+    programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    drop_if_only: [CATS, IE3]
+    pnums: {MSD: 29}
+  CFC12:
+    parameter_num: 22
+    units: ppt
+    gas_dir: cfcs/cfc12
+    file_gas: F12
+    programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    drop_if_only: [CATS, IE3]
+  CFC113:
+    parameter_num: 32
+    units: ppt
+    gas_dir: cfcs/cfc113
+    file_gas: F113
+    programs: [CATS, IE3, fECD, MSD]
+    drop_if_only: [CATS, IE3]
+  CCl4:
+    parameter_num: 37
+    units: ppt
+    gas_dir: solvents/CCl4
+    file_gas: CCl4
+    programs: [CATS, IE3, RITS, fECD]
+  SF6:
+    parameter_num: 6
+    units: ppt
+    gas_dir: sf6
+    file_gas: SF6
+    programs: [CATS, IE3, fECD, CCGG]
+  N2O:
+    parameter_num: 5
+    units: ppb
+    gas_dir: n2o
+    file_gas: N2O
+    programs: [CATS, IE3, RITS, oldGC, fECD, CCGG]
+    se_cap: {fECD: 0.7}
