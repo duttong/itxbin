@@ -30,6 +30,8 @@
 | CATS-SMO | 243 | `cats` (site=smo) |
 | CATS-SPO | 244 | `cats` (site=spo) |
 | RITS-BRW/NWR/MLO/SMO/SPO | 246/247/248/249/250 | none (published data only) |
+| oldGC (flask ECD 1977-1995, aka FE1) | 251 | none (`hats.fecd_oldgc`) |
+| OTTO (flask ECD 1994-2019, aka FE2) | 237 | none |
 
 | Compound | parameter_num |
 |---|---|
@@ -216,12 +218,13 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
 
 ## oldGC flask data (hats.fecd_oldgc)
 
-The original HATS flask GC-ECD ("oldGC", 1977-1995) survives only as
+The original HATS flask GC-ECD ("oldGC" or FE1, inst_num 251, 1977-1995;
+successor OTTO/FE2 started in 1994) survives only as
 published monthly means: CFC-11 (pnum 114), CFC-12 (22) and N2O (5) at ALT,
 BRW, CGO, MLO, NWR, SMO and SPO, from
 `/aftp/hats/{cfcs/cfc11,cfcs/cfc12,n2o}/flasks/OldGC/monthly/{SITE}_{gas}_MM.dat`.
 `fecd_oldgc_import.py [-i]` loads them into `hats.fecd_oldgc` (site_num,
-parameter_num, month, mean, sd, n, and the file's calibration scale; DDL in
+inst_num, parameter_num, month, mean, sd, n, and the file's calibration scale; DDL in
 `fecd_oldgc.sql`). Upsert on (site_num, parameter_num, month), so reruns are
 safe. 2,885 rows, loaded 2026-09-26.
 

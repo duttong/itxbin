@@ -4,6 +4,7 @@
 -- (ALT, BRW, CGO, MLO, NWR, SMO, SPO).  Loaded by fecd_oldgc_import.py; read
 -- by the combined data sets (logosdata/combined_data.py).
 --
+--   inst_num   251 (ccgg.inst_description: the oldGC flask ECD, aka FE1)
 --   month      first day of the month
 --   mean, sd   monthly mean and its standard deviation (DOUBLE, never NUMERIC)
 --   n          number of samples in the month
@@ -12,6 +13,7 @@
 CREATE TABLE hats.fecd_oldgc (
     num            INT(11)     NOT NULL AUTO_INCREMENT,
     site_num       INT(11)     NOT NULL,
+    inst_num       INT(11)     NOT NULL DEFAULT 251,
     parameter_num  INT(11)     NOT NULL,
     month          DATE        NOT NULL,
     mean           DOUBLE      NOT NULL,

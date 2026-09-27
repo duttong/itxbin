@@ -23,6 +23,7 @@ sys.path.append('/ccg/src/db/')
 import db_utils.db_conn as db_conn  # noqa: E402
 
 AFTP_ROOT = Path('/aftp/hats')
+OLDGC_INST_NUM = 251  # ccgg.inst_description: oldGC flask ECD, aka FE1
 
 # file gas -> (directory under AFTP_ROOT, parameter_num)
 OLDGC_GASES = {
@@ -55,10 +56,10 @@ def main():
     site_nums = {r['code'].upper(): int(r['num'])
                  for r in db.doquery("SELECT num, code FROM gmd.site")}
     sql = """
-        INSERT INTO hats.fecd_oldgc (site_num, parameter_num, month, mean, sd, n, scale)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE mean = VALUES(mean), sd = VALUES(sd), n = VALUES(n),
-                                scale = VALUES(scale)
+        INSERT INTO hats.fecd_oldgc (site_num, inst_num, parameter_num, month, mean, sd, n, scale)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE inst_num = VALUES(inst_num), mean = VALUES(mean),
+                                sd = VALUES(sd), n = VALUES(n), scale = VALUES(scale)
     """
     total = 0
     for gas, (folder, pnum) in OLDGC_GASES.items():
@@ -69,7 +70,7 @@ def main():
                   f"{df.month.min()} to {df.month.max()}, scale {scale}")
             total += len(df)
             if args.insert and not df.empty:
-                params = [(site_nums[site], pnum, r.month, float(r.mean),
+                params = [(site_nums[site], OLDGC_INST_NUM, pnum, r.month, float(r.mean),
                            None if pd.isna(r.sd) else float(r.sd), int(r.n), scale)
                           for r in df.itertuples(index=False)]
                 db.doquery(sql, params, commit=True, multiInsert=True)
