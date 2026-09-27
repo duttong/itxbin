@@ -94,6 +94,15 @@ programs:
   oldGC:
     source: oldgc
     se_divisor: 1
+    # Igor smoothed each oldGC site record with Loess (SMTH 0.05 of its monthly
+    # grid, ~30 months; 0.2, ~120 months, for the short ALT and CGO records)
+    # and used the smooth curve for every month from first to last sample.
+    # This replaces the gap fill for this program, and is what bridges SPO:
+    # flasks there were sampled only 1-4 months a year before 1992, with
+    # gaps of up to two years (1981-1983).
+    loess:
+      window_months: 30
+      site_window_months: {alt: 120, cgo: 120}
   RITS:
     source: insitu
     inst_nums: [246, 247, 248, 249, 250]

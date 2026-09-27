@@ -12,6 +12,7 @@ from combined_data import (  # noqa: E402
     CombinedDataBuilder,
     add_mismatch,
     combine_programs,
+    loess_site_series,
     programs_bitstring,
     smooth_series,
 )
@@ -70,6 +71,24 @@ class SmoothSeriesTests(unittest.TestCase):
     def test_window_zero_is_noop(self):
         s = pd.Series([1.0, 2.0, 3.0])
         self.assertIs(smooth_series(s, 0, 4), s)
+
+
+class LoessTests(unittest.TestCase):
+    def test_fills_every_month_and_follows_a_trend(self):
+        # Summer-only sampling, like SPO before 1992, on a straight line.
+        dates = pd.to_datetime([f'{y}-{m:02d}-01' for y in range(1980, 1986) for m in (1, 2, 12)])
+        mf = 100 + 2.0 * (dates.year - 1980 + (dates.month - 0.5) / 12)
+        obs = pd.DataFrame({'date': dates, 'mf': mf, 'se': 0.5, 'n': 3})
+
+        out = loess_site_series(obs, 30)
+
+        self.assertEqual(len(out), (1985 - 1980) * 12 + 12)
+        self.assertEqual(out.index[0], dates[0])
+        july = out.loc['1983-07-01']
+        self.assertAlmostEqual(july['mf'], 100 + 2.0 * (3 + 6.5 / 12), places=6)
+        self.assertEqual(july['n'], 0)
+        self.assertEqual(out.loc['1983-01-01', 'n'], 3)
+        self.assertTrue(out['se'].notna().all())
 
 
 class BuilderUnitTests(unittest.TestCase):

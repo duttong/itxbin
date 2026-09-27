@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from scipy.signal import savgol_filter
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from global_means import GlobalMeansCalculator, GlobalMeansConfig
 
@@ -134,6 +135,33 @@ def add_mismatch(combined: pd.DataFrame, frames: dict[str, pd.DataFrame]) -> pd.
         excess = (combined['mf'] - f['mf']).abs() - (combined['sd'] + f['se'])
         sd = sd + excess.clip(lower=0).fillna(0)
     return sd.where(combined['mf'].notna())
+
+
+def _decimal_year(dates) -> np.ndarray:
+    d = pd.DatetimeIndex(dates)
+    return (d.year + (d.month - 0.5) / 12).to_numpy()
+
+
+def loess_site_series(obs: pd.DataFrame, window_months: float) -> pd.DataFrame:
+    """Igor-style Loess of one site's monthly record (columns date, mf, se, n).
+
+    Returns every month from the first to the last observation: mf is the
+    lowess curve (window about *window_months* wide, at least 5 points), se
+    is interpolated in time, and n is the month's sample count (0 where the
+    month was filled).
+    """
+    obs = obs.sort_values('date')
+    grid = pd.date_range(obs['date'].iloc[0], obs['date'].iloc[-1], freq='MS', name='date')
+    if len(obs) < 3:
+        return obs.set_index('date')[['mf', 'se', 'n']]
+    frac = min(1.0, max(window_months / len(grid), 5 / len(obs)))
+    fit = lowess(obs['mf'].to_numpy(), _decimal_year(obs['date']), frac=frac, it=0,
+                 xvals=_decimal_year(grid))
+    by_date = obs.set_index('date')
+    out = pd.DataFrame({'mf': fit}, index=grid)
+    out['se'] = by_date['se'].reindex(grid).interpolate(method='time').ffill().bfill()
+    out['n'] = by_date['n'].reindex(grid).fillna(0).astype(int)
+    return out
 
 
 def smooth_series(series: pd.Series, window: int, order: int) -> pd.Series:
@@ -356,6 +384,14 @@ class CombinedDataBuilder:
             return {}
         df = df.assign(mf=self.apply_offsets(program, df))
         df = df.assign(sd=self.standard_errors(program, df))
+        loess_cfg = self.config.programs[program].get('loess')
+        if loess_cfg:
+            # Igor oldGC: a Loess curve replaces the monthly values and fills
+            # every gap from the first to the last sample.
+            site_windows = loess_cfg.get('site_window_months') or {}
+            return {site: loess_site_series(g.rename(columns={'sd': 'se'}),
+                                            float(site_windows.get(site, loess_cfg['window_months'])))
+                    for site, g in df.groupby('site')}
         filled = self.calculator.fill_site_gaps(df)
         out = {}
         for site, grp in filled.groupby('site'):
