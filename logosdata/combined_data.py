@@ -564,9 +564,11 @@ class CombinedDataBuilder:
                 combined = combined[~only]
                 if combined.empty:
                     continue
+            # Mismatch against the unsmoothed mean, so smoothing residuals
+            # don't count as program disagreement.
+            combined['sd'] = add_mismatch(combined, {p: f[['mf', 'se']] for p, f in frames.items()})
             combined['mf'] = smooth_series(combined['mf'], self.config.smoothing_window,
                                            self.config.smoothing_order)
-            combined['sd'] = add_mismatch(combined, {p: f[['mf', 'se']] for p, f in frames.items()})
             n = sum(f['n'].reindex(combined.index).fillna(0) for f in frames.values())
             out = combined.assign(site=site, n=n.astype(int))
             out['programs'] = [programs_bitstring(p, order) for p in out['programs']]
