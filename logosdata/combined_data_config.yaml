@@ -31,18 +31,17 @@
 #   5. Smooth each site with a Savitzky-Golay filter.
 #   6. Band, hemispheric and global means with cos(lat) weights.
 
-# Background sites in the combined products (Igor AllBKsitesOTTO), plus the
-# MLO PFP pseudo-site.
-sites: [alt, sum, brw, mhd, thd, nwr, kum, mlo, mlo_pfp, smo, cgo, psa, spo]
+# Background sites in the combined products (Igor AllBKsitesOTTO).
+sites: [alt, sum, brw, mhd, thd, nwr, kum, mlo, smo, cgo, psa, spo]
 
-# PFP pseudo-sites: flask pairs at the base site with no pair ID (pair_id_num
-# = 0) are CCGG PFP samples and are kept apart under the pseudo-site name, at
-# the base site's latitude.  PFPs replaced programmatic flasks at MLO after the
-# Nov 2022 Mauna Loa eruption (no flask analyses 2023-2024) and have run
-# alongside them in 2021-2022 and from 2025.  Only the M* instruments (M3/M4)
-# measured them.  As in the M* global-means export, both are weighted while
-# they run concurrently, so the MLO location counts twice in the LN band then
-# (an open question -- see gml_global_means_config.yaml).
+# PFP flasks: pairs at the base site with no pair ID (pair_id_num = 0) are
+# CCGG PFP samples.  PFPs replaced programmatic flasks at MLO after the Nov
+# 2022 Mauna Loa eruption (no flask analyses 2023-2024) and have run alongside
+# them in 2021-2022 and from 2025.  Only the M* instruments (M3/M4) measured
+# them.  They form their own program (PFP, `pfp: only`) at the base site, so
+# where both run they are combined with the other programs like any other,
+# and MLO counts once in the LN band.  Other flask programs leave them out.
+# The key is the label the SQL gives them, the value their base site.
 pfp_sites:
   mlo_pfp: mlo
 
@@ -80,9 +79,9 @@ smoothing:
 #   insitu      hats.ng_insitu_monthly_means for the listed inst_nums
 #               (insitu_monthly_means_batch.py).
 #   pairs       hats.ng_pair_avg_view flask pair means for the listed inst_ids,
-#               aggregated to monthly mean/sd/n.  PFP pairs go to their
-#               pseudo-site (pfp_sites).  OTTO rows get site and date from
-#               hats.hatsflask_pair_info.
+#               aggregated to monthly mean/sd/n.  PFP pairs (pfp_sites) are
+#               used only by a program with `pfp: only`, at the base site.
+#               OTTO rows get site and date from hats.hatsflask_pair_info.
 #   ccgg        ccgg.flask_data_view, CCGG surface flasks, unflagged
 #               ('..%'); pair means per event time, then monthly mean/sd, with
 #               sd = sqrt(sd^2 + mean(unc)^2) (as ~/CCGG/N2O_comparison.py).
@@ -127,6 +126,11 @@ programs:
   MSD:
     source: pairs
     inst_ids: [M1, M3, M4]
+    se_divisor: 4
+  PFP:
+    source: pairs
+    inst_ids: [M3, M4]
+    pfp: only
     se_divisor: 4
 
 # Igor doubled the standard error at SMO for every program.
@@ -180,18 +184,18 @@ gases:
     units: ppt
     gas_dir: cfcs/cfc11
     file_gas: F11
-    programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    programs: [CATS, IE3, RITS, fECD, oldGC, MSD, PFP]
     offset_reference: fECD
     offset_reference_date: '2005-01-01'
     offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}
     drop_if_only: [CATS, IE3]
-    pnums: {MSD: 29}
+    pnums: {MSD: 29, PFP: 29}
   CFC12:
     parameter_num: 22
     units: ppt
     gas_dir: cfcs/cfc12
     file_gas: F12
-    programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    programs: [CATS, IE3, RITS, fECD, oldGC, MSD, PFP]
     offset_reference: fECD
     offset_reference_date: '2005-01-01'
     offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}
@@ -204,7 +208,7 @@ gases:
     units: ppt
     gas_dir: cfcs/cfc113
     file_gas: F113
-    programs: [CATS, IE3, fECD, MSD]
+    programs: [CATS, IE3, fECD, MSD, PFP]
     offset_reference: MSD
     offset_reference_date: '2015-01-01'
     offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}

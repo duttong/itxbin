@@ -155,6 +155,19 @@ class BuilderUnitTests(unittest.TestCase):
             ('MSD', 'MSD', None, None),
         ])
 
+    def test_pfp_pairs_only_in_pfp_program(self):
+        class FakeDb:
+            def doquery(self, sql, params=None):
+                return [{'site': 'mlo', 'dt': '2023-01-05', 'value': 200.0},
+                        {'site': 'mlo_pfp', 'dt': '2023-01-09', 'value': 210.0},
+                        {'site': 'brw', 'dt': '2023-01-02', 'value': 205.0}]
+        b = self._builder({'parameter_num': 22})
+        b.db = FakeDb()
+        msd = b._load_pairs('MSD', {'inst_ids': ['M3']})
+        pfp = b._load_pairs('PFP', {'inst_ids': ['M3'], 'pfp': 'only'})
+        self.assertEqual(dict(zip(msd.site, msd.mf)), {'brw': 205.0, 'mlo': 200.0})
+        self.assertEqual(dict(zip(pfp.site, pfp.mf)), {'mlo': 210.0})
+
     def test_pfp_label(self):
         b = self._builder({})
         sql = b._pfp_label_sql()

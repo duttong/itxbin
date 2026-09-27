@@ -338,7 +338,8 @@ class CombinedDataBuilder:
 
     def _load_pairs(self, program: str, spec: dict) -> pd.DataFrame:
         """Flask pair means pooled across the program's instruments, then
-        aggregated to monthly mean/sd/n.  PFP pairs go to their pseudo-site.
+        aggregated to monthly mean/sd/n.  PFP pairs are kept only by a
+        `pfp: only` program, at their base site.
         OTTO pairs carry no site/date in the view (flask_id = 0), so they come
         from hatsflask_pair_info."""
         pnum = self.pnum_for(program)
@@ -367,6 +368,15 @@ class CombinedDataBuilder:
             frames.append(pd.DataFrame(rows))
         pairs = pd.concat([f for f in frames if not f.empty], ignore_index=True) \
             if any(not f.empty for f in frames) else pd.DataFrame()
+        if pairs.empty:
+            return pairs
+        # PFP pairs feed only a program marked `pfp: only`, at their base site;
+        # every other flask program leaves them out.
+        is_pfp = pairs['site'].isin(self.config.pfp_sites)
+        if spec.get('pfp') == 'only':
+            pairs = pairs[is_pfp].assign(site=lambda d: d['site'].map(self.config.pfp_sites))
+        else:
+            pairs = pairs[~is_pfp]
         if pairs.empty:
             return pairs
         pairs['value'] = pd.to_numeric(pairs['value'], errors='coerce')
