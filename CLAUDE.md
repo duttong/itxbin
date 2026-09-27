@@ -205,10 +205,15 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
   CFC11, CFC12, CFC113, CCl4, SF6 and N2O, compares with the published /aftp
   files, and replaces each gas's rows in `hats.ng_logos_combined_data`
   (site rows plus Global/NH/SH/HN/LN/LS/HS; DDL in `ng_logos_combined_data.sql`).
-- Per site, programs are combined with Igor's 1/se weights and mismatch error,
-  then Savitzky-Golay smoothed; band/hemispheric/global means reuse
-  `global_means.py` (GML_means semi-hemispheric bands). MLO PFP pairs are
-  their own site, `mlo_pfp`.
+- Per site, programs are combined with inverse-variance weights and a
+  Birge-ratio error (`site_combine`; `igor` restores Igor's 1/se weights and
+  mismatch term), then Savitzky-Golay smoothed; band/hemispheric/global means
+  reuse `global_means.py` (GML_means semi-hemispheric bands).
+- Standard errors (`se_method: overlap`) come from each program piece's
+  monthly-mean noise, measured every build from how the programs differ at
+  shared site-months (three-cornered hat, `program_noise()`); the batch
+  prints it. Gap-filled months get se x sqrt(1 + months to data).
+- MLO PFP pairs (M3/M4) are their own program, `PFP`, combined at `mlo`.
 - oldGC is read from `hats.fecd_oldgc` (see below); CCGG comes from
   `ccgg.flask_data_view`.
 - Per-program scale offsets (`offsets_pct`) are applied only where programs

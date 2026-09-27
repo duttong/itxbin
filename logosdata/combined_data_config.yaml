@@ -22,12 +22,13 @@
 #   * IE3 joins the in-situ programs.
 #
 # Steps for each gas:
-#   1. Load each program's per-site monthly mean, sd and n.
-#   2. Turn sd into a standard error (se_divisor, se_cap, site_se_scale).
-#   3. Fill interior gaps in each program/site series.
-#   4. Combine the programs at each site, weighting by 1/se (Igor
-#      WeightedMean_ofasite): mean = sum(x/se)/sum(1/se), sd = N/sum(1/se),
-#      plus a mismatch term where programs disagree by more than their errors.
+#   1. Load each program's per-site monthly mean, sd and n; apply offsets.
+#   2. Turn sd into a standard error (se_method: measured program noise, or
+#      Igor's se_divisor; se_cap, site_se_scale).
+#   3. Fill interior gaps in each program/site series; filled months get a
+#      larger error (downweight_filled).
+#   4. Combine the programs at each site (site_combine: inverse-variance
+#      weights with a Birge-ratio error, or Igor's 1/se weights plus mismatch).
 #   5. Smooth each site with a Savitzky-Golay filter.
 #   6. Band, hemispheric and global means with cos(lat) weights.
 
@@ -69,6 +70,14 @@ max_interpolation_months: 12
 # measured data dominate wherever another program has them.  Igor weighted
 # filled and measured months alike.
 downweight_filled: true
+
+# How programs are combined at each site (step 4):
+#   inverse_variance  weights 1/se^2; error = 1/sqrt(sum 1/se^2), scaled up
+#                     by the Birge ratio sqrt(chi^2/(N-1)) where programs
+#                     scatter more than their errors allow.
+#   igor              weights 1/se (Igor WeightedMean_ofasite); error
+#                     N/sum(1/se) plus Igor's mismatch term.
+site_combine: inverse_variance
 
 # Savitzky-Golay smoothing of each site's combined series (Igor
 # Station_smooth: Smooth/E=3/S=4 7).  Runs shorter than the window are left

@@ -54,6 +54,7 @@ class CombinedConfig:
     pfp_sites: dict[str, str] = field(default_factory=dict)
     se_method: str = 'igor'
     downweight_filled: bool = False
+    site_combine: str = 'igor'
     se_fallback: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -77,6 +78,7 @@ class CombinedConfig:
             pfp_sites={k.lower(): v.lower() for k, v in (cfg.get('pfp_sites') or {}).items()},
             se_method=str(cfg.get('se_method', 'igor')),
             downweight_filled=bool(cfg.get('downweight_filled', False)),
+            site_combine=str(cfg.get('site_combine', 'igor')),
             se_fallback=dict(cfg.get('se_fallback') or {}),
         )
 
@@ -130,6 +132,33 @@ def combine_programs(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     out['mf'] = (num / wsum).where(count > 0)
     out['sd'] = (count / wsum).where(count > 0)
     out['programs'] = present
+    return out
+
+
+def combine_inverse_variance(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Inverse-variance weighted mean of several programs at one site.
+
+    mean = sum(x/se^2)/sum(1/se^2).  The error is the internal error
+    1/sqrt(sum(1/se^2)) scaled up by the Birge ratio sqrt(chi^2/(N-1)) when
+    the programs scatter more than their errors allow (never scaled down).
+    Same columns as combine_programs(); ``sd`` is the final error.
+    """
+    months = sorted(set().union(*[f.index for f in frames.values()])) if frames else []
+    idx = pd.DatetimeIndex(months, name='date')
+    x = pd.DataFrame({p: f['mf'].reindex(idx) for p, f in frames.items()})
+    se = pd.DataFrame({p: f['se'].reindex(idx) for p, f in frames.items()})
+    ok = x.notna() & se.gt(0)
+    w = (1.0 / se ** 2).where(ok, 0.0)
+    wsum = w.sum(axis=1)
+    count = ok.sum(axis=1)
+    mean = (w * x.where(ok, 0.0)).sum(axis=1) / wsum.where(wsum > 0)
+    internal = 1.0 / np.sqrt(wsum.where(wsum > 0))
+    chi2 = (w * (x.sub(mean, axis=0) ** 2).where(ok, 0.0)).sum(axis=1)
+    birge = np.sqrt(chi2 / (count - 1).where(count > 1)).fillna(1.0).clip(lower=1.0)
+    out = pd.DataFrame(index=idx)
+    out['mf'] = mean
+    out['sd'] = internal * birge
+    out['programs'] = [set(ok.columns[r]) for r in ok.to_numpy()]
     return out
 
 
@@ -712,7 +741,11 @@ class CombinedDataBuilder:
         drop_only = set(self.gas_cfg.get('drop_if_only') or [])
         rows = []
         for site, frames in sorted(by_site.items()):
-            combined = combine_programs({p: f[['mf', 'se']] for p, f in frames.items()})
+            inputs = {p: f[['mf', 'se']] for p, f in frames.items()}
+            if self.config.site_combine == 'inverse_variance':
+                combined = combine_inverse_variance(inputs)
+            else:
+                combined = combine_programs(inputs)
             if drop_only:
                 only = combined['programs'].apply(lambda p: bool(p) and p <= drop_only)
                 combined = combined[~only]
@@ -720,7 +753,8 @@ class CombinedDataBuilder:
                     continue
             # Mismatch against the unsmoothed mean, so smoothing residuals
             # don't count as program disagreement.
-            combined['sd'] = add_mismatch(combined, {p: f[['mf', 'se']] for p, f in frames.items()})
+            if self.config.site_combine != 'inverse_variance':
+                combined['sd'] = add_mismatch(combined, inputs)
             combined['mf'] = smooth_series(combined['mf'], self.config.smoothing_window,
                                            self.config.smoothing_order)
             n = sum(f['n'].reindex(combined.index).fillna(0) for f in frames.values())

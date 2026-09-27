@@ -12,6 +12,7 @@ from combined_data import (  # noqa: E402
     CombinedConfig,
     CombinedDataBuilder,
     add_mismatch,
+    combine_inverse_variance,
     combine_programs,
     inflate_filled_se,
     loess_site_series,
@@ -118,6 +119,24 @@ class OffsetEstimateTests(unittest.TestCase):
         level = solve_offsets(pairs, 'A')
         self.assertNotIn('C', level)
         self.assertAlmostEqual(level['B'], -1.0)
+
+
+class InverseVarianceTests(unittest.TestCase):
+    def test_weights_and_birge(self):
+        a = _frame([100.0, 100.0, np.nan], [1.0, 1.0, 1.0])
+        b = _frame([100.5, 110.0, 103.0], [2.0, 2.0, 2.0])
+
+        out = combine_inverse_variance({'A': a, 'B': b})
+
+        # month 0: weights 1 and 0.25 -> 100.1; chi2 = 0.1^2 + 0.4^2/4 < 1
+        self.assertAlmostEqual(out['mf'].iloc[0], 100.1)
+        self.assertAlmostEqual(out['sd'].iloc[0], 1 / np.sqrt(1.25))
+        # month 1: 10 ppt apart, far outside the errors -> Birge-scaled
+        chi2 = (2.0 ** 2) + (8.0 ** 2) / 4
+        self.assertAlmostEqual(out['sd'].iloc[1], np.sqrt(chi2) / np.sqrt(1.25))
+        self.assertEqual(out['mf'].iloc[2], 103.0)
+        self.assertEqual(out['sd'].iloc[2], 2.0)
+        self.assertEqual(out['programs'].iloc[2], {'B'})
 
 
 class InflateFilledTests(unittest.TestCase):
