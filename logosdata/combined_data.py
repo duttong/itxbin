@@ -53,6 +53,7 @@ class CombinedConfig:
     gases: dict[str, dict] = field(default_factory=dict)
     pfp_sites: dict[str, str] = field(default_factory=dict)
     se_method: str = 'igor'
+    downweight_filled: bool = False
     se_fallback: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -75,6 +76,7 @@ class CombinedConfig:
             gases=cfg['gases'],
             pfp_sites={k.lower(): v.lower() for k, v in (cfg.get('pfp_sites') or {}).items()},
             se_method=str(cfg.get('se_method', 'igor')),
+            downweight_filled=bool(cfg.get('downweight_filled', False)),
             se_fallback=dict(cfg.get('se_fallback') or {}),
         )
 
@@ -167,6 +169,23 @@ def loess_site_series(obs: pd.DataFrame, window_months: float) -> pd.DataFrame:
     out['se'] = by_date['se'].reindex(grid).interpolate(method='time').ffill().bfill()
     out['n'] = by_date['n'].reindex(grid).fillna(0).astype(int)
     return out
+
+
+def inflate_filled_se(frame: pd.DataFrame) -> pd.Series:
+    """se with filled months (n == 0) down-weighted: multiplied by
+    sqrt(1 + d), d = months to the nearest measured month, so an estimate
+    one month from data counts about half as much as a measurement, and one
+    a year away about a thirteenth."""
+    measured = frame['n'].to_numpy() > 0
+    if measured.all() or not measured.any():
+        return frame['se']
+    month = frame.index.year.to_numpy() * 12 + frame.index.month.to_numpy()
+    obs = month[measured]
+    pos = np.searchsorted(obs, month)
+    before = np.abs(month - obs[np.clip(pos - 1, 0, len(obs) - 1)])
+    after = np.abs(obs[np.clip(pos, 0, len(obs) - 1)] - month)
+    d = np.where(measured, 0, np.minimum(before, after))
+    return frame['se'] * np.sqrt(1.0 + d)
 
 
 def smooth_series(series: pd.Series, window: int, order: int) -> pd.Series:
@@ -578,14 +597,17 @@ class CombinedDataBuilder:
             # Igor oldGC: a Loess curve replaces the monthly values and fills
             # every gap from the first to the last sample.
             site_windows = loess_cfg.get('site_window_months') or {}
-            return {site: loess_site_series(g.rename(columns={'sd': 'se'}),
-                                            float(site_windows.get(site, loess_cfg['window_months'])))
-                    for site, g in df.groupby('site')}
-        filled = self.calculator.fill_site_gaps(df)
-        out = {}
-        for site, grp in filled.groupby('site'):
-            grp = grp.set_index('date').rename(columns={'sd': 'se'})
-            out[site] = grp[['mf', 'se', 'n']].dropna(subset=['mf'])
+            out = {site: loess_site_series(g.rename(columns={'sd': 'se'}),
+                                           float(site_windows.get(site, loess_cfg['window_months'])))
+                   for site, g in df.groupby('site')}
+        else:
+            filled = self.calculator.fill_site_gaps(df)
+            out = {}
+            for site, grp in filled.groupby('site'):
+                grp = grp.set_index('date').rename(columns={'sd': 'se'})
+                out[site] = grp[['mf', 'se', 'n']].dropna(subset=['mf'])
+        if self.config.downweight_filled:
+            out = {site: f.assign(se=inflate_filled_se(f)) for site, f in out.items()}
         return out
 
     # ── offsets ──────────────────────────────────────────────────────────────

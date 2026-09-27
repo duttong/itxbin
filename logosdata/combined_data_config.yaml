@@ -63,6 +63,13 @@ weight_lat_overrides:
 interpolation_method: seasonal
 max_interpolation_months: 12
 
+# Filled months (and the oldGC Loess months between samples) are estimates,
+# not measurements.  With downweight_filled their standard error is
+# multiplied by sqrt(1 + d), d = months to the nearest measured month, so
+# measured data dominate wherever another program has them.  Igor weighted
+# filled and measured months alike.
+downweight_filled: true
+
 # Savitzky-Golay smoothing of each site's combined series (Igor
 # Station_smooth: Smooth/E=3/S=4 7).  Runs shorter than the window are left
 # unsmoothed.  Set window to 0 to turn smoothing off.

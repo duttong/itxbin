@@ -13,6 +13,7 @@ from combined_data import (  # noqa: E402
     CombinedDataBuilder,
     add_mismatch,
     combine_programs,
+    inflate_filled_se,
     loess_site_series,
     pairwise_log_ratios,
     program_noise,
@@ -117,6 +118,14 @@ class OffsetEstimateTests(unittest.TestCase):
         level = solve_offsets(pairs, 'A')
         self.assertNotIn('C', level)
         self.assertAlmostEqual(level['B'], -1.0)
+
+
+class InflateFilledTests(unittest.TestCase):
+    def test_se_grows_with_distance_from_data(self):
+        idx = pd.date_range('2000-01-01', periods=6, freq='MS')
+        f = pd.DataFrame({'se': 1.0, 'n': [3, 0, 0, 0, 2, 0]}, index=idx)
+        np.testing.assert_allclose(inflate_filled_se(f),
+                                   [1, np.sqrt(2), np.sqrt(3), np.sqrt(2), 1, np.sqrt(2)])
 
 
 class ProgramNoiseTests(unittest.TestCase):
