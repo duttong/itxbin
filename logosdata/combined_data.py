@@ -104,6 +104,23 @@ def programs_bitstring(present: set[str], order: list[str]) -> str:
     return ''.join('1' if p in present else '0' for p in order)
 
 
+def _stack_programs(frames: dict[str, pd.DataFrame]):
+    """Programs side by side on their shared month index: (x, se, ok), each a
+    frame with one column per program; ok marks usable values."""
+    months = sorted(set().union(*[f.index for f in frames.values()])) if frames else []
+    idx = pd.DatetimeIndex(months, name='date')
+    x = pd.DataFrame({p: f['mf'].reindex(idx) for p, f in frames.items()}, index=idx)
+    se = pd.DataFrame({p: f['se'].reindex(idx) for p, f in frames.items()}, index=idx)
+    return x, se, x.notna() & se.gt(0)
+
+
+def _combined_frame(x: pd.DataFrame, ok: pd.DataFrame, mean: pd.Series,
+                    sd: pd.Series) -> pd.DataFrame:
+    out = pd.DataFrame({'mf': mean, 'sd': sd}, index=x.index)
+    out['programs'] = [set(ok.columns[r]) for r in ok.to_numpy()]
+    return out
+
+
 def combine_programs(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Weighted mean of several programs' series at one site.
 
@@ -113,26 +130,11 @@ def combine_programs(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     N/sum(1/se) for N contributing programs.  Returns columns ``mf``, ``sd``
     (base error, before the mismatch term) and ``programs`` (a set per month).
     """
-    months = sorted(set().union(*[f.index for f in frames.values()])) if frames else []
-    idx = pd.DatetimeIndex(months, name='date')
-    num = pd.Series(0.0, index=idx)
-    wsum = pd.Series(0.0, index=idx)
-    count = pd.Series(0, index=idx)
-    present = pd.Series([set() for _ in idx], index=idx, dtype=object)
-    for prog, f in frames.items():
-        f = f.reindex(idx)
-        ok = f['mf'].notna() & f['se'].gt(0)
-        w = 1.0 / f.loc[ok, 'se']
-        num.loc[ok] += w * f.loc[ok, 'mf']
-        wsum.loc[ok] += w
-        count.loc[ok] += 1
-        for d in f.index[ok]:
-            present.at[d] = present.at[d] | {prog}
-    out = pd.DataFrame(index=idx)
-    out['mf'] = (num / wsum).where(count > 0)
-    out['sd'] = (count / wsum).where(count > 0)
-    out['programs'] = present
-    return out
+    x, se, ok = _stack_programs(frames)
+    w = (1.0 / se).where(ok, 0.0)
+    wsum = w.sum(axis=1).where(lambda v: v > 0)
+    mean = (w * x.where(ok, 0.0)).sum(axis=1) / wsum
+    return _combined_frame(x, ok, mean, ok.sum(axis=1) / wsum)
 
 
 def combine_inverse_variance(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -143,23 +145,14 @@ def combine_inverse_variance(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     the programs scatter more than their errors allow (never scaled down).
     Same columns as combine_programs(); ``sd`` is the final error.
     """
-    months = sorted(set().union(*[f.index for f in frames.values()])) if frames else []
-    idx = pd.DatetimeIndex(months, name='date')
-    x = pd.DataFrame({p: f['mf'].reindex(idx) for p, f in frames.items()})
-    se = pd.DataFrame({p: f['se'].reindex(idx) for p, f in frames.items()})
-    ok = x.notna() & se.gt(0)
+    x, se, ok = _stack_programs(frames)
     w = (1.0 / se ** 2).where(ok, 0.0)
-    wsum = w.sum(axis=1)
+    wsum = w.sum(axis=1).where(lambda v: v > 0)
     count = ok.sum(axis=1)
-    mean = (w * x.where(ok, 0.0)).sum(axis=1) / wsum.where(wsum > 0)
-    internal = 1.0 / np.sqrt(wsum.where(wsum > 0))
+    mean = (w * x.where(ok, 0.0)).sum(axis=1) / wsum
     chi2 = (w * (x.sub(mean, axis=0) ** 2).where(ok, 0.0)).sum(axis=1)
     birge = np.sqrt(chi2 / (count - 1).where(count > 1)).fillna(1.0).clip(lower=1.0)
-    out = pd.DataFrame(index=idx)
-    out['mf'] = mean
-    out['sd'] = internal * birge
-    out['programs'] = [set(ok.columns[r]) for r in ok.to_numpy()]
-    return out
+    return _combined_frame(x, ok, mean, birge / np.sqrt(wsum))
 
 
 def add_mismatch(combined: pd.DataFrame, frames: dict[str, pd.DataFrame]) -> pd.Series:
@@ -729,14 +722,17 @@ class CombinedDataBuilder:
 
     # ── combining ────────────────────────────────────────────────────────────
 
-    def site_series(self) -> pd.DataFrame:
-        """Combined, smoothed monthly series for every site: columns site,
-        date, mf, sd, n, programs."""
+    def program_site_frames(self) -> dict[str, dict[str, pd.DataFrame]]:
+        """{site: {program: frame(mf, se, n)}} for every program, prepared."""
         by_site: dict[str, dict[str, pd.DataFrame]] = {}
         for program in self.gas_cfg['programs']:
             for site, frame in self.prepare_program(program).items():
                 by_site.setdefault(site, {})[program] = frame
-        self.program_frames = by_site
+        return by_site
+
+    def site_series(self, by_site: dict[str, dict[str, pd.DataFrame]]) -> pd.DataFrame:
+        """Combined, smoothed monthly series for every site from
+        program_site_frames(): columns site, date, mf, sd, n, programs."""
         order = self.config.program_order
         drop_only = set(self.gas_cfg.get('drop_if_only') or [])
         rows = []
@@ -766,30 +762,26 @@ class CombinedDataBuilder:
         return pd.concat(rows, ignore_index=True)[['site', 'date', 'mf', 'sd', 'n', 'programs']]
 
     def site_latitudes(self) -> dict[str, float]:
-        """{site: lat} from gmd.site; a PFP pseudo-site takes its base site's."""
-        sites = sorted({self.config.pfp_sites.get(s, s) for s in self.config.sites})
+        """{site: lat} from gmd.site."""
+        sites = sorted(self.config.sites)
         rows = self.db.doquery(
             f"SELECT LOWER(code) AS code, lat FROM gmd.site WHERE LOWER(code) IN "
             f"({','.join(['%s'] * len(sites))})", sites) or []
-        lats = {r['code']: float(r['lat']) for r in rows}
-        for pseudo, base in self.config.pfp_sites.items():
-            if base in lats:
-                lats[pseudo] = lats[base]
-        return lats
+        return {r['code']: float(r['lat']) for r in rows}
 
-    def program_global_means(self, lats: dict[str, float]) -> list[pd.DataFrame]:
+    def program_global_means(self, by_site: dict[str, dict[str, pd.DataFrame]],
+                             lats: dict[str, float]) -> list[pd.DataFrame]:
         """Each program's own global mean, from its gap-filled site series
         alone (no combining or smoothing), as location 'prog:<program>'.
 
         These show how the programs overlap and agree (the provenance figure);
         a program with too few sites for all four bands has no global mean.
-        Call after site_series().
         """
         order = self.config.program_order
         frames = []
         for program in self.gas_cfg['programs']:
             parts = [f.assign(site=site).rename(columns={'se': 'sd'}).reset_index()
-                     for site, progs in self.program_frames.items()
+                     for site, progs in by_site.items()
                      for p, f in progs.items() if p == program]
             if not parts:
                 continue
@@ -813,11 +805,12 @@ class CombinedDataBuilder:
         Locations are the sites, Global, NH, SH and the four bands, and each
         program's own global mean as 'prog:<program>'.
         """
-        sites = self.site_series()
+        by_site = self.program_site_frames()
+        sites = self.site_series(by_site)
         if sites.empty:
             return pd.DataFrame(columns=['location', 'date', 'mean', 'sd', 'n', 'programs'])
-        prepared = self.calculator.prepare(sites[['site', 'date', 'mf', 'sd', 'n']],
-                                           self.site_latitudes())
+        lats = self.site_latitudes()
+        prepared = self.calculator.prepare(sites[['site', 'date', 'mf', 'sd', 'n']], lats)
         means = self.calculator.compute_prepared(prepared)
 
         # Programs contributing to any site each month, for the mean rows.
@@ -837,7 +830,7 @@ class CombinedDataBuilder:
             m['programs'] = m['date'].map(bits)
             m['n'] = m['date'].map(n_total).fillna(0).astype(int)
             out.append(m)
-        out.extend(self.program_global_means(self.site_latitudes()))
+        out.extend(self.program_global_means(by_site, lats))
         result = pd.concat(out, ignore_index=True)
         return result[['location', 'date', 'mean', 'sd', 'n', 'programs']].sort_values(
             ['location', 'date']).reset_index(drop=True)
