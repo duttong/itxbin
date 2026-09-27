@@ -329,6 +329,27 @@ before 2022, not because they are per-injection.
   `ng_pair_avg_view`. Same reason the Relative Stddev figure and right-click
   navigation don't work for M*.
 
+## Timeseries figure analyte list and "(P)"
+
+The Mole Fractions figure's analyte combo (`_figure_analyte_names()`) lists
+every channel from `instrument.analytes`, plus a `"<compound> (P)"` entry for
+each compound on more than one channel when the instrument keeps
+`hats.ng_preferred_channel` rows (FE3, IE3, CATS). It is sorted by compound,
+then channel, with `(P)` last, e.g. `CFC12 (a)`, `CFC12 (c)`, `CFC12 (f)`,
+`CFC12 (P)`.
+
+- `(P)` follows `ng_preferred_channel` date by date, the same record the
+  Timeseries tab's plain name gives for IE3/CATS. It works for FE3 too, even
+  though FE3's tab lists channels rather than forcing preferred ones.
+- `TimeseriesWidget._channel_selection()` is the one place that turns a name
+  into `(channel, use_preferred_channel)`, and `_resolve_pnum()` maps `(P)` to
+  the compound's pnum. Every figure query goes through them, including the
+  OTTO ones. No real channel is named `P` (`PREFERRED_CHANNEL`).
+- A figure opened from a plain tab name lands on `(P)`.
+- Preferred plots carry each point's channel in `_meta["channels"]`, so
+  right-click opens the Processing tab on the channel that point was measured on.
+- The Relative Stddev figure is unchanged. Its query ignores channel.
+
 ## Pale-yellow "staged or running" cue
 
 `_PENDING_STYLE` / `set_button_pending()` in `logos_timeseries.py` are the one

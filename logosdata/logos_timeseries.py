@@ -27,6 +27,50 @@ import configparser
 
 _USER_CONF = Path.home() / '.logos_data_user.conf'
 
+# Pseudo-channel for an analyte-list entry that follows hats.ng_preferred_channel
+# date by date, e.g. "CFC12 (P)" next to "CFC12 (a)" and "CFC12 (f)". No real
+# channel is named P.
+PREFERRED_CHANNEL = "P"
+
+
+def _split_analyte_channel(name: str | None) -> tuple[str | None, str | None]:
+    """Split "CFC12 (a)" into ("CFC12", "a"); a plain name gives (name, None)."""
+    if not name:
+        return name, None
+    m = re.match(r'^(.*?)\s+\(([^()]+)\)\s*$', name)
+    if not m:
+        return name, None
+    return m.group(1), m.group(2).strip()
+
+
+def _figure_analyte_names(instrument) -> list[str]:
+    """Analyte list for a figure's combo: every channel, plus a "(P)" entry for
+    each compound measured on more than one channel when the instrument keeps
+    preferred channels (FE3, IE3, CATS). Sorted by compound, channels
+    alphabetically, with the preferred entry last."""
+    names = list((getattr(instrument, "analytes", None) or {}).keys())
+    if hasattr(instrument, "return_preferred_channel"):
+        channels_by_base = {}
+        for name in names:
+            base, channel = _split_analyte_channel(name)
+            if channel:
+                channels_by_base.setdefault(base, set()).add(channel)
+        names += [f"{base} ({PREFERRED_CHANNEL})"
+                  for base, channels in channels_by_base.items() if len(channels) > 1]
+
+    def sort_key(name):
+        base, channel = _split_analyte_channel(name)
+        return (base.casefold(), channel == PREFERRED_CHANNEL, (channel or "").casefold())
+
+    return sorted(names, key=sort_key)
+
+
+def _explicit_channel(name: str | None) -> str | None:
+    """The channel a figure should filter on: "CFC12 (a)" gives "a", while a
+    plain name or a "(P)" entry gives None (the preferred-channel record)."""
+    channel = _split_analyte_channel(name)[1]
+    return None if channel == PREFERRED_CHANNEL else channel
+
 
 def _load_timeseries_years() -> tuple[int, int]:
     """Return (start_year, end_year) from user config, or sensible defaults."""
@@ -525,8 +569,9 @@ class TimeseriesFigure(TagCRUDMixin):
         # let them pick one explicitly instead of only offering the
         # preferred-channel-per-compound default. query_insitu_data() and
         # friends resolve a channel-suffixed name's pnum via a fallback to
-        # instrument.analytes and honor its explicit channel.
-        analyte_names = list((self.parent_widget.instrument.analytes or {}).keys())
+        # instrument.analytes and honor its explicit channel. A "(P)" entry
+        # steps back to the date-aware preferred-channel record.
+        analyte_names = _figure_analyte_names(self.parent_widget.instrument)
         if not analyte_names:
             analyte_names = [self.analyte]
 
@@ -584,8 +629,10 @@ class TimeseriesFigure(TagCRUDMixin):
             # match here (e.g. only "SF6 (q)" is listed) -- fall back to
             # this channel if known, else the first entry for the compound,
             # so the combo's initial selection is never left unmatched.
-            if self.channel:
-                idx = self.analyte_combo.findText(f"{self.analyte} ({self.channel})", Qt.MatchExactly)
+            # A plain name with no channel is the preferred-channel record,
+            # so land on its "(P)" entry when there is one.
+            channel = self.channel or PREFERRED_CHANNEL
+            idx = self.analyte_combo.findText(f"{self.analyte} ({channel})", Qt.MatchExactly)
             if idx < 0:
                 prefix = f"{self.analyte} ("
                 candidates = [
@@ -600,9 +647,7 @@ class TimeseriesFigure(TagCRUDMixin):
             # actually landed, so the initial plot matches what's displayed
             # instead of using stale construction-time values.
             self.analyte = self.analyte_combo.itemText(idx)
-            self.channel = None
-            if "(" in self.analyte and ")" in self.analyte:
-                self.channel = self.analyte.split("(", 1)[1].strip(") ")
+            self.channel = _explicit_channel(self.analyte)
 
         self.reload_btn = QPushButton("Reload")
 
@@ -957,6 +1002,7 @@ class TimeseriesFigure(TagCRUDMixin):
                     "rejected":        sub["rejected"].tolist(),
                     "analyte":         self.analyte,
                     "channel":         self.channel,
+                    "channels":        sub["channel"].tolist() if "channel" in sub else None,
                 }
                 line.set_visible(visible)
                 dataset_handles.setdefault(label, []).append(line)
@@ -1375,11 +1421,7 @@ class TimeseriesFigure(TagCRUDMixin):
 
     def _on_analyte_changed(self, text):
         self.analyte = text
-        if "(" in text and ")" in text:
-            _, channel = text.split("(", 1)
-            self.channel = channel.strip(") ")
-        else:
-            self.channel = None
+        self.channel = _explicit_channel(text)
         self._on_reload_clicked()
 
     # ────────────────────────────────────────────────────────────
@@ -2747,10 +2789,7 @@ class TimeseriesWidget(QWidget):
         # a popup figure viewing "N2O (a)" specifically) keeps that channel
         # even though the main tab's own combo only lists the
         # channel-simplified base name.
-        self.current_channel = None
-        if "(" in analyte_name and ")" in analyte_name:
-            _, channel = analyte_name.split("(", 1)
-            self.current_channel = channel.strip(") ")
+        self.current_channel = _explicit_channel(analyte_name)
 
         combo_name = analyte_name
         if self._uses_forced_preferred_channel():
@@ -2861,6 +2900,7 @@ class TimeseriesWidget(QWidget):
                             "rejected": sub.get("rejected", pd.Series([0]*len(sub))).tolist(),
                             "analyte": analyte,
                             "channel": self.current_channel,
+                            "channels": sub["channel"].tolist() if "channel" in sub else None,
                         }
                         line.set_visible(visible)
                         dataset_handles.setdefault(label, []).append(line)
@@ -3068,11 +3108,27 @@ class TimeseriesWidget(QWidget):
     def get_active_sites(self):
         return [cb.text() for cb in self.site_checks if cb.isChecked()]
 
+    def _supports_preferred_channel(self) -> bool:
+        """True when the instrument keeps hats.ng_preferred_channel rows (FE3, IE3, CATS)."""
+        return hasattr(self.instrument, "return_preferred_channel")
+
     def _uses_forced_preferred_channel(self) -> bool:
         """True when a caller wants ng_preferred_channel to choose duplicate channels."""
-        return bool(getattr(self, "force_preferred_channel", False)) and hasattr(
-            self.instrument, "return_preferred_channel"
-        )
+        return bool(getattr(self, "force_preferred_channel", False)) and self._supports_preferred_channel()
+
+    def _channel_selection(self, analyte: str | None) -> tuple[str | None, bool]:
+        """Return (channel, use_preferred_channel) for an analyte name.
+
+        "CFC12 (a)" filters on channel a. "CFC12 (P)" follows
+        ng_preferred_channel on any instrument that keeps it, and a plain
+        "CFC12" does so where the tab forces preferred channels (IE3, CATS).
+        """
+        channel = _split_analyte_channel(analyte)[1]
+        if channel == PREFERRED_CHANNEL:
+            return None, self._supports_preferred_channel()
+        if channel:
+            return channel, False
+        return None, self._uses_forced_preferred_channel()
 
     def _resolve_pnum(self, analyte: str | None):
         """Look up an analyte's parameter_num.
@@ -3085,9 +3141,19 @@ class TimeseriesWidget(QWidget):
         """
         if analyte is None:
             return None
+        all_analytes = self.instrument.analytes or {}
+        base, channel = _split_analyte_channel(analyte)
+        if channel == PREFERRED_CHANNEL:
+            # "CFC12 (P)" has no row of its own; use the compound's pnum,
+            # from the plain name or any of its channel entries.
+            pnum = self.analytes.get(base, all_analytes.get(base))
+            if pnum is None:
+                pnum = next((p for name, p in all_analytes.items()
+                             if _split_analyte_channel(name)[0] == base), None)
+            return pnum
         pnum = self.analytes.get(analyte)
         if pnum is None:
-            pnum = (self.instrument.analytes or {}).get(analyte)
+            pnum = all_analytes.get(analyte)
         return pnum
 
     def _preferred_channel_filter_sql(
@@ -3097,7 +3163,7 @@ class TimeseriesWidget(QWidget):
         date_expr: str,
     ) -> str:
         """Return a SQL filter matching the preferred channel for each row date."""
-        if not self._uses_forced_preferred_channel():
+        if not self._supports_preferred_channel():
             return ""
 
         inst_num = int(self.instrument.inst_num)
@@ -3131,8 +3197,9 @@ class TimeseriesWidget(QWidget):
         analyte = analyte or self.analyte_combo.currentText()
         pnum    = self._resolve_pnum(analyte)
         self.set_current_analyte(analyte)
-        channel = channel or self.current_channel
-        use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
+        selected_channel, use_preferred_channel = self._channel_selection(analyte)
+        channel = channel or selected_channel
+        use_preferred_channel = use_preferred_channel and channel is None
 
         if pnum is None:
             return pd.DataFrame()
@@ -3201,10 +3268,7 @@ class TimeseriesWidget(QWidget):
         # figure viewing "N2O (a)" specifically) always wins; only fall
         # back to the date-aware ng_preferred_channel SQL for a plain
         # (no-suffix) name.
-        channel = None
-        if "(" in analyte and ")" in analyte:
-            channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
+        channel, use_preferred_channel = self._channel_selection(analyte)
 
         query_params = (start, end, analyte, use_preferred_channel)
         if not force and query_params == self._last_insitu_params and self._cached_insitu_df is not None:
@@ -3278,10 +3342,7 @@ class TimeseriesWidget(QWidget):
         if pnum is None:
             return pd.DataFrame()
 
-        channel = None
-        if "(" in analyte and ")" in analyte:
-            channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
+        channel, use_preferred_channel = self._channel_selection(analyte)
 
         if not use_preferred_channel:
             return self._query_insitu_monthly_mean_data_live(pnum, channel, start, end, sites)
@@ -3376,10 +3437,7 @@ class TimeseriesWidget(QWidget):
         if pnum is None:
             return pd.DataFrame()
 
-        channel = None
-        if "(" in analyte and ")" in analyte:
-            channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
+        channel, use_preferred_channel = self._channel_selection(analyte)
         ch_filter = (
             self._preferred_channel_filter_sql("v.channel", "v.parameter_num", "v.sample_datetime")
             if use_preferred_channel
@@ -3427,10 +3485,7 @@ class TimeseriesWidget(QWidget):
         if pnum is None:
             return pd.DataFrame()
 
-        channel = None
-        if "(" in analyte and ")" in analyte:
-            channel = analyte.split("(", 1)[1].strip(") ")
-        use_preferred_channel = self._uses_forced_preferred_channel() and channel is None
+        channel, use_preferred_channel = self._channel_selection(analyte)
         ch_filter = (
             self._preferred_channel_filter_sql("v.channel", "v.parameter_num", "v.sample_datetime")
             if use_preferred_channel
@@ -3701,7 +3756,7 @@ class TimeseriesWidget(QWidget):
         if self.instrument.inst_num != 193:
             return pd.DataFrame()
         analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
+        pnum = self._resolve_pnum(analyte)
         if pnum is None:
             return pd.DataFrame()
         start = self.start_year.value()
@@ -3729,7 +3784,7 @@ class TimeseriesWidget(QWidget):
         if self.instrument.inst_num != 193:
             return pd.DataFrame()
         analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
+        pnum = self._resolve_pnum(analyte)
         if pnum is None:
             return pd.DataFrame()
         start = self.start_year.value()
@@ -3766,7 +3821,7 @@ class TimeseriesWidget(QWidget):
         if self.instrument.inst_num != 193:
             return pd.DataFrame()
         analyte = analyte or self.analyte_combo.currentText()
-        pnum = self.analytes.get(analyte)
+        pnum = self._resolve_pnum(analyte)
         if pnum is None:
             return pd.DataFrame()
         start = self.start_year.value()
@@ -3884,7 +3939,9 @@ class TimeseriesWidget(QWidget):
         port        = _mval("port")
         air_label   = getattr(artist, "_dataset_label", None)
         analyte     = artist._meta.get("analyte", "Unknown")
-        channel     = artist._meta.get("channel", None)
+        # A preferred-channel ("(P)" or plain) plot has no single channel;
+        # each point then carries the one it was measured on.
+        channel     = artist._meta.get("channel", None) or _mval("channels")
 
         # IE3/CATS run_time is an ingest-batch stamp (set once when the loader
         # runs), not a per-point or per-GC-run timestamp -- for CATS in
