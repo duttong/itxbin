@@ -372,6 +372,7 @@ class CombinedDataBuilder:
         for program in self.gas_cfg['programs']:
             for site, frame in self.prepare_program(program).items():
                 by_site.setdefault(site, {})[program] = frame
+        self.program_frames = by_site
         order = self.config.program_order
         drop_only = set(self.gas_cfg.get('drop_if_only') or [])
         rows = []
@@ -405,10 +406,41 @@ class CombinedDataBuilder:
                 lats[pseudo] = lats[base]
         return lats
 
+    def program_global_means(self, lats: dict[str, float]) -> list[pd.DataFrame]:
+        """Each program's own global mean, from its gap-filled site series
+        alone (no combining or smoothing), as location 'prog:<program>'.
+
+        These show how the programs overlap and agree (the provenance figure);
+        a program with too few sites for all four bands has no global mean.
+        Call after site_series().
+        """
+        order = self.config.program_order
+        frames = []
+        for program in self.gas_cfg['programs']:
+            parts = [f.assign(site=site).rename(columns={'se': 'sd'}).reset_index()
+                     for site, progs in self.program_frames.items()
+                     for p, f in progs.items() if p == program]
+            if not parts:
+                continue
+            site_df = pd.concat(parts, ignore_index=True)[['site', 'date', 'mf', 'sd', 'n']]
+            means = self.calculator.compute_prepared(self.calculator.prepare(site_df, lats))
+            if means.empty or 'Global' not in means:
+                continue
+            m = means[['Global', 'Global_sd']].rename(columns={'Global': 'mean', 'Global_sd': 'sd'})
+            m = m.dropna(subset=['mean']).reset_index()
+            if m.empty:
+                continue
+            m['location'] = f'prog:{program}'
+            m['programs'] = programs_bitstring({program}, order)
+            m['n'] = m['date'].map(site_df.groupby('date')['n'].sum()).fillna(0).astype(int)
+            frames.append(m)
+        return frames
+
     def build(self) -> pd.DataFrame:
         """Tidy result: columns location, date, mean, sd, n, programs.
 
-        Locations are the sites plus Global, NH, SH and the four bands.
+        Locations are the sites, Global, NH, SH and the four bands, and each
+        program's own global mean as 'prog:<program>'.
         """
         sites = self.site_series()
         if sites.empty:
@@ -434,6 +466,7 @@ class CombinedDataBuilder:
             m['programs'] = m['date'].map(bits)
             m['n'] = m['date'].map(n_total).fillna(0).astype(int)
             out.append(m)
+        out.extend(self.program_global_means(self.site_latitudes()))
         result = pd.concat(out, ignore_index=True)
         return result[['location', 'date', 'mean', 'sd', 'n', 'programs']].sort_values(
             ['location', 'date']).reset_index(drop=True)
