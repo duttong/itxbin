@@ -26,8 +26,9 @@ ingest.
 
 RITS (inst_num 246-250, 1987-2001) holds only published values imported by
 rits_aftp2db.py and never changes, so it only needs one refresh after an
-import. Its monthly std is the scatter of the hourly values in the month --
-the published files carry no measurement uncertainty.
+import and is left out of --all (the weekly cron). Its monthly std is the
+scatter of the hourly values in the month -- the published files carry no
+measurement uncertainty.
 
 Usage:
   python3 insitu_monthly_means_batch.py ie3 -i
@@ -82,8 +83,9 @@ def _rits_sources(sites) -> list:
 
 def _build_instruments(args) -> list:
     if args.all:
-        return ([IE3_Instrument()] + [CATS_Instrument(site=s) for s in CATS_SITES]
-                + _rits_sources(RITS_INST_NUM_BY_SITE))
+        # RITS is retired published data that never changes; refresh it
+        # explicitly with 'rits' after a re-import instead.
+        return [IE3_Instrument()] + [CATS_Instrument(site=s) for s in CATS_SITES]
     if args.instrument == 'ie3':
         if args.sites:
             raise SystemExit("Site codes are only valid with 'cats' or 'rits'.")
@@ -210,7 +212,7 @@ def main():
                          help="CATS site codes (brw, sum, nwr, mlo, smo, spo) or RITS "
                               "site codes (brw, nwr, mlo, smo, spo); omit for all.")
     parser.add_argument('--all', action='store_true',
-                         help="Refresh IE3 and every CATS and RITS site.")
+                         help="Refresh IE3 and every CATS site (not RITS).")
     parser.add_argument('-i', '--insert', action='store_true',
                          help="Write results to DB (default: dry run).")
     parser.add_argument('-v', '--verbose', action='store_true',
