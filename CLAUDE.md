@@ -211,9 +211,14 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
   their own site, `mlo_pfp`.
 - oldGC is read from `hats.fecd_oldgc` (see below); CCGG comes from
   `ccgg.flask_data_view`.
-- Igor's per-program scale offsets are not applied yet (`offsets_pct` in the
-  config is empty). CFC12 and CFC113 differ from the published files by about
-  0.3% and 0.9% because of it. CATS input is provisional until the cal-tank
+- Per-program scale offsets (`offsets_pct`) are applied only where programs
+  clearly disagree: CFC113 CATS/OTTO -2.1% (to MSD) and CFC12 RITS +1.7%,
+  M1 +0.74%. `combined_data_batch.py --offsets [gas]` estimates all of them
+  from the programs' shared site-months (a weighted least-squares chain to
+  `offset_reference`, with `offset_breaks` splitting fECD at OTTO -> FE3 and
+  MSD at M1 -> M3) for review; the config lists what was left out and why.
+- CFC113 uses no ECD data from 2021 (`program_limits`): CFC-113a co-elutes
+  on the ECDs and is growing. CATS input is provisional until the cal-tank
   fill-code fixes and recalcs are done.
 
 ## oldGC flask data (hats.fecd_oldgc)

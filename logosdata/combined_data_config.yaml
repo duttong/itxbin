@@ -12,9 +12,11 @@
 #   * Hemispheric and global means use the GML_means semi-hemispheric bands
 #     (see global_means.py and gml_global_means_config.yaml) instead of Igor's
 #     cos(lat) weights divided by latitude-bin counts.
-#   * No per-program scale offsets are applied (Igor's root:offsets table).
+#   * Per-program scale offsets (Igor's root:offsets table) are applied only
+#     where the programs clearly disagree (CFC113 ECDs, CFC12 RITS and M1),
+#     estimated from their overlap by `combined_data_batch.py --offsets`.
 #   * Gaps in each program/site series are filled with the Holt-Winters
-#     seasonal fill used by the M* global-means export (max 3 months), not
+#     seasonal fill used by the M* global-means export (max 12 months), not
 #     Igor's Monte Carlo poly4+harmonics ensemble, and nothing is extrapolated
 #     past a program's last month (Igor extended OTTO 6 months).
 #   * IE3 joins the in-situ programs.
@@ -146,12 +148,32 @@ site_se_scale:
 #                  mf * (100 + pct) / 100 (Igor ReturnOffset).  Either a
 #                  number, or a list of {pct, start, end} (YYYY-MM-DD, either
 #                  end open) for an offset that applies to part of the record.
-#                  None are set yet.  Measured median differences from the
-#                  published combined site values (2026-09-26) suggest:
-#                    CFC113  CATS about +2.0 to +2.7%, fECD +1.7 to +2.4%
-#                            (published follows MSD)
-#                    CFC12   RITS -1.1 to -1.6%, MSD -0.5 to -0.75% before
-#                            2010 (published follows oldGC/fECD/CATS)
+#   program_limits per-program {start, end} dates; data outside is not used.
+#
+# Offsets.  `combined_data_batch.py --offsets [gas]` estimates every program's
+# level from the site-months it shares with the others (measured months only,
+# at least 12 shared site-months per pair), relative to offset_reference, and
+# prints the pairwise differences, the drift left per 5-year block, and an
+# offsets_pct block.
+#   offset_reference       program held at zero
+#   offset_reference_date  which piece of the reference, if it has breaks
+#   offset_breaks          dates where a program is split and each piece gets
+#                          its own offset: fECD at the OTTO -> FE3 changeover
+#                          (2019-09), MSD at M1 -> M3 (2009-06)
+# Only offsets that are large and stable across the record are applied, to
+# avoid fitting noise (2026-09-26):
+#   CFC113  CATS and OTTO +2.1% above MSD, steady 1995-2019 (CFC-113a
+#           co-elution on the ECDs).
+#   CFC12   RITS -1.3 to -1.7% and M1 -0.7 to -0.9% below OTTO; Igor applied
+#           the same two (the published file sits there too).
+# Estimated but not applied (under ~0.3%, or poorly constrained):
+#   CFC11   all within 0.2% except oldGC ~+0.5-0.7%, tied only through 1991-95.
+#   CFC12   FE3 and M3/M4 -0.37% vs OTTO (the published file keeps this
+#           step at 2019); oldGC +0.3-0.7%, inconsistent pairs.
+#   CCl4    FE3 -0.8% vs OTTO (a step the published file also keeps); CATS
+#           +0.2% but provisional until the CATS recalcs.
+#   N2O     fECD(OTTO) -0.17% vs CCGG; others under 0.1%.
+#   SF6     OTTO -0.23% vs CCGG; others under 0.1%.
 gases:
   CFC11:
     parameter_num: 114
@@ -159,6 +181,9 @@ gases:
     gas_dir: cfcs/cfc11
     file_gas: F11
     programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    offset_reference: fECD
+    offset_reference_date: '2005-01-01'
+    offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}
     drop_if_only: [CATS, IE3]
     pnums: {MSD: 29}
   CFC12:
@@ -167,6 +192,12 @@ gases:
     gas_dir: cfcs/cfc12
     file_gas: F12
     programs: [CATS, IE3, RITS, fECD, oldGC, MSD]
+    offset_reference: fECD
+    offset_reference_date: '2005-01-01'
+    offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}
+    offsets_pct:
+      RITS: 1.70
+      MSD: [{pct: 0.74, end: '2009-05-31'}]
     drop_if_only: [CATS, IE3]
   CFC113:
     parameter_num: 32
@@ -174,23 +205,43 @@ gases:
     gas_dir: cfcs/cfc113
     file_gas: F113
     programs: [CATS, IE3, fECD, MSD]
+    offset_reference: MSD
+    offset_reference_date: '2015-01-01'
+    offset_breaks: {fECD: ['2019-09-01'], MSD: ['2009-06-01']}
+    offsets_pct:
+      CATS: -2.11
+      fECD: [{pct: -2.05, end: '2019-08-31'}]
     drop_if_only: [CATS, IE3]
+    # CFC-113a co-elutes with CFC-113 on the ECDs and is growing in the
+    # atmosphere, so the ECD programs drift high against MSD from about 2020.
+    # Only MSD is used from 2021.
+    program_limits:
+      CATS: {end: '2020-12-31'}
+      IE3: {end: '2020-12-31'}
+      fECD: {end: '2020-12-31'}
   CCl4:
     parameter_num: 37
     units: ppt
     gas_dir: solvents/CCl4
     file_gas: CCl4
     programs: [CATS, IE3, RITS, fECD]
+    offset_reference: fECD
+    offset_reference_date: '2005-01-01'
+    offset_breaks: {fECD: ['2019-09-01']}
   SF6:
     parameter_num: 6
     units: ppt
     gas_dir: sf6
     file_gas: SF6
     programs: [CATS, IE3, fECD, CCGG]
+    offset_reference: CCGG
+    offset_breaks: {fECD: ['2019-09-01']}
   N2O:
     parameter_num: 5
     units: ppb
     gas_dir: n2o
     file_gas: N2O
     programs: [CATS, IE3, RITS, oldGC, fECD, CCGG]
+    offset_reference: CCGG
+    offset_breaks: {fECD: ['2019-09-01']}
     se_cap: {fECD: 0.7}

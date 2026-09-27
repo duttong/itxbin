@@ -16,6 +16,7 @@ Usage:
   python3 combined_data_batch.py --compare        # also compare with /aftp
   python3 combined_data_batch.py --csv out_dir    # also write one CSV per gas
   python3 combined_data_batch.py -i               # write to the database
+  python3 combined_data_batch.py --offsets CFC12  # estimate program offsets only
 """
 from __future__ import annotations
 
@@ -105,6 +106,33 @@ def write_rows(db, gas: str, pnum: int, result: pd.DataFrame) -> int:
     return len(params)
 
 
+def print_offsets(builder: CombinedDataBuilder) -> None:
+    """The estimated program offsets for one gas, the pairwise differences
+    behind them, the drift left per 5-year block, and an offsets_pct block to
+    paste into the config."""
+    est = builder.estimate_offsets()
+    ref_key = est['reference']
+    print(f"  program offsets relative to {ref_key} (offset_pct puts each on it):")
+    print(est['offsets'].round(3).to_string(index=False))
+    print("  pairwise median % difference (100 ln a/b) vs the fit:")
+    print(est['pairs'].round(3).to_string(index=False))
+    print("  % difference from the other programs after the offsets, by 5-year block:")
+    print(est['blocks'].round(2).to_string())
+    print("  config:")
+    print("    offsets_pct:")
+    for program, grp in est['offsets'].groupby('program', sort=False):
+        grp = grp.dropna(subset=['offset_pct'])
+        if grp.empty or (len(grp) == 1 and grp['key'].iloc[0] == ref_key):
+            continue
+        if len(grp) == 1 and not grp['start'].iloc[0] and not grp['end'].iloc[0]:
+            print(f"      {program}: {grp['offset_pct'].iloc[0]:.2f}")
+            continue
+        print(f"      {program}:")
+        for r in grp.itertuples():
+            span = ''.join(f", {k}: '{v}'" for k, v in (('start', r.start), ('end', r.end)) if v)
+            print(f"        - {{pct: {r.offset_pct:.2f}{span}}}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -112,6 +140,9 @@ def main():
     parser.add_argument('--compare', action='store_true',
                         help="Compare with the published /aftp combined files.")
     parser.add_argument('--csv', metavar='DIR', help="Write one CSV per gas to DIR.")
+    parser.add_argument('--offsets', action='store_true',
+                        help="Estimate each program's scale offset from its overlap with the "
+                             "others and print a config block; builds nothing.")
     parser.add_argument('-i', '--insert', action='store_true',
                         help=f"Replace each gas's rows in {TABLE}.")
     args = parser.parse_args()
@@ -127,6 +158,10 @@ def main():
     for gas in gases:
         t0 = time.time()
         builder = CombinedDataBuilder(gas, db, config)
+        if args.offsets:
+            print(gas)
+            print_offsets(builder)
+            continue
         result = builder.build()
         g = result[result.location == 'Global'].dropna(subset=['mean'])
         span = f"{g.date.min():%Y-%m} to {g.date.max():%Y-%m}" if not g.empty else 'no global mean'

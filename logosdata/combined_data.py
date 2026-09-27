@@ -184,6 +184,58 @@ def smooth_series(series: pd.Series, window: int, order: int) -> pd.Series:
     return out
 
 
+def pairwise_log_ratios(series: dict[str, pd.Series], min_overlap: int = 12) -> pd.DataFrame:
+    """Median 100*ln(a/b) over the site-months two series share.
+
+    *series* maps a key to a Series of mole fractions indexed by (site, date).
+    Returns one row per pair with at least *min_overlap* shared site-months:
+    columns a, b, pct, n.
+    """
+    keys = list(series)
+    rows = []
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            j = pd.concat([series[a], series[b]], axis=1, keys=['a', 'b'], join='inner')
+            j = j[(j['a'] > 0) & (j['b'] > 0)]
+            if len(j) < min_overlap:
+                continue
+            rows.append({'a': a, 'b': b, 'n': len(j),
+                         'pct': float(np.median(100 * np.log(j['a'] / j['b'])))})
+    return pd.DataFrame(rows, columns=['a', 'b', 'pct', 'n'])
+
+
+def solve_offsets(pairs: pd.DataFrame, reference: str) -> pd.Series:
+    """Each key's level relative to *reference*, in percent (log ratio x 100).
+
+    Weighted least squares on pct(a, b) = x_a - x_b with x_reference = 0 and
+    weights equal to the shared site-months, so a program with no direct
+    overlap with the reference is tied to it through the programs it does
+    overlap.  Keys not connected to the reference are left out.
+    """
+    linked, frontier = {reference}, [reference]
+    while frontier:
+        k = frontier.pop()
+        for r in pairs.itertuples():
+            other = r.b if r.a == k else r.a if r.b == k else None
+            if other is not None and other not in linked:
+                linked.add(other)
+                frontier.append(other)
+    free = sorted(linked - {reference})
+    if not free:
+        return pd.Series({reference: 0.0})
+    col = {k: i for i, k in enumerate(free)}
+    use = pairs[pairs['a'].isin(linked) & pairs['b'].isin(linked)]
+    A = np.zeros((len(use), len(free)))
+    for row, r in enumerate(use.itertuples()):
+        if r.a in col:
+            A[row, col[r.a]] = 1.0
+        if r.b in col:
+            A[row, col[r.b]] = -1.0
+    w = np.sqrt(use['n'].to_numpy(float))
+    x, *_ = np.linalg.lstsq(A * w[:, None], use['pct'].to_numpy() * w, rcond=None)
+    return pd.Series({reference: 0.0, **dict(zip(free, x))})
+
+
 class CombinedDataBuilder:
     """Build one combined data set.
 
@@ -231,6 +283,11 @@ class CombinedDataBuilder:
         df['date'] = pd.to_datetime(df['date'])
         for col in ('mf', 'sd', 'n'):
             df[col] = pd.to_numeric(df[col], errors='coerce')
+        limits = (self.gas_cfg.get('program_limits') or {}).get(program) or {}
+        if limits.get('start'):
+            df = df[df['date'] >= pd.Timestamp(limits['start'])]
+        if limits.get('end'):
+            df = df[df['date'] <= pd.Timestamp(limits['end'])]
         return df.dropna(subset=['mf'])[['site', 'date', 'mf', 'sd', 'n']].reset_index(drop=True)
 
     def _load_oldgc(self, program: str, spec: dict) -> pd.DataFrame:
@@ -398,6 +455,94 @@ class CombinedDataBuilder:
             grp = grp.set_index('date').rename(columns={'sd': 'se'})
             out[site] = grp[['mf', 'se', 'n']].dropna(subset=['mf'])
         return out
+
+    # ── offsets ──────────────────────────────────────────────────────────────
+
+    def offset_segments(self) -> list[tuple[str, str, Optional[str], Optional[str]]]:
+        """(key, program, start, end) for every program piece whose offset is
+        estimated separately.  A program is split at its ``offset_breaks``
+        dates; start is inclusive, end is the day before the next break."""
+        breaks = self.gas_cfg.get('offset_breaks') or {}
+        segs = []
+        for program in self.gas_cfg['programs']:
+            cuts = [pd.Timestamp(b) for b in breaks.get(program, [])]
+            edges = [None] + cuts + [None]
+            for lo, hi in zip(edges[:-1], edges[1:]):
+                start = lo.strftime('%Y-%m-%d') if lo is not None else None
+                end = (hi - pd.Timedelta(days=1)).strftime('%Y-%m-%d') if hi is not None else None
+                key = program if not cuts else f"{program}[{start or ''}..{end or ''}]"
+                segs.append((key, program, start, end))
+        return segs
+
+    def estimate_offsets(self, min_overlap: int = 12) -> dict[str, pd.DataFrame]:
+        """Estimate each program's scale offset from the site-months it shares
+        with the other programs (measured months only, before gap filling and
+        before any configured offset).
+
+        The gas's ``offset_reference`` program is held at zero.  Returns
+        ``offsets`` (key, program, start, end, level_pct, offset_pct, n) where
+        offset_pct is the value for ``offsets_pct`` that puts the piece on the
+        reference, and ``pairs`` (a, b, n, pct, fitted, resid) to judge how
+        consistent the pairwise differences are.
+        """
+        reference = self.gas_cfg.get('offset_reference')
+        if reference not in self.gas_cfg['programs']:
+            raise ValueError(f"{self.gas}: offset_reference must be one of its programs")
+        raw = {p: self.load_program(p) for p in self.gas_cfg['programs']}
+        series = {}
+        meta = {}
+        for key, program, start, end in self.offset_segments():
+            df = raw[program]
+            if start:
+                df = df[df['date'] >= pd.Timestamp(start)]
+            if end:
+                df = df[df['date'] <= pd.Timestamp(end)]
+            if not df.empty:
+                series[key] = df.set_index(['site', 'date'])['mf']
+                meta[key] = (program, start, end)
+        ref_keys = [k for k in series if meta[k][0] == reference]
+        ref_date = self.gas_cfg.get('offset_reference_date')
+        if ref_date:
+            d = pd.Timestamp(ref_date)
+            ref_keys = [k for k in ref_keys
+                        if (not meta[k][1] or d >= pd.Timestamp(meta[k][1]))
+                        and (not meta[k][2] or d <= pd.Timestamp(meta[k][2]))]
+        if len(ref_keys) != 1:
+            raise ValueError(f"{self.gas}: offset_reference needs data, and an "
+                             f"offset_reference_date if it has offset_breaks")
+        pairs = pairwise_log_ratios(series, min_overlap)
+        level = solve_offsets(pairs, ref_keys[0])
+        pairs['fitted'] = pairs['a'].map(level) - pairs['b'].map(level)
+        pairs['resid'] = pairs['pct'] - pairs['fitted']
+        shared = pd.concat([pairs.groupby('a')['n'].sum(), pairs.groupby('b')['n'].sum()],
+                           axis=1).sum(axis=1)
+        offsets = pd.DataFrame(
+            [{'key': k, 'program': meta[k][0], 'start': meta[k][1], 'end': meta[k][2],
+              'level_pct': level.get(k, np.nan),
+              'offset_pct': 100 * (np.exp(-level[k] / 100) - 1) if k in level else np.nan,
+              'n': int(shared.get(k, 0))}
+             for k in series])
+        return {'reference': ref_keys[0], 'offsets': offsets, 'pairs': pairs,
+                'blocks': self._offset_residual_blocks(series, level)}
+
+    @staticmethod
+    def _offset_residual_blocks(series: dict[str, pd.Series], level: pd.Series,
+                                years: int = 5) -> pd.DataFrame:
+        """Once every piece is moved to the reference by its estimated level,
+        each piece's median % difference from all the other pieces it shares
+        site-months with, per *years*-year block.  A trend here is drift that
+        a constant offset does not remove."""
+        adj = {k: 100 * np.log(s[s > 0]) - level[k] for k, s in series.items() if k in level}
+        out = {}
+        for k, s in adj.items():
+            diffs = [pd.concat([s, o], axis=1, join='inner').pipe(lambda j: j.iloc[:, 0] - j.iloc[:, 1])
+                     for other, o in adj.items() if other != k]
+            d = pd.concat(diffs) if diffs else pd.Series(dtype=float)
+            if d.empty:
+                continue
+            block = (d.index.get_level_values('date').year // years) * years
+            out[k] = d.groupby(block).median()
+        return pd.DataFrame(out).T.sort_index(axis=1)
 
     # ── combining ────────────────────────────────────────────────────────────
 

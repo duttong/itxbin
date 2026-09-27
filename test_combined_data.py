@@ -13,8 +13,10 @@ from combined_data import (  # noqa: E402
     add_mismatch,
     combine_programs,
     loess_site_series,
+    pairwise_log_ratios,
     programs_bitstring,
     smooth_series,
+    solve_offsets,
 )
 
 MONTHS = pd.date_range('2000-01-01', periods=3, freq='MS', name='date')
@@ -91,6 +93,30 @@ class LoessTests(unittest.TestCase):
         self.assertTrue(out['se'].notna().all())
 
 
+class OffsetEstimateTests(unittest.TestCase):
+    def test_chain_through_a_middle_program(self):
+        # C never overlaps A (the reference) but both overlap B.
+        idx = pd.MultiIndex.from_product([['brw'], pd.date_range('2000-01-01', periods=24,
+                                                                 freq='MS')],
+                                         names=['site', 'date'])
+        a = pd.Series(100.0, index=idx[:16])
+        b = pd.Series(102.0, index=idx)
+        c = pd.Series(101.0, index=idx[16:])
+        pairs = pairwise_log_ratios({'A': a, 'B': b, 'C': c}, min_overlap=6)
+        self.assertEqual(set(zip(pairs.a, pairs.b)), {('A', 'B'), ('B', 'C')})
+
+        level = solve_offsets(pairs, 'A')
+
+        self.assertAlmostEqual(level['B'], 100 * np.log(1.02), places=6)
+        self.assertAlmostEqual(level['C'], 100 * np.log(1.01), places=6)
+
+    def test_unlinked_program_left_out(self):
+        pairs = pd.DataFrame({'a': ['A'], 'b': ['B'], 'pct': [1.0], 'n': [20]})
+        level = solve_offsets(pairs, 'A')
+        self.assertNotIn('C', level)
+        self.assertAlmostEqual(level['B'], -1.0)
+
+
 class BuilderUnitTests(unittest.TestCase):
     def setUp(self):
         self.cfg = CombinedConfig.load()
@@ -119,6 +145,15 @@ class BuilderUnitTests(unittest.TestCase):
         se = b.standard_errors('fECD', df)
         # sqrt_n: 2/2 = 1 -> capped 0.7; smo doubled; the NaN gets brw's median
         np.testing.assert_allclose(se, [0.7, 1.4, 0.7])
+
+    def test_offset_segments(self):
+        b = self._builder({'programs': ['fECD', 'MSD'],
+                           'offset_breaks': {'fECD': ['2019-09-01']}})
+        self.assertEqual(b.offset_segments(), [
+            ('fECD[..2019-08-31]', 'fECD', None, '2019-08-31'),
+            ('fECD[2019-09-01..]', 'fECD', '2019-09-01', None),
+            ('MSD', 'MSD', None, None),
+        ])
 
     def test_pfp_label(self):
         b = self._builder({})
