@@ -64,6 +64,11 @@ weight_lat_overrides:
 interpolation_method: seasonal
 max_interpolation_months: 12
 
+# Two gap-fill methods on purpose: the seasonal fill keeps measured months
+# and the seasonal cycle but cannot bridge oldGC's multi-year SPO gaps; Loess
+# (oldGC only, below) bridges them but would flatten the seasonal cycle of
+# the in situ and flask programs.
+#
 # Filled months (and the oldGC Loess months between samples) are estimates,
 # not measurements.  With downweight_filled their standard error is
 # multiplied by sqrt(1 + d), d = months to the nearest measured month, so
@@ -81,7 +86,9 @@ site_combine: inverse_variance
 
 # Savitzky-Golay smoothing of each site's combined series (Igor
 # Station_smooth: Smooth/E=3/S=4 7).  Runs shorter than the window are left
-# unsmoothed.  Set window to 0 to turn smoothing off.
+# unsmoothed.  Set window to 0 to turn smoothing off.  Tested 2026-09-27: without it
+# the Global series is twice as rough and agrees slightly less with the
+# published files for every gas, so it stays.
 smoothing:
   window: 7
   order: 4
