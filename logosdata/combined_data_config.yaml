@@ -73,8 +73,8 @@ smoothing:
 # string stored with every row (1 = the program contributed that month).
 #
 # source types:
-#   aftp_oldgc  published monthly files; path uses {site} (upper case) and
-#               {file_gas}.  Columns: yr mon m sd n.
+#   oldgc       hats.fecd_oldgc monthly means (loaded from the published /aftp
+#               oldGC files by fecd_oldgc_import.py).
 #   insitu      hats.ng_insitu_monthly_means for the listed inst_nums
 #               (insitu_monthly_means_batch.py).
 #   pairs       hats.ng_pair_avg_view flask pair means for the listed inst_ids,
@@ -92,8 +92,7 @@ smoothing:
 # gets the median se of that program/site series.
 programs:
   oldGC:
-    source: aftp_oldgc
-    path: /aftp/hats/{gas_dir}/flasks/OldGC/monthly/{SITE}_{file_gas}_MM.dat
+    source: oldgc
     se_divisor: 1
   RITS:
     source: insitu
@@ -127,8 +126,8 @@ site_se_scale:
 # calcHATScombinedData, plus IE3 wherever CATS is used.
 #   parameter_num  the pnum stored in ng_logos_combined_data
 #   pnums          per-program parameter_num where it differs
-#   gas_dir        /aftp/hats directory (oldGC files and the published file)
-#   file_gas       gas name in the oldGC and published file names
+#   gas_dir        /aftp/hats directory of the published combined file
+#   file_gas       gas name in the published combined file name
 #   se_cap         per-program cap on the standard error (Igor capped the
 #                  OTTO N2O standard error at 0.7 ppb)
 #   drop_if_only   site-months supported only by these programs are dropped,

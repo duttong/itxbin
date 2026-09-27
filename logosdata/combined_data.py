@@ -190,7 +190,7 @@ class CombinedDataBuilder:
         mf, sd, n.  Only the configured background sites are kept."""
         spec = self.config.programs[program]
         loader = {
-            'aftp_oldgc': self._load_oldgc,
+            'oldgc': self._load_oldgc,
             'insitu': self._load_insitu,
             'pairs': self._load_pairs,
             'ccgg': self._load_ccgg,
@@ -206,19 +206,13 @@ class CombinedDataBuilder:
         return df.dropna(subset=['mf'])[['site', 'date', 'mf', 'sd', 'n']].reset_index(drop=True)
 
     def _load_oldgc(self, program: str, spec: dict) -> pd.DataFrame:
-        frames = []
-        for site in self.config.sites:
-            path = Path(spec['path'].format(gas_dir=self.gas_cfg['gas_dir'], SITE=site.upper(),
-                                            file_gas=self.gas_cfg['file_gas']))
-            if not path.exists():
-                continue
-            df = pd.read_csv(path, comment='#', sep=r'\s+', na_values=['nan', 'NaN'])
-            df.columns = ['yr', 'mon', 'mf', 'sd', 'n']
-            df = df[df['n'] > 0]
-            df['date'] = pd.to_datetime(dict(year=df.yr, month=df.mon, day=1))
-            df['site'] = site
-            frames.append(df[['site', 'date', 'mf', 'sd', 'n']])
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        """oldGC monthly means from hats.fecd_oldgc (fecd_oldgc_import.py)."""
+        rows = self.db.doquery(
+            """SELECT LOWER(s.code) AS site, o.month AS date, o.mean AS mf, o.sd AS sd, o.n AS n
+               FROM hats.fecd_oldgc o JOIN gmd.site s ON s.num = o.site_num
+               WHERE o.parameter_num = %s""",
+            [self.pnum_for(program)]) or []
+        return pd.DataFrame(rows)
 
     def _load_insitu(self, program: str, spec: dict) -> pd.DataFrame:
         insts = [int(i) for i in spec['inst_nums']]

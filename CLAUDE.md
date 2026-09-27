@@ -207,12 +207,23 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
   then Savitzky-Golay smoothed; band/hemispheric/global means reuse
   `global_means.py` (GML_means semi-hemispheric bands). MLO PFP pairs are
   their own site, `mlo_pfp`.
-- oldGC exists only as /aftp monthly files; CCGG comes from
+- oldGC is read from `hats.fecd_oldgc` (see below); CCGG comes from
   `ccgg.flask_data_view`.
 - Igor's per-program scale offsets are not applied yet (`offsets_pct` in the
   config is empty). CFC12 and CFC113 differ from the published files by about
   0.3% and 0.9% because of it. CATS input is provisional until the cal-tank
   fill-code fixes and recalcs are done.
+
+## oldGC flask data (hats.fecd_oldgc)
+
+The original HATS flask GC-ECD ("oldGC", 1977-1995) survives only as
+published monthly means: CFC-11 (pnum 114), CFC-12 (22) and N2O (5) at ALT,
+BRW, CGO, MLO, NWR, SMO and SPO, from
+`/aftp/hats/{cfcs/cfc11,cfcs/cfc12,n2o}/flasks/OldGC/monthly/{SITE}_{gas}_MM.dat`.
+`fecd_oldgc_import.py [-i]` loads them into `hats.fecd_oldgc` (site_num,
+parameter_num, month, mean, sd, n, and the file's calibration scale; DDL in
+`fecd_oldgc.sql`). Upsert on (site_num, parameter_num, month), so reruns are
+safe. 2,885 rows, loaded 2026-09-26.
 
 ## RITS (pre-CATS in-situ GCs, 1987-2001)
 
