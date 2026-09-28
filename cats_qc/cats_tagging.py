@@ -69,7 +69,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cats_batch import CATS_batch
 from cats_cal_step_qc import ALL_GASES, build_cal_step_qc
 from cats_baseline_qc import build_baseline_tag_qc
-from cats_cal_window_qc import TAG_NUM as CAL_WINDOW_TAG_NUM, build_cal_window_qc
+from cats_cal_window_qc import (TAG_NUM as CAL_WINDOW_TAG_NUM, ALL_GASES as CAL_WINDOW_GASES,
+                                build_cal_window_qc)
 
 
 def _parse_yyyymmdd(s: str) -> str:
@@ -121,12 +122,22 @@ ALGORITHMS: dict[str, QcAlgorithm] = {
 # cal_step -> baseline -> cal_window within a single `--algo all` run.
 _RECALC_BEFORE_BUILD = {"cal_window"}
 
-# analyte display_name -> its one reporting channel, per ALL_GASES
-# (CATS_GCwerks2DB.UPLOAD_MOLS: q for N2O/SF6, f for the halocarbon solvents).
-ALL_ANALYTES: dict[str, str] = {
-    gas: channel
-    for gas, channel in (gc.rsplit("_", 1) for gc in ALL_GASES)
-}
+# --gas all roster per algorithm, as (analyte, channel) pairs. cal_step and
+# baseline cover the reporting channels (ALL_GASES: q for N2O/SF6, f for the
+# halocarbon solvents); cal_window also covers the secondary a channel. A
+# list rather than a dict because one analyte can appear on two channels.
+_ALGO_GASES: dict[str, tuple[str, ...]] = {"cal_window": CAL_WINDOW_GASES}
+
+
+def gases_for(algo_name: str) -> list[tuple[str, str]]:
+    """--gas all (analyte, channel) pairs for one algorithm."""
+    return [tuple(gc.rsplit("_", 1)) for gc in _ALGO_GASES.get(algo_name, ALL_GASES)]
+
+
+def site_has(batch: CATS_batch, analyte: str, channel: str) -> bool:
+    """True if this site's analyte_list has analyte on channel."""
+    key = f"{analyte} ({channel})".lower()
+    return key in {k.lower() for k in batch.analytes}
 
 
 def resolve_analyte(batch: CATS_batch, analyte: str, channel: str | None) -> tuple[int, str]:
@@ -279,7 +290,8 @@ def main() -> int:
     p.add_argument("--algo", default="cal_step", choices=[*ALGORITHMS, "all"])
     p.add_argument("--gas", default="N2O_q",
                    help='Analyte_channel (e.g. N2O_q), same format as the other '
-                        'cats_qc/ scripts, or "all" for every CATS analyte/channel.')
+                        'cats_qc/ scripts, or "all" for every CATS analyte/channel '
+                        '(cal_window also covers the a channel).')
     p.add_argument("--start", type=_parse_yyyymmdd, default=None,
                    help="Start date, YYYYMMDD (default: Jan 1 of the current year).")
     p.add_argument("--end", type=_parse_yyyymmdd, default=None,
@@ -318,11 +330,9 @@ def main() -> int:
     algos = list(ALGORITHMS) if args.algo == "all" else [args.algo]
     batch = CATS_batch(args.site)
 
-    if args.gas.lower() == "all":
-        analytes = list(ALL_ANALYTES.items())
-    else:
+    run_all = args.gas.lower() == "all"
+    if not run_all:
         analyte, channel = args.gas.rsplit("_", 1)
-        analytes = [(analyte, channel)]
 
     algo_kwargs = {
         "cal_step": dict(
@@ -343,6 +353,12 @@ def main() -> int:
 
     results = []
     for algo_name in algos:
+        if run_all:
+            # Skip roster entries this site doesn't list (e.g. no H1211 (a)),
+            # rather than letting resolve_analyte() exit mid-run.
+            analytes = [(a, c) for a, c in gases_for(algo_name) if site_has(batch, a, c)]
+        else:
+            analytes = [(analyte, channel)]
         for analyte, channel in analytes:
             pnum, resolved_channel = resolve_analyte(batch, analyte, channel)
             if algo_name in _RECALC_BEFORE_BUILD and not args.dry_run and not args.skip_recalc:

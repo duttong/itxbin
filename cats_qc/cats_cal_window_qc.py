@@ -72,10 +72,15 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cats_batch import CATS_batch
 
-# Same analyte/channel roster as cats_cal_step_qc.py (CATS_GCwerks2DB.UPLOAD_MOLS).
+# The reporting channels (cats_cal_step_qc.py's roster, CATS_GCwerks2DB.UPLOAD_MOLS)
+# plus the secondary "a" channel. cal_window only needs the air and
+# reference-tank mole fractions of one channel, so it works on any channel
+# that has been processed; a channel a site lacks, or has no mole fractions
+# for (e.g. CFC11_a before a gets a cal method), just flags nothing.
 ALL_GASES = (
     "N2O_q", "SF6_q", "CFC12_f", "CFC11_f", "CFC113_f",
     "H1211_f", "CCl4_f", "CH3CCl3_f", "CHCl3_f",
+    "N2O_a", "CFC12_a", "CFC11_a", "CFC113_a", "H1211_a",
 )
 
 # "C" reject tag: "Mole fraction falls outside of calibration range, results
