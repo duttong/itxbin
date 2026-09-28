@@ -73,7 +73,12 @@ class IE3_Instrument(HATS_DB_Functions):
     # fill A blends both contents (SF6 5.101, CH3CCl3 31.4), which put MLO
     # SF6 ~0.5 ppt high and CH3CCl3 ~30% off in 2000-09..2001-06. The
     # values below are the means of the pre-refill stdgc/m3 calibrations
-    # (unc = their standard error).
+    # (unc = their standard error). An optional 5th/6th element sets the
+    # post-refill coef0/unc_c0 instead of keeping caldrift's blended value.
+    # ALM-066023 fill B (3 contents, refills 2004..2008 and 2012..2014)
+    # and AAL070045 fill A (refill 2005-03..05): CH3CCl3 only so far, for
+    # SMO, which used ALM-066023 in 2002-03 (30.41) and AAL070045 in
+    # 2005-06 (17.27).
     UNRECORDED_FILL_SPLITS = {
         ('ALM067679', 'A', 6): ('2002-01-09', 4.6925, 0.031, ('2001-12-18', '2002-07-30')),
         ('ALM067679', 'A', 5): ('2002-01-09', 315.48, 0.41, ('2001-12-18', '2002-07-30')),
@@ -84,6 +89,9 @@ class IE3_Instrument(HATS_DB_Functions):
         ('ALM067679', 'A', 37): ('2002-01-09', 99.0005, 0.177, ('2001-12-18', '2002-07-30')),
         ('ALM067679', 'A', 114): ('2002-01-09', 259.06, 0.33, ('2001-12-18', '2002-07-30')),
         ('ALM067679', 'A', 32): ('2002-01-09', 82.427, 0.516, ('2001-12-18', '2002-07-30')),
+        ('ALM-066023', 'B', 131): ('2004-01-06', 30.411, 0.117, ('2004-01-06', '2008-04-09')),
+        ('AAL070045', 'A', 131): ('2005-03-26', 25.723, 0.130, ('2005-03-26', '2005-05-02'),
+                                  17.275, 0.061),
     }
 
     # Tank drift. caldrift stores value(t) = coef0 + coef1*x + coef2*x**2,
@@ -435,8 +443,9 @@ class IE3_Instrument(HATS_DB_Functions):
         (latest start_date <= analysis date) picks it before split_date and
         the caldrift row after it.
         """
-        for (o_serial, o_fill, o_pnum), (split, coef0, unc, window) in \
-                self.UNRECORDED_FILL_SPLITS.items():
+        for (o_serial, o_fill, o_pnum), spec in self.UNRECORDED_FILL_SPLITS.items():
+            split, coef0, unc, window = spec[:4]
+            after_value = spec[4:6] if len(spec) >= 6 else None
             if o_serial != str(serial) or o_pnum != int(pnum):
                 continue
             lo, hi = (pd.Timestamp(d).date() for d in window)
@@ -450,6 +459,9 @@ class IE3_Instrument(HATS_DB_Functions):
             before = dict(fill, coef0=coef0, unc_c0=unc, end_date=None,
                           comment='pre-refill value (UNRECORDED_FILL_SPLITS)')
             after = dict(fill, start_date=pd.Timestamp(split).date())
+            if after_value is not None:
+                after.update(coef0=after_value[0], unc_c0=after_value[1],
+                             comment='post-refill value (UNRECORDED_FILL_SPLITS)')
             history = sorted(rest + [before, after], key=lambda r: r['start_date'])
         return history
 
