@@ -4048,6 +4048,12 @@ class TimeseriesWidget(QWidget):
         if run_time    is not None: lines.append(f"<b>Run time:</b> {run_time}")
         QToolTip.showText(QCursor.pos(), "<br>".join(lines))
 
+        # Right click loads an individual processing run.  M1/M3 points are
+        # historical pair means rather than loadable runs, so keep their
+        # tooltip and Multi-Tag interaction but do not attempt navigation.
+        if event.mouseevent.button == 3 and getattr(artist, "_is_mstar_pair", False):
+            return
+
         # Right click adds extra action -- loads the run in main window
         if event.mouseevent.button == 3:  # right click
             # artist._meta['analyte'] may already carry its own channel
