@@ -21,7 +21,12 @@ Bounded vs open-ended --end: every run except the LAST gets an explicit
 tile the requested range with no gaps, so this never leaves a hole).
 The last run omits --end, so it naturally extends to cover any new data
 ingested after this CSV was generated -- matching cats_apply_cal_method.py's
-convention for its own final state.
+convention for its own final state. Pass this script's own --start/--end to
+apply only PART of a CSV (e.g. the record before/after a flagged gap you're
+not ready to resolve yet) -- these filter which periods are read before the
+run-collapsing above happens, and --end additionally bounds the final
+included run (and the retag) instead of leaving it open, so a partial apply
+never silently extends into the untouched remainder.
 
 Deliberately does NOT call cats_batch.py directly -- same reasoning as
 cats_apply_cal_method.py: a plain recompute would leave the cal_window
@@ -70,12 +75,15 @@ import pandas as pd
 HERE = Path(__file__).resolve().parent
 
 
-def _build_apply_plan(df: pd.DataFrame) -> list[dict]:
+def _build_apply_plan(df: pd.DataFrame, end_override: str | None = None) -> list[dict]:
     """Turn a cal_method_viterbi.py period table into an ordered list of
     {'method', 'start_date', 'end_date'} runs -- one per contiguous stretch
-    of the same 'chosen' value, oldest first. end_date is None for the
-    last run (open-ended). Pure function (no subprocess/DB calls), so the
-    ordering is unit-testable without a database.
+    of the same 'chosen' value, oldest first. end_date is None for the last
+    run (open-ended) UNLESS end_override is given, in which case the last
+    run is bounded there instead -- for applying only part of a CSV (e.g.
+    up to a flagged gap) without leaving the tail open-ended into territory
+    this call was never meant to touch. Pure function (no subprocess/DB
+    calls), so the ordering is unit-testable without a database.
     """
     df = df.sort_values("period_start").reset_index(drop=True)
     # format="mixed": most periods are plain dates, but a mid-week
@@ -96,7 +104,7 @@ def _build_apply_plan(df: pd.DataFrame) -> list[dict]:
         if i + 1 < len(runs):
             end_date = (runs.loc[i + 1, "start"].normalize() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
         else:
-            end_date = None
+            end_date = end_override
         plan.append({"method": row["method"], "start_date": start_date, "end_date": end_date})
     return plan
 
@@ -117,6 +125,16 @@ def main() -> int:
                          "gas/channel columns of its own (one CSV is always one analyte).")
     p.add_argument("--input", type=Path, required=True,
                     help="CSV produced by cal_method_viterbi.py --output.")
+    p.add_argument("--start", default=None,
+                    help="Only apply periods on/after this date (YYYY-MM-DD) -- filters "
+                         "the input CSV; does not affect the original detection run. Use "
+                         "to apply just part of a CSV (e.g. before/after a flagged gap) "
+                         "without touching the rest.")
+    p.add_argument("--end", default=None,
+                    help="Only apply periods on/before this date (YYYY-MM-DD). The final "
+                         "included run gets this as its own --end (bounded) instead of "
+                         "being left open-ended, so applying a partial range never leaks "
+                         "into territory past --end.")
     p.add_argument("--skip-retag", action="store_true",
                     help="Apply the method changes but skip the final cats_tagging.py "
                          "--algo cal_window retag (e.g. BRW CHCl3 -- real seasonality "
@@ -130,7 +148,16 @@ def main() -> int:
         print(f"{args.input}: no periods, nothing to apply.")
         return 0
 
-    plan = _build_apply_plan(df)
+    df["period_start"] = pd.to_datetime(df["period_start"], format="mixed")
+    if args.start:
+        df = df[df["period_start"] >= pd.Timestamp(args.start)]
+    if args.end:
+        df = df[df["period_start"] <= pd.Timestamp(args.end)]
+    if df.empty:
+        print(f"{args.input}: no periods in [{args.start or '...'}, {args.end or '...'}], nothing to apply.")
+        return 0
+
+    plan = _build_apply_plan(df, end_override=args.end)
     for step in plan:
         end_label = step["end_date"] or "now"
         print(f"APPLY {args.gas} {step['start_date']} -> {end_label}: {step['method']}")
@@ -149,13 +176,19 @@ def main() -> int:
         return 0
 
     earliest_start = plan[0]["start_date"]
-    print(f"\nRETAG {args.gas} {earliest_start} -> now "
+    retag_end = args.end  # bound the retag too, so a partial --end apply never
+                           # recomputes/retags the untouched tail past it
+    end_label = retag_end or "now"
+    print(f"\nRETAG {args.gas} {earliest_start} -> {end_label} "
           f"(recomputes mole fractions for every method set above, then cal_window)")
-    _run([
+    retag_cmd = [
         sys.executable, str(HERE / "cats_tagging.py"),
         "--site", args.site, "--algo", "cal_window",
         "--gas", args.gas, "--start", earliest_start,
-    ], args.dry_run)
+    ]
+    if retag_end:
+        retag_cmd += ["--end", retag_end]
+    _run(retag_cmd, args.dry_run)
 
     print(f"\n{'Dry run -- ' if args.dry_run else ''}{len(plan)} run(s) applied, 1 group retagged.")
     return 0

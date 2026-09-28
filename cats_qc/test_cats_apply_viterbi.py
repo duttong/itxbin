@@ -78,6 +78,25 @@ class BuildApplyPlanTests(unittest.TestCase):
         plan = _build_apply_plan(df)
         self.assertEqual(plan, [{"method": "cal12", "start_date": "2000-01-01", "end_date": None}])
 
+    def test_end_override_bounds_the_last_run_instead_of_open_ended(self):
+        df = pd.DataFrame([
+            _period("2000-01-01", "cal12"),
+            _period("2000-01-08", "cal2"),
+        ])
+        plan = _build_apply_plan(df, end_override="2000-01-31")
+        self.assertEqual(plan[-1], {"method": "cal2", "start_date": "2000-01-08", "end_date": "2000-01-31"})
+
+    def test_end_override_does_not_affect_non_final_runs(self):
+        df = pd.DataFrame([
+            _period("2000-01-01", "cal12"),
+            _period("2000-01-08", "cal2"),
+            _period("2000-01-15", "cal12"),
+        ])
+        plan = _build_apply_plan(df, end_override="2000-01-31")
+        self.assertEqual(plan[0]["end_date"], "2000-01-07")
+        self.assertEqual(plan[1]["end_date"], "2000-01-14")
+        self.assertEqual(plan[2]["end_date"], "2000-01-31")
+
 
 if __name__ == "__main__":
     unittest.main()
