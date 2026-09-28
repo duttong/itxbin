@@ -1358,21 +1358,44 @@ class TimeseriesFigure(TagCRUDMixin):
         """
         handles = {}
 
-        pair_df = self.parent_widget.query_mstar_pair_data(self.analyte)
+        pair_df = self.parent_widget.query_mstar_pair_data(
+            self.analyte, include_tagged=self._show_flagged
+        )
         visible_pair = self.dataset_visibility.get("All samples", True)
         if not pair_df.empty:
             for site, grp in pair_df.groupby("site"):
                 color = adjust_brightness(site_colors.get(site, "gray"), 0.75)
-                line, = ax.plot(
-                    grp["sample_datetime"], grp["pair_avg"],
-                    marker="P", linestyle="",
-                    color=color, markersize=5, alpha=0.6,
-                    mfc=color, mec=color, label="All samples"
-                )
-                line._site = site
-                line._dataset_label = "All samples"
-                line.set_visible(visible_pair)
-                handles.setdefault("All samples", []).append(line)
+                is_flagged = grp["rejected"].fillna(0).astype(int) == 1
+                for flagged, sub in ((False, grp[~is_flagged]), (True, grp[is_flagged])):
+                    if sub.empty:
+                        continue
+                    line, = ax.plot(
+                        sub["sample_datetime"], sub["pair_avg"],
+                        marker="P", linestyle="",
+                        color=color, markersize=6 if flagged else 5,
+                        alpha=1.0 if flagged else 0.6,
+                        mfc=color, mec="red" if flagged else color,
+                        markeredgewidth=1.4 if flagged else 0.8,
+                        label="All samples", picker=5,
+                    )
+                    line._site = site
+                    line._dataset_label = "All samples"
+                    # M1/M3 plot pair means, but each point is backed by one
+                    # or more ordinary ng_mole_fractions rows.  Retain those
+                    # primary keys so Multi-Tag can apply a selected pair's
+                    # tag to every constituent flask result.
+                    line._is_mstar_pair = True
+                    line._meta = {
+                        "sample_datetime": sub["sample_datetime"].tolist(),
+                        "site": sub["site"].tolist(),
+                        "pair_id_num": sub["pair_id_num"].tolist(),
+                        "flask_ids": sub["flask_ids"].tolist(),
+                        "mf_num": sub["mf_nums"].tolist(),
+                        "rejected": sub["rejected"].tolist(),
+                        "analyte": self.analyte,
+                    }
+                    line.set_visible(visible_pair)
+                    handles.setdefault("All samples", []).append(line)
 
         # The 10-day and monthly aggregates are not drawn here: the "10-day mean"
         # and "Monthly mean" datasets already pool M1/M3/M4 (see
@@ -1680,7 +1703,12 @@ class TimeseriesFigure(TagCRUDMixin):
             v = vals[idx]
             if v is None:
                 continue
-            out.append(int(v))
+            # M1/M3 pair-mean points carry a list of their constituent
+            # flask-result IDs; ordinary plotted points carry one ID.
+            if isinstance(v, (list, tuple, set)):
+                out.extend(int(mf_num) for mf_num in v if mf_num is not None)
+            else:
+                out.append(int(v))
         return sorted(set(out))
 
     def _multi_tag_info_text(self, row_idxs) -> str:
@@ -1807,6 +1835,14 @@ class TimeseriesFigure(TagCRUDMixin):
             self._rebuild_preserving_view()
             return
 
+        # A selected M1/M3 point represents a pair mean.  Its source query
+        # already filters rejected constituent rows, so rebuild immediately
+        # after changing its tags.  This removes a fully rejected pair rather
+        # than leaving its old mean visible as a transient overlay.
+        if any(getattr(artist, "_is_mstar_pair", False) for artist, _ in row_idxs):
+            self._rebuild_preserving_view()
+            return
+
         new_val = 1 if applied else 0
         mf_set = set(mf_nums)
         if not self.df.empty and 'ng_mole_fraction_num' in self.df.columns:
@@ -1874,7 +1910,12 @@ class TimeseriesFigure(TagCRUDMixin):
                 vals = getattr(artist, "_meta", {}).get("mf_num")
                 if not vals:
                     continue
-                fresh.extend((artist, i) for i, v in enumerate(vals) if v in mf_nums)
+                for i, v in enumerate(vals):
+                    if isinstance(v, (list, tuple, set)):
+                        if any(int(mf_num) in mf_nums for mf_num in v if mf_num is not None):
+                            fresh.append((artist, i))
+                    elif v in mf_nums:
+                        fresh.append((artist, i))
         self._multi_tag_selection = fresh
         if fresh:
             self._highlight_multi_tag_selection(fresh)
@@ -3722,8 +3763,13 @@ class TimeseriesWidget(QWidget):
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
-    def query_mstar_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
-        """Query M1+M3 individual pair rows from ng_pair_avg_view (M4 only)."""
+    def query_mstar_pair_data(self, analyte: str | None = None,
+                              include_tagged: bool = False) -> pd.DataFrame:
+        """Query M1/M3 pair means plus their constituent flask-result IDs.
+
+        When *include_tagged* is true, return pair means using all constituent
+        rows so fully rejected pairs can be displayed and untagged again.
+        """
         if self.instrument.inst_num != 192:
             return pd.DataFrame()
         analyte = analyte or self.analyte_combo.currentText()
@@ -3736,19 +3782,48 @@ class TimeseriesWidget(QWidget):
         sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
         if not sites:
             return pd.DataFrame()
+        # This mirrors ng_pair_avg_view's grouping, while retaining the
+        # ng_mole_fraction_num values which that view intentionally omits.
+        # Multi-Tag needs the IDs to tag every flask behind a selected pair.
+        # ng_pair_avg_view excludes rejected rows, so include them explicitly
+        # when the figure's "Show tagged data" switch is active.
+        rejection_filter = "" if include_tagged else "AND d.rejected = 0"
         sql = f"""
-        SELECT UPPER(site) AS site, sample_datetime, pair_avg, pair_stdv
-        FROM hats.ng_pair_avg_view
-        WHERE inst_id IN ('M1', 'M3')
-          AND parameter_num = %s
-          AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(sample_datetime) BETWEEN %s AND %s
-        ORDER BY site, sample_datetime
+        SELECT UPPER(d.site) AS site,
+               d.sample_datetime,
+               d.pair_id_num,
+               AVG(d.value) AS pair_avg,
+               STD(d.value) AS pair_stdv,
+               MAX(d.rejected) AS rejected,
+               GROUP_CONCAT(d.sample_id
+                            ORDER BY d.ng_mole_fraction_num) AS flask_ids,
+               GROUP_CONCAT(d.ng_mole_fraction_num
+                            ORDER BY d.ng_mole_fraction_num) AS mf_nums
+        FROM hats.ng_data_view d
+        WHERE d.inst_id IN ('M1', 'M3')
+          AND d.parameter_num = %s
+          {rejection_filter}
+          AND UPPER(d.site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(d.sample_datetime) BETWEEN %s AND %s
+        GROUP BY d.site, d.site_num, d.sample_datetime, d.inst_num, d.inst_id,
+                 d.pair_id_num, d.parameter_num, d.parameter, d.wind_speed,
+                 d.wind_direction, d.channel
+        ORDER BY d.site, d.sample_datetime
         """
         params = [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
             df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+            df["mf_nums"] = df["mf_nums"].map(
+                lambda nums: [] if pd.isna(nums) else [
+                    int(num) for num in str(nums).split(",") if num
+                ]
+            )
+            df["flask_ids"] = df["flask_ids"].map(
+                lambda ids: [] if pd.isna(ids) else [
+                    str(flask_id) for flask_id in str(ids).split(",") if flask_id
+                ]
+            )
         return df
 
     def query_otto_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
@@ -3932,6 +4007,7 @@ class TimeseriesWidget(QWidget):
 
         sample_id   = _mval("sample_id")
         pair_id_num = _mval("pair_id_num")
+        flask_ids   = _mval("flask_ids")
         run_type_num = _mval("run_type_num")
         run_time    = _mval("run_time")
         sample_time = _mval("sample_datetime")
@@ -3960,8 +4036,12 @@ class TimeseriesWidget(QWidget):
         lines = [f"<b>Site:</b> {site}"]
         if air_label  is not None and port is not None:
             lines.append(f"<b>Port:</b> {air_label} (port {port})")
-        if sample_id   is not None: lines.append(f"<b>Sample ID:</b> {sample_id}")
         if pair_id_num is not None: lines.append(f"<b>Pair ID:</b> {pair_id_num}")
+        if flask_ids:
+            lines.append(f"<b>Flask IDs:</b> {', '.join(str(flask_id) for flask_id in flask_ids)}")
+        elif sample_id is not None:
+            id_label = "Sample ID" if run_type_num is not None and int(run_type_num) == 5 else "Flask ID"
+            lines.append(f"<b>{id_label}:</b> {sample_id}")
         if run_type_num is not None:
             lines.append(f"<b>Flask Type:</b> {'PFP' if int(run_type_num) == 5 else 'Flask'}")
         if sample_time is not None: lines.append(f"<b>Time:</b> {sample_time}")
