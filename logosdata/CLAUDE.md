@@ -662,12 +662,22 @@ tank's response (crimson diamond).
   logic expects, so they're handled separately via `_ie3_cal_tooltip_click()`.
   `self._ie3_cal_tooltip_points` holds `{'artist', 'lines': [{'title', 'val',
   'unc'}, ...]}` per point, reset at the top of every `_ie3_cal_plot()` call.
-- **`hats.scale_assignments.coef1` (drift) is not applied anywhere in
-  logos_data.** `ref_tank_coef0()`/`ref_tank_unc_c0()` and `cal_tank_coefs()`
-  (in `ie3_cal_test.py`, imported by `logos_data.py`) only read `coef0`/
-  `unc_c0` and silently ignore `coef1`. Contrast with the M4/FE3/Perseus path
-  (`populate_cal_mf()`), which detects a non-zero `coef1` and raises a
-  `RuntimeWarning` but still uses flat `coef0` — no path applies drift yet.
+- **Tank drift (`scale_assignments.coef1`/`coef2`) is applied only on the
+  IE3/CATS batch path, and only where a gate approves it.**
+  `IE3_Instrument.scale_assignment_history()` attaches caldrift's drift terms
+  to a fill when it has at least `DRIFT_MIN_N` (3) calibrations, changes the
+  value by at most `DRIFT_MAX_PCT` (5%) over the tank's time on this
+  instrument's ports, and is not in `DRIFT_EXCLUDE` (fills with a probable
+  unrecorded refill, from `cats_qc/tank_refill_check.py`). Approved fills are
+  evaluated as coef0 + coef1·x + coef2·x² (x = decimal year − tzero, as
+  caldrift) by `fill_value_at()`, which `scale_assignment_values_for_dates()`,
+  `_scale_simple_fill_coef0()` and `ie3_cal_test._fill_value_for_date()` all
+  use. As of 2026-09-28 the gate approves nothing: every nonzero coef1 on a
+  tank IE3/CATS used is either n<3, over 5%, or a refill artifact.
+  `ref_tank_coef0()`/`ref_tank_unc_c0()` (core `scale_assignments()`) and
+  `cal_tank_coefs()` in `ie3_cal_test.py` still read flat `coef0`. The
+  M4/FE3/Perseus path (`populate_cal_mf()`) is unchanged: it warns on a
+  non-zero `coef1` and uses flat `coef0`.
 - **Don't confuse with `hats.ng_response`**: that table stores the weekly
   cal-fit's own `coef0`/`coef1` (intercept/slope of the fit line, written by
   `upsert_ng_response()` / `ie3_batch.py`) — a different quantity from

@@ -86,6 +86,34 @@ class IE3_Instrument(HATS_DB_Functions):
         ('ALM067679', 'A', 32): ('2002-01-09', 82.427, 0.516, ('2001-12-18', '2002-07-30')),
     }
 
+    # Tank drift. caldrift stores value(t) = coef0 + coef1*x + coef2*x**2,
+    # x = decimal year - tzero. IE3/CATS apply the drift terms only where
+    # the fit is trustworthy for how this instrument used the tank: at
+    # least DRIFT_MIN_N calibrations, and the drift may change the value by
+    # no more than DRIFT_MAX_PCT over the time the tank was on this
+    # instrument's ports. Other fills keep coef0 (the value at tzero), as
+    # before. Two-point fits through a refill or through reactive loss
+    # (e.g. AAL070764 CCl4 fill C) fail the gate. DRIFT_EXCLUDE turns drift
+    # off for named (serial, fill_code, pnum) fills that pass the gate but
+    # are known to be wrong (pnum None = every gas in that fill). Decisions
+    # are kept in self.drift_decisions.
+    APPLY_SCALE_DRIFT = True
+    DRIFT_MIN_N = 3
+    DRIFT_MAX_PCT = 5.0
+    # Fills with a probable unrecorded refill, found by
+    # cats_qc/tank_refill_check.py (two or more of SF6, N2O, HCFC-22,
+    # HFC-134a and CFC-12 jump between calibrations of one fill code).
+    # caldrift fits one line through both contents, so its coef1 describes
+    # the refill, not drift. Remove an entry once its fill record is added
+    # and caldrift rerun.
+    DRIFT_EXCLUDE = {
+        ('AAL070045', 'A', None), ('AAL070048', 'A', None), ('AAL070056', 'C', None),
+        ('AAL071165', 'C', None), ('AAL072334', 'A', None), ('ALM-032489', 'C', None),
+        ('ALM-066023', 'B', None), ('ALM067679', 'A', None), ('ALM067683', 'A', None),
+        ('CC416397', 'A', None), ('CC456880', 'A', None), ('CC456884', 'A', None),
+        ('CC456917', 'A', None),
+    }
+
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
     # list and timeseries. CATS (subclass) overrides this to None to keep its
     # full record. load_data is intentionally not floored so batch/programmatic
@@ -366,6 +394,8 @@ class IE3_Instrument(HATS_DB_Functions):
 
         history = self._apply_scale_assignment_source_overrides(serial, pnum, history)
         history = self._apply_unrecorded_fill_splits(serial, pnum, history)
+        if self.APPLY_SCALE_DRIFT:
+            history = self._attach_scale_drift(serial, pnum, history)
 
         self._scale_assignment_cache[cache_key] = history
         return history
@@ -423,6 +453,108 @@ class IE3_Instrument(HATS_DB_Functions):
             history = sorted(rest + [before, after], key=lambda r: r['start_date'])
         return history
 
+    @staticmethod
+    def decimal_year(when):
+        """Leap-aware decimal year, as ccg_dates.decimalDate (caldrift's tzero)."""
+        t = pd.Timestamp(when)
+        if t.tzinfo is not None:
+            t = t.tz_convert(None)
+        start = pd.Timestamp(year=t.year, month=1, day=1)
+        seconds = 3.16224e7 if t.is_leap_year else 3.1536e7
+        return t.year + (t - start).total_seconds() / seconds
+
+    @classmethod
+    def fill_value_at(cls, fill, when, key='coef0'):
+        """fill[key], with the fill's approved drift applied to coef0 at *when*."""
+        value = fill.get(key)
+        drift = fill.get('drift') if key == 'coef0' else None
+        if drift is None or value is None or when is None or pd.isna(when):
+            return value
+        x = cls.decimal_year(when) - drift['tzero']
+        return float(value) + drift['coef1'] * x + drift['coef2'] * x * x
+
+    def _tank_periods(self, serial):
+        """(start, end) timestamps when *serial* sat on any port at this site."""
+        history = getattr(self, 'port_config_history', None)
+        if history is None or history.empty:
+            return []
+        rows = history.loc[history['site_num'] == self.site_num].sort_values('start_datetime')
+        periods = []
+        for _, port_rows in rows.groupby('port_num'):
+            port_rows = port_rows.reset_index(drop=True)
+            ends = port_rows['start_datetime'].shift(-1)
+            for i, r in port_rows.iterrows():
+                if r['label'] == serial:
+                    end = ends.iat[i] if pd.notna(ends.iat[i]) else pd.Timestamp.now(tz='UTC')
+                    periods.append((r['start_datetime'], end))
+        return periods
+
+    def _attach_scale_drift(self, serial, pnum, history):
+        """Attach caldrift's drift terms to fills that pass the drift gate."""
+        if not history:
+            return history
+        esc = str(serial).replace("'", "''")
+        rows = []
+        for view in ('hats.scale_assignments_view', 'reftank.scale_assignments_view'):
+            rows += self.db.doquery(f"""
+                SELECT fill_code, coef0, tzero, coef1, coef2, n FROM {view}
+                WHERE serial_number = '{esc}' AND parameter_num = {int(pnum)}
+                  AND current_scale = 1 AND current_assignment = 1
+            """) or []
+        terms = {}
+        for r in rows:
+            if r.get('tzero') is None:
+                continue
+            key = (r['fill_code'], round(float(r['coef0']), 6))
+            terms.setdefault(key, r)
+        split_fills = {f for (s, f, p) in self.UNRECORDED_FILL_SPLITS if s == str(serial) and p == int(pnum)}
+        periods = self._tank_periods(str(serial))
+        if not hasattr(self, 'drift_decisions'):
+            self.drift_decisions = []
+        out = []
+        for fill in history:
+            fill = dict(fill)
+            fill.pop('drift', None)
+            r = terms.get((fill['fill_code'], round(float(fill['coef0']), 6)))
+            coef1 = float(r.get('coef1') or 0) if r else 0.0
+            coef2 = float(r.get('coef2') or 0) if r else 0.0
+            if r is None or (coef1 == 0 and coef2 == 0):
+                out.append(fill)
+                continue
+            f_start = pd.Timestamp(fill['start_date'], tz='UTC')
+            f_end = (pd.Timestamp(fill['end_date'], tz='UTC') + pd.Timedelta('1D')
+                     if fill.get('end_date') is not None else pd.Timestamp.now(tz='UTC'))
+            used = [(max(a, f_start), min(b, f_end)) for a, b in periods if a < f_end and b > f_start]
+            decision = {'serial': str(serial), 'fill_code': fill['fill_code'], 'pnum': int(pnum),
+                        'n': r.get('n'), 'coef0': float(fill['coef0']), 'coef1': coef1,
+                        'coef2': coef2, 'tzero': float(r['tzero']), 'max_pct': None}
+            if not used:
+                decision['result'] = 'not on this instrument'
+            else:
+                tz0 = float(r['tzero'])
+                xs = [self.decimal_year(t) - tz0 for a, b in used for t in (a, b)]
+                if coef2 != 0:
+                    vertex = -coef1 / (2 * coef2)
+                    if min(xs) < vertex < max(xs):
+                        xs.append(vertex)
+                max_pct = 100 * max(abs(coef1 * x + coef2 * x * x) for x in xs) / abs(float(fill['coef0']))
+                decision['max_pct'] = round(max_pct, 2)
+                if ((str(serial), fill['fill_code'], int(pnum)) in self.DRIFT_EXCLUDE
+                        or (str(serial), fill['fill_code'], None) in self.DRIFT_EXCLUDE):
+                    decision['result'] = 'excluded'
+                elif fill['fill_code'] in split_fills:
+                    decision['result'] = 'unrecorded-fill split'
+                elif (r.get('n') or 0) < self.DRIFT_MIN_N:
+                    decision['result'] = f"n<{self.DRIFT_MIN_N}"
+                elif max_pct > self.DRIFT_MAX_PCT:
+                    decision['result'] = f">{self.DRIFT_MAX_PCT:g}%"
+                else:
+                    decision['result'] = 'applied'
+                    fill['drift'] = {'tzero': tz0, 'coef1': coef1, 'coef2': coef2}
+            self.drift_decisions.append(decision)
+            out.append(fill)
+        return out
+
     def scale_assignment_values_for_dates(self, serial, pnum, dates, key='coef0'):
         """Resolve an assignment value for each date without repeated DB queries."""
         dates = pd.to_datetime(dates, errors='coerce', utc=True)
@@ -445,7 +577,7 @@ class IE3_Instrument(HATS_DB_Functions):
             end_date = row.get('end_date')
             if end_date is not None and dates.at[idx].date() > pd.Timestamp(end_date).date():
                 continue
-            result.at[idx] = float(row[key])
+            result.at[idx] = float(self.fill_value_at(row, dates.at[idx], key))
         return result
 
     def query_return_run_list(self, runtype=None, start_date=None, end_date=None):
@@ -734,7 +866,7 @@ class IE3_Instrument(HATS_DB_Functions):
                     end_d = end_date.date() if hasattr(end_date, 'date') else pd.Timestamp(end_date).date()
                     if d > end_d:
                         return None
-                return fill.get('coef0')
+                return IE3_Instrument.fill_value_at(fill, date)
         return None
 
     def calc_mole_fraction_scale_simple(self, df):

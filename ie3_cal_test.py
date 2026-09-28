@@ -318,7 +318,7 @@ def _fill_value_for_date(fills: list[dict], date, key: str) -> Optional[float]:
                 end_d = end_date.date() if hasattr(end_date, 'date') else pd.Timestamp(end_date).date()
                 if d > end_d:
                     return None
-            return fill[key]
+            return IE3_Instrument.fill_value_at(fill, date, key)
     return None
 
 
