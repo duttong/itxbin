@@ -67,13 +67,23 @@ class IE3_Instrument(HATS_DB_Functions):
     # goes dead once any fill starts inside search_window (the gap between
     # the last pre-refill and first post-refill calibration), so it can stay
     # in place until the real fill record is added and caldrift rerun.
-    # ALM067679 (MLO cal2 2000-09-08..2001-06-25): stdgc 2000-08-02 and
-    # 2001-12-17 give SF6 4.685/4.700, N2O 315.48; 2002-07-30 and 2004-03-22
-    # give SF6 5.101, N2O 317.48 (2002 ambient). caldrift fill A = 5.101 /
-    # 317.44 put MLO SF6 ~0.5 ppt high and doubled the cal12 slope.
+    # ALM067679 (MLO cal2 2000-09-08..2001-06-25) was refilled between the
+    # 2002-01-08 m3 and 2002-07-30 stdgc calibrations: SF6 4.69 -> 5.10,
+    # N2O 315.5 -> 317.5, CH3CCl3 43.9 -> 30.9, HCFC-22 145 -> 167. caldrift
+    # fill A blends both contents (SF6 5.101, CH3CCl3 31.4), which put MLO
+    # SF6 ~0.5 ppt high and CH3CCl3 ~30% off in 2000-09..2001-06. The
+    # values below are the means of the pre-refill stdgc/m3 calibrations
+    # (unc = their standard error).
     UNRECORDED_FILL_SPLITS = {
-        ('ALM067679', 'A', 6): ('2002-01-01', 4.6925, 0.031, ('2001-12-18', '2002-07-30')),
-        ('ALM067679', 'A', 5): ('2002-01-01', 315.48, 0.41, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 6): ('2002-01-09', 4.6925, 0.031, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 5): ('2002-01-09', 315.48, 0.41, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 131): ('2002-01-09', 43.899, 0.126, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 34): ('2002-01-09', 8.033, 0.339, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 26): ('2002-01-09', 4.2012, 0.016, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 22): ('2002-01-09', 540.933, 0.940, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 37): ('2002-01-09', 99.0005, 0.177, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 114): ('2002-01-09', 259.06, 0.33, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 32): ('2002-01-09', 82.427, 0.516, ('2001-12-18', '2002-07-30')),
     }
 
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
