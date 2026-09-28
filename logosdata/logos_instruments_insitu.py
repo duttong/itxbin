@@ -58,6 +58,24 @@ class IE3_Instrument(HATS_DB_Functions):
         ('CC479743', 'A', 114): 29,    # SMO cal2 2020-2022
     }
 
+    # Temporary splits of a fill for tanks refilled without a reftank.fill
+    # record. caldrift then assigns the whole fill from post-refill
+    # calibrations, which is wrong for the period the tank was actually on
+    # an instrument. Each entry is (serial, fill_code, pnum) -> (split_date,
+    # coef0, unc_c0, search_window): before split_date the fill takes the
+    # given pre-refill value, after it keeps the caldrift value. An entry
+    # goes dead once any fill starts inside search_window (the gap between
+    # the last pre-refill and first post-refill calibration), so it can stay
+    # in place until the real fill record is added and caldrift rerun.
+    # ALM067679 (MLO cal2 2000-09-08..2001-06-25): stdgc 2000-08-02 and
+    # 2001-12-17 give SF6 4.685/4.700, N2O 315.48; 2002-07-30 and 2004-03-22
+    # give SF6 5.101, N2O 317.48 (2002 ambient). caldrift fill A = 5.101 /
+    # 317.44 put MLO SF6 ~0.5 ppt high and doubled the cal12 slope.
+    UNRECORDED_FILL_SPLITS = {
+        ('ALM067679', 'A', 6): ('2002-01-01', 4.6925, 0.031, ('2001-12-18', '2002-07-30')),
+        ('ALM067679', 'A', 5): ('2002-01-01', 315.48, 0.41, ('2001-12-18', '2002-07-30')),
+    }
+
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
     # list and timeseries. CATS (subclass) overrides this to None to keep its
     # full record. load_data is intentionally not floored so batch/programmatic
@@ -337,6 +355,7 @@ class IE3_Instrument(HATS_DB_Functions):
             history = reference if reference else self.legacy_scale_assignment_history(serial, pnum)
 
         history = self._apply_scale_assignment_source_overrides(serial, pnum, history)
+        history = self._apply_unrecorded_fill_splits(serial, pnum, history)
 
         self._scale_assignment_cache[cache_key] = history
         return history
@@ -368,6 +387,31 @@ class IE3_Instrument(HATS_DB_Functions):
         if not borrowed:
             return history
         return sorted(history + borrowed, key=lambda r: r['start_date'])
+
+    def _apply_unrecorded_fill_splits(self, serial, pnum, history):
+        """Split a fill at an unrecorded refill via UNRECORDED_FILL_SPLITS.
+
+        The pre-refill part is inserted as its own row, so the date lookup
+        (latest start_date <= analysis date) picks it before split_date and
+        the caldrift row after it.
+        """
+        for (o_serial, o_fill, o_pnum), (split, coef0, unc, window) in \
+                self.UNRECORDED_FILL_SPLITS.items():
+            if o_serial != str(serial) or o_pnum != int(pnum):
+                continue
+            lo, hi = (pd.Timestamp(d).date() for d in window)
+            if any(lo <= pd.Timestamp(r['start_date']).date() <= hi for r in history):
+                continue  # the real fill record exists now
+            fill_rows = [r for r in history if r['fill_code'] == o_fill]
+            if not fill_rows:
+                continue
+            rest = [r for r in history if r['fill_code'] != o_fill]
+            fill = dict(fill_rows[-1])
+            before = dict(fill, coef0=coef0, unc_c0=unc, end_date=None,
+                          comment='pre-refill value (UNRECORDED_FILL_SPLITS)')
+            after = dict(fill, start_date=pd.Timestamp(split).date())
+            history = sorted(rest + [before, after], key=lambda r: r['start_date'])
+        return history
 
     def scale_assignment_values_for_dates(self, serial, pnum, dates, key='coef0'):
         """Resolve an assignment value for each date without repeated DB queries."""
