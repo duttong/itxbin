@@ -64,6 +64,19 @@ weight_lat_overrides:
 interpolation_method: seasonal
 max_interpolation_months: 12
 
+# Gaps longer than that, up to max_gap_months, are bridged by a broad Loess of
+# the program/site's measured months (used only inside the gap; the fill is
+# marked n = 0 and down-weighted).  2026-09-29: added for the 20-month MHD
+# hole (1999-09 to 2001-04, no flasks recorded), which emptied the 45-60N
+# band.  Gaps over max_gap_months stay open on purpose: they are the ones
+# another program covers (MLO's 33-month eruption outage, run by the PFPs;
+# fECD's 2013-2020 break at every site, run by CCGG/MSD/CATS), and a fill
+# there would put an invented series beside real data.  A program can
+# override any key under its own long_gap_loess.
+long_gap_loess:
+  window_months: 30
+  max_gap_months: 24
+
 # oldGC (2026-09-29) uses the seasonal fill followed by a 3-month box mean
 # (box_smooth_months, below) like the other programs; the Loess option is
 # still in the code (`loess:` on a program) but is not in use.  Gaps over
@@ -140,21 +153,19 @@ programs:
     # above the measured 1988-89 values (a 120-month window on an 86-month
     # record cannot follow the rise) and was 3.4 ppt rms from the data against
     # 1.7 for the fill + box.  The old setting, to go back to Loess (delete
-    # box_smooth_months and long_gap_loess below):
+    # box_smooth_months and the long_gap_loess override below):
     #   loess:
     #     window_months: 30
     #     site_window_months: {alt: 120, cgo: 120}
     box_smooth_months: 3
-    # Gaps up to max_interpolation_months (12) get the seasonal fill.  Longer
-    # ones are real gaps (SPO was sampled 1-4 months a year before 1992, N2O
-    # has a 37-46 month hole at every site), and a seasonal fit is not
-    # defensible there: the 2026-09-29 hold-out test (BRW/MLO/NWR/SMO,
-    # artificial gaps of 12-46 months) showed it no better than a straight
-    # line.  They are bridged by a broad Loess of the measured months instead
-    # (long_gap_loess), used only inside those gaps.  The whole series then
-    # gets the box mean.  Filled months carry n = 0 and are down-weighted.
+    # Gaps over max_interpolation_months are bridged by the Loess above.  oldGC
+    # raises the cap to 48: SPO was sampled 1-4 months a year before 1992 and
+    # N2O has a 37-46 month hole at every site, and nothing else covers those
+    # years.  A seasonal fit is not defensible there: the 2026-09-29 hold-out
+    # test (BRW/MLO/NWR/SMO, artificial gaps of 12-46 months) showed it no
+    # better than a straight line.
     long_gap_loess:
-      window_months: 30
+      max_gap_months: 48
   RITS:
     source: insitu
     inst_nums: [246, 247, 248, 249, 250]

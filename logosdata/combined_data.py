@@ -56,6 +56,7 @@ class CombinedConfig:
     se_method: str = 'igor'
     downweight_filled: bool = False
     site_combine: str = 'igor'
+    long_gap_loess: dict = field(default_factory=dict)
     se_fallback: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -81,6 +82,7 @@ class CombinedConfig:
             downweight_filled=bool(cfg.get('downweight_filled', False)),
             site_combine=str(cfg.get('site_combine', 'igor')),
             se_fallback=dict(cfg.get('se_fallback') or {}),
+            long_gap_loess=dict(cfg.get('long_gap_loess') or {}),
         )
 
     @property
@@ -613,20 +615,35 @@ class CombinedDataBuilder:
             factor[mask] *= (100.0 + float(e['pct'])) / 100.0
         return df['mf'] * factor
 
-    def _fill_long_gaps_loess(self, grp: pd.DataFrame, obs: pd.DataFrame, cfg: dict,
+    def _long_gap_cfg(self, program: str) -> dict:
+        """Loess bridge settings for a program: the top-level long_gap_loess
+        block with the program's own long_gap_loess keys laid over it.  Empty
+        (no bridging) when the config has neither."""
+        cfg = dict(self.config.long_gap_loess or {})
+        cfg.update(self.config.programs[program].get('long_gap_loess') or {})
+        return cfg
+
+    @staticmethod
+    def _fill_long_gaps_loess(grp: pd.DataFrame, obs: pd.DataFrame, cfg: dict,
                               site: str) -> pd.DataFrame:
         """Fill the interior gaps the seasonal fill left empty (longer than
-        max_interpolation_months) from a broad Loess of the site's measured
-        months.  Measured and seasonally filled months are untouched; the
-        Loess supplies only the months inside those long gaps, marked n = 0."""
+        max_interpolation_months) but no longer than cfg['max_gap_months']
+        from a broad Loess of the site's measured months.  Measured and
+        seasonally filled months are untouched; the Loess supplies only the
+        months inside those gaps, marked n = 0.  Longer gaps stay open."""
         hole = grp['mf'].isna()
         if not hole.any():
+            return grp
+        run = hole.ne(hole.shift()).cumsum()
+        run_len = hole.groupby(run).transform('size')
+        bridge = hole & run_len.le(int(cfg.get('max_gap_months', 24)))
+        if not bridge.any():
             return grp
         windows = cfg.get('site_window_months') or {}
         curve = loess_site_series(obs.rename(columns={'sd': 'se'}),
                                   float(windows.get(site, cfg['window_months'])))
         grp = grp.copy()
-        fill = hole & grp.index.isin(curve.index)
+        fill = bridge & grp.index.isin(curve.index)
         grp.loc[fill, 'mf'] = curve['mf'].reindex(grp.index[fill]).to_numpy()
         se = grp['se'].interpolate(method='time', limit_area='inside')
         grp.loc[fill, 'se'] = se[fill]
@@ -651,7 +668,7 @@ class CombinedDataBuilder:
         else:
             box = int(self.config.programs[program].get('box_smooth_months') or 0)
             filled = self.calculator.fill_site_gaps(df)
-            long_cfg = self.config.programs[program].get('long_gap_loess')
+            long_cfg = self._long_gap_cfg(program)
             out = {}
             for site, grp in filled.groupby('site'):
                 grp = grp.set_index('date').rename(columns={'sd': 'se'})
