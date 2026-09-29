@@ -64,12 +64,12 @@ weight_lat_overrides:
 interpolation_method: seasonal
 max_interpolation_months: 12
 
-# Two gap-fill methods on purpose: the seasonal fill keeps measured months
-# and the seasonal cycle but cannot bridge oldGC's multi-year SPO gaps; Loess
-# (oldGC only, below) bridges them but would flatten the seasonal cycle of
-# the in situ and flask programs.
+# oldGC (2026-09-29) uses the seasonal fill followed by a 3-month box mean
+# (box_smooth_months, below) like the other programs; the Loess option is
+# still in the code (`loess:` on a program) but is not in use.  Gaps over
+# max_interpolation_months in oldGC are bridged by Loess (long_gap_loess, below).
 #
-# Filled months (and the oldGC Loess months between samples) are estimates,
+# Filled months are estimates,
 # not measurements.  With downweight_filled their standard error is
 # multiplied by sqrt(1 + d), d = months to the nearest measured month, so
 # measured data dominate wherever another program has them.  Igor weighted
@@ -132,15 +132,29 @@ programs:
   oldGC:
     source: oldgc
     se_divisor: 1
-    # Igor smoothed each oldGC site record with Loess (SMTH 0.05 of its monthly
+    # Seasonal gap fill (interpolation_method above), then a centred 3-month
+    # box mean of the filled series (box_smooth_months).  Igor instead
+    # replaced each site record with a Loess curve (SMTH 0.05 of the monthly
     # grid, ~30 months; 0.2, ~120 months, for the short ALT and CGO records)
-    # and used the smooth curve for every month from first to last sample.
-    # This replaces the gap fill for this program, and is what bridges SPO:
-    # flasks there were sampled only 1-4 months a year before 1992, with
-    # gaps of up to two years (1981-1983).
-    loess:
+    # that bridged every gap.  2026-09-29: on ALT CFC11 that curve sat 5-7 ppt
+    # above the measured 1988-89 values (a 120-month window on an 86-month
+    # record cannot follow the rise) and was 3.4 ppt rms from the data against
+    # 1.7 for the fill + box.  The old setting, to go back to Loess (delete
+    # box_smooth_months and long_gap_loess below):
+    #   loess:
+    #     window_months: 30
+    #     site_window_months: {alt: 120, cgo: 120}
+    box_smooth_months: 3
+    # Gaps up to max_interpolation_months (12) get the seasonal fill.  Longer
+    # ones are real gaps (SPO was sampled 1-4 months a year before 1992, N2O
+    # has a 37-46 month hole at every site), and a seasonal fit is not
+    # defensible there: the 2026-09-29 hold-out test (BRW/MLO/NWR/SMO,
+    # artificial gaps of 12-46 months) showed it no better than a straight
+    # line.  They are bridged by a broad Loess of the measured months instead
+    # (long_gap_loess), used only inside those gaps.  The whole series then
+    # gets the box mean.  Filled months carry n = 0 and are down-weighted.
+    long_gap_loess:
       window_months: 30
-      site_window_months: {alt: 120, cgo: 120}
   RITS:
     source: insitu
     inst_nums: [246, 247, 248, 249, 250]

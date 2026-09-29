@@ -613,6 +613,25 @@ class CombinedDataBuilder:
             factor[mask] *= (100.0 + float(e['pct'])) / 100.0
         return df['mf'] * factor
 
+    def _fill_long_gaps_loess(self, grp: pd.DataFrame, obs: pd.DataFrame, cfg: dict,
+                              site: str) -> pd.DataFrame:
+        """Fill the interior gaps the seasonal fill left empty (longer than
+        max_interpolation_months) from a broad Loess of the site's measured
+        months.  Measured and seasonally filled months are untouched; the
+        Loess supplies only the months inside those long gaps, marked n = 0."""
+        hole = grp['mf'].isna()
+        if not hole.any():
+            return grp
+        windows = cfg.get('site_window_months') or {}
+        curve = loess_site_series(obs.rename(columns={'sd': 'se'}),
+                                  float(windows.get(site, cfg['window_months'])))
+        grp = grp.copy()
+        fill = hole & grp.index.isin(curve.index)
+        grp.loc[fill, 'mf'] = curve['mf'].reindex(grp.index[fill]).to_numpy()
+        se = grp['se'].interpolate(method='time', limit_area='inside')
+        grp.loc[fill, 'se'] = se[fill]
+        return grp
+
     def prepare_program(self, program: str) -> dict[str, pd.DataFrame]:
         """{site: frame(mf, se, n) indexed by month} after gap filling."""
         df = self.program_monthly(program)
@@ -630,10 +649,20 @@ class CombinedDataBuilder:
                                            float(site_windows.get(site, loess_cfg['window_months'])))
                    for site, g in df.groupby('site')}
         else:
+            box = int(self.config.programs[program].get('box_smooth_months') or 0)
             filled = self.calculator.fill_site_gaps(df)
+            long_cfg = self.config.programs[program].get('long_gap_loess')
             out = {}
             for site, grp in filled.groupby('site'):
                 grp = grp.set_index('date').rename(columns={'sd': 'se'})
+                if long_cfg:
+                    grp = self._fill_long_gaps_loess(grp, df[df['site'] == site], long_cfg, site)
+                if box > 1:
+                    # Seasonal gap fill, then a centred box mean of the filled
+                    # series.  min_periods=2 keeps the first and last month of
+                    # each record (and the edges of any unfilled gap) smoothed
+                    # over what is there instead of dropping them.
+                    grp['mf'] = grp['mf'].rolling(box, center=True, min_periods=2).mean()
                 out[site] = grp[['mf', 'se', 'n']].dropna(subset=['mf'])
         if self.config.downweight_filled:
             out = {site: f.assign(se=inflate_filled_se(f)) for site, f in out.items()}
