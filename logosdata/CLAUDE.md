@@ -290,7 +290,18 @@ M4-only shows the last four years of a 32-year record.
 |---|---|---|
 | All samples | `ng_data_processing_view` (M4 injections) **+** `query_mstar_pair_data()` (M1/M3 pair means) | **1991-2026** |
 | Flask mean / Pair mean | `ng_data_processing_view`, inst_num=192 | M4 only |
-| 10-day mean / Monthly mean | `ng_pair_avg_view` via `_binned_inst_filter()` | **M1+M3+M4** |
+| 10-day mean / Monthly mean | `MSTAR_PAIR_AVG_SQL` via `_binned_inst_filter()` | **M1+M3+M4** |
+
+**Two-flask rule (Montzka):** an M* pair mean needs at least two distinct
+flasks with a value. `ng_pair_avg_view` drops rejected rows *before* grouping,
+so a pair whose partner is rejected (or has a NULL value) still appears there as
+a one-flask "pair" -- and its `n` counts analyses, not flasks, so `n` can't
+catch it. The view is left as is; every M* consumer (Pair mean, 10-day/monthly
+means, M1/M3 pair points, logos_compare M*, the three M* exporters,
+`mstar-export.py`, combined_data MSD/PFP) reads `MSTAR_PAIR_AVG_SQL` from
+`mstar_pairs.py` instead: the view's grouping and columns plus the two-flask
+`HAVING`, same speed. `build_datasets()` applies the same rule in pandas for
+M4. FE3/OTTO still use the view unchanged.
 
 **`All samples` spans the whole M-system**, carrying the finest per-sample data
 available at each date: M4 injections from 2022, M1/M3 flask pair means before

@@ -26,6 +26,7 @@ from typing import Optional
 import pandas as pd
 
 from global_means import GlobalMeansCalculator, GlobalMeansConfig
+from mstar_pairs import MSTAR_PAIR_AVG_SQL
 
 
 def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -229,7 +230,8 @@ class MstarDataExporter:
     # ── data query ───────────────────────────────────────────────────────────
 
     def query_data(self) -> pd.DataFrame:
-        """Query ng_pair_avg_view for all M* instruments, returning a DataFrame.
+        """Query two-flask pair means (MSTAR_PAIR_AVG_SQL) for all M*
+        instruments, returning a DataFrame.
 
         PFP rows are relabelled onto their pseudo-site (MLO -> MLO_PFP), so a
         request for MLO returns programmatic flask pairs only.  The relabelled
@@ -245,7 +247,7 @@ class MstarDataExporter:
         sql = f"""
         SELECT * FROM (
             SELECT v.*, {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site
-            FROM hats.ng_pair_avg_view v
+            FROM {MSTAR_PAIR_AVG_SQL} v
             WHERE v.inst_id IN ({insts})
               AND v.parameter_num = %s
               AND UPPER(v.site) IN ({base_list})
@@ -421,7 +423,7 @@ class MstarMonthlyExporter(MstarDataExporter):
             SELECT {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site,
                    DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
                    v.pair_avg
-            FROM hats.ng_pair_avg_view v
+            FROM {MSTAR_PAIR_AVG_SQL} v
             WHERE v.inst_id IN ({insts})
               AND v.parameter_num = %s
               AND UPPER(v.site) IN ({base_list})
@@ -614,7 +616,7 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             SELECT {_site_label_sql('v.site', 'v.pair_id_num')} AS export_site,
                    DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS date,
                    v.pair_avg
-            FROM hats.ng_pair_avg_view v
+            FROM {MSTAR_PAIR_AVG_SQL} v
             WHERE v.inst_id IN ({insts})
               AND v.parameter_num = %s
               AND UPPER(v.site) IN ({base_list})

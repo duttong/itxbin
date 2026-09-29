@@ -25,6 +25,7 @@ import typer
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / 'itxbin'))
 from hats_db import HATSdb
+from mstar_pairs import MSTAR_PAIR_AVG_SQL
 
 app = typer.Typer(add_completion=False)
 
@@ -138,7 +139,8 @@ def main(
     if end_date:
         where += f" AND sample_datetime <= '{end_date} 23:59:59'"
 
-    query = f'SELECT * FROM hats.ng_pair_avg_view WHERE {where} ORDER BY site, sample_datetime'
+    # Two-flask pairs only (Montzka's rule); see mstar_pairs.py.
+    query = f'SELECT * FROM {MSTAR_PAIR_AVG_SQL} v WHERE {where} ORDER BY site, sample_datetime'
     rows = db.doquery(query)
 
     if not rows:

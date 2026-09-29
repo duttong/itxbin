@@ -30,6 +30,7 @@ from scipy.signal import savgol_filter
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from global_means import GlobalMeansCalculator, GlobalMeansConfig
+from mstar_pairs import MSTAR_INST_IDS, MSTAR_PAIR_AVG_SQL
 
 CONFIG_FILE = Path(__file__).parent / 'combined_data_config.yaml'
 
@@ -439,15 +440,21 @@ class CombinedDataBuilder:
         inst_ids = list(spec['inst_ids'])
         frames = []
         regular = [i for i in inst_ids if i.upper() != 'OTTO']
-        if regular:
+        # M* pairs need two flasks (Montzka's rule), so they come from
+        # MSTAR_PAIR_AVG_SQL; other instruments keep ng_pair_avg_view.
+        mstar = [i for i in regular if i.upper() in MSTAR_INST_IDS]
+        other = [i for i in regular if i.upper() not in MSTAR_INST_IDS]
+        for ids, source in ((mstar, MSTAR_PAIR_AVG_SQL), (other, 'hats.ng_pair_avg_view')):
+            if not ids:
+                continue
             rows = self.db.doquery(
                 f"""SELECT {self._pfp_label_sql()} AS site, v.sample_datetime AS dt,
                            v.pair_avg AS value
-                    FROM hats.ng_pair_avg_view v
-                    WHERE v.inst_id IN ({','.join(['%s'] * len(regular))})
+                    FROM {source} v
+                    WHERE v.inst_id IN ({','.join(['%s'] * len(ids))})
                       AND v.parameter_num = %s
                       AND v.sample_datetime IS NOT NULL AND {self._PREFERRED_CHANNEL_SQL}""",
-                regular + [pnum]) or []
+                ids + [pnum]) or []
             frames.append(pd.DataFrame(rows))
         if any(i.upper() == 'OTTO' for i in inst_ids):
             rows = self.db.doquery(

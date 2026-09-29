@@ -60,6 +60,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from logos_timeseries import LOGOS_sites, PFP_SITES, TimeseriesWidget, build_site_colors  # noqa: E402
+from mstar_pairs import MSTAR_PAIR_AVG_SQL  # noqa: E402
 from logos_instruments import (  # noqa: E402
     CATS_Instrument,
     FE3_Instrument,
@@ -924,6 +925,7 @@ class LogosCompareWindow(QMainWindow):
             loader_key="m4",
             regular_condition="v.inst_id IN ('M1', 'M3', 'M4')",
             pfp_condition="v.inst_id = 'M4'",
+            source=MSTAR_PAIR_AVG_SQL,
         )
 
     def _query_fecd_monthly_mean_data(
@@ -996,6 +998,7 @@ class LogosCompareWindow(QMainWindow):
         loader_key: str,
         regular_condition: str,
         pfp_condition: str,
+        source: str = "hats.ng_pair_avg_view",
     ) -> pd.DataFrame:
         pnum = int(selection.parameter_num)
         start = self.start_year.value()
@@ -1010,7 +1013,7 @@ class LogosCompareWindow(QMainWindow):
             AVG(v.pair_avg) AS monthly_avg,
             STDDEV(v.pair_avg) AS monthly_std,
             COUNT(*) AS n
-        FROM hats.ng_pair_avg_view v
+        FROM {source} v
         WHERE {regular_condition}
           AND v.parameter_num = %s
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})

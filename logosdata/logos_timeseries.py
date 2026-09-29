@@ -22,6 +22,7 @@ from pathlib import Path
 from data_export import (MstarDataExporter, MstarMonthlyExporter,
                          MstarGlobalMeansExporter, FecdDataExporter)
 from logos_tagging import TagCRUDMixin, MultiTagPanel
+from mstar_pairs import MSTAR_PAIR_AVG_SQL
 
 import configparser
 
@@ -3466,6 +3467,16 @@ class TimeseriesWidget(QWidget):
             return f"{col_prefix}inst_id IN ({ids})", []
         return f"{col_prefix}inst_num = %s", [self.instrument.inst_num]
 
+    def _pair_avg_source(self):
+        """FROM-clause source for flask pair means.
+
+        M* pairs must have two flasks (Montzka's rule), so M4 reads them from
+        MSTAR_PAIR_AVG_SQL; other instruments keep ng_pair_avg_view.
+        """
+        if self.instrument.inst_num == 192:
+            return MSTAR_PAIR_AVG_SQL
+        return "hats.ng_pair_avg_view"
+
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
@@ -3501,7 +3512,7 @@ class TimeseriesWidget(QWidget):
         sql = f"""
         SELECT UPPER(v.site) AS site, {_period_expr} AS period_start,
             AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
-        FROM hats.ng_pair_avg_view v
+        FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
@@ -3543,7 +3554,7 @@ class TimeseriesWidget(QWidget):
         sql = f"""
         SELECT UPPER(v.site) AS site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
             AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
-        FROM hats.ng_pair_avg_view v
+        FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
@@ -3788,6 +3799,11 @@ class TimeseriesWidget(QWidget):
         # ng_pair_avg_view excludes rejected rows, so include them explicitly
         # when the figure's "Show tagged data" switch is active.
         rejection_filter = "" if include_tagged else "AND d.rejected = 0"
+        # Montzka's rule: a pair mean needs two flasks with a value.  Hidden
+        # single-flask pairs reappear under "Show tagged data".
+        two_flask_filter = "" if include_tagged else (
+            "HAVING COUNT(DISTINCT CASE WHEN d.value IS NOT NULL "
+            "THEN d.sample_id END) >= 2")
         sql = f"""
         SELECT UPPER(d.site) AS site,
                d.sample_datetime,
@@ -3808,6 +3824,7 @@ class TimeseriesWidget(QWidget):
         GROUP BY d.site, d.site_num, d.sample_datetime, d.inst_num, d.inst_id,
                  d.pair_id_num, d.parameter_num, d.parameter, d.wind_speed,
                  d.wind_direction, d.channel
+        {two_flask_filter}
         ORDER BY d.site, d.sample_datetime
         """
         params = [pnum] + sites + [start, end]
@@ -3946,6 +3963,18 @@ class TimeseriesWidget(QWidget):
         flask_runs = clean[(clean["run_type_num"] == 1) & (clean["pair_id_num"] > 0)].copy()
         pfp_runs = clean[clean["run_type_num"] == 5].copy()
 
+        # M* follows Montzka's rule: a pair mean needs two distinct flasks with
+        # a value, so a pair whose partner is rejected gets no pair mean.
+        # Flask means are unaffected.
+        pm_flask_runs, pm_pfp_runs = flask_runs, pfp_runs
+        if self.instrument.inst_num == 192:
+            def _two_flasks(runs, keys):
+                valued = runs[runs["mole_fraction"].notna()]
+                n_flasks = valued.groupby(keys)["sample_id"].transform("nunique")
+                return valued[n_flasks >= 2]
+            pm_flask_runs = _two_flasks(flask_runs, ["site", "pair_id_num"])
+            pm_pfp_runs = _two_flasks(pfp_runs, ["site", "sample_datetime"])
+
         fm_cols = ["site", "sample_id", "sample_datetime", "mean", "std"]
         if flask_runs.empty:
             fm = pd.DataFrame(columns=fm_cols)
@@ -3956,15 +3985,15 @@ class TimeseriesWidget(QWidget):
             fm.columns = fm_cols
 
         pm_frames = []
-        if not flask_runs.empty:
-            pm_flask = (flask_runs.groupby(["site", "pair_id_num"])
+        if not pm_flask_runs.empty:
+            pm_flask = (pm_flask_runs.groupby(["site", "pair_id_num"])
                                  .agg({"sample_datetime": "first", "mole_fraction": ["mean", "std"]})
                                  .reset_index())
             pm_flask.columns = ["site", "pair_id_num", "sample_datetime", "mean", "std"]
             pm_frames.append(pm_flask)
 
-        if not pfp_runs.empty:
-            pm_pfp = (pfp_runs.groupby(["site", "sample_datetime"])
+        if not pm_pfp_runs.empty:
+            pm_pfp = (pm_pfp_runs.groupby(["site", "sample_datetime"])
                                .agg({"sample_id": "first", "mole_fraction": ["mean", "std"]})
                                .reset_index())
             pm_pfp.columns = ["site", "sample_datetime", "pair_id_num", "mean", "std"]
