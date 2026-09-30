@@ -31,6 +31,8 @@ m4_ingest.py pipeline:
                        (e.g. "aal-070045_Arch_A", "SX-3531", "12-1234" for PFP)
      - pair_id_num     flask pair ID for HATS flask network runs, else 0
      - flask_id        flask number within a pair, else 0
+     - test_num        validated equipment test number from a T####_ label,
+                       else 0; sample and run types are unchanged
      - ccgg_event_num  CCGG event number for PFP flasks at MLO/MKO, else NULL
      - flask_port      for PFP runs: the individual flask valve number extracted
                        from port_info (updated separately via update_pfp_flask_port)
@@ -72,6 +74,15 @@ RUN_INDEX_SAMPLE_INFO_RE = re.compile(
     r'(?P<sample_time>(?:\d{1,2}[-_])?[A-Za-z]{3}[-_][0-9]{2})_?'
     r'#(?P<tank>[\w-]+)$'
 )
+TEST_LABEL_RE = re.compile(r'^T(?P<test_num>[0-9]{4})(?:[_ -]|$)', re.IGNORECASE)
+
+
+def parse_test_num(value):
+    """Extract a four-digit equipment test prefix from an M4 sample label."""
+    if value is None or pd.isna(value):
+        return 0
+    match = TEST_LABEL_RE.match(str(value).strip())
+    return int(match.group('test_num')) if match else 0
 
 
 def normalize_flask_pair_label(value):
@@ -565,6 +576,22 @@ class M4_SampleLogs(M4_Instrument):
         Inserts or updates rows in hats.ng_analysis using a batch insert.
         This function uses db.doMultiInsert to perform the insertions.
         """
+        df = df.copy()
+        df['test_num'] = df['tank'].apply(parse_test_num)
+        candidates = sorted(set(df.loc[df['test_num'] > 0, 'test_num']))
+        if candidates:
+            placeholders = ','.join(['%s'] * len(candidates))
+            rows = self.db.doquery(
+                'SELECT DISTINCT test_num FROM ccgg_equip.equip_tests_view '
+                f'WHERE test_num IN ({placeholders})', tuple(candidates)
+            )
+            valid = {int(row['test_num']) for row in rows or []}
+            for test_num in candidates:
+                if test_num not in valid:
+                    print(f'Warning: M4 test {test_num} is not in '
+                          'ccgg_equip.equip_tests_view; storing test_num=0')
+            df.loc[~df['test_num'].isin(valid), 'test_num'] = 0
+
         sql_insert = """
         INSERT INTO hats.ng_analysis (
             analysis_time,
@@ -575,9 +602,10 @@ class M4_SampleLogs(M4_Instrument):
             port_info,
             pair_id_num,
             flask_id, 
-            ccgg_event_num
+            ccgg_event_num,
+            test_num
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
             run_type_num = VALUES(run_type_num),
@@ -586,7 +614,8 @@ class M4_SampleLogs(M4_Instrument):
             port_info    = VALUES(port_info),
             pair_id_num  = VALUES(pair_id_num),
             flask_id     = VALUES(flask_id),
-            ccgg_event_num = VALUES(ccgg_event_num)
+            ccgg_event_num = VALUES(ccgg_event_num),
+            test_num     = VALUES(test_num)
         """
 
         df = df.fillna('')
@@ -605,6 +634,7 @@ class M4_SampleLogs(M4_Instrument):
                     row.pair_id,
                     row.flask_id,
                     row.ccgg_event_num,
+                    int(row.test_num),
                 )
                 params.append(p)
     
@@ -733,13 +763,14 @@ class M4_Serial_Numbers(M4_Instrument):
         """
         Returns:
         - 'sx-####' if an sx/esx tag is present
-        - otherwise the first digit run found anywhere
+        - otherwise the first digit run after removing any T####_ prefix
         - otherwise None
         """
         if port_info is None or (isinstance(port_info, float) and pd.isna(port_info)):
             return None
 
         s = str(port_info).strip().lower()
+        s = TEST_LABEL_RE.sub('', s, count=1)
 
         m = self.SX_RE.search(s)
         if m:
