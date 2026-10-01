@@ -196,6 +196,7 @@ programs:
     source: pairs
     inst_ids: [M3, M4]
     pfp: only
+    reports_as: MSD     # one MSD program in ng_logos_combined_programs / published files
     se_divisor: 4
 
 # Igor doubled the standard error at SMO for every program.

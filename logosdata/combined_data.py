@@ -86,6 +86,12 @@ class CombinedConfig:
         )
 
     @property
+    def reports_as(self) -> dict[str, str]:
+        """Programs reported under another program's name (PFP -> MSD)."""
+        return {p: spec['reports_as'] for p, spec in self.programs.items()
+                if spec.get('reports_as')}
+
+    @property
     def program_order(self) -> list[str]:
         """Program names in bit order."""
         return list(self.programs)
@@ -105,6 +111,25 @@ class CombinedConfig:
 def programs_bitstring(present: set[str], order: list[str]) -> str:
     """'1'/'0' per program in *order*, e.g. '0101001'."""
     return ''.join('1' if p in present else '0' for p in order)
+
+
+def load_program_lookup(db) -> list[dict]:
+    """hats.ng_logos_combined_programs rows (abbr, bit_pos, name, description)
+    in bit_pos order: the fixed program order of the published Programs column."""
+    return db.doquery("SELECT abbr, bit_pos, name, description "
+                      "FROM hats.ng_logos_combined_programs ORDER BY bit_pos")
+
+
+def programs_names(bits: str | None, order: list[str], canonical: list[str],
+                   reports_as: dict[str, str] | None = None) -> str:
+    """Bit string in config *order* -> comma separated abbrs in *canonical* order.
+    *reports_as* maps a program to the one it is reported as (PFP -> MSD)."""
+    reports_as = reports_as or {}
+    on = {reports_as.get(p, p) for p, b in zip(order, bits or '') if b == '1'}
+    unknown = on - set(canonical)
+    if unknown:
+        raise ValueError(f"programs not in ng_logos_combined_programs: {sorted(unknown)}")
+    return ','.join(p for p in canonical if p in on)
 
 
 def _stack_programs(frames: dict[str, pd.DataFrame]):

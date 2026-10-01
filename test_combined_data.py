@@ -19,6 +19,7 @@ from combined_data import (  # noqa: E402
     pairwise_log_ratios,
     program_noise,
     programs_bitstring,
+    programs_names,
     smooth_series,
     solve_offsets,
 )
@@ -58,6 +59,15 @@ class CombineProgramsTests(unittest.TestCase):
 
     def test_bitstring(self):
         self.assertEqual(programs_bitstring({'CATS', 'MSD'}, ['oldGC', 'CATS', 'MSD']), '011')
+
+    def test_names_follow_canonical_order_not_config_order(self):
+        canon = ['oldGC', 'CATS', 'MSD']
+        self.assertEqual(programs_names('110', ['MSD', 'CATS', 'oldGC'], canon), 'CATS,MSD')
+        self.assertEqual(programs_names('000', canon, canon), '')
+        self.assertEqual(programs_names('01', ['CATS', 'PFP'], canon, {'PFP': 'MSD'}), 'MSD')
+        self.assertEqual(programs_names('11', ['MSD', 'PFP'], canon, {'PFP': 'MSD'}), 'MSD')
+        with self.assertRaises(ValueError):
+            programs_names('1', ['NEW'], canon)
 
 
 class SmoothSeriesTests(unittest.TestCase):

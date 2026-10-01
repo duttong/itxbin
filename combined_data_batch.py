@@ -31,7 +31,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'logosdata'))
 sys.path.append('/ccg/src/db/')
 
-from combined_data import CombinedConfig, CombinedDataBuilder  # noqa: E402
+from combined_data import (CombinedConfig, CombinedDataBuilder, load_program_lookup,  # noqa: E402
+                           programs_names)
 import db_utils.db_conn as db_conn  # noqa: E402
 
 AFTP_ROOT = Path('/aftp/hats')
@@ -90,13 +91,17 @@ def compare(result: pd.DataFrame, published: pd.DataFrame) -> pd.DataFrame:
     return stats.reindex([o for o in order if o in stats.index])
 
 
-def write_rows(db, gas: str, pnum: int, result: pd.DataFrame) -> int:
+def write_rows(db, gas: str, pnum: int, result: pd.DataFrame, order: list[str],
+               canonical: list[str], reports_as: dict[str, str]) -> int:
+    """Replace the gas's rows.  programs is stored as comma separated abbrs
+    (canonical = ng_logos_combined_programs order), whatever order the config
+    lists the programs in."""
     db.doquery(f"DELETE FROM {TABLE} WHERE gas = %s", [gas], commit=True)
     params = [
         (gas, pnum, r.location, r.date.date(),
          None if pd.isna(r.mean) else float(r.mean),
          None if pd.isna(r.sd) else float(r.sd),
-         int(r.n), r.programs)
+         int(r.n), programs_names(r.programs, order, canonical, reports_as))
         for r in result.itertuples(index=False)
     ]
     sql = (f"INSERT INTO {TABLE} (gas, parameter_num, location, month, mean, sd, n, programs) "
@@ -154,6 +159,7 @@ def main():
         parser.error(f"not in the config: {', '.join(sorted(unknown))}")
 
     db = db_conn.HATS_ng()
+    canonical = [r['abbr'] for r in load_program_lookup(db)]
     pd.set_option('display.width', 200)
     for gas in gases:
         t0 = time.time()
@@ -184,7 +190,8 @@ def main():
                 print(f"  vs {published.attrs['path']} (new - published):")
                 print(compare(result, published).round(3).to_string())
         if args.insert:
-            n = write_rows(db, gas, int(config.gases[gas]['parameter_num']), result)
+            n = write_rows(db, gas, int(config.gases[gas]['parameter_num']), result,
+                              config.program_order, canonical, config.reports_as)
             print(f"  wrote {n} rows to {TABLE}")
 
 
