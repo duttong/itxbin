@@ -3155,6 +3155,9 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             autoscale_mode = self._get_autoscale_mode()
             if autoscale_mode in {"samples", "standard"}:
                 exclude = self.instrument.EXCLUDE
+                if self.instrument.inst_id == 'm4' and self.run_type_num == 10:
+                    # Tests are the samples of interest in the Tests selection.
+                    exclude = [r for r in exclude if r != 10]
                 if self.instrument.inst_id in ('m4', 'prs'):
                     # m4/prs use run_type_num to exclude blanks/calibrations
                     exclude_variable = 'run_type_num'

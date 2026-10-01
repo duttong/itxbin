@@ -32,7 +32,9 @@ m4_ingest.py pipeline:
      - pair_id_num     flask pair ID for HATS flask network runs, else 0
      - flask_id        flask number within a pair, else 0
      - test_num        validated equipment test number from a T####_ label,
-                       else 0; sample and run types are unchanged
+                       else 0; validated test labels use run_type_num=10;
+                       manual assignments on unchanged unprefixed
+                       labels survive reimport; sample/run types are unchanged
      - ccgg_event_num  CCGG event number for PFP flasks at MLO/MKO, else NULL
      - flask_port      for PFP runs: the individual flask valve number extracted
                        from port_info (updated separately via update_pfp_flask_port)
@@ -591,6 +593,7 @@ class M4_SampleLogs(M4_Instrument):
                     print(f'Warning: M4 test {test_num} is not in '
                           'ccgg_equip.equip_tests_view; storing test_num=0')
             df.loc[~df['test_num'].isin(valid), 'test_num'] = 0
+        df.loc[df['test_num'] > 0, 'run_type_num'] = 10
 
         sql_insert = """
         INSERT INTO hats.ng_analysis (
@@ -608,14 +611,17 @@ class M4_SampleLogs(M4_Instrument):
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
+            test_num     = IF(VALUES(test_num) = 0
+                              AND port_info = VALUES(port_info)
+                              AND TRIM(port_info) NOT REGEXP '^[Tt][0-9]{4}([_ -]|$)',
+                              test_num, VALUES(test_num)),
             run_type_num = VALUES(run_type_num),
             run_time     = VALUES(run_time),
             port         = VALUES(port),
             port_info    = VALUES(port_info),
             pair_id_num  = VALUES(pair_id_num),
             flask_id     = VALUES(flask_id),
-            ccgg_event_num = VALUES(ccgg_event_num),
-            test_num     = VALUES(test_num)
+            ccgg_event_num = VALUES(ccgg_event_num)
         """
 
         df = df.fillna('')

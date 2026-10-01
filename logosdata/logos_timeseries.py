@@ -3254,12 +3254,14 @@ class TimeseriesWidget(QWidget):
         query_params = (start, end, analyte, channel, use_preferred_channel)
 
         if force or query_params != self._last_query_params:
+            test_filter = 'AND test_num = 0 AND run_type_num <> 10' if self.instrument.inst_num == 192 else ''
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
                    rejected, site, sample_id, pair_id_num, run_type_num, ng_mole_fraction_num
             FROM hats.ng_data_processing_view
             WHERE inst_num = {self.instrument.inst_num}
               AND parameter_num = {pnum}
+              {test_filter}
               {ch_str}
               AND YEAR(sample_datetime) BETWEEN {start} AND {end}
             ORDER BY sample_datetime;

@@ -71,10 +71,15 @@ class TestAnalysisIngest(unittest.TestCase):
         self.ingest.db.doquery.assert_called_once()
         rows = self.inserted_rows()
         self.assertEqual([row[-1] for row in rows], [1073, 1073, 1065, 0, 0])
-        self.assertEqual([(row[5], row[3]) for row in rows], labels)
+        self.assertEqual([(row[5], row[3]) for row in rows],
+                         [(label, 10 if i < 3 else run_type)
+                          for i, (label, run_type) in enumerate(labels)])
         pd.testing.assert_frame_equal(frame, original)
         sql = self.ingest.db.doMultiInsert.call_args.args[0]
-        self.assertIn('test_num     = VALUES(test_num)', sql)
+        self.assertIn('test_num     = IF(VALUES(test_num) = 0', sql)
+        self.assertIn('AND port_info = VALUES(port_info)', sql)
+        # Compare the original label before the upsert replaces port_info.
+        self.assertLess(sql.index('test_num     = IF'), sql.index('port_info    = VALUES'))
         self.assertEqual(sql.count('%s'), len(rows[0]))
 
     def test_unknown_numbers_warn_and_can_be_resolved_on_reimport(self):
@@ -84,14 +89,17 @@ class TestAnalysisIngest(unittest.TestCase):
             self.ingest.insert_ng_analysis(frame)
         self.assertIn('M4 test 1099', output.getvalue())
         self.assertEqual(self.inserted_rows()[0][-1], 0)
+        self.assertEqual(self.inserted_rows()[0][3], 1)
         self.ingest.db.doquery.return_value = [{'test_num': 1099}]
         self.ingest.insert_ng_analysis(frame)
         self.assertEqual(self.inserted_rows()[0][-1], 1099)
+        self.assertEqual(self.inserted_rows()[0][3], 10)
 
     def test_ordinary_samples_do_not_query_equipment_tests(self):
-        self.ingest.insert_ng_analysis(self.frame([('SX-3531', 8), ('12-1234', 5)]))
+        self.ingest.insert_ng_analysis(self.frame([('SX-3531', 8), ('12-1234', 5), ('sx-3574_Arch_A', 7)]))
         self.ingest.db.doquery.assert_not_called()
-        self.assertEqual([row[-1] for row in self.inserted_rows()], [0, 0])
+        self.assertEqual([row[-1] for row in self.inserted_rows()], [0, 0, 0])
+        self.assertEqual([row[3] for row in self.inserted_rows()], [8, 5, 7])
 
     def test_validation_failure_prevents_any_writes(self):
         self.ingest.db.doquery.side_effect = RuntimeError('database unavailable')

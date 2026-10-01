@@ -30,6 +30,8 @@ MSTAR_PAIR_AVG_SQL = """(
            STD(d.value) AS pair_stdv
     FROM hats.ng_data_view d
     WHERE d.rejected = 0
+      AND d.test_num = 0
+      AND d.run_type_num <> 10
       AND (d.pair_id_num > 0 OR d.ccgg_event_num > 0)
       AND d.inst_id IN ('M1', 'M3', 'M4')
     GROUP BY d.site, d.site_num, d.sample_datetime, d.inst_num, d.inst_id,

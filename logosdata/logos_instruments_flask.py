@@ -19,10 +19,11 @@ class M4_Instrument(HATS_DB_Functions):
         "Flasks": 1,        # run_type_num
         #"Calibrations": 2,
         "PFPs": 5,
+        "Tests": 10,
     }
     STANDARD_RUN_TYPE = 8
     CAL_RUN_TYPES = {7}  # run_type_num values written to hats.calibrations
-    EXCLUDE = [6, 7]     # run_type_num to exclude from autoscaling (zero air and tank runs)
+    EXCLUDE = [6, 7, 10]  # zero air, tank runs, and equipment tests
     # Per-injection engineering columns from ng_data_processing_view
     # (already loaded by load_data's SELECT *).
     ADDITIONAL_DATA_COLUMNS = (
@@ -43,6 +44,7 @@ class M4_Instrument(HATS_DB_Functions):
         6: 'v',   # Zero
         7: '^',   # Tank
         8: 'D',   # Standard
+        10: 'X',  # Equipment test
     }
 
     _MISSING_LABEL_VALUES = {'', '0', 'nan', 'none', '<na>'}
@@ -95,10 +97,8 @@ class M4_Instrument(HATS_DB_Functions):
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass
        
-        # the run_type_num for M4 is not the same for all run_times
-        # Don't use for filtering 
-        if run_type_num is not None:
-            run_type_filter = f"AND run_type_num = {run_type_num}"
+        # The GUI filters run times by type, then loads the complete sequence.
+        # Keep its standards and controls available for normalization/plotting.
 
         if verbose:
             print(f"Loading data from {start_date} to {str(end_date)} for parameter {pnum}")
@@ -153,6 +153,19 @@ class M4_Instrument(HATS_DB_Functions):
             combos = pd.Series(list(zip(flask_ports, pfp_ids)), index=df.index[mask])
             pfp_codes = pd.Series(pd.factorize(combos)[0] + 200, index=df.index[mask])  # offset to avoid collisions with real ports
             df.loc[mask, 'port_idx'] = pfp_codes.astype('Int64')
+
+        # Equipment tests can switch samples on the same inlet. Give each
+        # labeled sample a separate legend entry rather than pooling the port.
+        test_mask = df['run_type_num'].eq(10)
+        if test_mask.any():
+            tests = df.loc[test_mask]
+            identities = pd.Series(
+                list(zip(tests['port'], tests['port_info'])), index=tests.index
+            )
+            df.loc[test_mask, 'port_idx'] = pd.Series(
+                pd.factorize(identities)[0] + 1000, index=tests.index,
+                dtype='Int64'
+            )
         
         df = self.add_port_labels(df)       # port labels, colors, and markers
         
