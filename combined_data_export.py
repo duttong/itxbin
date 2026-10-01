@@ -11,9 +11,11 @@ hats.ng_logos_combined_programs (bit_pos order); published files had 6 digits
 (oldGC RITS otto CATS CCGG MSD).
 
 Usage:
-    python3 combined_data_export.py [gases] [-o DIR] [--compare]
+    python3 combined_data_export.py [gases] [-o DIR] [--compare] [--full-record]
 
 Writes DIR/<P>_global_<gas>.txt (default DIR is ~/combined_data, never /aftp).
+By default only rows with public=1 (months up to publication_end_date in the
+config) are written; --full-record writes every calculated month.
 --compare diffs the columns/values against the published file.
 """
 from __future__ import annotations
@@ -215,6 +217,8 @@ def main():
     ap.add_argument('gases', nargs='*', help="Gas keys; default all.")
     ap.add_argument('-o', '--outdir', default=str(Path.home() / 'combined_data'))
     ap.add_argument('--compare', action='store_true')
+    ap.add_argument('--full-record', action='store_true',
+                    help="Include months after publication_end_date (public=0).")
     args = ap.parse_args()
 
     config = CombinedConfig.load()
@@ -227,7 +231,8 @@ def main():
     for gas in gases:
         cfg = config.gases[gas]
         rows = db.doquery(f"SELECT location, month, mean, sd, n, programs FROM {TABLE} "
-                          "WHERE gas = %s", [gas])
+                          "WHERE gas = %s" + ('' if args.full_record else " AND public = 1"),
+                          [gas])
         df = pd.DataFrame(rows)
         name, text = build_file(gas, df, cfg, cfg['publish'], programs, today)
         (out / name).write_text(text)

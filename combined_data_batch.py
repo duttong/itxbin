@@ -92,20 +92,24 @@ def compare(result: pd.DataFrame, published: pd.DataFrame) -> pd.DataFrame:
 
 
 def write_rows(db, gas: str, pnum: int, result: pd.DataFrame, order: list[str],
-               canonical: list[str], reports_as: dict[str, str]) -> int:
+               canonical: list[str], reports_as: dict[str, str],
+               publication_end: str | None = None) -> int:
     """Replace the gas's rows.  programs is stored as comma separated abbrs
     (canonical = ng_logos_combined_programs order), whatever order the config
-    lists the programs in."""
+    lists the programs in.  public is 1 for months up to publication_end
+    ('YYYY-MM', inclusive; every month if None), else 0."""
+    cutoff = pd.Timestamp(publication_end) if publication_end else None
     db.doquery(f"DELETE FROM {TABLE} WHERE gas = %s", [gas], commit=True)
     params = [
         (gas, pnum, r.location, r.date.date(),
          None if pd.isna(r.mean) else float(r.mean),
          None if pd.isna(r.sd) else float(r.sd),
-         int(r.n), programs_names(r.programs, order, canonical, reports_as))
+         int(r.n), programs_names(r.programs, order, canonical, reports_as),
+         int(cutoff is None or r.date <= cutoff))
         for r in result.itertuples(index=False)
     ]
-    sql = (f"INSERT INTO {TABLE} (gas, parameter_num, location, month, mean, sd, n, programs) "
-           "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)")
+    sql = (f"INSERT INTO {TABLE} (gas, parameter_num, location, month, mean, sd, n, programs, public) "
+           "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)")
     for i in range(0, len(params), 5000):
         db.doquery(sql, params[i:i + 5000], commit=True, multiInsert=True)
     return len(params)
@@ -191,7 +195,8 @@ def main():
                 print(compare(result, published).round(3).to_string())
         if args.insert:
             n = write_rows(db, gas, int(config.gases[gas]['parameter_num']), result,
-                              config.program_order, canonical, config.reports_as)
+                              config.program_order, canonical, config.reports_as,
+                           config.publication_end_date)
             print(f"  wrote {n} rows to {TABLE}")
 
 

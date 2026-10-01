@@ -58,6 +58,7 @@ class CombinedConfig:
     site_combine: str = 'igor'
     long_gap_loess: dict = field(default_factory=dict)
     se_fallback: dict[str, str] = field(default_factory=dict)
+    publication_end_date: str | None = None   # 'YYYY-MM', inclusive public cutoff
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> 'CombinedConfig':
@@ -83,6 +84,8 @@ class CombinedConfig:
             site_combine=str(cfg.get('site_combine', 'igor')),
             se_fallback=dict(cfg.get('se_fallback') or {}),
             long_gap_loess=dict(cfg.get('long_gap_loess') or {}),
+            publication_end_date=(str(cfg['publication_end_date'])
+                                  if cfg.get('publication_end_date') else None),
         )
 
     @property

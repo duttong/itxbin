@@ -32,6 +32,10 @@
 #   5. Smooth each site with a Savitzky-Golay filter.
 #   6. Band, hemispheric and global means with cos(lat) weights.
 
+# Last date for use in public files and website plots. The date is inclusive.
+# YYYY-MM, so the last month is included in the published files.
+publication_end_date: '2026-06'
+
 # Background sites in the combined products (Igor AllBKsitesOTTO).
 sites: [alt, sum, brw, mhd, thd, nwr, kum, mlo, smo, cgo, psa, spo]
 
