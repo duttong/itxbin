@@ -53,6 +53,7 @@ SITE_DESC = {
 
 UNITS = {'ppt': 'parts-per-trillion, ppt', 'ppb': 'parts-per-billion, ppb'}
 MEAN_ORDER = ['NH', 'SH', 'Global']
+BAND_ORDER = ['HN', 'LN', 'LS', 'HS']   # semi-hemispheric bands, after Global
 
 
 def names_to_bits(names: str | None, order: list[str]) -> str:
@@ -100,9 +101,14 @@ def build_header(gas: str, cfg: dict, meta: dict, programs: list[dict], filename
         "",
         "See https://gml.noaa.gov/obop/ for station statistics and personnel.",
         "",
-        f"Columns: year, month, then the mean and 1-sigma error ({p}_<NH|SH|Global|site>_{short} and _sd)",
-        "for the northern hemisphere, southern hemisphere, global mean and each site.",
+        f"Columns: year, month, then the mean and 1-sigma error ({p}_<name>_{short} and {p}_<name>_{short}_sd)",
+        "for the northern hemisphere (NH), southern hemisphere (SH), global mean (Global), the four",
+        "semi-hemispheric bands (HN, LN, LS, HS) and each site.",
         "nan = not a number or no data, and space(s) is the delimiter.",
+        "",
+        "Semi-hemispheric bands: HN = 30N to 90N, LN = 0 to 30N, LS = 0 to 30S, HS = 30S to 90S.",
+        "Each band is a cosine-of-latitude weighted mean of its sites (South Pole is weighted at 65S).",
+        "NH = (HN + LN)/2, SH = (LS + HS)/2 and Global = (HN + LN + LS + HS)/4.",
         "",
         f"The last column ({p}_{short}_Programs) is an {len(programs)}-digit binary number listing the",
         "measurement programs used in the combined hemispheric and global mean for that month.",
@@ -134,7 +140,7 @@ def build_header(gas: str, cfg: dict, meta: dict, programs: list[dict], filename
 def build_file(gas: str, df: pd.DataFrame, cfg: dict, meta: dict, programs: list[dict],
                today: date) -> tuple[str, str]:
     short, p = meta['short'], meta['prefix']
-    df = df[df.location.isin(MEAN_ORDER + SITES)].copy()
+    df = df[df.location.isin(MEAN_ORDER + BAND_ORDER + SITES)].copy()
     df['month'] = pd.to_datetime(df['month'])
     order = [r['abbr'] for r in programs]
     df['programs'] = [names_to_bits(n, order) for n in df['programs']]
@@ -148,7 +154,7 @@ def build_file(gas: str, df: pd.DataFrame, cfg: dict, meta: dict, programs: list
     prog = df[df.location == 'Global'].set_index('month')['programs']
     prog = prog.reindex(means.index).fillna(
         df.drop_duplicates('month').set_index('month')['programs'].reindex(means.index))
-    locs = MEAN_ORDER + SITES
+    locs = MEAN_ORDER + BAND_ORDER + SITES
 
     cols = [f'{p}_{short}_YYYY', f'{p}_{short}_MM']
     for loc in locs:
@@ -184,9 +190,9 @@ def compare(path_new: Path, path_pub: Path) -> None:
         return cols, df
     cn, dn = load(path_new)
     cp, dp = load(path_pub)
-    print(f"  columns identical: {cn == cp}")
-    if cn != cp:
-        print("   only new:", [c for c in cn if c not in cp], " only published:", [c for c in cp if c not in cn])
+    extra = [c for c in cn if c not in cp]
+    print(f"  columns: {len(cn)} new, {len(cp)} published; only new: "
+          f"{[c for c in extra if not c.endswith('_sd')]}; only published: {[c for c in cp if c not in cn]}")
     n = dn.set_index(dn.columns[:2].tolist())
     q = dp.set_index(dp.columns[:2].tolist())
     common_c = [c for c in n.columns[:-1] if c in q.columns]

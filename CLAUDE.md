@@ -222,8 +222,9 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
   append-only, never renumber). The order of `programs:` in the YAML does not
   affect it; `programs_names()` converts the builder's internal bit strings.
 - `combined_data_export.py [gases] [-o DIR] [--compare]` writes text files with
-  the same columns as the published `/aftp/hats/<gas>/combined/*_global_*.txt`
-  (default `~/combined_data`, never `/aftp`), with a new header; Programs is a
+  the published `/aftp/hats/<gas>/combined/*_global_*.txt` columns plus the four
+  semi-hemispheric bands (HN, LN, LS, HS; each with `_sd`) between Global and the
+  sites (default `~/combined_data`, never `/aftp`), with a new header; Programs is a
   7-digit string derived from the lookup table. Per-gas header metadata (DOI, scale,
   authors, notes) is in each gas's `publish:` block in the config.
 - The SQL DDL files live in `sql/`, which is untracked (not in git, not
