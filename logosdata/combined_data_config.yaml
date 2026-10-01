@@ -206,6 +206,10 @@ site_se_scale:
 # The combined data sets.  Programs and their order come from Igor
 # calcHATScombinedData, plus IE3 wherever CATS is used.
 #   parameter_num  the pnum stored in ng_logos_combined_data
+#   publish        header metadata for combined_data_export.py: column prefix,
+#                  long name, short name (file/column suffix), calibration scale,
+#                  DOI, citation authors, and optional free-text notes (wrapped
+#                  into the file header)
 #   pnums          per-program parameter_num where it differs
 #   gas_dir        /aftp/hats directory of the published combined file
 #   file_gas       gas name in the published combined file name
@@ -247,6 +251,13 @@ site_se_scale:
 gases:
   CFC11:
     parameter_num: 114
+    publish:
+      prefix: HATS
+      name: Chloroflurocarbon-11
+      short: F11
+      scale: NOAA 2016
+      doi: 10.15138/BVQ6-2S69
+      authors: Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen
     units: ppt
     gas_dir: cfcs/cfc11
     file_gas: F11
@@ -258,6 +269,13 @@ gases:
     pnums: {MSD: 29, PFP: 29}
   CFC12:
     parameter_num: 22
+    publish:
+      prefix: HATS
+      name: Chloroflurocarbon-12
+      short: F12
+      scale: NOAA 2008
+      doi: 10.15138/PJ63-H440
+      authors: Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen
     units: ppt
     gas_dir: cfcs/cfc12
     file_gas: F12
@@ -271,6 +289,15 @@ gases:
     drop_if_only: [CATS, IE3]
   CFC113:
     parameter_num: 32
+    publish:
+      prefix: HATS
+      name: Chloroflurocarbon-113
+      short: F113
+      scale: NOAA 2002
+      doi: 10.15138/4N0D-4M07
+      authors: Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen
+      notes: >-
+        CFC-113a co-elutes with CFC-113 on the electron-capture detectors, so CATS and OTTO read about 2% above the mass-spectrometer (MSD) record; CATS values are lowered 2.11% and fECD (OTTO) values 2.05% to match MSD. Because CFC-113a is growing in the atmosphere, no electron-capture data (CATS, IE3, fECD) are used after 2020; from 2021 the record is MSD only.
     units: ppt
     gas_dir: cfcs/cfc113
     file_gas: F113
@@ -291,6 +318,13 @@ gases:
       fECD: {end: '2020-12-31'}
   CCl4:
     parameter_num: 37
+    publish:
+      prefix: HATS
+      name: Carbon Tetrachloride
+      short: CCl4
+      scale: NOAA 2008
+      doi: 10.15138/CV0A-J604
+      authors: Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen
     units: ppt
     gas_dir: solvents/CCl4
     file_gas: CCl4
@@ -300,6 +334,13 @@ gases:
     offset_breaks: {fECD: ['2019-09-01']}
   SF6:
     parameter_num: 6
+    publish:
+      prefix: GML
+      name: Sulfur hexafluoride
+      short: SF6
+      scale: WMO X2014
+      doi: 10.15138/TQ02-ZX42
+      authors: Dutton, G.S., B.D. Hall, E.J. Dlugokencky, X. Lan, J.D. Nance, M. Madronich
     units: ppt
     gas_dir: sf6
     file_gas: SF6
@@ -308,6 +349,13 @@ gases:
     offset_breaks: {fECD: ['2019-09-01']}
   N2O:
     parameter_num: 5
+    publish:
+      prefix: GML
+      name: Nitrous Oxide
+      short: N2O
+      scale: NOAA 2006A
+      doi: 10.15138/GMZ7-2Q16
+      authors: Dutton, G.S., B.D. Hall, E.J. Dlugokencky, X. Lan, M. Madronich, J.D. Nance, K.M. Petersen
     units: ppb
     gas_dir: n2o
     file_gas: N2O

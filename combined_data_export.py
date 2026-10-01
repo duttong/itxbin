@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -50,22 +51,6 @@ SITE_DESC = {
     'spo': 'South Pole (90S)(flask and in insitu)',
 }
 
-# Per-gas metadata carried over from the published headers (prefix is the
-# column prefix those files use).  TODO: move into combined_data_config.yaml.
-META = {
-    'CFC11': dict(prefix='HATS', name='Chloroflurocarbon-11', short='F11', scale='NOAA 2016',
-                  doi='10.15138/BVQ6-2S69', authors='Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen'),
-    'CFC12': dict(prefix='HATS', name='Chloroflurocarbon-12', short='F12', scale='NOAA 2008',
-                  doi='10.15138/PJ63-H440', authors='Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen'),
-    'CFC113': dict(prefix='HATS', name='Chloroflurocarbon-113', short='F113', scale='NOAA 2002',
-                   doi='10.15138/4N0D-4M07', authors='Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen'),
-    'CCl4': dict(prefix='HATS', name='Carbon Tetrachloride', short='CCl4', scale='NOAA 2008',
-                 doi='10.15138/CV0A-J604', authors='Dutton, G.S., B.D. Hall, S.A. Montzka, J.D. Nance, S.D. Clingan, K.M. Petersen'),
-    'N2O': dict(prefix='GML', name='Nitrous Oxide', short='N2O', scale='NOAA 2006A',
-                doi='10.15138/GMZ7-2Q16', authors='Dutton, G.S., B.D. Hall, E.J. Dlugokencky, X. Lan, M. Madronich, J.D. Nance, K.M. Petersen'),
-    'SF6': dict(prefix='GML', name='Sulfur hexafluoride', short='SF6', scale='WMO X2014',
-                doi='10.15138/TQ02-ZX42', authors='Dutton, G.S., B.D. Hall, E.J. Dlugokencky, X. Lan, J.D. Nance, M. Madronich'),
-}
 UNITS = {'ppt': 'parts-per-trillion, ppt', 'ppb': 'parts-per-billion, ppb'}
 MEAN_ORDER = ['NH', 'SH', 'Global']
 
@@ -141,6 +126,8 @@ def build_header(gas: str, cfg: dict, meta: dict, programs: list[dict], filename
         "long-term trends for background air.",
         "",
     ]
+    if meta.get('notes'):
+        h += ["Notes:"] + textwrap.wrap(str(meta['notes']), 92) + [""]
     return ['#  ' + line if line else '#  ' for line in h]
 
 
@@ -219,7 +206,7 @@ def main():
     args = ap.parse_args()
 
     config = CombinedConfig.load()
-    gases = args.gases or list(META)
+    gases = args.gases or [g for g, c in config.gases.items() if c.get('publish')]
     db = db_conn.HATS_ng()
     programs = load_program_lookup(db)
     out = Path(args.outdir)
@@ -230,7 +217,7 @@ def main():
         rows = db.doquery(f"SELECT location, month, mean, sd, n, programs FROM {TABLE} "
                           "WHERE gas = %s", [gas])
         df = pd.DataFrame(rows)
-        name, text = build_file(gas, df, cfg, META[gas], programs, today)
+        name, text = build_file(gas, df, cfg, cfg['publish'], programs, today)
         (out / name).write_text(text)
         print(f"{gas}: wrote {out / name}")
         if args.compare:

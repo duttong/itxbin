@@ -224,8 +224,8 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
 - `combined_data_export.py [gases] [-o DIR] [--compare]` writes text files with
   the same columns as the published `/aftp/hats/<gas>/combined/*_global_*.txt`
   (default `~/combined_data`, never `/aftp`), with a new header; Programs is a
-  7-digit string derived from the lookup table. Per-gas metadata (DOI, scale,
-  authors) is still hardcoded in the script (`META`).
+  7-digit string derived from the lookup table. Per-gas header metadata (DOI, scale,
+  authors, notes) is in each gas's `publish:` block in the config.
 - The SQL DDL files live in `sql/`, which is untracked (not in git, not
   deployed). `omi/logos_combined.php` reads `programs` as the abbreviation list.
 - oldGC is read from `hats.fecd_oldgc` (see below); CCGG comes from
