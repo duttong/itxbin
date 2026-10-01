@@ -34,6 +34,8 @@ import typer
 
 OMI = 'omi'
 PAGE = '/var/www/html/hats/logos_field_cylinders.php'
+TANK_POPUP = '/var/www/html/hats/logos_tank_popup.inc.php'
+TANK_POPUP_INCLUDE = "require_once(__DIR__ . '/logos_tank_popup.inc.php');"
 AFTP_DIR = Path('/aftp/hats')
 MAX_PASSES = 6
 SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=30']
@@ -103,7 +105,7 @@ def replay_key(sql: str, params: list[str]) -> str:
     return hashlib.sha1((sql + '\x1f' + enc).encode()).hexdigest()
 
 
-def build_variant(src: str, site: str) -> str:
+def build_variant(src: str, site: str, tank_popup: str | None = None) -> str:
     """Turn the live page into a one-site, public, standalone snapshot page."""
     def sub(old: str, new: str) -> None:
         nonlocal src
@@ -115,11 +117,20 @@ def build_variant(src: str, site: str) -> str:
     sub("require_once(WWW_ROOT . UTILS_ROOT_RELPATH . '/dbutils.php');",
         f"$FC_INSTRUMENTS = array_values(array_filter($FC_INSTRUMENTS, fn($i) => $i['site'] === '{site}'));\n"
         "require_once(WWW_ROOT . UTILS_ROOT_RELPATH . '/dbutils.php');")
+    # The dashboard now shares its tank helpers with other omi pages. Inline
+    # them so the temporary page can render without a relative include, and
+    # apply the same public-copy filtering to their tooltip and popup data.
+    if TANK_POPUP_INCLUDE in src:
+        if tank_popup is None or not tank_popup.startswith('<?php'):
+            raise RuntimeError('dashboard requires the shared tank popup source')
+        sub(TANK_POPUP_INCLUDE, tank_popup.removeprefix('<?php'))
     # Public copy: fill code + date only (fill notes carry people's names).
     src, n = re.subn(r'''\$title = trim\("Filled \{\$f\['date'\]\}\. " \. .*?\);''',
                      '''$title = "Filled {$f['date']}";''', src)
     if n != 1:
         raise RuntimeError('page layout changed; cannot find fill-notes tooltip')
+    sub("'notes' => trim(preg_replace('/\\s+/', ' ', (string)$f['notes']))",
+        "'notes' => ''")
     sub('Fill = reftank.fill code for the gas in the tank (hover for fill date and notes).',
         'Fill = fill code for the gas in the tank (hover for fill date).')
     i = src.find('$bs_adjContent = ob_get_clean();')
@@ -162,7 +173,10 @@ def main(
     db.doquery("SET time_zone = '+00:00'")   # the page's UNIX_TIMESTAMP()s assume UTC
 
     page = run(SSH + [OMI, f'cat {PAGE}']).stdout
-    variant = build_variant(page, site_uc)
+    tank_popup = None
+    if TANK_POPUP_INCLUDE in page:
+        tank_popup = run(SSH + [OMI, f'cat {TANK_POPUP}']).stdout
+    variant = build_variant(page, site_uc, tank_popup)
     rdir = run(SSH + [OMI, 'mktemp -d /tmp/ie3_cyl_snapshot.XXXXXX']).stdout.strip()
     replay: dict = {}
     try:
