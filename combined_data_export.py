@@ -114,7 +114,7 @@ def build_header(gas: str, cfg: dict, meta: dict, programs: list[dict], filename
         "global mean is nan unless every band it needs has data.  The _sd columns carry the site",
         "errors through the same weights, treating the sites as independent.",
         "",
-        f"The last column ({p}_{short}_Programs) is an {len(programs)}-digit binary number listing the",
+        f"The last column ({p}_{short}_Programs) is a binary string of {len(programs)} digits listing the",
         "measurement programs used in the combined hemispheric and global mean for that month.",
         "A 1 means data from the program was used.  Digits are ordered left to right:",
         "   " + ", ".join(r['abbr'] for r in programs),
