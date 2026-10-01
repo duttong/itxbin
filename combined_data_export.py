@@ -140,7 +140,9 @@ def build_file(gas: str, df: pd.DataFrame, cfg: dict, meta: dict, programs: list
     df['programs'] = [names_to_bits(n, order) for n in df['programs']]
     means = df.pivot(index='month', columns='location', values='mean')
     sds = df.pivot(index='month', columns='location', values='sd')
-    means = means.dropna(how='all')   # trailing months with nothing yet
+    # Like the published files, start and stop at the months that have a
+    # hemispheric or global mean (a site alone, e.g. 1977-08 or the newest month, is left out).
+    means = means.dropna(subset=[c for c in MEAN_ORDER if c in means], how='all')
     sds = sds.reindex(means.index)
     # Programs flag comes from the Global row, else any row that month.
     prog = df[df.location == 'Global'].set_index('month')['programs']
