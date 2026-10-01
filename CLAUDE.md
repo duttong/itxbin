@@ -55,7 +55,7 @@
   `pair_id_num`/`flask_id` stay 0. testinfo covers only the Main sequence;
   it is placed in the full SSV sequence by a unique substring match (or a
   `main_offset` key if the FE3 app ever writes one). DDL in
-  `ng_analysis_test_num.sql`.
+  `sql/ng_analysis_test_num.sql`.
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions
@@ -204,7 +204,7 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
 - `combined_data_batch.py [gases] [--compare] [--csv DIR] [-i]` builds
   CFC11, CFC12, CFC113, CCl4, SF6 and N2O, compares with the published /aftp
   files, and replaces each gas's rows in `hats.ng_logos_combined_data`
-  (site rows plus Global/NH/SH/HN/LN/LS/HS; DDL in `ng_logos_combined_data.sql`).
+  (site rows plus Global/NH/SH/HN/LN/LS/HS; DDL in `sql/ng_logos_combined_data.sql`).
 - Per site, programs are combined with inverse-variance weights and a
   Birge-ratio error (`site_combine`; `igor` restores Igor's 1/se weights and
   mismatch term), then Savitzky-Golay smoothed; band/hemispheric/global means
@@ -213,7 +213,21 @@ github.com/duttong/HATS-Igor-code, `CATS/Global Means.ipf`).
   monthly-mean noise, measured every build from how the programs differ at
   shared site-months (three-cornered hat, `program_noise()`); the batch
   prints it. Gap-filled months get se x sqrt(1 + months to data).
-- MLO PFP pairs (M3/M4) are their own program, `PFP`, combined at `mlo`.
+- MLO PFP pairs (M3/M4) are their own calculation stream, `PFP`, combined at
+  `mlo`, but are *reported as* MSD (`reports_as: MSD` in the config), as on the
+  omi `logos_combined.php` page.
+- `ng_logos_combined_data.programs` holds the abbreviations of the contributing
+  programs, comma separated (`fECD,CATS,MSD`), in `bit_pos` order from
+  `hats.ng_logos_combined_programs` (oldGC, RITS, fECD, CATS, IE3, CCGG, MSD;
+  append-only, never renumber). The order of `programs:` in the YAML does not
+  affect it; `programs_names()` converts the builder's internal bit strings.
+- `combined_data_export.py [gases] [-o DIR] [--compare]` writes text files with
+  the same columns as the published `/aftp/hats/<gas>/combined/*_global_*.txt`
+  (default `~/combined_data`, never `/aftp`), with a new header; Programs is a
+  7-digit string derived from the lookup table. Per-gas metadata (DOI, scale,
+  authors) is still hardcoded in the script (`META`).
+- The SQL DDL files live in `sql/`, which is untracked (not in git, not
+  deployed). `omi/logos_combined.php` reads `programs` as the abbreviation list.
 - oldGC is read from `hats.fecd_oldgc` (see below); CCGG comes from
   `ccgg.flask_data_view`.
 - Per-program scale offsets (`offsets_pct`) are applied only where programs
@@ -235,7 +249,7 @@ BRW, CGO, MLO, NWR, SMO and SPO, from
 `/aftp/hats/{cfcs/cfc11,cfcs/cfc12,n2o}/flasks/OldGC/monthly/{SITE}_{gas}_MM.dat`.
 `fecd_oldgc_import.py [-i]` loads them into `hats.fecd_oldgc` (site_num,
 inst_num, parameter_num, month, mean, sd, n, and the file's calibration scale; DDL in
-`fecd_oldgc.sql`). Upsert on (site_num, parameter_num, month), so reruns are
+`sql/fecd_oldgc.sql`). Upsert on (site_num, parameter_num, month), so reruns are
 safe. 2,885 rows, loaded 2026-09-26.
 
 ## RITS (pre-CATS in-situ GCs, 1987-2001)
