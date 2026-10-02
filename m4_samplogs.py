@@ -48,6 +48,10 @@ m4_ingest.py pipeline:
      - last_flow / last_vflow           final flow readings
      - pfpopen / pfpclose               PFP valve numbers opened/closed this run
      - pfp_press1/2/3                   PFP internal pressure readings
+     - trap_cold / trap_hot             therm1 (cryo trap) means in deg C from the
+                                        temps_*.csv files; windows come from the bd*.txt
+                                        run log (cold: sample valve open to 30 s before
+                                        close; hot: 8-13 min after open)
 
    After the ng_analysis upsert, M4_Serial_Numbers queries for any rows whose
    tank_serial_num is still NULL, extracts a key from port_info using regex
@@ -250,14 +254,71 @@ class M4_SampleLogs(M4_Instrument):
 
         return parsed
     
+    def load_trap_temps(self):
+        """ Load every temps_*.csv (therm0, therm1 every ~10 s) into one frame indexed by datetime. """
+        dfs = [pd.read_csv(f, parse_dates=['datetime']) for f in sorted(self.incoming_dir.glob('temps_*.csv'))]
+        if not dfs:
+            return pd.DataFrame(columns=['therm0', 'therm1'])
+        return (pd.concat(dfs).drop_duplicates('datetime')
+                .set_index('datetime').sort_index())
+
+    def trap_temps_for_file(self, xl_file, temps):
+        """
+        Compute trap_cold / trap_hot (therm1) for each injection in one GSPC run.
+
+        The bd*.txt run log sits next to the .xl file. Each injection's events are
+        followed by a record line "<path>.xl,<date>,<time>,<sample#>" whose date and
+        time are exactly the .xl row's Date/Time, so that line is the join key.
+          trap_cold  mean from Sample valve open to 30 s before Sample valve closed
+          trap_hot   mean from 8 to 13 min after Sample valve open
+        Returns {dt_xl Timestamp: (trap_cold, trap_hot)}; NaN where temps don't cover the window.
+        """
+        txt = xl_file.with_suffix('.txt')
+        if not txt.exists() or temps.empty:
+            return {}
+        event_re = re.compile(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+: (.*)')
+        record_re = re.compile(r'\.xl,(\d{4}-\d\d-\d\d),(\d\d:\d\d:\d\d),\d+\s*$')
+        out, opened, closed = {}, None, None
+        with open(txt, errors='replace') as fh:
+            for line in fh:
+                m = event_re.match(line)
+                if m:
+                    msg = m.group(2).strip()
+                    if msg == 'Sample valve open':
+                        opened, closed = pd.Timestamp(m.group(1)), None
+                    elif msg == 'Sample valve closed' and opened is not None and closed is None:
+                        closed = pd.Timestamp(m.group(1))
+                    continue
+                m = record_re.search(line)
+                if m:
+                    if opened is not None and closed is not None:
+                        out[pd.Timestamp(f'{m.group(1)} {m.group(2)}')] = self.trap_window_means(temps, opened, closed)
+                    opened, closed = None, None
+        return out
+
+    @staticmethod
+    def trap_window_means(temps, opened, closed):
+        """ trap_cold / trap_hot from therm1 for one injection (NaN if the window is under-sampled). """
+        def mean(start, end, expected):
+            w = temps.loc[start:end, 'therm1']
+            return w.mean() if len(w) >= 0.8 * expected else float('nan')
+        minute = pd.Timedelta(minutes=1)
+        cold_end = closed - pd.Timedelta(seconds=30)
+        return (mean(opened, cold_end, (cold_end - opened).total_seconds() / 10),
+                mean(opened + 8 * minute, opened + 13 * minute, 30))
+
     def load_all_xl_files(self):
         """ Load all .xl pressure files into a single dataframe. Drop duplicate rows. """
         dfs = []
+        temps = self.load_trap_temps()
         for file in self.xlfiles:
             df = self.read_custom_xl_file(file)
             # xl files can contain mixed date formats and Excel fractional-day
             # times from cells formatted as numeric values.
             df['dt_xl'] = self.parse_xl_datetime(df)
+            traps = self.trap_temps_for_file(file, temps)
+            df['trap_cold'] = df['dt_xl'].map(lambda t: traps.get(t, (float('nan'),) * 2)[0])
+            df['trap_hot'] = df['dt_xl'].map(lambda t: traps.get(t, (float('nan'),) * 2)[1])
             dfs.append(df)
             
         df = pd.concat(dfs, axis=0)
@@ -688,9 +749,11 @@ class M4_SampleLogs(M4_Instrument):
                 pfpclose,
                 pfp_press1,
                 pfp_press2,
-                pfp_press3
+                pfp_press3,
+                trap_cold,
+                trap_hot
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON DUPLICATE KEY UPDATE
                 init_p       = VALUES(init_p),
@@ -707,13 +770,17 @@ class M4_SampleLogs(M4_Instrument):
                 pfpclose     = VALUES(pfpclose),
                 pfp_press1   = VALUES(pfp_press1),
                 pfp_press2   = VALUES(pfp_press2),
-                pfp_press3   = VALUES(pfp_press3)
+                pfp_press3   = VALUES(pfp_press3),
+                trap_cold    = VALUES(trap_cold),
+                trap_hot     = VALUES(trap_hot)
             """
 
+        # trap temps are DOUBLE columns: keep NaN as NULL rather than ''
+        traps = df[['trap_cold', 'trap_hot']].astype(object).where(df[['trap_cold', 'trap_hot']].notna(), None)
         df = df.fillna('')
         params = []
 
-        for idx, row in df.iterrows():
+        for pos, (idx, row) in enumerate(df.iterrows()):
             p = (
                 row.analysis_num,
                 row.init_p,
@@ -731,7 +798,9 @@ class M4_SampleLogs(M4_Instrument):
                 row.pfp_press1,
                 row.pfp_press2,
                 row.pfp_press3,
-            )           
+                traps.iat[pos, 0],
+                traps.iat[pos, 1],
+            )
             params.append(p)
 
             if self.db.doMultiInsert(sql_insert, params): 
