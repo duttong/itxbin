@@ -30,6 +30,7 @@ class M4_Instrument(HATS_DB_Functions):
         'init_p', 'final_p', 'net_pressure', 'initp_rsd', 'finalp_rsd',
         'low_flow', 'cryocount', 'loflocount', 'last_flow', 'last_vflow',
         'pfpopen', 'pfpclose', 'pfp_press1', 'pfp_press2', 'pfp_press3',
+        'trap_cold', 'trap_hot',
     )
     # Require >=3 unrejected injections for a calibration row, matching FE3.
     # A num=1/2 group has too few injections for a meaningful stddev and
