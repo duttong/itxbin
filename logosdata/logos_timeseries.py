@@ -48,16 +48,20 @@ def _figure_analyte_names(instrument) -> list[str]:
     """Analyte list for a figure's combo: every channel, plus a "(P)" entry for
     each compound measured on more than one channel when the instrument keeps
     preferred channels (FE3, IE3, CATS). Sorted by compound, channels
-    alphabetically, with the preferred entry last."""
+    alphabetically, with the preferred entry last. Instruments without
+    preferred channels (M4, BLD1, ...) keep the analyte_list order, which is
+    elution order."""
     names = list((getattr(instrument, "analytes", None) or {}).keys())
-    if hasattr(instrument, "return_preferred_channel"):
-        channels_by_base = {}
-        for name in names:
-            base, channel = _split_analyte_channel(name)
-            if channel:
-                channels_by_base.setdefault(base, set()).add(channel)
-        names += [f"{base} ({PREFERRED_CHANNEL})"
-                  for base, channels in channels_by_base.items() if len(channels) > 1]
+    if not hasattr(instrument, "return_preferred_channel"):
+        return names
+
+    channels_by_base = {}
+    for name in names:
+        base, channel = _split_analyte_channel(name)
+        if channel:
+            channels_by_base.setdefault(base, set()).add(channel)
+    names += [f"{base} ({PREFERRED_CHANNEL})"
+              for base, channels in channels_by_base.items() if len(channels) > 1]
 
     def sort_key(name):
         base, channel = _split_analyte_channel(name)
