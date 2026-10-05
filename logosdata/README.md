@@ -66,9 +66,19 @@ saves it as `default_inst` in `~/.logos-tanks.conf`.
 | Processing | all | Date range, run/analyte selection, response/ratio/mole-fraction plots, flagging |
 | Timeseries | all | Long-term mole fraction trends with site overlays and IE3 in-situ data |
 | Tanks | m4, fe3, ie3, bld1, prs | Reference tank history and tank assignment |
-| LOGOS AI | m4, fe3, ie3 | Chat interface for querying HATS data |
+| Figures | all | Custom instrument figures; M4 thermocouple temperatures and cryogen timing |
 
 Tab visibility is controlled per instrument in `logos_data.conf`.
+The LOGOS AI source remains available, but its tab is disabled in every
+instrument configuration.
+
+On M4's Figures tab, use the shared Processing date range and run selector,
+then click **Thermocouples**. The plot appears on the right with navigation
+and save controls. Once rendered, it refreshes automatically when you select
+another run, use the previous/next buttons, or apply a new date range.
+It uses the selected run date's `bdMMDDYY.txt` log and
+overlapping `temps_*.csv` files from the M4 GSPC directory (or its year archive).
+Other instruments show a placeholder until custom figures are added.
 
 On the Processing tab for CATS, IE3, FE3, and BLD1, enable
 **Chromatogram Viewer** and left-click a plotted point to open its GCWerks

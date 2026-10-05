@@ -23,10 +23,8 @@ from datetime import datetime
 import re
 from pathlib import Path
 
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 
@@ -36,10 +34,11 @@ EVENT_RE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+: (.*)")
 
 def read_log(path):
     ev = []
-    for line in open(path, errors="replace"):
-        m = EVENT_RE.match(line)
-        if m:
-            ev.append((pd.Timestamp(m[1]), m[2].strip()))
+    with open(path, errors="replace") as log:
+        for line in log:
+            m = EVENT_RE.match(line)
+            if m:
+                ev.append((pd.Timestamp(m[1]), m[2].strip()))
     return ev
 
 
@@ -56,7 +55,16 @@ def spans(ev, on, off):
 
 def read_temps(directory, t0, t1):
     """All temps_*.csv rows overlapping [t0, t1], de-duplicated."""
-    dfs = [pd.read_csv(f, parse_dates=["datetime"]) for f in sorted(directory.glob("temps_*.csv"))]
+    dfs = []
+    for path in sorted(directory.glob("temps_*.csv")):
+        frame = pd.read_csv(path)
+        # Edited copies can contain times alone. Never invent a date for them.
+        frame["datetime"] = pd.to_datetime(
+            frame["datetime"], format="ISO8601", errors="coerce"
+        )
+        dfs.append(frame.dropna(subset=["datetime"]))
+    if not dfs:
+        raise SystemExit(f"No temps_*.csv files found in {directory}")
     t = pd.concat(dfs).drop_duplicates("datetime").sort_values("datetime")
     return t[(t.datetime >= t0 - pd.Timedelta(minutes=5)) & (t.datetime <= t1 + pd.Timedelta(minutes=5))].reset_index(drop=True)
 
@@ -86,7 +94,8 @@ def fmt_stats(v):
     return f"{v.mean():.2f} ± {sd:.2f} ({v.min():.2f}, {v.max():.2f}) °C"
 
 
-def make_figure(bd, out):
+def build_figure(bd):
+    """Build the plot without selecting a backend or writing a file."""
     ev = read_log(bd)
     if not ev:
         raise SystemExit(f"No timestamped events in {bd}")
@@ -101,7 +110,8 @@ def make_figure(bd, out):
     tt = (t.datetime - ref).dt.total_seconds().values
     grid = np.arange(-240, 1080, 5.0)  # seconds relative to sample valve open
 
-    fig, ax = plt.subplots(2, 1, figsize=(14, 10))
+    fig = Figure(figsize=(14, 10))
+    ax = fig.subplots(2, 1, gridspec_kw={"height_ratios": [1, 2]})
 
     a = ax[0]
     a.plot(t.datetime, t.therm0, lw=.9, color="tab:red", label="therm0")
@@ -158,10 +168,25 @@ def make_figure(bd, out):
     a.set_xlim(grid[0] / 60, grid[-1] / 60)
     a.set_ylim(-190, 215)
 
-    plt.tight_layout()
-    plt.savefig(out, dpi=110)
-    plt.close(fig)
+    fig.tight_layout()
+    return fig, n
+
+
+def make_figure(bd, out):
+    fig, n = build_figure(bd)
+    fig.savefig(out, dpi=110)
     print(f"Wrote {out}  ({n} injections)")
+
+
+def bd_file_for_run(directory, run_time):
+    """Locate a selected run's log in the active directory or year archive."""
+    date = pd.Timestamp(str(run_time).split(" (")[0])
+    name = f"bd{date.strftime('%m%d%y')}.txt"
+    for parent in (directory, directory / str(date.year)):
+        path = parent / name
+        if path.is_file():
+            return path
+    raise FileNotFoundError(f"Cannot find {name} in {directory} or its {date.year} archive")
 
 
 def latest_bd_file(directory):

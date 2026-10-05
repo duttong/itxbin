@@ -2,7 +2,10 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import warnings
 from unittest.mock import patch
+
+import pandas as pd
 
 from logosdata import m4_thermocouples as thermocouples
 
@@ -46,6 +49,72 @@ class BdFileSelectionTests(unittest.TestCase):
         with patch.object(thermocouples, "GSPC_DIR", self.directory), patch.object(thermocouples, "make_figure") as plot, patch("sys.argv", ["m4_thermocouples.py", "bd100126", "-o", "custom.png"]):
             thermocouples.main()
         plot.assert_called_once_with(explicit, "custom.png")
+
+    def test_selected_run_uses_month_day_year_and_archive(self):
+        archive = self.directory / "2026"
+        archive.mkdir()
+        selected = archive / "bd100226.txt"
+        selected.touch()
+        self.assertEqual(
+            thermocouples.bd_file_for_run(self.directory, "2026-10-02 11:30:00 (Cal)"),
+            selected,
+        )
+        active = self.directory / selected.name
+        active.touch()
+        self.assertEqual(
+            thermocouples.bd_file_for_run(self.directory, "2026-10-02 11:30:00"),
+            active,
+        )
+
+    def test_missing_selected_run_does_not_use_latest_file(self):
+        (self.directory / "bd100226.txt").touch()
+        with self.assertRaisesRegex(FileNotFoundError, "bd100126.txt"):
+            thermocouples.bd_file_for_run(self.directory, "2026-10-01 09:00:00")
+
+    def test_missing_temperature_files_has_clear_error(self):
+        with self.assertRaisesRegex(SystemExit, "No temps_.*csv files found"):
+            thermocouples.read_temps(self.directory, None, None)
+
+    def test_temperature_parsing_excludes_time_only_copies_without_warnings(self):
+        (self.directory / "temps_original.csv").write_text(
+            "datetime,therm0,therm1\n"
+            "2026-01-21 23:59:59,20,-170\n"
+            "2026-01-22 00:00:00,21,-171\n"
+            "2026-01-22 00:00:01.500,22,-172\n"
+            "invalid,23,-173\n"
+        )
+        (self.directory / "temps_copy.csv").write_text(
+            "datetime,therm0,therm1\n15:21:04,99,99\n7:23:42,99,99\n"
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            temps = thermocouples.read_temps(
+                self.directory, pd.Timestamp("2026-01-21 23:59:59"),
+                pd.Timestamp("2026-01-22 00:00:02"),
+            )
+        self.assertEqual(temps.datetime.tolist(), [
+            pd.Timestamp("2026-01-21 23:59:59"),
+            pd.Timestamp("2026-01-22 00:00:00"),
+            pd.Timestamp("2026-01-22 00:00:01.500"),
+        ])
+        self.assertEqual(temps.therm0.tolist(), [20, 21, 22])
+
+    def test_figure_panel_heights_are_one_to_two(self):
+        bd = self.directory / "bd100226.txt"
+        bd.write_text(
+            "2026-10-02 00:00:00,000: Start\n"
+            "2026-10-02 00:04:00,000: Sample valve open\n"
+            "2026-10-02 00:08:00,000: Sample valve closed\n"
+            "2026-10-02 00:24:00,000: End\n"
+        )
+        pd.DataFrame({
+            "datetime": pd.date_range("2026-10-02", periods=145, freq="10s"),
+            "therm0": 20.0, "therm1": -170.0,
+        }).to_csv(self.directory / "temps_2026-10-02.csv", index=False)
+        figure, injections = thermocouples.build_figure(bd)
+        self.assertEqual(injections, 1)
+        upper, lower = figure.axes
+        self.assertAlmostEqual(lower.get_position().height / upper.get_position().height, 2)
 
 
 if __name__ == "__main__":

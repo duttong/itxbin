@@ -53,7 +53,7 @@ Lives in this directory alongside the code. Controls per-instrument UI:
 
 | Key | Type | Effect |
 |---|---|---|
-| `tabs` | comma list | Which tabs are visible (`processing, timeseries, tanks, ai`) |
+| `tabs` | comma list | Which tabs are visible (`processing, timeseries, tanks, figures`; `ai` remains supported but disabled) |
 | `default_analyte` | string | Analyte selected on startup |
 | `csv_export` | bool | Show "Save run to .csv" button on Processing tab |
 | `change_run_type` | bool | Show "Change Run Type" control on Processing tab |
@@ -71,14 +71,18 @@ preferred_instrument = fe3
 
 ## Tab structure (MainWindow)
 
-Tabs are built conditionally from `logos_data.conf`. The four possible tabs:
+Tabs are built conditionally from `logos_data.conf`. The configured tabs:
 
 1. **Processing** — always present; date range, run/analyte selection, plotting
 2. **Timeseries** — `TimeseriesWidget`; long-term mole fraction trends
 3. **Tanks** — `TanksWidget`; reference tank history
-4. **LOGOS AI** — `LOGOSAITab`; chat agent backed by `LOGOSChatAgent`
+4. **Figures** — `FiguresWidget`; custom instrument plots. Shares the date
+   range and run selector with Processing; M4 offers Thermocouples.
 
-`self.timeseries_tab`, `self.tanks_tab`, and `self.logos_ai_tab` are `None`
+**LOGOS AI** (`LOGOSAITab`, backed by `LOGOSChatAgent`) is preserved in source
+but disabled by all instrument configs.
+
+`self.timeseries_tab`, `self.tanks_tab`, `self.figures_tab`, and `self.logos_ai_tab` are `None`
 when their tab is disabled — guard before use.
 
 ## Key MainWindow state

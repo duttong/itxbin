@@ -50,6 +50,7 @@ from logos_agent_tools import LOGOSDataAgentTools
 from logos_ai_agent import LOGOSChatAgent, api_key_available
 from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
+from logos_figures import FiguresWidget
 from logos_tagging import (
     _TAG_LAYOUT,
     _INFO_TAG_NUMS,
@@ -1022,6 +1023,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         run_layout.setSpacing(6)
         run_gb.setLayout(run_layout)
         run_layout.addWidget(date_gb)
+        self.run_selection_layout = run_layout
+        self.run_date_group = date_gb
         
         # Change Run Type
         change_runtype = QGroupBox("CHANGE RUN TYPE")
@@ -1072,7 +1075,9 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         runsel_hbox.addWidget(self.run_cb, stretch=1)
         runsel_hbox.addWidget(self.next_btn)
         runsel_hbox.addWidget(self._copy_run_time_btn)
-        run_layout.addLayout(runsel_hbox)
+        self.run_selector_widget = QWidget()
+        self.run_selector_widget.setLayout(runsel_hbox)
+        run_layout.addWidget(self.run_selector_widget)
         self._setup_run_shortcuts()
         run_layout.addLayout(runtype_row)
 
@@ -1402,7 +1407,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         # ── TABS ──
         _visible_tabs_raw = self._inst_cfg.get(
             'tabs',
-            fallback='processing, timeseries, tanks, ai'
+            fallback='processing, timeseries, tanks, figures'
         )
         _visible_tabs = {t.strip().lower() for t in _visible_tabs_raw.split(',')}
         if not api_key_available():
@@ -1458,6 +1463,11 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             tabs.addTab(self.logos_ai_tab, "LOGOS AI")
         else:
             self.logos_ai_tab = None
+
+        self.figures_tab = None
+        if 'figures' in _visible_tabs:
+            self.figures_tab = FiguresWidget(self.instrument, self, parent=self)
+            tabs.addTab(self.figures_tab, "FIGURES")
 
         self.tabs = tabs
         tabs.currentChanged.connect(self._on_tab_changed)
@@ -1551,6 +1561,9 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         h_main.addWidget(left_container, stretch=0)  # Fixed width for left pane
         h_main.addWidget(right_placeholder, stretch=1)  # Flexible width for right pane
         h_main.addWidget(right_spacer, stretch=1)
+        if self.figures_tab is not None:
+            h_main.addWidget(self.figures_tab.plot_widget, stretch=1)
+            self.figures_tab.plot_widget.hide()
 
         if self.instrument.inst_id == 'prs':
             self._apply_prs_read_only_restrictions()
@@ -1588,6 +1601,15 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         current = self.tabs.currentWidget() if self.tabs else None
         if not current:
             return
+        figures_active = self.figures_tab is not None and current is self.figures_tab
+        # Share the actual controls so the run/date selection survives tab changes.
+        if self.figures_tab is not None:
+            target = self.figures_tab.controls if figures_active else self.run_selection_layout
+            for index, widget in enumerate((self.run_date_group, self.run_selector_widget)):
+                if target.indexOf(widget) < 0:
+                    target.insertWidget(index, widget)
+            self.figures_tab.plot_widget.setVisible(figures_active)
+            self.h_main.setStretch(3, 1 if figures_active else 0)
         if current is self.logos_ai_tab or current is self.tanks_tab:
             # Neither tab uses the shared plot canvas (Tanks pops its plots into
             # their own floating matplotlib windows), so give the tab the full
@@ -1620,7 +1642,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.left_container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         show_plot = current is self.processing_pane
         self.right_placeholder.setVisible(show_plot)
-        self.right_spacer.setVisible(not show_plot)
+        self.right_spacer.setVisible(not show_plot and not figures_active)
         self.h_main.setStretch(0, 0)
         self.h_main.setStretch(1, 1)
         self.h_main.setStretch(2, 1)
@@ -5719,6 +5741,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         # radio button in sync.
         self.on_plot_type_changed(self.current_plot_type)
         self._update_calibration_button_state()
+        if self.figures_tab is not None:
+            self.figures_tab.refresh_for_run()
 
     def populate_analyte_controls(self):
         """
@@ -6420,6 +6444,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self._update_calibration_button_state()
         self._update_notes_button_style()
         self.on_plot_type_changed(self.current_plot_type)
+        if self.figures_tab is not None:
+            self.figures_tab.refresh_for_run()
 
     def on_edit_run_notes(self):
         """Handle the 'Edit Run Notes' button click."""
