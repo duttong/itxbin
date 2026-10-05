@@ -183,7 +183,11 @@ class M4_SampleLogs(M4_Instrument):
             data.append(parts)
         
         df = pd.DataFrame(data, columns=columns)
-        
+
+        # A hand-edited log can leave stray spaces ("flask "), which would not match
+        # the sample type lookups later and give run_type_num 0.
+        df["SampType"] = df["SampType"].str.strip()
+
         # Convert specified columns to floats
         float_columns = [
             "Net_Pressure", "Init_P", "Final_P", "InitP_RSD", 
