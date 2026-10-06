@@ -140,8 +140,10 @@ sections. Opened via the **Multi-Tag** button or the `G` key cycle.
   changed by the user.
 - **`_USER_REMOVABLE_AUTO_TAGS`** — exception: the R checkbox is enabled only
   when the tag is already applied to *all* selected points (remove-only).
-  Tag 316 (`qc_status` is set to `'F'` when applied, so it won't be
-  reapplied by the batch loader after manual removal).
+  Tag 316: removing it writes a row to `hats.ng_mole_fraction_tag_override`
+  (`_OVERRIDE_REMEMBERED_AUTO_TAGS` in `logos_tagging.py`), which
+  `flag_first_reference_run()` checks, so the batch loader won't reapply it;
+  re-applying the tag deletes the row.
 - **Save/Update Comment** button is disabled unless the selected point(s)
   carry at least one tag.
 - **Selection gestures**: plain click selects one point; dragging a box

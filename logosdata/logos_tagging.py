@@ -67,9 +67,14 @@ _INFO_TAG_DESCRIPTIONS = {
 }
 
 # Auto tags the user may manually remove (but not add).
-# 316: first-reference-run flag set by m4_gcwerks2db; qc_status is moved to
-# 'F' at the same time, so removing the tag won't cause it to be reapplied.
+# 316: first-reference-run flag set by m4_gcwerks2db.
 _USER_REMOVABLE_AUTO_TAGS = frozenset({316})
+
+# Automatic tags whose manual removal is remembered in hats.ng_mole_fraction_tag_override, which the
+# tagger checks before (re)applying the tag. Removing one of these writes an override row; applying
+# the tag again deletes it. Only the M4/FE3/BLD1 tag table has an override table (not IE3/CATS yet).
+_OVERRIDE_REMEMBERED_AUTO_TAGS = frozenset({316})
+OVERRIDE_TABLE = 'hats.ng_mole_fraction_tag_override'
 
 
 class TagCRUDMixin:
@@ -100,6 +105,19 @@ class TagCRUDMixin:
         tag_table, tag_key, _, _ = self._tag_table_info()
         sql = f"INSERT IGNORE INTO {tag_table} ({tag_key}, tag_num) VALUES (%s, %s);"
         self.instrument.db.doMultiInsert(sql, [(n, tag_num) for n in mf_nums], all=True)
+        if self._remembers_override(tag_num):
+            self._delete_override_rows(mf_nums, tag_num)   # tag is back: forget the override
+
+    def _remembers_override(self, tag_num: int) -> bool:
+        """True if removing/applying this tag should be recorded in the override table."""
+        return tag_num in _OVERRIDE_REMEMBERED_AUTO_TAGS and self._tag_table_info()[0] == 'hats.ng_mole_fraction_tags'
+
+    def _delete_override_rows(self, mf_nums: list[int], tag_num: int):
+        placeholders = ",".join(["%s"] * len(mf_nums))
+        self.instrument.db.doquery(
+            f"DELETE FROM {OVERRIDE_TABLE} WHERE ng_mole_fraction_num IN ({placeholders}) AND tag_num = %s;",
+            list(mf_nums) + [tag_num],
+        )
 
     def _delete_tag_for_mf_nums(self, mf_nums: list[int], tag_num: int):
         """Remove a specific tag from the given mole-fraction primary keys."""
@@ -111,6 +129,12 @@ class TagCRUDMixin:
             f"DELETE FROM {tag_table} WHERE {tag_key} IN ({placeholders}) AND tag_num = %s;",
             list(mf_nums) + [tag_num],
         )
+        if self._remembers_override(tag_num):
+            # Remember the removal so the automatic tagger leaves it off (idempotent re-runs).
+            self.instrument.db.doMultiInsert(
+                f"INSERT IGNORE INTO {OVERRIDE_TABLE} (ng_mole_fraction_num, tag_num) VALUES (%s, %s);",
+                [(n, tag_num) for n in mf_nums], all=True,
+            )
 
     def _fetch_tag_nums_for_mf_nums(self, mf_nums: list[int]) -> set[int]:
         """Return the set of tag_nums currently applied to the given mf primary keys."""

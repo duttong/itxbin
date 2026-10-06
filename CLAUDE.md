@@ -59,6 +59,11 @@
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions
+- `hats.ng_mole_fraction_tag_override` — `(ng_mole_fraction_num, tag_num,
+  removed_datetime)`, unique on the first two: automatic tags a QA/QC session
+  removed by hand, which taggers must not re-apply. DDL in
+  `sql/ng_mole_fraction_tag_override.sql`; seeded 2026-10-06 with 1,117 rows
+  (the first standards that had lost 316)
 - `hats.ng_insitu_mole_fraction_tags` — tag table for IE3 mole fractions
 - `hats.calibrations` — per-run aggregated tank calibration values (avg
   mole fraction, stddev, n, run_number, scale_num) keyed on
@@ -171,9 +176,19 @@ analyte list.
   tag for the rows in the current flagged export by deleting stale 324 tags and
   reinserting current ones.
 - M4 first-reference tags use `tag_num=316`. `flag_first_reference_run()` in
-  `m4_gcwerks2db.py` applies 316 and simultaneously sets `qc_status='F'`;
-  reapplication only targets `qc_status='P'` rows, so manually removing 316
-  in logos_data is safe — it will not be reapplied on the next batch run.
+  `m4_gcwerks2db.py` is idempotent: it `INSERT IGNORE`s 316 on every mole
+  fraction of the first standard of each run_time, except those listed in
+  `hats.ng_mole_fraction_tag_override` (below). "First" is the first standard
+  of the whole run (looked up from 2 days before the loaded window), not of the
+  part inside the window; before 2026-10-06 a run straddling midnight at a
+  month boundary got a second 316 on its first post-midnight standard (3 runs,
+  129 tags, removed and recalculated). Removing 316 in logos_data writes an
+  override row, so the tagger never puts it back; re-applying the tag deletes
+  the row. (`qc_status` is still moved `'P'` -> `'F'` for these rows but no
+  longer gates the tagging.) Only 316 is override-remembered so far
+  (`_OVERRIDE_REMEMBERED_AUTO_TAGS` in `logosdata/logos_tagging.py`); there is
+  no insitu (IE3/CATS) override table yet. The tagger adds tags but does not
+  delete stale ones.
 
 ## IE3/CATS in-situ timeseries (logos_timeseries.py)
 
