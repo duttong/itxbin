@@ -183,9 +183,37 @@ class M4_GCwerks(M4_Instrument):
                 self.db.doMultiInsert(tag_insert, tag_params, all=True)
 
     def flag_first_reference_run(self, start_time, end_time):
-        """Tag the first reference run in each run_time group after mole fractions exist."""
-        start_str = pd.to_datetime(start_time).strftime('%Y-%m-%d %H:%M:%S')
+        """Tag the first reference run in each run_time group after mole fractions exist.
+
+        Idempotent: INSERT IGNORE of tag 316 on every mole fraction of the first standard of each
+        run_time, except those a QA/QC session has removed it from, which are listed in
+        hats.ng_mole_fraction_tag_override (written by logos_data when 316 is removed by hand).
+        Re-running it, or reloading the same data, changes nothing. qc_status is still moved
+        'P' -> 'F' for these rows as before, but it no longer gates the tagging.
+
+        "First" means first of the whole run, not of the part of it inside the loaded window: a run
+        that straddles the window start (e.g. midnight at a month boundary) would otherwise get a
+        second 316 on its first standard after the cut. Runs last well under a day, so the first
+        standard is looked up over every run starting from two days before the window; only
+        standards inside the window are tagged."""
+        start_ts = pd.to_datetime(start_time)
+        start_str = start_ts.strftime('%Y-%m-%d %H:%M:%S')
         end_str = pd.to_datetime(end_time).strftime('%Y-%m-%d %H:%M:%S')
+        run_from = (start_ts - pd.Timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
+
+        # First standard of each run_time, over the whole run (not just the loaded window).
+        firsts = f"""
+            (
+                SELECT
+                    run_time,
+                    MIN(analysis_time) AS first_analysis_time
+                FROM hats.ng_analysis
+                WHERE inst_num = {self.inst_num}
+                AND run_type_num = 8
+                AND run_time BETWEEN '{run_from}' AND '{end_str}'
+                GROUP BY run_time
+            ) firsts
+        """
 
         sql = f"""
             INSERT IGNORE INTO hats.ng_mole_fraction_tags (
@@ -196,22 +224,16 @@ class M4_GCwerks(M4_Instrument):
             FROM hats.ng_mole_fractions mf
             JOIN hats.ng_analysis a
             ON mf.analysis_num = a.num
-            JOIN (
-                SELECT
-                    run_time,
-                    MIN(analysis_time) AS first_analysis_time
-                FROM hats.ng_analysis
-                WHERE inst_num = {self.inst_num}
-                AND run_type_num = 8
-                AND analysis_time BETWEEN '{start_str}' AND '{end_str}'
-                GROUP BY run_time
-            ) firsts
+            JOIN {firsts}
             ON a.run_time = firsts.run_time
             AND a.analysis_time = firsts.first_analysis_time
             WHERE a.inst_num = {self.inst_num}
             AND a.run_type_num = 8
             AND a.analysis_time BETWEEN '{start_str}' AND '{end_str}'
-            AND mf.qc_status = 'P';
+            AND NOT EXISTS (
+                SELECT 1 FROM hats.ng_mole_fraction_tag_override o
+                WHERE o.ng_mole_fraction_num = mf.num AND o.tag_num = 316
+            );
         """
         self.db.doquery(sql)
 
@@ -219,16 +241,7 @@ class M4_GCwerks(M4_Instrument):
             UPDATE hats.ng_mole_fractions mf
             JOIN hats.ng_analysis a
             ON mf.analysis_num = a.num
-            JOIN (
-                SELECT
-                    run_time,
-                    MIN(analysis_time) AS first_analysis_time
-                FROM hats.ng_analysis
-                WHERE inst_num = {self.inst_num}
-                AND run_type_num = 8
-                AND analysis_time BETWEEN '{start_str}' AND '{end_str}'
-                GROUP BY run_time
-            ) firsts
+            JOIN {firsts}
             ON a.run_time = firsts.run_time
             AND a.analysis_time = firsts.first_analysis_time
             SET mf.qc_status = 'F'
