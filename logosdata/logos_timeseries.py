@@ -3347,7 +3347,7 @@ class TimeseriesWidget(QWidget):
           AND a.port IN ({",".join(str(p) for p in getattr(self.instrument, "AIR_PORTS", [3, 7]))})
           AND mf.parameter_num = {pnum}
           {ch_filter}
-          AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
+          AND a.analysis_time >= '{int(start)}-01-01' AND a.analysis_time < '{int(end) + 1}-01-01'
           {floor_clause}
         ORDER BY a.analysis_time;
         """
@@ -3445,7 +3445,7 @@ class TimeseriesWidget(QWidget):
           AND mf.parameter_num = {pnum}
           {ch_filter}
           AND UPPER(s.code) IN ({",".join(["%s"] * len(sites))})
-          AND YEAR(a.analysis_time) BETWEEN {start} AND {end}
+          AND a.analysis_time >= '{int(start)}-01-01' AND a.analysis_time < '{int(end) + 1}-01-01'
           {floor_clause}
         GROUP BY site, month_start
         ORDER BY site, month_start;
