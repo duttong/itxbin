@@ -598,6 +598,25 @@ monthly resolution:
   month whose own sd is unknown contributes 0.
 - A site's monthly sd is the spread of its pair means, falling back to the
   single pair's own `pair_stdv` when `n = 1` (a one-pair month has no spread).
+- **Two weighting methods** (`weighting_method` in the config, `bins` or
+  `latitude`). A gas with an entry in `gas_bins` (CH3Br, CH3Cl, CH3CCl3, from
+  Montzka's own method) uses **bins** while the method is `bins`: three hand-chosen
+  bins per hemisphere, a bin being the *unweighted* mean of its sites with data
+  that month, a hemisphere the weighted mean of its bins with fixed weights (not
+  required to sum to 1), Global = (NH + SH)/2. `mlo_pfp` sits in the MLO bin so MLO
+  is not counted twice. Every other gas, and every gas under `latitude`, uses the
+  four cos(lat) bands above. Output columns for a bin gas are `NHtrop`... in place
+  of `HN/LN/LS/HS` (`mean_labels` on the calculator and exporter carry the
+  names). A hemisphere is blank unless all its bins have data; interior site gaps
+  are still gap-filled first. While a gas is on bins its site list is the union of
+  its bins' sites, not `gas_background_overrides`. The header text for each method
+  comes from `global_means_method_*` / `global_means_columns_*` in the yaml.
+  `global_means_compare.py GAS...` (itxbin root) builds A latitude with the
+  config sites, B latitude with the bin sites and C bins, so B-A is the site
+  choice and C-B the weighting; `--plot DIR` writes a figure.
+  Measured (1991-2026, Global, C-A): CH3Br -0.03 ppt mean, CH3CCl3 +0.05,
+  CH3Cl **-3.2 ppt** (NH -6.5, ~0.6%): probably the cos(lat) HN band being dominated by NWR,
+  LEF and HFM (enhanced sites), which his bins cap at 0.25 (not verified).
 - Interior gaps in a site's monthly series are filled when
   `interpolate_site_gaps` is on; those months carry `n = 0`. Leading/trailing
   gaps are never extrapolated.

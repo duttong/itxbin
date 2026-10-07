@@ -56,6 +56,62 @@ gas_background_overrides:
 # mlo_pfp in months where both exist, rather than weighting both.  Nothing
 # implements that yet.
 
+# How the hemispheric means are weighted:
+#   latitude  four semi-hemispheric bands (HN/LN/LS/HS) with cos(latitude) site
+#             weights.  What every gas used before gas_bins existed.
+#   bins      the hand-chosen bins in gas_bins below, for the gases listed
+#             there.  A gas with no gas_bins entry always uses latitude.
+# Set to `latitude` to switch every gas back without touching gas_bins.
+weighting_method: bins
+
+# Bin weighting, from Montzka's own calculation (his notes for CH3Br, CH3Cl and
+# CH3CCl3).  Each hemisphere has bins; a bin is the unweighted mean of its sites
+# with data that month, and a hemisphere is the weighted mean of its bins using
+# the `weight` given.  Global is (NH + SH) / 2.  Bin names become columns in the
+# export, so keep them short and unique.
+#
+# While weighting_method is `bins`, a listed gas takes its sites from here, not
+# from gas_background_overrides or background_sites.  mlo_pfp shares the MLO
+# bin so MLO is not counted twice.
+#
+# CH3Br: three bins per hemisphere, tropical weighted 0.5 and the others 0.25.
+# nwr is left out for frequent early enhancements, thd for regularly low levels
+# (local ocean influence?), and mhd and sum for short or intermittent records.
+# lef and hfm are kept despite periodic enhancements.
+#
+# CH3Cl: as CH3Br, with nwr in the mid-latitude NH bin.
+#
+# CH3CCl3: the hemisphere is split into three sine-weighted bins, each weighted
+# by the cosine of its midpoint.
+gas_bins:
+  CH3Br:
+    NH:
+      NHtrop: {sites: [mlo, mlo_pfp, kum], weight: 0.5}
+      NHmid:  {sites: [lef, hfm],          weight: 0.25}
+      NHhi:   {sites: [brw, alt],          weight: 0.25}
+    SH:
+      SHtrop: {sites: [smo],               weight: 0.5}
+      SHmid:  {sites: [cgo],               weight: 0.25}
+      SHhi:   {sites: [psa, spo],          weight: 0.25}
+  CH3Cl:
+    NH:
+      NHtrop: {sites: [mlo, mlo_pfp, kum], weight: 0.5}
+      NHmid:  {sites: [nwr, lef, hfm],     weight: 0.25}
+      NHhi:   {sites: [brw, alt],          weight: 0.25}
+    SH:
+      SHtrop: {sites: [smo],               weight: 0.5}
+      SHmid:  {sites: [cgo],               weight: 0.25}
+      SHhi:   {sites: [psa, spo],          weight: 0.25}
+  CH3CCl3:
+    NH:
+      NHtrop: {sites: [mlo, mlo_pfp, kum],     weight: 0.970}
+      NHmid:  {sites: [lef, thd, nwr],         weight: 0.751}
+      NHhi:   {sites: [brw, alt, sum, mhd],    weight: 0.402}
+    SH:
+      SHtrop: {sites: [smo],                   weight: 0.974}
+      SHmid:  {sites: [cgo],                   weight: 0.770}
+      SHhi:   {sites: [spo],                   weight: 0.408}
+
 # Latitudes used *only* for the cos(latitude) weights (Steve's method).  The
 # underlying data and the site metadata are untouched.
 #
@@ -189,6 +245,47 @@ global_means_file_header: |
   #   reports, so a site-month reads alike in both.
   {interp_note}
   #
+  {method_text}
+  #
+  # Background sites used for {param}:
+  #   {background_sites}
+  {skipped_sites}
+  #
+  # -------------------------------------------------------------------------
+  # COLUMN DESCRIPTIONS
+  #
+  # yyyy         Year (UTC)
+  # mm           Month, 1-12 (UTC)
+  # dec_date     Mid-month decimal year (UTC)
+  # Global       Global mean dry-air mole fraction (pmol/mol, ppt)
+  # Global_sd    Propagated 1-sigma uncertainty of the global mean
+  # NH, SH       Northern and Southern Hemisphere means, and their _sd
+  {band_columns}
+  # <site>       Site monthly mean mole fraction
+  # <site>_sd    Standard deviation of that site's monthly mean
+  # <site>_n     Number of flask pairs in that site's monthly mean
+  #
+  # Months run continuously from the first to the last month with data.
+  # Missing values are reported as nan.  Mole fractions and standard deviations
+  # are written to three decimal places.
+  #
+  # -------------------------------------------------------------------------
+  # REFERENCES
+  #
+  # Montzka, S.A., J.H. Butler, J.W. Elkins, T.M. Thompson, A.D. Clarke,
+  #   and L.T. Lock, Present and future trends in the atmospheric burden of
+  #   ozone-depleting halogens, Nature, 398, 690-694, 1999.
+  #
+  # Montzka, S.A., B.D. Hall, J.W. Elkins, Accelerated increases observed for
+  #   hydrochlorofluorocarbons since 2004 in the global atmosphere,
+  #   Geophys. Res. Lett., 36, L03804, doi:10.1029/2008GL036475, 2009.
+  #
+  # -------------------------------------------------------------------------
+
+# Text substituted for {method_text} in the header above, depending on how the
+# hemispheric means were weighted.  {phi}, {psa_note} and {bin_table} are
+# filled in by the exporter.
+global_means_method_latitude: |
   # Semi-hemispheric means (HN, LN, LS, HS)
   #   Sites are grouped by latitude and averaged with cos(latitude) weights:
   #
@@ -228,39 +325,47 @@ global_means_file_header: |
   #   sampled sites pin down each mean, not how much the regions differ from
   #   one another.  A site contributes nothing to the sum in a month where its
   #   own standard deviation is unknown.
+global_means_method_bins: |
+  # Hemispheric means built from hand-chosen bins (SH and NH, three bins each)
+  #   Sites are not grouped by latitude.  Each hemisphere is split into the bins
+  #   listed under "Bins used for {param}" below.  A bin's monthly value is the
+  #   unweighted mean of the sites in it that have data that month:
   #
-  # Background sites used for {param}:
-  #   {background_sites}
-  {skipped_sites}
+  #       bin = mean(x_i)
   #
-  # -------------------------------------------------------------------------
-  # COLUMN DESCRIPTIONS
+  #   where x_i is site i's monthly mean.  Each bin carries a fixed weight, and
+  #   a hemisphere is the weighted mean of its bins:
   #
-  # yyyy         Year (UTC)
-  # mm           Month, 1-12 (UTC)
-  # dec_date     Mid-month decimal year (UTC)
-  # Global       Global mean dry-air mole fraction (pmol/mol, ppt)
-  # Global_sd    Propagated 1-sigma uncertainty of the global mean
-  # NH, SH       Northern and Southern Hemisphere means, and their _sd
+  #       hemisphere = sum(W_b * bin_b) / sum(W_b)
+  #
+  #   mlo and mlo_pfp are both members of the MLO bin, so MLO is not counted
+  #   twice while both have data.
+  #
+  # Hemispheric and global means
+  #   Global = (NH + SH) / 2
+  #   A mean is left blank unless every bin it needs has a value that month,
+  #   so Global requires all six bins.
+  #
+  # Uncertainties (the _sd columns on the bin, hemispheric and global means)
+  #   Site standard deviations are propagated through the same averages,
+  #   treating the sites as independent:
+  #
+  #       var(bin)        = sum( sd_i^2 ) / k^2        (k sites with data)
+  #       var(hemisphere) = sum( (W_b / sum(W))^2 * var(bin_b) )
+  #       sd(Global)      = sqrt( var(NH) + var(SH) ) / 2
+  #
+  #   These are propagated measurement scatter: they describe how well the
+  #   sampled sites pin down each mean, not how much the regions differ from
+  #   one another.  A site contributes nothing to the sum in a month where its
+  #   own standard deviation is unknown.
+  #
+  # Bins used for {param}:
+  #   {bin_table}
+
+# Column descriptions substituted for {band_columns} in the header above.
+global_means_columns_latitude: |
   # HN, LN,      Semi-hemispheric means (see METHOD above), and their _sd
   #   LS, HS
-  # <site>       Site monthly mean mole fraction
-  # <site>_sd    Standard deviation of that site's monthly mean
-  # <site>_n     Number of flask pairs in that site's monthly mean
-  #
-  # Months run continuously from the first to the last month with data.
-  # Missing values are reported as nan.  Mole fractions and standard deviations
-  # are written to three decimal places.
-  #
-  # -------------------------------------------------------------------------
-  # REFERENCES
-  #
-  # Montzka, S.A., J.H. Butler, J.W. Elkins, T.M. Thompson, A.D. Clarke,
-  #   and L.T. Lock, Present and future trends in the atmospheric burden of
-  #   ozone-depleting halogens, Nature, 398, 690-694, 1999.
-  #
-  # Montzka, S.A., B.D. Hall, J.W. Elkins, Accelerated increases observed for
-  #   hydrochlorofluorocarbons since 2004 in the global atmosphere,
-  #   Geophys. Res. Lett., 36, L03804, doi:10.1029/2008GL036475, 2009.
-  #
-  # -------------------------------------------------------------------------
+global_means_columns_bins: |
+  # {bin}      Bin means (see METHOD above), and their _sd; the names are
+  #              listed in the bin table

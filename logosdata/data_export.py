@@ -87,8 +87,6 @@ COLUMNS_PAIRS_FILE = Path(__file__).parent / 'mstar_columns_pairs.txt'
 COLUMNS_MONTHLY_FILE = Path(__file__).parent / 'mstar_columns_monthly.txt'
 MISSING = 'nd'
 MONTHLY_MISSING = 'nan'
-# Column order for the global-means export: means before the site columns.
-_MEAN_COL_ORDER = ['Global', 'NH', 'SH', 'HN', 'LN', 'LS', 'HS']
 # The global-means product follows GML_means' 3-decimal convention; 2 would
 # round away the propagated uncertainties, which are often a few hundredths.
 GLOBAL_MEANS_DECIMALS = 3
@@ -550,11 +548,17 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
     See :mod:`global_means` for the math.
     """
 
+    # Mean columns in file order; __init__ replaces this with the bins' names
+    # when the gas is weighted by bin rather than by latitude band.
+    mean_labels = ['Global', 'NH', 'SH', 'HN', 'LN', 'LS', 'HS']
+
     def __init__(self, instrument, parameter: str, parameter_num: int,
                  start_year: int, end_year: int,
                  config: 'GlobalMeansConfig | None' = None):
         self.config = config or GlobalMeansConfig.load()
         self.calculator = GlobalMeansCalculator(parameter, config=self.config)
+        # Mean columns, in file order: Global, NH, SH, then the bands or bins.
+        self.mean_labels = list(self.calculator.mean_labels)
         # Populated by query_data(); reported in the file header.
         self.sites_without_data: list[str] = []
         super().__init__(
@@ -682,10 +686,10 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         )
         interp_note = self._interpolation_note()
         psa_lat = self.calculator.weight_lats.get('psa')
-        psa_note = (
+        psa_note = ('' if self.calculator.uses_bins else (
             f'\n#   For {self.parameter} PSA is also moved, weighted as '
             f'{abs(psa_lat):.0f}S instead of its\n#   true ~64S.' if psa_lat else ''
-        )
+        ))
         source_note = (
             '#\n#   Note: GML publishes this gas from blended fECD and MSD\n'
             '#   measurements.  This file is M-system only, so it will not\n'
@@ -693,7 +697,17 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             if self.config.is_combined_source(self.parameter) else '#'
         )
         phi = f'{self.config.phi:g}'
+        method = 'bins' if self.calculator.uses_bins else 'latitude'
+        method_text = (self.config.method_text[method]
+                       .replace('{phi}', phi)
+                       .replace('{psa_note}', psa_note)
+                       .replace('{bin_table}', self._bin_table())
+                       .replace('{param}', self.parameter)
+                       .rstrip('\n'))
         return (self.config.header_template
+                .replace('{method_text}', method_text)
+                .replace('{band_columns}',
+                         self.config.columns_text[method].rstrip('\n'))
                 .replace('{filename}', filename)
                 .replace('{param}', self.parameter)
                 .replace('{generated_on}', datetime.now().strftime('%Y-%m-%d'))
@@ -703,6 +717,15 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
                 .replace('{psa_note}', psa_note)
                 .replace('{interp_note}', interp_note)
                 .replace('{source_note}', source_note))
+
+    def _bin_table(self) -> str:
+        """One line per bin: name, weight and sites, for the file header."""
+        lines = []
+        for hemi in ('NH', 'SH'):
+            for b in self.calculator.bins.get(hemi, []):
+                lines.append(f"{b['name']:<7} weight {b['weight']:<6g} "
+                             f"{', '.join(b['sites'])}")
+        return '\n#   '.join(lines)
 
     def _interpolation_note(self) -> str:
         """Comment block describing how gaps were filled, per the active config."""
@@ -748,8 +771,9 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         for col in df.columns:
             if col == 'date':
                 continue
-            (mean_cols if col.split('_')[0] in _MEAN_COL_ORDER else site_cols).append(col)
-        mean_cols.sort(key=lambda c: (_MEAN_COL_ORDER.index(c.split('_')[0]),
+            base = col[:-3] if col.endswith('_sd') else col
+            (mean_cols if base in self.mean_labels else site_cols).append(col)
+        mean_cols.sort(key=lambda c: (self.mean_labels.index(c[:-3] if c.endswith('_sd') else c),
                                       c.endswith('_sd')))
 
         lines = ['\t'.join(['yyyy', 'mm', 'dec_date'] + mean_cols + site_cols)]
@@ -781,7 +805,7 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         out = []
         for col in sorted(c for c in df.columns
                           if not c.endswith(('_sd', '_n'))
-                          and c not in ('date',) + tuple(_MEAN_COL_ORDER)):
+                          and c not in ('date', *self.mean_labels)):
             out.append({
                 'label': col, 'site': col.upper(),
                 'x': df['date'], 'y': pd.to_numeric(df[col], errors='coerce'),

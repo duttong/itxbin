@@ -40,6 +40,44 @@ BANDS = ('HN', 'LN', 'LS', 'HS')
 COMBOS = {'NH': ('HN', 'LN'), 'SH': ('LS', 'HS'), 'Global': BANDS}
 
 
+METHODS = ('latitude', 'bins')
+
+
+def _check_method(method: str) -> str:
+    method = str(method).lower()
+    if method not in METHODS:
+        raise ValueError(f"weighting_method must be one of {METHODS}, got {method!r}")
+    return method
+
+
+def _parse_gas_bins(raw: dict) -> dict[str, dict[str, list[dict]]]:
+    """Normalise the gas_bins config into {gas: {hemisphere: [bin, ...]}}.
+
+    Each bin is ``{name, sites (lower case), weight}``.  Hemispheres are NH and
+    SH; bin names have to be unique within a gas, since they become columns.
+    """
+    out: dict[str, dict[str, list[dict]]] = {}
+    for gas, hemis in raw.items():
+        names: set[str] = set()
+        out[gas] = {}
+        for hemi, bins in hemis.items():
+            if hemi not in ('NH', 'SH'):
+                raise ValueError(f"gas_bins {gas}: hemisphere must be NH or SH, got {hemi!r}")
+            out[gas][hemi] = []
+            for name, spec in bins.items():
+                if name in names or name in ('Global', 'NH', 'SH') + BANDS:
+                    raise ValueError(f"gas_bins {gas}: bin name {name!r} is not unique")
+                names.add(name)
+                weight = float(spec['weight'])
+                if weight <= 0 or not spec.get('sites'):
+                    raise ValueError(f"gas_bins {gas}/{name}: needs sites and a positive weight")
+                out[gas][hemi].append({'name': name, 'weight': weight,
+                                       'sites': [x.lower() for x in spec['sites']]})
+        if set(out[gas]) != {'NH', 'SH'}:
+            raise ValueError(f"gas_bins {gas}: needs both NH and SH")
+    return out
+
+
 def normalize_gas_name(name: str) -> str:
     """Return *name* with hyphens stripped, for matching display names to config keys.
 
@@ -63,7 +101,11 @@ class GlobalMeansConfig:
     max_interpolation_months: int = 3
     combined_source_gases: list[str] = field(default_factory=list)
     analyte_aliases: dict[str, str] = field(default_factory=dict)
+    weighting_method: str = 'latitude'
+    gas_bins: dict[str, dict[str, list[dict]]] = field(default_factory=dict)
     header_template: str = ''
+    method_text: dict[str, str] = field(default_factory=dict)
+    columns_text: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> 'GlobalMeansConfig':
@@ -86,7 +128,11 @@ class GlobalMeansConfig:
             max_interpolation_months=int(cfg.get('max_interpolation_months', 3)),
             combined_source_gases=cfg.get('combined_source_gases') or [],
             analyte_aliases=cfg.get('analyte_aliases') or {},
+            weighting_method=_check_method(cfg.get('weighting_method', 'latitude')),
+            gas_bins=_parse_gas_bins(cfg.get('gas_bins') or {}),
             header_template=cfg.get('global_means_file_header', ''),
+            method_text={m: cfg.get(f'global_means_method_{m}', '') for m in METHODS},
+            columns_text={m: cfg.get(f'global_means_columns_{m}', '') for m in METHODS},
         )
 
     # ── per-gas lookups ──────────────────────────────────────────────────────
@@ -100,7 +146,8 @@ class GlobalMeansConfig:
         if analyte in self.analyte_aliases:
             return self.analyte_aliases[analyte]
         candidate = normalize_gas_name(analyte)
-        known = set(self.gas_background_overrides) | set(self.combined_source_gases)
+        known = (set(self.gas_background_overrides) | set(self.combined_source_gases)
+                 | set(self.gas_bins))
         for entry in self.gas_weight_lat_overrides.values():
             known.update(entry.get('gases', []))
         for key in known:
@@ -117,8 +164,25 @@ class GlobalMeansConfig:
         gas = self.gas_key(analyte)
         return any(g.lower() == gas.lower() for g in self.combined_source_gases)
 
+    def bins_for(self, analyte: str) -> dict[str, list[dict]]:
+        """Bins for *analyte* as {hemisphere: [{name, sites, weight}, ...]}.
+
+        Empty unless ``weighting_method`` is ``bins`` and the gas has an entry in
+        ``gas_bins``; an empty result means the latitude method is in force.
+        """
+        if self.weighting_method != 'bins':
+            return {}
+        return self.gas_bins.get(self.gas_key(analyte), {})
+
     def sites_for(self, analyte: str) -> list[str]:
         """Background sites to use for *analyte*."""
+        bins = self.bins_for(analyte)
+        if bins:
+            sites: list[str] = []
+            for hemi_bins in bins.values():
+                for b in hemi_bins:
+                    sites.extend(s for s in b['sites'] if s not in sites)
+            return sites
         return self.gas_background_overrides.get(self.gas_key(analyte),
                                                  self.background_sites)
 
@@ -149,6 +213,16 @@ class GlobalMeansCalculator:
         self.analyte = analyte
         self.weight_lats = self.config.weight_lats_for(analyte)
         self.skipped_sites: list[str] = []
+        self.bins = self.config.bins_for(analyte)
+        self.mean_labels = (
+            ['Global', 'NH', 'SH'] + [b['name'] for h in ('NH', 'SH') for b in self.bins[h]]
+            if self.bins else ['Global', 'NH', 'SH', *BANDS]
+        )
+
+    @property
+    def uses_bins(self) -> bool:
+        """True when this gas is weighted with gas_bins rather than by latitude."""
+        return bool(self.bins)
 
     # ── site frame preparation ───────────────────────────────────────────────
 
@@ -326,6 +400,8 @@ class GlobalMeansCalculator:
         """
         if prepared.empty:
             return pd.DataFrame()
+        if self.uses_bins:
+            return self._compute_bins(prepared)
 
         means, variances = self.band_means(prepared)
         out = pd.DataFrame(index=means.index)
@@ -340,5 +416,59 @@ class GlobalMeansCalculator:
             out[band] = means[band]
             out[f'{band}_sd'] = np.sqrt(variances[band])
 
+        out.index.name = 'date'
+        return out
+
+    def _compute_bins(self, prepared: pd.DataFrame) -> pd.DataFrame:
+        """Monthly means from the configured bins (see ``gas_bins`` in the config).
+
+        A bin is the unweighted mean of the sites in it that have data that
+        month; its variance is ``sum(sd_i^2) / k^2`` for the *k* sites present.
+        A hemisphere is the weighted mean of its bins and is left NaN unless
+        every bin has a value, matching how the latitude bands behave.  Global is
+        ``(NH + SH) / 2``.  Returns the same columns as the latitude path, with
+        the bins in place of HN/LN/LS/HS.
+        """
+        data = prepared.dropna(subset=['mf'])
+        if data.empty:
+            return pd.DataFrame()
+        mf = data.pivot_table(index='date', columns='site', values='mf')
+        sd = data.pivot_table(index='date', columns='site', values='sd')
+        sd = sd.reindex(index=mf.index, columns=mf.columns)
+
+        bin_mean, bin_var = {}, {}
+        for hemi in ('NH', 'SH'):
+            for b in self.bins[hemi]:
+                cols = [s for s in b['sites'] if s in mf.columns]
+                if not cols:
+                    bin_mean[b['name']] = pd.Series(np.nan, index=mf.index)
+                    bin_var[b['name']] = pd.Series(np.nan, index=mf.index)
+                    continue
+                have = mf[cols].notna()
+                k = have.sum(axis=1).replace(0, np.nan)
+                bin_mean[b['name']] = mf[cols].sum(axis=1, min_count=1) / k
+                # A site without its own sd contributes nothing, not NaN.
+                var = (sd[cols].where(have).fillna(0.0) ** 2).sum(axis=1) / k ** 2
+                bin_var[b['name']] = var.where(k.notna())
+        bin_mean = pd.DataFrame(bin_mean)
+        bin_var = pd.DataFrame(bin_var)
+
+        out = pd.DataFrame(index=mf.index)
+        hemi_var = {}
+        for hemi in ('NH', 'SH'):
+            names = [b['name'] for b in self.bins[hemi]]
+            w = pd.Series({b['name']: b['weight'] for b in self.bins[hemi]})
+            w = w / w.sum()
+            out[hemi] = (bin_mean[names] * w).sum(axis=1, min_count=len(names))
+            hemi_var[hemi] = (bin_var[names] * w ** 2).sum(axis=1, min_count=len(names))
+            out[f'{hemi}_sd'] = np.sqrt(hemi_var[hemi])
+        out['Global'] = out[['NH', 'SH']].mean(axis=1, skipna=False)
+        out['Global_sd'] = np.sqrt((hemi_var['NH'] + hemi_var['SH']).where(
+            out['Global'].notna())) / 2
+        for name in bin_mean.columns:
+            out[name] = bin_mean[name]
+            out[f'{name}_sd'] = np.sqrt(bin_var[name])
+        out = out[['Global', 'Global_sd', 'NH', 'NH_sd', 'SH', 'SH_sd']
+                  + [c for n in bin_mean.columns for c in (n, f'{n}_sd')]]
         out.index.name = 'date'
         return out
