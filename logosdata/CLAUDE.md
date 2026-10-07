@@ -590,7 +590,7 @@ monthly resolution:
 - Sites are bucketed into `HN / LN / LS / HS` at ±`phi` (30°) and averaged with
   `cos(lat)` weights; `Global` is the unweighted mean of the four bands, NaN
   unless all four are present that month.
-- `weight_lat_overrides` move SPO to −65 (and PSA to −80 for the gases listed
+- `weight_lat_overrides` move SPO to −66 (and PSA to −80 for the gases listed
   in `gas_weight_lat_overrides`) **for the weights only** — Steve's method.
   The data and `gmd.site` are untouched.
 - `_sd` columns propagate the site standard deviations through the same

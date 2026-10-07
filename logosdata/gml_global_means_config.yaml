@@ -29,6 +29,10 @@ gas_background_overrides:
   HFC227ea: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
   HFC365mfc: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
   HFC236fa: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa]
+  # HCFC22 follows Montzka's own hemispheric means: SH is spo, cgo and smo only;
+  # NH is mlo (and mlo_pfp), kum, nwr, brw and alt.  No mhd, psa, sum, thd, rpb
+  # or ush.
+  HCFC22: [alt, brw, cgo, kum, mlo, mlo_pfp, nwr, smo, spo]
 
 # PFP pseudo-sites and double weighting -- OPEN QUESTION
 #
@@ -55,10 +59,10 @@ gas_background_overrides:
 # Latitudes used *only* for the cos(latitude) weights (Steve's method).  The
 # underlying data and the site metadata are untouched.
 #
-# spo (true lat ~ -90) is moved to -65 so it doesn't carry a near-zero weight
+# spo (true lat ~ -90) is moved to -66 so it doesn't carry a near-zero weight
 # in the high-southern band, which would effectively drop it out of the HS mean.
 weight_lat_overrides:
-  spo: -65.0
+  spo: -66.0
 
 # psa (true lat ~ -64) is moved to -80 for selected short-lived or
 # interhemispherically uneven gases, so its NH-leaning signal doesn't dominate
@@ -197,7 +201,7 @@ global_means_file_header: |
   #     HS  lat <= {phi}S
   #   Two latitudes are moved before the weights are computed so a station
   #   does not fall out of its band; only the weights change, not the data.
-  #   SPO is weighted as 65S instead of ~90S, where its true cos(lat) would
+  #   SPO is weighted as 66S instead of ~90S, where its true cos(lat) would
   #   be near zero.{psa_note}
   #
   # Hemispheric and global means
