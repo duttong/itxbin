@@ -152,9 +152,8 @@ PFP_SITES = {'MLO_PFP': 'MLO', 'MKO_PFP': 'MKO'}
 FE3_EXTRA_SITES = ['ITN', 'USH']
 
 # Sites excluded from the "Export M* Data -- All Sites" action.
-# MKO_PFP: only PFP samples exist at MKO, no standard flask M* record.
 # BLD: M4-only site, no M1/M3 data.
-MSTAR_EXPORT_EXCLUDE = {'MKO_PFP', 'BLD'}
+MSTAR_EXPORT_EXCLUDE = {'BLD'}
 
 
 # colors for site-based plotting; "Latitude" is a special case that assigns colors based on lat order
