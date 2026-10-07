@@ -29,7 +29,7 @@ gas_background_overrides:
   HFC227ea: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
   HFC365mfc: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, rpb, smo, ush, psa, spo]
   HFC236fa: [alt, sum, brw, cgo, kum, mlo, mlo_pfp, nwr, thd, smo, ush, psa]
-  # HCFC22 follows Montzka's own hemispheric means: SH is spo, cgo and smo only;
+  # HCFC22 follows Steves's own hemispheric means: SH is spo, cgo and smo only;
   # NH is mlo (and mlo_pfp), kum, nwr, brw and alt.  No mhd, psa, sum, thd, rpb
   # or ush.
   HCFC22: [alt, brw, cgo, kum, mlo, mlo_pfp, nwr, smo, spo]
@@ -52,13 +52,6 @@ gas_background_overrides:
 # weight of a single-programme site.  During 2023-2024 only mlo_pfp has data, so
 # the weighting is unaffected there.
 #
-# Measured effect on the global mean of splitting them (HFC-134a, 2021 onward):
-# -0.077 ppt on average, 0.21 ppt at worst, about 0.06% of signal.
-#
-# Still to decide: whether to prefer the programmatic flask value and drop
-# mlo_pfp in months where both exist, rather than weighting both.  Nothing
-# implements that yet.
-
 # How the hemispheric means are weighted:
 #   latitude  four semi-hemispheric bands (HN/LN/LS/HS) with cos(latitude) site
 #             weights.  What every gas used before gas_bins existed.
@@ -156,23 +149,13 @@ interpolation_method: seasonal
 # Longest run of consecutive missing months that will be bridged.  A longer run
 # is left empty rather than straight-lined.
 #
-# This matters most where a co-located surrogate is running: MLO's programmatic
-# flask record has a 33-month hole from the Nov 2022 eruption outage
-# (2022-12 to 2025-08) that mlo_pfp covers.  Without a cap, mlo is filled with a
-# confident-looking ramp -- biased up to 3.4 ppt above the real PFP measurement
-# at the same location -- and then weighted in the LN band *alongside* mlo_pfp,
-# double-counting MLO with one of the two values fabricated.
-#
-# Capping costs nothing in coverage: with the cap the global mean is still
-# defined in 382 of 391 months for HFC-134a, exactly as without it, because the
-# surrogate already covers the outage.
 max_interpolation_months: 3
 
 # Gases whose published GML product blends fECD and MSD measurements
 # (data_source.combined in gml_config.yaml).  This export is M-system only, so
 # for these gases it will not reproduce the published global means exactly --
 # the published values also carry OTTO/FE3 data.  Gases outside this list are
-# MSD-only upstream too, and do reproduce closely.
+# MSD-only upstream too.
 combined_source_gases: [CFC11, CFC12, CFC113, CCl4, SF6]
 
 # The keys above use GML gas names; logos_data analytes use display names from
