@@ -363,10 +363,10 @@ class M4_SampleLogs(M4_Instrument):
     def merged_rundata(self, duration='2ME', save=True):
         """Merge pressure files with chromatogram file names."""
         
-        valid_sites = [
-            'alt', 'amy', 'bld', 'brw', 'cgo', 'hfm', 'kum', 'lef', 'mhd', 'mko',
-            'mlo', 'nwr', 'psa', 'rpb', 'smo', 'spo', 'sum', 'thd', 'wis'
-        ]
+        # Sites with flask pairs in hats.hatsflask_pair_info (so new sites like
+        # MON parse automatically), plus legacy codes that have no pairs there.
+        legacy_sites = ['mko']
+        valid_sites = sorted({s.lower() for s in self.LOGOS_sites} | set(legacy_sites))
         
         # Determine the start date based on the duration argument.
         if duration.lower() == 'all':

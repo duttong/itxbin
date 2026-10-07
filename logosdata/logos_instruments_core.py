@@ -5,6 +5,7 @@ names through the logos_instruments facade."""
 import sys
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import re
 from datetime import datetime, timedelta, timezone
 import time
@@ -23,9 +24,11 @@ class LOGOS_Instruments:
         'cats': 239,   # per-site inst_num is overridden in CATS_Instrument.__init__
     }
     
-    LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
-            'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
-            'BLD', 'MKO']
+    # Used only if the hatsflask_pair_info lookup (HATS_DB_Functions.LOGOS_sites)
+    # fails.
+    LOGOS_sites_fallback = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO',
+            'NWR', 'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD',
+            'HFM', 'BLD']
     
     BASE_MARKER_SIZE = 60   # for scatter plots. Can override in subclasses.
     # Columns of self.run offered in logos_data's "Additional" toolbar combo,
@@ -46,6 +49,50 @@ class HATS_DB_Functions(LOGOS_Instruments):
     # every aggregated group (historical behavior). Instruments override this
     # to drop statistically meaningless low-n groups (see FE3_Instrument).
     MIN_CAL_INJECTIONS = 1
+
+    _flask_sites_cache = None
+
+    @property
+    def LOGOS_sites(self):
+        """Flask site codes ordered north to south, from the sites that have
+        sample pairs in hats.hatsflask_pair_info (new sites appear
+        automatically). Cached for the process; falls back to the static
+        LOGOS_sites_fallback list if the query fails."""
+        cls = HATS_DB_Functions
+        if cls._flask_sites_cache is None:
+            try:
+                rows = self.db.doquery(
+                    "SELECT s.code, s.lat FROM hats.hatsflask_pair_info p "
+                    "JOIN gmd.site s ON p.site_num = s.num "
+                    "GROUP BY s.code, s.lat ORDER BY s.lat DESC")
+                codes = [r['code'] for r in rows]
+                if not codes:
+                    raise ValueError("no sites returned")
+                cls._flask_sites_cache = codes
+            except Exception as e:
+                print(f"flask site lookup failed ({e}); using fallback list",
+                      file=sys.stderr)
+                return list(self.LOGOS_sites_fallback)
+        return list(cls._flask_sites_cache)
+
+    def site_colors(self):
+        """Site -> RGBA, jet ordered by latitude (same as the timeseries
+        'Latitude' palette) so colors stay put when a site is added."""
+        sites = self.LOGOS_sites
+        cmap = plt.get_cmap('jet', len(sites))
+        return {site: self._darken_light(cmap(i))
+                for i, site in enumerate(sites)}
+
+    @staticmethod
+    def _darken_light(rgba, start=0.3, span=0.6, strength=0.45):
+        """Darken colors too pale to read on white (jet's yellow-green
+        band). The darkening ramps up smoothly with luminance above `start`
+        so neighbouring sites don't swap light/dark order; darker colors
+        pass through unchanged."""
+        r, g, b, a = rgba
+        lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        f = 1 - strength * min(max((lum - start) / span, 0.0), 1.0)
+        return (r * f, g * f, b * f, a)
 
     # N2O and SF6 predate the consolidated hats.scale_assignments_view.  Keep
     # this compatibility mapping here, in the database-access layer, so all

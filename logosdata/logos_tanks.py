@@ -29,10 +29,6 @@ import sys
 from collections import defaultdict
 
 
-LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'MKO', 'ALT', 'CGO', 'NWR',
-            'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
-            'BLD', 'MKO']
-
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".logos-tanks.conf")
 MAX_SAVED_SETS = 5
 

@@ -135,6 +135,8 @@ def _save_timeseries_marker_size(size: int) -> None:
         cfg.write(fh)
 
 
+# Fallback only; the live list is HATS_DB_Functions.LOGOS_sites (from
+# hats.hatsflask_pair_info). PFP pseudo-sites are added in get_site_info().
 LOGOS_sites = ['SUM', 'PSA', 'SPO', 'SMO', 'AMY', 'ALT', 'CGO', 'NWR',
             'LEF', 'BRW', 'RPB', 'KUM', 'MLO', 'WIS', 'THD', 'MHD', 'HFM',
             'BLD', 'MLO_PFP', 'MKO_PFP']
@@ -2867,7 +2869,9 @@ class TimeseriesWidget(QWidget):
         
     def get_site_info(self):
         extra = FE3_EXTRA_SITES if getattr(self.instrument, 'inst_num', None) == 193 else []
-        real_sites = [s for s in LOGOS_sites if s not in PFP_SITES] + extra
+        live = getattr(self.instrument, 'LOGOS_sites', None) or LOGOS_sites
+        real_sites = [s for s in live if s not in PFP_SITES]
+        real_sites += [s for s in extra if s not in real_sites]
         # Also fetch base sites for PFP pseudo-sites even if they are not in
         # LOGOS_sites (e.g. MKO was removed as a standalone site but MKO_PFP
         # still needs MKO's lat/lon to place itself in the sorted list).

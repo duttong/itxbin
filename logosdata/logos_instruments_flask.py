@@ -283,8 +283,7 @@ class M4_Instrument(HATS_DB_Functions):
                             .str.strip()
 
         # assign colors to sites
-        cmap = plt.get_cmap('tab20')
-        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+        site_colors = self.site_colors()
 
         # Start with site-based colors
         df['port_color'] = df['site'].map(site_colors).fillna('gray')
@@ -763,8 +762,7 @@ class FE3_Instrument(HATS_DB_Functions):
         df.loc[before_mask & (df['port'] == 2),  'port_idx'] = (10 + df['flask_port'].fillna(0).astype(int))
 
         # assign colors to sites
-        cmap = plt.get_cmap('tab20')
-        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+        site_colors = self.site_colors()
 
         # Start with site-based colors
         df['port_color'] = df['site'].map(site_colors).fillna('gray')
@@ -1229,8 +1227,7 @@ class Perseus_Instrument(HATS_DB_Functions):
         )
 
         # assign colors to sites (HATS/PFP/CCGG)
-        cmap = plt.get_cmap('tab20')
-        site_colors = {site: cmap(i % 20) for i, site in enumerate(self.LOGOS_sites)}
+        site_colors = self.site_colors()
         df['port_color'] = df['site'].map(site_colors).fillna('gray').astype(object)
 
         # std/cal/tank: distinct color per cylinder. sample_id is the
