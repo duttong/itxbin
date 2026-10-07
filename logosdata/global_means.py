@@ -43,6 +43,24 @@ COMBOS = {'NH': ('HN', 'LN'), 'SH': ('LS', 'HS'), 'Global': BANDS}
 METHODS = ('latitude', 'bins')
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a repeated key instead of keeping the last one.
+
+    A bin renamed onto an existing name would otherwise silently delete the
+    first bin from the hemisphere.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f'duplicate key {key!r}', key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+
 def _check_method(method: str) -> str:
     method = str(method).lower()
     if method not in METHODS:
@@ -109,8 +127,14 @@ class GlobalMeansConfig:
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> 'GlobalMeansConfig':
-        with open(path) as fh:
-            cfg = yaml.safe_load(fh)
+        return cls.from_text(Path(path).read_text())
+
+    @classmethod
+    def from_text(cls, text: str) -> 'GlobalMeansConfig':
+        """Parse config *text*; raises on bad YAML or an invalid gas_bins entry."""
+        cfg = yaml.load(text, Loader=_StrictLoader)
+        if not isinstance(cfg, dict):
+            raise ValueError('the config must be a YAML mapping of settings')
         return cls(
             phi=float(cfg.get('phi', 30.0)),
             background_sites=[s.lower() for s in cfg.get('background_sites', [])],

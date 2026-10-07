@@ -17,6 +17,7 @@ logosdata/
   data_export.py       # Mstar/Fecd file exporters used by the Timeseries tab
   global_means.py      # cos(lat)-weighted hemispheric and global mean math
   gml_global_means_config.yaml  # background sites and weighting rules for it
+  global_means_config_dialog.py # "Edit Global Means Config" editor + validate_config_text()
   combined_data.py     # multi-program combined data sets (replaces Igor "HATS combined")
   combined_data_config.yaml     # roadmap: programs, sources and rules per gas
   logos_tanks.py       # TanksWidget — tank history and reference tank UI
@@ -617,6 +618,16 @@ monthly resolution:
   Measured (1991-2026, Global, C-A): CH3Br -0.03 ppt mean, CH3CCl3 +0.05,
   CH3Cl **-3.2 ppt** (NH -6.5, ~0.6%): probably the cos(lat) HN band being dominated by NWR,
   LEF and HFM (enhanced sites), which his bins cap at 0.25 (not verified).
+- **"Edit Global Means Config" button** (SAVE group, M4) opens
+  `GlobalMeansConfigDialog`, a plain-text editor on the live yaml. Save is gated
+  by `validate_config_text()`: it must parse (`_StrictLoader` rejects duplicate
+  keys, which YAML would otherwise merge silently -- a bin renamed onto another
+  deletes it), build a calculator for every gas under both methods, and keep the
+  header blocks. The exporter re-reads the file each time, so an edit applies
+  to the next export. The deployed copy is a git checkout, so the `deploy` shell
+  function (`~/.bashrc`) commits a dirty yaml, `pull --rebase`s and pushes, and
+  aborts the rebase with a message on conflict. The file must be writable by
+  whoever runs logos_data (it is `-rw-r--r-- gdutton` on `/hats/gc/itxbin`).
 - Interior gaps in a site's monthly series are filled when
   `interpolate_site_gaps` is on; those months carry `n = 0`. Leading/trailing
   gaps are never extrapolated.

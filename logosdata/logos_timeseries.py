@@ -2685,6 +2685,16 @@ class TimeseriesWidget(QWidget):
                 "header states it in full."
             )
 
+            _tip_cfg = (
+                "<b>Edit Global Means Config</b><br><br>"
+                "Opens <tt>gml_global_means_config.yaml</tt>, which sets each "
+                "gas's background sites, the CH3Br / CH3Cl / CH3CCl3 bins, the "
+                "weighting method and the site weighting latitudes.<br><br>"
+                "A save is checked first and refused if the config would not "
+                "load. It takes effect on the next Global Means export; "
+                "<tt>deploy</tt> commits and pushes the edit."
+            )
+
             self.export_mstar_all_btn = QPushButton("All Sites and Time")
             self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
             self.export_mstar_sel_btn = QPushButton("Selected Sites and Time")
@@ -2693,6 +2703,8 @@ class TimeseriesWidget(QWidget):
             self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
             self.export_mstar_global_btn = QPushButton("Global Means at Selected Time")
             self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
+            self.edit_global_cfg_btn = QPushButton("Edit Global Means Config")
+            self.edit_global_cfg_btn.clicked.connect(self._edit_global_means_config)
 
             _all_sites = lambda: [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
             save_layout.addLayout(self._export_row(
@@ -2709,6 +2721,7 @@ class TimeseriesWidget(QWidget):
                 self.export_mstar_global_btn, _tip_global,
                 on_plot=lambda: self._preview_export(None,
                                                      exporter_cls=MstarGlobalMeansExporter)))
+            save_layout.addLayout(self._export_row(self.edit_global_cfg_btn, _tip_cfg))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
 
@@ -3023,6 +3036,11 @@ class TimeseriesWidget(QWidget):
         """Export M* monthly means for the checked sites and the selected year range."""
         self._run_mstar_export(sites=self.get_active_sites(), all_time=False,
                                exporter_cls=MstarMonthlyExporter)
+
+    def _edit_global_means_config(self):
+        """Open the config editor; a modal dialog, so one at a time."""
+        from global_means_config_dialog import GlobalMeansConfigDialog
+        GlobalMeansConfigDialog(self).exec_()
 
     def _export_mstar_global_means(self):
         """Export monthly global/hemispheric means over the selected year range.
