@@ -55,7 +55,7 @@ class FiguresWidget(QWidget):
         try:
             directory = Path(self.instrument.gc_dir) / "MassHunter/GCMS/M4 GSPC Files"
             bd = bd_file_for_run(directory, run_time)
-            figure, _ = build_figure(bd)
+            figure, _ = build_figure(bd, directory)
             canvas = FigureCanvasQTAgg(figure)
             toolbar = NavigationToolbar2QT(canvas, self.plot_widget)
             for old in (self.canvas, self.toolbar):

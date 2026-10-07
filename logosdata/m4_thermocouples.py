@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 GSPC_DIR = Path("/hats/gc/m4/MassHunter/GCMS/M4 GSPC Files")
+CHEMSTATION_DIR = Path("/hats/gc/m4/chemstation")
 EVENT_RE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+: (.*)")
 
 
@@ -53,10 +54,15 @@ def spans(ev, on, off):
     return out
 
 
-def read_temps(directory, t0, t1):
-    """All temps_*.csv rows overlapping [t0, t1], de-duplicated."""
+def temps_dirs(directory, year):
+    """Directories that may hold temps_*.csv: active, year archive, then Temp."""
+    return [d for d in (directory, directory / str(year), directory / "Temp") if d.is_dir()]
+
+
+def read_temps(directories, t0, t1):
+    """All temps_*.csv rows overlapping [t0, t1] in the directories, de-duplicated."""
     dfs = []
-    for path in sorted(directory.glob("temps_*.csv")):
+    for path in sorted(p for d in directories for p in d.glob("temps_*.csv")):
         frame = pd.read_csv(path)
         # Edited copies can contain times alone. Never invent a date for them.
         frame["datetime"] = pd.to_datetime(
@@ -64,7 +70,7 @@ def read_temps(directory, t0, t1):
         )
         dfs.append(frame.dropna(subset=["datetime"]))
     if not dfs:
-        raise SystemExit(f"No temps_*.csv files found in {directory}")
+        raise SystemExit(f"No temps_*.csv files found in {[str(d) for d in directories]}")
     t = pd.concat(dfs).drop_duplicates("datetime").sort_values("datetime")
     return t[(t.datetime >= t0 - pd.Timedelta(minutes=5)) & (t.datetime <= t1 + pd.Timedelta(minutes=5))].reset_index(drop=True)
 
@@ -94,12 +100,16 @@ def fmt_stats(v):
     return f"{v.mean():.2f} ± {sd:.2f} ({v.min():.2f}, {v.max():.2f}) °C"
 
 
-def build_figure(bd):
-    """Build the plot without selecting a backend or writing a file."""
+def build_figure(bd, directory=GSPC_DIR):
+    """Build the plot without selecting a backend or writing a file.
+
+    The log may come from the chemstation copy, which has no temps_*.csv, so the
+    temperature files are always searched for under the GSPC directory.
+    """
     ev = read_log(bd)
     if not ev:
         raise SystemExit(f"No timestamped events in {bd}")
-    t = read_temps(bd.parent, ev[0][0], ev[-1][0])
+    t = read_temps(temps_dirs(Path(directory), ev[0][0].year), ev[0][0], ev[-1][0])
     if t.empty:
         raise SystemExit(f"No temps_*.csv data overlaps {bd.name} ({ev[0][0]} - {ev[-1][0]})")
 
@@ -179,14 +189,18 @@ def make_figure(bd, out):
 
 
 def bd_file_for_run(directory, run_time):
-    """Locate a selected run's log in the active directory or year archive."""
+    """Locate a selected run's log: GSPC dir, year archive, chemstation, then Temp.
+
+    Temp is last because it holds working copies the operator may still be editing.
+    """
     date = pd.Timestamp(str(run_time).split(" (")[0])
     name = f"bd{date.strftime('%m%d%y')}.txt"
-    for parent in (directory, directory / str(date.year)):
+    parents = (directory, directory / str(date.year), CHEMSTATION_DIR, directory / "Temp")
+    for parent in parents:
         path = parent / name
         if path.is_file():
             return path
-    raise FileNotFoundError(f"Cannot find {name} in {directory} or its {date.year} archive")
+    raise FileNotFoundError(f"Cannot find {name} in " + ", ".join(str(p) for p in parents))
 
 
 def latest_bd_file(directory):
