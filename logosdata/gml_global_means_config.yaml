@@ -33,6 +33,9 @@ gas_background_overrides:
   # NH is mlo (and mlo_pfp), kum, nwr, brw and alt.  No mhd, psa, sum, thd, rpb
   # or ush.
   HCFC22: [alt, brw, cgo, kum, mlo, mlo_pfp, nwr, smo, spo]
+  # CFC11 uses the HCFC22 sites plus psa in the SH and mhd, thd and sum in the NH
+  # (Montzka).  No rpb or ush.
+  CFC11: [alt, brw, cgo, kum, mlo, mlo_pfp, nwr, smo, spo, psa, mhd, thd, sum]
 
 # PFP pseudo-sites and double weighting -- OPEN QUESTION
 #

@@ -109,6 +109,8 @@ def plot(gas: str, res: dict[str, pd.DataFrame], outdir: Path) -> Path:
                         lw=1, label='B - A  site choice')
         axes[1, j].plot(res['C'].index, res['C'][m] - res['B'][m], color='tab:red',
                         lw=1, label='C - B  weighting')
+        axes[1, j].plot(res['C'].index, res['C'][m] - res['A'][m], color='k',
+                        lw=1.4, label='C - A  total')
         axes[1, j].set_ylabel('ppt')
     axes[0, 0].legend(fontsize=8)
     axes[1, 0].legend(fontsize=8)
