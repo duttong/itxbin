@@ -146,6 +146,9 @@ class TanksPlotter:
 
         fill_list = ",".join(fill_ids)
         
+        # reftank.grav_view is fetched separately and merged: joined into
+        # this query the plan degrades with the number of fills (seconds on
+        # long year spans), while a plain fill_num IN (...) lookup is instant.
         sql = f"""
             SELECT
                 h.num,
@@ -157,26 +160,40 @@ class TanksPlotter:
                 h.ng_tank_uses_num,
                 u.abbr         AS use_short,
                 u.description  AS use_desc,
-                g.species,
-                g.species_num AS parameter_num,
-                g.mf_value,
                 h.site_num,
                 h.start,
                 h.end,
                 h.comment,
-                f.notes AS fill_notes,
-                g.notes AS grav_notes
+                f.notes AS fill_notes
             FROM reftank.fill f
             LEFT JOIN hats.ng_tank_use_history h
               ON h.fill_idx = f.idx
             LEFT JOIN hats.ng_tank_uses u
               ON u.num = h.ng_tank_uses_num
-            LEFT JOIN reftank.grav_view g
-              ON g.fill_num = f.idx
             WHERE f.idx IN ({fill_list})
             ORDER BY f.serial_number, f.`date` DESC;
         """
         df = pd.DataFrame(self.db.doquery(sql))
+        grav_sql = f"""
+            SELECT fill_num,
+                   species,
+                   species_num AS parameter_num,
+                   mf_value,
+                   notes AS grav_notes
+            FROM reftank.grav_view
+            WHERE fill_num IN ({fill_list});
+        """
+        grav = pd.DataFrame(self.db.doquery(grav_sql))
+        if grav.empty:
+            grav = pd.DataFrame(
+                columns=["fill_num", "species", "parameter_num", "mf_value", "grav_notes"]
+            )
+        if not df.empty:
+            # Left merge keeps df's row order and fans out one row per grav
+            # species, as the old LEFT JOIN did.
+            df = df.merge(grav, how="left", left_on="fill_idx", right_on="fill_num").drop(
+                columns="fill_num"
+            )
         if "date" in df.columns:
             df = df.rename(columns={"date": "fill_date"})
         return df
