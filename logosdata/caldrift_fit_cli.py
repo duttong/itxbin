@@ -38,6 +38,32 @@ if _CCG_NEXTGEN not in sys.path:
     sys.path.append(_CCG_NEXTGEN)
 
 
+def _skip_scipy_stats():
+    """Avoid importing scipy.stats (~0.4 s of cold start).
+
+    ccg_calfit only uses scipy.stats.t.ppf, which is scipy.special.stdtrit
+    underneath (identical values), so register a minimal stand-in module
+    before ccg_calfit is imported. Falls back to the real scipy.stats if
+    anything about this goes wrong.
+    """
+    try:
+        import types
+        import scipy
+        import scipy.special
+
+        class _StudentT:
+            @staticmethod
+            def ppf(q, df):
+                return scipy.special.stdtrit(df, q)
+
+        stub = types.ModuleType("scipy.stats")
+        stub.t = _StudentT()
+        sys.modules["scipy.stats"] = stub
+        scipy.stats = stub
+    except Exception:
+        sys.modules.pop("scipy.stats", None)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tank", required=True)
@@ -52,6 +78,7 @@ def main():
                           "(default: all levels, unfiltered)")
     args = ap.parse_args()
 
+    _skip_scipy_stats()
     try:
         import ccg_cal_db
         import ccg_calfit
