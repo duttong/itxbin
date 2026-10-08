@@ -1814,10 +1814,11 @@ class TanksWidget(QWidget):
         flag_filter = "c.flag IN ('.', 'M')" if include_flagged else "c.flag = '.'"
         # num >= 3 is only a meaningful quality signal for instruments that
         # actually vary it. The legacy 'm3' system recorded num=1 on every
-        # row it ever wrote (its entire 1994-2022 history) — for m3 that's
-        # just how the column is populated, not a low-confidence flag, so a
-        # uniform threshold would silently discard all m3 history. M4 does
-        # vary num meaningfully, so the threshold still applies there.
+        # row it ever wrote (its entire 1994-2022 history), as did the standards
+        # GC ('stdgc') — for them that's just how the column is populated,
+        # not a low-confidence flag, so a uniform threshold would silently
+        # discard all of their history. M4 does vary num meaningfully, so the
+        # threshold still applies there.
         sql = f"""
             SELECT
                 CONCAT(c.date, ' ', c.time) AS run_time,
@@ -1836,7 +1837,7 @@ class TanksWidget(QWidget):
               AND c.mixratio IS NOT NULL
               AND c.mixratio > -99
               AND c.mixratio != 0
-              AND (c.inst = 'm3' OR c.num >= 3)
+              AND (c.inst IN ('m3', 'stdgc') OR c.num >= 3)
               AND {flag_filter}
             ORDER BY c.date, c.time;
         """
@@ -1976,17 +1977,16 @@ class TanksWidget(QWidget):
         # (below): a num=1/2 M4 row is a single/double-injection episode
         # that never appears as a plotted point, so letting it feed the fit
         # lets an invisible point silently skew the curve. The legacy 'm3'
-        # system is exempted: it recorded num=1 on every row it ever wrote
-        # (its entire 1994-2022 history), so for m3 that value carries no
-        # quality information and this threshold would otherwise discard
-        # all of it.
+        # and 'stdgc' systems are exempted: they recorded num=1 on every row
+        # they ever wrote, so for them that value carries no quality
+        # information and this threshold would otherwise discard all of it.
         allowed_flags = (".",) if exclude_flagged else (".", "M")
         candidates = [
             d for d in cals.cals
             if d.get("flag") in allowed_flags
             and d.get("mixratio") is not None
             and d.get("mixratio") > -800
-            and (d.get("inst") == "m3" or (d.get("num") or 0) >= 3)
+            and (d.get("inst") in ("m3", "stdgc") or (d.get("num") or 0) >= 3)
         ]
         # cal_level filter, applied only when a specific level was asked for.
         # cals.cals rows come from hats.calibrations_fill_view via SELECT *,

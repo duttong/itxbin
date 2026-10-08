@@ -80,17 +80,17 @@ def main():
     # quality signal, matching the plot's own calibrations query
     # (LOGOSTANKS_GetCalibrations / _fetch_calibration_df) — a
     # single/double-injection M4 episode that never appears as a plotted
-    # point could otherwise silently skew the fit. The legacy 'm3' system
-    # is exempted: it recorded num=1 on every row it ever wrote (its whole
-    # 1994-2022 history), so for m3 that value carries no quality
-    # information and a uniform threshold would discard all of it.
+    # point could otherwise silently skew the fit. The legacy 'm3' and
+    # 'stdgc' (standards GC, inst 224) systems are exempted: they recorded
+    # num=1 on every row they ever wrote, so for them that value carries no
+    # quality information and a uniform threshold would discard all of it.
     allowed_flags = (".", "M") if args.include_flagged else (".",)
     candidates = [
         d for d in cals.cals
         if d.get("flag") in allowed_flags
         and d.get("mixratio") is not None
         and d.get("mixratio") > -800
-        and (d.get("inst") == "m3" or (d.get("num") or 0) >= 3)
+        and (d.get("inst") in ("m3", "stdgc") or (d.get("num") or 0) >= 3)
     ]
 
     # cal_level filter: applied only when the caller asked for a specific
