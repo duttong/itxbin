@@ -50,7 +50,7 @@ m4_ingest.py pipeline:
      - pfp_press1/2/3                   PFP internal pressure readings
      - trap_cold / trap_hot             therm1 (cryo trap) means in deg C from the
                                         temps_*.csv files; windows come from the bd*.txt
-                                        run log (cold: sample valve open to 30 s before
+                                        run log (cold: sample valve open to 10 s before
                                         close; hot: 8-13 min after open)
 
    After the ng_analysis upsert, M4_Serial_Numbers queries for any rows whose
@@ -273,7 +273,7 @@ class M4_SampleLogs(M4_Instrument):
         The bd*.txt run log sits next to the .xl file. Each injection's events are
         followed by a record line "<path>.xl,<date>,<time>,<sample#>" whose date and
         time are exactly the .xl row's Date/Time, so that line is the join key.
-          trap_cold  mean from Sample valve open to 30 s before Sample valve closed
+          trap_cold  mean from Sample valve open to 10 s before Sample valve closed
           trap_hot   mean from 8 to 13 min after Sample valve open
         Returns {dt_xl Timestamp: (trap_cold, trap_hot)}; NaN where temps don't cover the window.
         """
@@ -307,7 +307,7 @@ class M4_SampleLogs(M4_Instrument):
             w = temps.loc[start:end, 'therm1']
             return w.mean() if len(w) >= 0.8 * expected else float('nan')
         minute = pd.Timedelta(minutes=1)
-        cold_end = closed - pd.Timedelta(seconds=30)
+        cold_end = closed - pd.Timedelta(seconds=10)
         return (mean(opened, cold_end, (cold_end - opened).total_seconds() / 10),
                 mean(opened + 8 * minute, opened + 13 * minute, 30))
 

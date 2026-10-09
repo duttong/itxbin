@@ -9,7 +9,7 @@ Top panel     whole run, cryogen-on and GC-cryogen-on spans shaded.
 Bottom panel  every injection overlaid (thin lines) with the mean (thick),
               aligned on "Sample valve open", with the trap_cold and trap_hot
               windows shaded:
-                trap_cold  sample valve open -> 30 s before sample valve closed
+                trap_cold  sample valve open -> 10 s before sample valve closed
                 trap_hot   8 to 13 min after sample valve open
               (same definitions as hats.ng_ancillary_data.trap_cold/trap_hot,
               loaded by m4_samplogs.py)
@@ -83,7 +83,7 @@ def trap_values(ev, t, opens):
         closed = [ts for ts, e in ev if e == "Sample valve closed" and ts > o]
         if not closed:
             continue
-        ce = closed[0] - pd.Timedelta(seconds=30)
+        ce = closed[0] - pd.Timedelta(seconds=10)
         for out, (a, b, expected) in ((cold, (o, ce, (ce - o).total_seconds() / 10)),
                                       (hot, (o + 8 * minute, o + 13 * minute, 30))):
             w = t.loc[(t.datetime >= a) & (t.datetime <= b), "therm1"]
@@ -93,11 +93,12 @@ def trap_values(ev, t, opens):
 
 
 def fmt_stats(v):
-    """mean ± sd (min, max), 2 decimals."""
+    """mean ± sd (25%, 75% percentiles), 2 decimals."""
     if len(v) == 0:
         return "(no data)"
     sd = v.std(ddof=1) if len(v) > 1 else 0.0
-    return f"{v.mean():.2f} ± {sd:.2f} ({v.min():.2f}, {v.max():.2f}) °C"
+    q1, q3 = np.percentile(v, [25, 75])
+    return f"{v.mean():.2f} ± {sd:.2f} (25/75%: {q1:.2f}, {q3:.2f}) °C"
 
 
 def build_figure(bd, directory=GSPC_DIR):
@@ -166,7 +167,7 @@ def build_figure(bd, directory=GSPC_DIR):
             a.text(x, 212, name, rotation=90, va="top", ha="right", fontsize=8)
     closes = [min((ts - o).total_seconds() for ts, e in ev if e == "Sample valve closed" and ts > o)
               for o in opens if any(e == "Sample valve closed" and ts > o for ts, e in ev)]
-    cold_end = (np.median(closes) - 30) / 60 if closes else 4.0
+    cold_end = (np.median(closes) - 10) / 60 if closes else 4.0
     cold, hot = trap_values(ev, t, opens)
     a.axvspan(0, cold_end, color="tab:cyan", alpha=.12, lw=0, label=f"trap_cold {fmt_stats(cold)}")
     a.axvspan(8, 13, color="tab:orange", alpha=.15, lw=0, label=f"trap_hot {fmt_stats(hot)}")
