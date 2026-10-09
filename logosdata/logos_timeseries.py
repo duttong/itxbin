@@ -3508,10 +3508,28 @@ class TimeseriesWidget(QWidget):
             return MSTAR_PAIR_AVG_SQL
         return "hats.ng_pair_avg_view"
 
+    def _pair_avg_site_sql(self, active_sites):
+        """(site_label_sql, base_sites) for pair-mean aggregate queries.
+
+        The M* pair-mean source files PFP pairs under their base site (MLO,
+        MKO) with pair_id_num = 0, the same rule data_export.py uses.  For M4
+        the label expression relabels those rows to the MLO_PFP/MKO_PFP
+        pseudo-site so flask and PFP stay separate series, like the raw points.
+        Other instruments carry no PFP, so they keep the plain site.
+        """
+        if self.instrument.inst_num != 192:
+            bases = [s for s in active_sites if s not in PFP_SITES]
+            return "UPPER(v.site)", bases
+        bases = sorted({PFP_SITES.get(s, s) for s in active_sites})
+        label = ("CASE WHEN v.pair_id_num = 0 AND UPPER(v.site) IN ("
+                 + ",".join(f"'{b}'" for b in PFP_SITES.values())
+                 + ") THEN CONCAT(UPPER(v.site), '_PFP') ELSE UPPER(v.site) END")
+        return label, bases
+
     def query_10day_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for 10-day means (M4 and FE3 only; IE3 handled via insitu).
         Bins: days 1-10 → 1st, days 11-20 → 11th, days 21+ → 21st of each month.
-        PFP pseudo-sites have no pair-average rows and are omitted."""
+        For M4 the M* source's pair_id_num = 0 rows are relabelled MLO_PFP/MKO_PFP."""
         if self.instrument.inst_num == 236:
             return pd.DataFrame()
 
@@ -3529,7 +3547,8 @@ class TimeseriesWidget(QWidget):
 
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        active = self.get_active_sites()
+        site_label, sites = self._pair_avg_site_sql(active)
         if not sites:
             return pd.DataFrame()
 
@@ -3541,23 +3560,25 @@ class TimeseriesWidget(QWidget):
 
         inst_sql, inst_params = self._binned_inst_filter()
         sql = f"""
-        SELECT UPPER(v.site) AS site, {_period_expr} AS period_start,
+        SELECT {site_label} AS site_label, {_period_expr} AS period_start,
             AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
         FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, period_start ORDER BY site, period_start;
+        GROUP BY site_label, period_start ORDER BY site_label, period_start;
         """
         params = inst_params + [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
+            df = df.rename(columns={"site_label": "site"})
+            df = df[df["site"].isin(active)].copy()
             df["period_start"] = pd.to_datetime(df["period_start"])
         return df
 
     def query_monthly_mean_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query ng_pair_avg_view for flask monthly means (M4 and FE3 only; IE3/CATS handled via insitu).
-        PFP pseudo-sites have no pair-average rows and are omitted."""
+        For M4 the M* source's pair_id_num = 0 rows are relabelled MLO_PFP/MKO_PFP."""
         insitu_inst_nums = {236} | set(self.instrument.INST_NUM_BY_SITE.values()) \
             if hasattr(self.instrument, 'INST_NUM_BY_SITE') else {236}
         if self.instrument.inst_num in insitu_inst_nums:
@@ -3577,23 +3598,26 @@ class TimeseriesWidget(QWidget):
 
         start = self.start_year.value()
         end   = self.end_year.value()
-        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        active = self.get_active_sites()
+        site_label, sites = self._pair_avg_site_sql(active)
         if not sites:
             return pd.DataFrame()
 
         inst_sql, inst_params = self._binned_inst_filter()
         sql = f"""
-        SELECT UPPER(v.site) AS site, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
+        SELECT {site_label} AS site_label, DATE_FORMAT(v.sample_datetime, '%%Y-%%m-01') AS month_start,
             AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
         FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
-        GROUP BY site, month_start ORDER BY site, month_start;
+        GROUP BY site_label, month_start ORDER BY site_label, month_start;
         """
         params = inst_params + [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
+            df = df.rename(columns={"site_label": "site"})
+            df = df[df["site"].isin(active)].copy()
             df["month_start"] = pd.to_datetime(df["month_start"])
         return df
 
@@ -3820,10 +3844,15 @@ class TimeseriesWidget(QWidget):
             return pd.DataFrame()
         start = self.start_year.value()
         end   = self.end_year.value()
-        # M* data is M1/M3 flask-only; PFP pseudo-sites don't apply
-        sites = [s for s in self.get_active_sites() if s not in PFP_SITES]
+        # M1/M3 PFP samples (run_type_num 5) are filed under MLO/MKO; relabel
+        # them to the pseudo-site so they stay apart from the flasks.
+        active = self.get_active_sites()
+        sites = sorted({PFP_SITES.get(s, s) for s in active})
         if not sites:
             return pd.DataFrame()
+        site_label = ("CASE WHEN d.run_type_num = 5 AND UPPER(d.site) IN ("
+                      + ",".join(f"'{b}'" for b in PFP_SITES.values())
+                      + ") THEN CONCAT(UPPER(d.site), '_PFP') ELSE UPPER(d.site) END")
         # This mirrors ng_pair_avg_view's grouping, while retaining the
         # ng_mole_fraction_num values which that view intentionally omits.
         # Multi-Tag needs the IDs to tag every flask behind a selected pair.
@@ -3836,7 +3865,7 @@ class TimeseriesWidget(QWidget):
             "HAVING COUNT(DISTINCT CASE WHEN d.value IS NOT NULL "
             "THEN d.sample_id END) >= 2")
         sql = f"""
-        SELECT UPPER(d.site) AS site,
+        SELECT {site_label} AS site_label,
                d.sample_datetime,
                d.pair_id_num,
                AVG(d.value) AS pair_avg,
@@ -3854,13 +3883,15 @@ class TimeseriesWidget(QWidget):
           AND YEAR(d.sample_datetime) BETWEEN %s AND %s
         GROUP BY d.site, d.site_num, d.sample_datetime, d.inst_num, d.inst_id,
                  d.pair_id_num, d.parameter_num, d.parameter, d.wind_speed,
-                 d.wind_direction, d.channel
+                 d.wind_direction, d.channel, d.run_type_num
         {two_flask_filter}
         ORDER BY d.site, d.sample_datetime
         """
         params = [pnum] + sites + [start, end]
         df = pd.DataFrame(self.instrument.doquery(sql, params))
         if not df.empty:
+            df = df.rename(columns={"site_label": "site"})
+            df = df[df["site"].isin(active)].copy()
             df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
             df["mf_nums"] = df["mf_nums"].map(
                 lambda nums: [] if pd.isna(nums) else [
