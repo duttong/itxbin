@@ -545,6 +545,11 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
     ``gml_global_means_config.yaml``; the Timeseries site checkboxes are not
     consulted, so the file always contains everything behind the means.
 
+    *extra_sites* adds monthly mean, sd and n columns for sites outside the
+    background list (the factory passes every LOGOS site), so one file carries
+    the whole network.  They are written after the background sites and take
+    no part in any mean; they are not gap-filled either.
+
     See :mod:`global_means` for the math.
     """
 
@@ -554,7 +559,8 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
 
     def __init__(self, instrument, parameter: str, parameter_num: int,
                  start_year: int, end_year: int,
-                 config: 'GlobalMeansConfig | None' = None):
+                 config: 'GlobalMeansConfig | None' = None,
+                 extra_sites: list[str] | None = None):
         self.config = config or GlobalMeansConfig.load()
         self.calculator = GlobalMeansCalculator(parameter, config=self.config)
         # Mean columns, in file order: Global, NH, SH, then the bands or bins.
@@ -569,6 +575,15 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             start_year=start_year,
             end_year=end_year,
         )
+        # Sites written alongside the background ones.  self.sites stays the
+        # background list: it alone decides latitudes, weights and the means.
+        background = {s.lower() for s in self.sites}
+        self.extra_sites: list[str] = []
+        for s in extra_sites or []:
+            if s.lower() not in background and s.upper() not in self.extra_sites:
+                self.extra_sites.append(s.upper())
+        # Populated by query_data(); the extra sites that yielded rows.
+        self.extra_sites_with_data: list[str] = []
 
     # ── site metadata ────────────────────────────────────────────────────────
 
@@ -594,10 +609,40 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
                 lats[pseudo.lower()] = lats[base_site.lower()]
         return lats
 
+    def site_info(self, sites: list[str]) -> dict[str, dict]:
+        """Return {site: {name, lat, lon, elev}} for the header's site table.
+
+        A PFP pseudo-site is not in gmd.site, so it takes its base site's row
+        and is named as a PFP.  A site gmd.site does not know is simply absent.
+        """
+        if not sites:
+            return {}
+        base = _base_sites(sites)
+        placeholders = ', '.join(['%s'] * len(base))
+        rows = self.instrument.doquery(
+            f'SELECT code, name, lat, lon, elev FROM gmd.site '
+            f'WHERE code IN ({placeholders})', base)
+        by_base = {r['code'].lower(): r for r in rows or []}
+        out = {}
+        for site in sites:
+            pseudo = site.upper() in _PFP_SITES
+            row = by_base.get(_PFP_SITES.get(site.upper(), site).lower())
+            if row is None:
+                continue
+            out[site.lower()] = {
+                'name': f"{row['name']} (PFP)" if pseudo else row['name'],
+                'lat': float(row['lat']), 'lon': float(row['lon']),
+                'elev': float(row['elev']),
+            }
+        return out
+
     # ── data query ───────────────────────────────────────────────────────────
 
-    def query_site_months(self) -> pd.DataFrame:
+    def query_site_months(self, sites: list[str] | None = None) -> pd.DataFrame:
         """Per-site monthly means of the M* flask pair averages.
+
+        *sites* defaults to the background sites; the extra sites go through
+        the same query so a site-month reads the same wherever it is written.
 
         ``sd`` is the spread of the pair means in the month, floored by
         :func:`apply_sd_floor` — the same standard deviation the monthly-means
@@ -606,11 +651,12 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
         spread of its own and would otherwise contribute nothing to the
         propagated uncertainties.
         """
+        sites = self.sites if sites is None else sites
         insts = ', '.join(f"'{i}'" for i in self.INSTRUMENTS)
-        if not self.sites:
+        if not sites:
             return pd.DataFrame()
-        base_list = ', '.join(f"'{s}'" for s in _base_sites(self.sites))
-        want_list = ', '.join(f"'{s}'" for s in self.sites)
+        base_list = ', '.join(f"'{s}'" for s in _base_sites(sites))
+        want_list = ', '.join(f"'{s}'" for s in sites)
         sql = f"""
         SELECT LOWER(export_site) AS site, date,
                AVG(pair_avg)    AS mf,
@@ -668,6 +714,20 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             site_cols[site] = wide[('mf', site)]
             site_cols[f'{site}_sd'] = wide[('sd', site)]
             site_cols[f'{site}_n'] = wide[('n', site)]
+
+        # Extra sites follow the background ones.  They are read as observed --
+        # no gap-filling -- since nothing is computed from them; a month with
+        # no accepted pair stays nan with n = 0.
+        extra_df = self.query_site_months(self.extra_sites)
+        self.extra_sites_with_data = (sorted(extra_df['site'].unique())
+                                      if not extra_df.empty else [])
+        if self.extra_sites_with_data:
+            extra_wide = extra_df.pivot_table(index='date', columns='site',
+                                              values=['mf', 'sd', 'n'], sort=True)
+            for site in self.extra_sites_with_data:
+                site_cols[site] = extra_wide[('mf', site)]
+                site_cols[f'{site}_sd'] = extra_wide[('sd', site)]
+                site_cols[f'{site}_n'] = extra_wide[('n', site)]
         sites_df = pd.DataFrame(site_cols)
 
         out = means.join(sites_df, how='outer')
@@ -685,6 +745,8 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             f'#   {", ".join(skipped)}' if skipped else '#'
         )
         interp_note = self._interpolation_note()
+        extra_note = self._additional_sites_note()
+        site_table = self._site_table(sorted(used))
         psa_lat = self.calculator.weight_lats.get('psa')
         psa_note = ('' if self.calculator.uses_bins else (
             f'\n#   For {self.parameter} PSA is also moved, weighted as '
@@ -704,7 +766,10 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
                        .replace('{bin_table}', self._bin_table())
                        .replace('{param}', self.parameter)
                        .rstrip('\n'))
-        return (self.config.header_template
+        # An empty note drops its template line rather than leaving a blank one.
+        template = self.config.header_template.replace(
+            '{additional_sites}\n', f'{extra_note}\n' if extra_note else '')
+        return (template
                 .replace('{method_text}', method_text)
                 .replace('{band_columns}',
                          self.config.columns_text[method].rstrip('\n'))
@@ -714,9 +779,67 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
                 .replace('{phi}', phi)
                 .replace('{background_sites}', ', '.join(used))
                 .replace('{skipped_sites}', skipped_note)
+                .replace('{site_table}', site_table)
                 .replace('{psa_note}', psa_note)
                 .replace('{interp_note}', interp_note)
                 .replace('{source_note}', source_note))
+
+    @staticmethod
+    def _fmt_lat(lat: float) -> str:
+        return f'{abs(lat):.2f}{"N" if lat >= 0 else "S"}'
+
+    @staticmethod
+    def _fmt_lon(lon: float) -> str:
+        # gmd.site keeps longitude as signed degrees east.
+        return f'{abs(lon):.2f}{"E" if lon >= 0 else "W"}'
+
+    def _site_table(self, background: list[str]) -> str:
+        """Comment-prefixed table of every site in the file, in column order.
+
+        Background sites come first, then the additional ones -- the order the
+        columns are written in -- each with its coordinates and the role it
+        plays.  Under the latitude method a site whose weighting latitude was
+        moved says so, since that is the latitude its weight and band use.
+        """
+        rows = [(s, 'background') for s in background]
+        rows += [(s, 'additional') for s in self.extra_sites_with_data]
+        info = self.site_info([s for s, _ in rows])
+        weight_lats = {k.lower(): v for k, v in self.calculator.weight_lats.items()}
+        table = []
+        for site, role in rows:
+            rec = info.get(site)
+            use = role
+            if role == 'background' and not self.calculator.uses_bins \
+                    and site in weight_lats and rec is not None \
+                    and abs(weight_lats[site] - rec['lat']) > 0.5:
+                wl = weight_lats[site]
+                use += f', weighted as {abs(wl):.0f}{"N" if wl >= 0 else "S"}'
+            if rec is None:
+                table.append((site, '', '', '', use, 'not in gmd.site'))
+            else:
+                table.append((site, self._fmt_lat(rec['lat']),
+                              self._fmt_lon(rec['lon']), f"{rec['elev']:.0f}",
+                              use, rec['name']))
+        # Name goes last: registry names vary a lot in length and would
+        # otherwise push every other column out.
+        use_w = max([len(r[4]) for r in table] + [len('use')])
+        lines = [f'#   {"site":<8} {"lat":>7}  {"lon":>8}  {"elev (m)":>8}  '
+                 f'{"use":<{use_w}}  name']
+        for site, lat, lon, elev, use, name in table:
+            lines.append(f'#   {site:<8} {lat:>7}  {lon:>8}  {elev:>8}  '
+                         f'{use:<{use_w}}  {name}')
+        return '\n'.join(lines)
+
+    def _additional_sites_note(self) -> str:
+        """Header block naming the sites written but not used in any mean."""
+        if not self.extra_sites_with_data:
+            return ''
+        return ('#\n'
+                '# Additional sites, written for reference and used in none of the\n'
+                '# means above (columns follow the background sites):\n'
+                f'#   {", ".join(self.extra_sites_with_data)}\n'
+                '#   These are read as observed: months with no accepted flask pair\n'
+                '#   are not interpolated and are reported as nan with n = 0.')
 
     def _bin_table(self) -> str:
         """One line per bin: name, weight and sites, for the file header."""
@@ -855,8 +978,9 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
     ) -> 'MstarGlobalMeansExporter':
         """Construct from a TimeseriesWidget.
 
-        *sites* is accepted for signature compatibility with the sibling
-        exporters and ignored: the background sites come from the config.
+        The background sites come from the config.  *sites*, when given, are
+        written as additional columns (see ``extra_sites``); they never enter
+        a mean.
         """
         analyte = analyte or widget.analyte_combo.currentText()
         if start_year is None:
@@ -869,6 +993,7 @@ class MstarGlobalMeansExporter(MstarMonthlyExporter):
             parameter_num=widget.analytes.get(analyte),
             start_year=start_year,
             end_year=end_year,
+            extra_sites=sites,
         )
 
 

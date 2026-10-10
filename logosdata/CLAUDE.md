@@ -397,7 +397,7 @@ Instrument-specific; built in `TimeseriesWidget.__init__` and handled by
 | All Sites and Time | `MstarDataExporter` | one file, per-pair rows, all sites |
 | Selected Sites and Time | `MstarDataExporter` | same, checked sites + year range |
 | Selected Sites, Times, Monthly Means | `MstarMonthlyExporter` | one file, one row per site per month |
-| Global Means | `MstarGlobalMeansExporter` | one file, monthly global/hemispheric means + the site means behind them |
+| Global Means | `MstarGlobalMeansExporter` | one file, monthly global/hemispheric means + the background-site means behind them + every other site (PFP pseudo-sites included) |
 
 FE3 gets two fECD buttons (`FecdDataExporter`), which prompt for a directory
 and write one file per site.
@@ -674,9 +674,25 @@ monthly resolution:
   (max 0.18). Coverage is identical either way.
 - **The site checkboxes are ignored** — the site list comes from
   `background_sites` / `gas_background_overrides` in the yaml, so the file
-  always contains every site feeding the means. `ush` is in that list but has no
-  M* data; it's dropped and named in the file header. (`mlo_pfp` also used to
-  be dropped, until the PFP split above gave it its own rows.)
+  always contains every site feeding the means. `ush` is in that list but has
+  no M* data; it's dropped and named in the file header. (`mlo_pfp` also used
+  to be dropped, until the PFP split above gave it its own rows.)
+- **Every other site is written too.** `from_timeseries_widget(sites=...)`
+  (the button passes `sites_by_lat` minus `MSTAR_EXPORT_EXCLUDE`, so BLD is out
+  and `MLO_PFP`/`MKO_PFP` are in) becomes `extra_sites`: `<site>`, `<site>_sd`,
+  `<site>_n` columns after the background sites. They go through the same
+  `query_site_months()` (PFP relabel + sd floor) but never `prepare()`, so they
+  take no part in a mean, are not gap-filled (a missing month is `nan`, n = 0)
+  and need no latitude. `self.sites` stays the background list; `extra_sites`
+  drops any site already in it. The header's `{additional_sites}` line names
+  them and is dropped when there are none.
+- **Header SAMPLING SITES table** (`{site_table}`, `_site_table()` /
+  `site_info()`): every site written, in column order (background, then
+  additional), with lat / lon / elevation / role / name from `gmd.site`. A PFP
+  pseudo-site shows its base site's row named "(PFP)". Under the latitude method
+  a background site whose weighting latitude was moved (SPO 66S; PSA 80S for the
+  listed gases) says `weighted as 66S`; none is shown under bins. A site with
+  no `gmd.site` row prints `not in gmd.site`.
 - Config keys use GML gas names (`HFC134a`); analytes are display names
   (`HFC-134a`). `GlobalMeansConfig.gas_key()` matches by stripping hyphens,
   with `analyte_aliases` for the rest (`PCE` → `C2Cl4`).

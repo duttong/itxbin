@@ -167,8 +167,10 @@ analyte_aliases:
   DCE12: CH2ClCH2Cl   # 1,2-dichloroethane -- confirm before relying on it
 
 # Header written at the top of the exported file.  {param}, {generated_on},
-# {phi}, {background_sites}, {skipped_sites}, {psa_note}, {interp_note} and
-# {source_note} are substituted by the exporter.
+# {phi}, {background_sites}, {skipped_sites}, {additional_sites}, {site_table},
+# {psa_note}, {interp_note} and {source_note} are substituted by the exporter.
+# {additional_sites} is a line of its own: it is dropped when the export has
+# no sites beyond the background list.
 global_means_file_header: |
   # File: {filename}
   # Date: {generated_on}
@@ -236,6 +238,19 @@ global_means_file_header: |
   # Background sites used for {param}:
   #   {background_sites}
   {skipped_sites}
+  {additional_sites}
+  #
+  # -------------------------------------------------------------------------
+  # SAMPLING SITES
+  #
+  # Every site written to this file, in column order, with its coordinates
+  # (degrees, N and E positive; elevation in metres above sea level) from the
+  # GML site registry, https://gml.noaa.gov/dv/site/
+  #
+  # "background" sites feed the means; "additional" sites are written for
+  # reference only.  A PFP pseudo-site shares its base site's coordinates.
+  #
+  {site_table}
   #
   # -------------------------------------------------------------------------
   # COLUMN DESCRIPTIONS

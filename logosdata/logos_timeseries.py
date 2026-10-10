@@ -2678,9 +2678,12 @@ class TimeseriesWidget(QWidget):
                 "instead (three per hemisphere, fixed weights); set "
                 "<tt>weighting_method: latitude</tt> in the config to switch "
                 "them back.<br><br>"
-                "<b>Sites:</b> the background list in "
-                "<tt>gml_global_means_config.yaml</tt> — the site checkboxes "
-                "above are <b>not</b> used. "
+                "<b>Means:</b> built from the background list in "
+                "<tt>gml_global_means_config.yaml</tt>.<br>"
+                "<b>Site columns:</b> every LOGOS site (PFP pseudo-sites "
+                "included) is written as well — the background sites first, "
+                "then the rest, which take no part in any mean and are not "
+                "gap-filled. The site checkboxes above are <b>not</b> used. "
                 "<b>Year range:</b> set by the Start / End spinboxes above."
                 "<br><br>The method follows "
                 "<tt>github.com/duttong/GML_means</tt>; the written file's "
@@ -2721,7 +2724,7 @@ class TimeseriesWidget(QWidget):
                                                      exporter_cls=MstarMonthlyExporter)))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_global_btn, _tip_global,
-                on_plot=lambda: self._preview_export(None,
+                on_plot=lambda: self._preview_export(_all_sites,
                                                      exporter_cls=MstarGlobalMeansExporter)))
             save_layout.addLayout(self._export_row(self.edit_global_cfg_btn, _tip_cfg))
             save_group.setLayout(save_layout)
@@ -3049,9 +3052,12 @@ class TimeseriesWidget(QWidget):
     def _export_mstar_global_means(self):
         """Export monthly global/hemispheric means over the selected year range.
 
-        The background sites come from the config, not the site checkboxes.
+        The means use the config's background sites, not the site checkboxes.
+        Every other site (PFP pseudo-sites included, minus MSTAR_EXPORT_EXCLUDE)
+        is written too, as extra columns outside the means.
         """
-        self._run_mstar_export(sites=None, all_time=False,
+        sites = [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
+        self._run_mstar_export(sites=sites, all_time=False,
                                exporter_cls=MstarGlobalMeansExporter)
 
     def _preview_export(self, sites_fn, all_time: bool = False,
