@@ -87,6 +87,17 @@ def ingest(
         typer.secho(f"Error running ie3_set_mf_method.py: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
+    # 5b. Response corrections for the AC-cycle temperature effect (temporary
+    # SMO location, 2026-05-11 on) for rows that don't have one yet, so
+    # ie3_batch.py below applies them. Warn only: missing factors mean
+    # uncorrected (factor 1), not wrong.
+    corr_cmd = [str(bin_dir / "ie3_resp_correction.py"), "--new-only", "-i"]
+    typer.secho(f"Running: {' '.join(corr_cmd)}", fg=typer.colors.BLUE)
+    try:
+        subprocess.run(corr_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"Warning: ie3_resp_correction.py failed: {e}", fg=typer.colors.YELLOW, err=True)
+
     # 6. Recalculate and write mole fractions for all analytes
     batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i", "--fits"]
     typer.secho(f"Running: {' '.join(batch_cmd)}", fg=typer.colors.BLUE)

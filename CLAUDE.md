@@ -100,7 +100,13 @@
 - `hats.ng_insitu_mole_fractions` — IE3/CATS computed mole fractions joined to
   `ng_insitu_analysis` via `analysis_num`; IE3 air ports are 3 and 7;
   CATS air ports are 4 and 8; `sample_loop_temp/pressure/flow` upserted by
-  `ie3_eng2db.py` (IE3 only)
+  `ie3_eng2db.py` (IE3 only). `sample_loop_temp` is **per channel** (IE3
+  loops a/b/c run near 38-40 / 36 / 31-33 C); analyze it per channel, not
+  one row per analysis
+- `hats.ng_insitu_resp_corrections` — per-injection peak-height factor
+  `(ng_insitu_mole_fraction_num PK, factor, model, created)`; no row = 1.
+  See "IE3 AC-cycle response correction" below. DDL in
+  `sql/ng_insitu_resp_corrections.sql`
 - `hats.ng_preferred_channel` — preferred channel per `(inst_num,
   parameter_num, start_date)`; used by `return_preferred_channel()` on FE3
   and IE3 instruments (e.g. IE3 CFC12→`b`, CFC11→`c`)
@@ -236,6 +242,44 @@ analyte list.
   `insitu_monthly_means_batch.py ie3 -i`. The recalc is needed because ref
   smoothing drops rejected rows, so air mislabelled as port 5 had pulled the
   smoothed ref.
+
+## IE3 AC-cycle response correction (2026-05-11 on)
+
+- Symptom: from the week of 2026-05-11 (IE3 in a temporary SMO location),
+  halocarbon noise rose 2-4x with a positive skew, in the ref tank too.
+  Mostly at night.
+- Cause: the AC unit next to the GC cycles about every 22 min, with larger
+  swings at night. Injections at the warm peak of `temp_top` (room) read
+  high, by a compound-dependent amount (H1211 > CFC-113 ~ CCl4 > CFC-11 >
+  CFC-12; N2O none). Oven and ECDs hold to ~0.001 C, so they are not the
+  cause; loops b/c swing opposite to `temp_top`, leading it by 2-3 min. The
+  1 Hz engineering files are `/hats/gc/smo/<yy>/incoming/<day>/eng_*.csv.gz`.
+- Correction: `ie3_resp_correction.py` fits, per analyte, a gradient-boosted
+  model of the port-5 ref height deviation from `temp_top` and that
+  channel's loop temperature (31-min deviations, lags 0-14 min) and writes
+  `factor = exp(-pred/100)` to `hats.ng_insitu_resp_corrections`
+  (`model='ie3_temp_gbm_v1'`). An analyte is written only if held-out
+  (week-blocked) ref noise drops >= 5%; N2O, CHCl3 and H1211 (c) fail. It
+  trains on raw heights from the view, so reruns don't compound.
+  `IE3_Instrument.load_data()` / `load_cal_week_data()` multiply `height` by
+  the factor before ref smoothing (`height_raw`, `resp_corr` kept); DB
+  heights are never changed.
+- Effect (Jun-Oct air scatter, ppt): CFC-11 (c) 0.48 -> 0.26, CFC-12 (b)
+  1.28 -> 0.63, CFC-113 0.33 -> 0.18, CCl4 0.51 -> 0.27; means drop slightly
+  (CFC-11 -0.06, CFC-12 b -0.21 ppt). An STP (P/T) correction was tested and
+  does not help: loop pressure doesn't move the heights, and the gas-law T
+  term adds noise on channel a.
+- Daily: `ie3_ingest.py` step 5b runs `ie3_resp_correction.py --new-only -i`
+  before `ie3_batch.py`, writing factors only for rows without one, so
+  factors behind stored mole fractions never change. A full rerun (no
+  `--new-only`) rewrites all factors; follow it with
+  `ie3_batch.py -p all -s 2605 -e end -i` and
+  `insitu_monthly_means_batch.py ie3 -i`.
+- Only for the AC period: on calm Mar-Apr data the model adds 5-10% noise.
+  **Set `DEFAULT_END` in `ie3_resp_correction.py` when IE3 moves back.**
+- Also 2026-10-11: 15 restart warm-up analyses (every loop >= 3 C below its
+  daily median; Apr 20, May 12/20/23, Sep 17) were tagged 141 on all
+  analytes.
 
 ## Combined data sets (hats.ng_logos_combined_data)
 

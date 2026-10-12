@@ -286,6 +286,35 @@ class IE3_Instrument(HATS_DB_Functions):
                 df.loc[mask, 'mole_fraction'] = df.loc[mask, 'mole_fraction'] + row['offset_value']
         return df
 
+    def _apply_resp_corrections(self, df):
+        """Multiply height by its hats.ng_insitu_resp_corrections factor.
+
+        Called by load_data() and load_cal_week_data() before reference
+        smoothing, so the ref, cal and air ports are all corrected the same
+        way. A row with no factor is left alone (factor 1). The raw height
+        is kept in `height_raw` and the factor in `resp_corr`.
+        Factors are written by ie3_resp_correction.py (IE3 AC-cycle
+        temperature model, 2026-05 onward)."""
+        df['height_raw'] = df['height']
+        df['resp_corr'] = 1.0
+        if df.empty or 'mf_num' not in df.columns:
+            return df
+        mf = pd.to_numeric(df['mf_num'], errors='coerce').dropna()
+        if mf.empty:
+            return df
+        rows = self.db.doquery(f"""
+            SELECT ng_insitu_mole_fraction_num AS mf_num, factor
+            FROM hats.ng_insitu_resp_corrections
+            WHERE ng_insitu_mole_fraction_num BETWEEN {int(mf.min())} AND {int(mf.max())}
+        """) or []
+        if not rows:
+            return df
+        factors = pd.DataFrame(rows).set_index('mf_num')['factor'].astype(float)
+        f = pd.to_numeric(df['mf_num'], errors='coerce').map(factors).fillna(1.0)
+        df['resp_corr'] = f.to_numpy()
+        df['height'] = df['height'] * df['resp_corr']
+        return df
+
     def tank_serials_for_dates(self, port_num, dates):
         """Return the tank/label installed on *port_num* at each timestamp."""
         dates = pd.to_datetime(dates, errors='coerce', utc=True)
@@ -725,6 +754,7 @@ class IE3_Instrument(HATS_DB_Functions):
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
         df['mf_method_num'] = df['mf_method_num'].fillna(self.default_mf_method(pnum)).astype(int)
+        df = self._apply_resp_corrections(df)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
 
@@ -1362,6 +1392,7 @@ class IE3_Instrument(HATS_DB_Functions):
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
         df['mf_method_num'] = df['mf_method_num'].fillna(self.default_mf_method(pnum)).astype(int)
+        df = self._apply_resp_corrections(df)
         df = self.norm.merge_smoothed_data(df)
         df = self.add_port_labels(df)
         return df.sort_values('analysis_datetime')
