@@ -277,6 +277,21 @@ analyte list.
   `insitu_monthly_means_batch.py ie3 -i`.
 - Only for the AC period: on calm Mar-Apr data the model adds 5-10% noise.
   **Set `DEFAULT_END` in `ie3_resp_correction.py` when IE3 moves back.**
+- Column heaters lose control on warm days (found 2026-10-12): the Omega
+  zones (`Omega1-4` in the eng files, setpoints 110 / 35 / 34 / 190 C; Omega2 =
+  channel b column, Omega3 = channel c column) only heat. With `temp_top`
+  above ~24 C, Omega3 drifts above its 34 C setpoint: +1.3 C mean, up to
+  +7 C, when the room is over 28 C. That happened 8.7% of the time after the
+  move and never before it; Omega2 2.8%. CCl4 (the last peak, ~406 s) then
+  elutes up to ~15 s early (389-399 s on 2026-06-24/25). Large CCl4 RT
+  shifts cluster at 15-17 local on hot days. The ref bracketing absorbs it:
+  dropping those injections only takes CCl4 air scatter from 0.356 to
+  0.353%, so it is not the main cause of CCl4's remaining noise. The aux EPCs
+  are not involved: channel c uses aux5 (main 30 -> 27.21 psi at backflush)
+  and aux6 (BF) per `aux_press_chans` in `~/IE3_acquisition/ie3_config.py`,
+  and both sit exactly on setpoint during elution. Fix: a cooler room, or
+  raise the Omega2/3 setpoints (~40 C, which shifts RTs and needs the
+  backflush timing rechecked).
 - Also 2026-10-11: 15 restart warm-up analyses (every loop >= 3 C below its
   daily median; Apr 20, May 12/20/23, Sep 17) were tagged 141 on all
   analytes.
