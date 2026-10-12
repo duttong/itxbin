@@ -207,6 +207,36 @@ analyte list.
   `instrument.site`); other instruments default to BRW/MLO/SMO/SPO
 - Right-click a point → navigates main window to that GC `run_time`
 
+## IE3 ITX port mislabels (fixed 2026-10-11)
+
+- Symptom: an occasional injection whose port is wrong — e.g. a port 5
+  (ref) point at air height (~24% high on SF6), or the ref showing up as low
+  air. The port is wrong at the source: in the ITX filename
+  (`2026smo2780629.5.itx`) and the wave note, so GCwerks and the DB just
+  carry it through.
+- Cause (`~/IE3_acquisition/ie3.py`, `itx_info()`): the port label was a
+  `cp()` readback taken only when a 1 s timer tick fell within ±0.5 s of
+  chrom_time 430 s. The tick phase drifts ~0.1 s per injection, so about
+  once per 10 h run no tick landed in the window and the file kept the
+  previous injection's port.
+- Log signature: in `/hats/gc/smo/26/incoming/<day>/ie3_*.log`, a
+  `final write` with no `itx_ssv = N` line before it. The mislabelled file
+  is the **next** one written; it carries the label of the injection before
+  it. The real port is the odd `SSV0 to N` command before that miss.
+  The exception is flask sampling (3 remapped to 7), where 7 → 7 is correct.
+- Fix: IE3_acquisition commit 8d7e991 labels from the commanded port in
+  `ssv_position()`; the 430 s `cp()` is only a check that logs
+  `SSV readback … != commanded` on a mismatch. New logs write
+  `itx_ssv = N (commanded)` / `itx_ssv check: readback = N`, so the
+  missing-line signature no longer applies after that version is running.
+- Cleanup: 49 mislabelled analyses (2026-03 to 2026-10-09) tagged 143
+  ("Valco valve failure", reject) on all 11 mole-fraction rows each, with a
+  comment naming the ITX file and the real port. 12 had already been hand
+  tagged. Then `ie3_batch.py -p all -s 2603 -e end -i` and
+  `insitu_monthly_means_batch.py ie3 -i`. The recalc is needed because ref
+  smoothing drops rejected rows, so air mislabelled as port 5 had pulled the
+  smoothed ref.
+
 ## Combined data sets (hats.ng_logos_combined_data)
 
 Python replacement for the Igor "HATS combined" products
