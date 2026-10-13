@@ -39,6 +39,7 @@ _TAG_LAYOUT = [
         ("G", "Chromatography issue",                                290, 291),
         ("M", "Agilent (MS or GC) device issue",                     132, 133),
         ("O", "Measurement lab operator error",                       43, 121),
+        ("T", "Analytical methods test",                             299,   0),
         ("U", "Unknown measurement problem",                         141, 142),
     ]),
     ("Automated Tags", [
