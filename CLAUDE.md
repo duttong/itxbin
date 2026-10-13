@@ -178,6 +178,10 @@ analyte list.
 - `rejected` is the dataframe column used by `logos_data`, `logos_timeseries`,
   and `logos_tanks` filtering.
 - Manual reject tags default to `tag_num=141`.
+- Tag 299 (`T`, "Analytical methods test") marks samples measured as part of
+  an analytical methods test; it rejects and has no informational partner. It
+  is in the Multi-Tag panel's Measurement Issues section (`_TAG_LAYOUT` in
+  `logosdata/logos_tagging.py`).
 - GCwerks reject tags use `tag_num=324`; GCwerks DB loaders synchronize this
   tag for the rows in the current flagged export by deleting stale 324 tags and
   reinserting current ones.

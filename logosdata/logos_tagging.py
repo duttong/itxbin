@@ -6,7 +6,7 @@ logos_data.py does `from logos_timeseries import TimeseriesWidget` at module
 level, so logos_timeseries.py cannot import back from logos_data.py.
 
 MultiTagPanel talks to whatever "host" it's constructed with purely through
-a small interface: the seven TagCRUDMixin methods, plus
+a small interface: the TagCRUDMixin methods, plus
 `_record_pending_tag`, `on_tag_state_changed`, and (optionally)
 `update_all_analytes` (its presence toggles the "Copy Tags to all Analytes"
 section on/off). It never assumes a single-run `self.run` DataFrame -- any
@@ -16,6 +16,7 @@ row-identity semantics belong entirely to the host.
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QApplication,
+    QMessageBox,
 )
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtCore import Qt, QTimer
@@ -76,6 +77,10 @@ _USER_REMOVABLE_AUTO_TAGS = frozenset({316})
 # the tag again deletes it. Only the M4/FE3/BLD1 tag table has an override table (not IE3/CATS yet).
 _OVERRIDE_REMEMBERED_AUTO_TAGS = frozenset({316})
 OVERRIDE_TABLE = 'hats.ng_mole_fraction_tag_override'
+
+
+# Full ccgg.tag_view names, loaded once per process by _fetch_tag_names().
+_TAG_NAME_CACHE: dict[int, str] = {}
 
 
 class TagCRUDMixin:
@@ -174,6 +179,24 @@ class TagCRUDMixin:
         )
         return (rows[0].get("comment") or "") if rows else ""
 
+    def _fetch_tag_names(self, tag_nums) -> dict[int, str]:
+        """Full `ccgg.tag_view` names for tag_nums ({} on DB error). Cached for the process."""
+        missing = sorted({int(n) for n in tag_nums if n} - _TAG_NAME_CACHE.keys())
+        if missing:
+            placeholders = ",".join(["%s"] * len(missing))
+            try:
+                rows = self.instrument.db.doquery(
+                    f"SELECT tag_num, name FROM ccgg.tag_view WHERE tag_num IN ({placeholders});",
+                    missing,
+                ) or []
+            except Exception as e:
+                print(f"Could not load tag names: {e}")
+                rows = []
+            for r in rows:
+                if r["name"]:
+                    _TAG_NAME_CACHE[int(r["tag_num"])] = r["name"].strip()
+        return {n: _TAG_NAME_CACHE[n] for n in tag_nums if n in _TAG_NAME_CACHE}
+
     def _save_comment_for_mf_nums(self, mf_nums: list[int], comment: str | None):
         if not mf_nums:
             return
@@ -188,7 +211,7 @@ class TagCRUDMixin:
 class MultiTagPanel(QWidget):
     """Floating panel: R/I tag checkboxes grouped by Sampling, Measurement, and Auto categories.
 
-    `host` must implement the seven TagCRUDMixin methods plus
+    `host` must implement the TagCRUDMixin methods plus
     `_record_pending_tag(row_idxs, tag_num, applied)` and
     `on_tag_state_changed(row_idxs, mf_nums, tag_num, applied, is_reject)`.
     If `host` also has `update_all_analytes()`, the "Copy Tags to all
@@ -224,6 +247,7 @@ class MultiTagPanel(QWidget):
             "<li>Check <b>R</b> to reject, <b>I</b> for an info tag &mdash; applied immediately to this analyte.</li>"
             f"{copy_all_line}"
             "<li>Add a note with <b>Save/Update Comment</b> (needs at least one tag).</li>"
+            "<li>Hover over or right-click a description for the full tag text.</li>"
             "</ul>"
         )
         instructions.setWordWrap(True)
@@ -251,6 +275,8 @@ class MultiTagPanel(QWidget):
         self._table.setSelectionMode(QTableWidget.NoSelection)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_full_tag_text)
         layout.addWidget(self._table)
 
         # Comment section
@@ -311,6 +337,9 @@ class MultiTagPanel(QWidget):
         self._table.setRowCount(row_count)
 
         section_bg = QColor("#c8d4e8")
+        all_tags = [n for _, entries in _TAG_LAYOUT for e in entries for n in e[2:] if n]
+        fetch = getattr(self.host, "_fetch_tag_names", None)
+        names = fetch(all_tags) if fetch else {}
 
         table_row = 0
         for section_name, entries in _TAG_LAYOUT:
@@ -368,8 +397,15 @@ class MultiTagPanel(QWidget):
                 n_item.setFont(fn)
                 self._table.setItem(table_row, 2, n_item)
 
+                full_text = "\n".join(
+                    f"{kind} {tnum}: {names.get(tnum, desc)}"
+                    for kind, tnum in (("R", r_tag), ("I", i_tag)) if tnum
+                )
+                n_item.setToolTip(full_text)
+
                 desc_item = QTableWidgetItem(desc)
                 desc_item.setFlags(Qt.ItemIsEnabled)
+                desc_item.setToolTip(full_text)
                 self._table.setItem(table_row, 3, desc_item)
 
                 self._rows.append({
@@ -380,11 +416,25 @@ class MultiTagPanel(QWidget):
                     "is_removable": is_removable,
                     "r_cb": r_cb,
                     "i_cb": i_cb,
+                    "desc": desc,
+                    "full_text": full_text,
                 })
                 table_row += 1
 
         self._table.resizeRowsToContents()
         self._fit_table_height()
+
+    def _show_full_tag_text(self, pos):
+        """Right-click on a tag row: the full ccgg.tag_view text in a copyable dialog."""
+        table_row = self._table.rowAt(pos.y())
+        entry = next((e for e in self._rows if e["table_row"] == table_row), None)
+        if entry is None:
+            return
+        box = QMessageBox(QMessageBox.Information, entry["desc"], entry["full_text"],
+                          QMessageBox.Ok, self)
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.show()
 
     def _fit_table_height(self):
         header_h = self._table.horizontalHeader().height()

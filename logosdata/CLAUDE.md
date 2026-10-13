@@ -137,6 +137,20 @@ Floating panel showing R (reject) and I (informational) checkboxes for each
 tag in `_TAG_LAYOUT`, grouped into Sampling, Measurement, and Automatic
 sections. Opened via the **Multi-Tag** button or the `G` key cycle.
 
+- **R-only rows** — an entry with `i_tag = 0` gets no I checkbox. Besides the
+  auto tags, Measurement Issues has one: **T "Analytical methods test"** (tag
+  299, `ccgg.tag_view` name "Sample measured as part of an analytical methods
+  test, not used in data analysis"; reject). It is distinct from the Sampling
+  T row (16/189), which is a *collection* methods test. Every R tag in the
+  Sampling and Measurement sections also appears in the Processing tab's tag
+  combobox, which is built from `_TAG_LAYOUT`.
+- **Full tag text** — the panel's descriptions are short labels. Hovering
+  over the letter or description shows the full `ccgg.tag_view` name of the
+  row's R and I tags (`R 168: …` / `I 223: …`), and right-clicking a row opens
+  the same text in a copyable dialog (`_show_full_tag_text`). Names come from
+  `TagCRUDMixin._fetch_tag_names()`, one query cached for the process; a tag
+  missing from the view falls back to the short label (tag 401 has no
+  `tag_view` row).
 - **Auto tags** — checkboxes are read-only; state reflects DB but cannot be
   changed by the user.
 - **`_USER_REMOVABLE_AUTO_TAGS`** — exception: the R checkbox is enabled only
