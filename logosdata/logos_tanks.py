@@ -319,7 +319,11 @@ class CaldriftPanel(QWidget):
     """
 
     def __init__(self, controller):
-        super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        # A child Qt.Window, not a parentless Qt.Tool: XQuartz floats parentless utility
+        # windows above every Mac app (and above their own tooltips). Parented, it stays
+        # on top of its main window only.
+        parent = controller.window() if isinstance(controller, QWidget) else None
+        super().__init__(parent, Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.controller = controller
         self.setWindowTitle("Caldrift")
         self._serial = None

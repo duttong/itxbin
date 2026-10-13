@@ -219,7 +219,11 @@ class MultiTagPanel(QWidget):
     """
 
     def __init__(self, host):
-        super().__init__(None, Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        # A child Qt.Window, not a parentless Qt.Tool: XQuartz floats parentless utility
+        # windows above every Mac app (and above their own tooltips). Parented, it stays
+        # on top of its main window only.
+        parent = host.window() if isinstance(host, QWidget) else None
+        super().__init__(parent, Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.host = host
         self._supports_copy_all = hasattr(host, 'update_all_analytes')
         self.setWindowTitle("Multi-Tag")
