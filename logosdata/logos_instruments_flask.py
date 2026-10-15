@@ -37,7 +37,10 @@ class M4_Instrument(HATS_DB_Functions):
     # can silently skew a caldrift fit even though it's excluded from the
     # plotted calibration series (which also requires num >= 3).
     MIN_CAL_INJECTIONS = 3
-    
+    # Processing-tab legend lists flasks/tanks in run order (first injection
+    # time) instead of alphabetically.
+    LEGEND_CHRONOLOGICAL = True
+
     MARKER_MAP = {
         # run_type_num
         1: 'o',   # Flask

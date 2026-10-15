@@ -2676,8 +2676,26 @@ class MainWindow(QMainWindow, TagCRUDMixin):
             ))
             label_to_port[label] = port
 
-        # Sort legend handles alphabetically by their label
-        legend_handles = sorted(legend_handles, key=lambda h: h.get_label())
+        if getattr(self.instrument, 'LEGEND_CHRONOLOGICAL', False):
+            # Run order: each port's first injection time, with the
+            # standard (ref) kept together at the end.
+            first_time = pd.Series(self._x_num, index=self.run.index).groupby(
+                self.run['port_idx']).min().fillna(np.inf)
+            std_type = getattr(self.instrument, 'STANDARD_RUN_TYPE', None)
+            std_ports = set()
+            if std_type is not None and 'run_type_num' in self.run.columns:
+                std_ports = set(self.run.loc[
+                    pd.to_numeric(self.run['run_type_num'], errors='coerce') == std_type,
+                    'port_idx'])
+
+            def _legend_key(h):
+                port = label_to_port[h.get_label()]
+                return (port in std_ports, first_time.get(port, np.inf), h.get_label())
+
+            legend_handles = sorted(legend_handles, key=_legend_key)
+        else:
+            # Sort legend handles alphabetically by their label
+            legend_handles = sorted(legend_handles, key=lambda h: h.get_label())
 
         extra_col = self._additional_data_column()
         self.figure.clear()
