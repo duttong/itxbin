@@ -34,7 +34,7 @@ from email.message import EmailMessage
 sys.path += ['/ccg/src/db', '/ccg/src/db/db_utils']
 import db_conn  # noqa: E402
 
-UNIT_URL = 'https://omi.cmdl.noaa.gov/om/hatsflask/equip_inventory_dev3.php?unit={}'
+UNIT_URL = 'https://omi.cmdl.noaa.gov/om2/equip_inventory.php?unit={}'
 MAX_DAYS = 56   # no reminders more than 8 weeks after start_date, whatever the schedule says
 
 
