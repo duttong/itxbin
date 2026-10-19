@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 import matplotlib.dates as mdates
+import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
@@ -30,6 +31,7 @@ class _EngToolbar(NavigationToolbar2QT):
     def home(self, *args):
         for ax in self.canvas.figure.axes:
             ax.autoscale()
+        self._widget._autoscale_y_axes()
         self.canvas.draw_idle()
         self._widget._update_legend_stats()
 AUTO_RESAMPLE_DAYS = 3
@@ -72,6 +74,7 @@ class EngPlotWidget(QWidget):
         self._filter_dir: Path | None = None
         self._scanned_dirs: list[Path] = []
         self._plot_lines: list = []
+        self._initial_traces: dict[str, str | None] = {}
         self._build_ui()
         self.restore_state()
 
@@ -195,6 +198,13 @@ class EngPlotWidget(QWidget):
         self.marker_btn.clicked.connect(self._toggle_markers)
         trace_row.addWidget(self.marker_btn)
 
+        self.lock_y_btn = QPushButton('Lock Y axes')
+        self.lock_y_btn.setCheckable(True)
+        self.lock_y_btn.setToolTip(
+            'Use the combined minimum and maximum of both traces in the visible time range')
+        self.lock_y_btn.toggled.connect(self._toggle_y_lock)
+        trace_row.addWidget(self.lock_y_btn)
+
         trace_row.addStretch()
         layout.addLayout(trace_row)
 
@@ -297,18 +307,37 @@ class EngPlotWidget(QWidget):
             return
 
         self._populate_trace_combos([self.time_col] + list(df.columns))
+        # Wait for the file headers: some columns are absent from legacy headers.
+        initial_traces, self._initial_traces = self._initial_traces, {}
+        for option, combo in (('y1', self.left_combo), ('y2', self.right_combo)):
+            requested = initial_traces.get(option)
+            if requested is None:
+                continue
+            index = combo.findText(requested)
+            if index < 0:
+                print(f'{self.instrument_name}: --{option} variable {requested!r} '
+                      'is unavailable in the loaded data; keeping the current selection.',
+                      file=sys.stderr)
+                continue
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
         left_col = self.left_combo.currentText()
         right_col = self.right_combo.currentText()
         self._plot(df, left_col, right_col, resample)
 
     # ---------------------------------------------------------------- plot
 
-    def _y_limits_in_view(self, df: pd.DataFrame, col: str, xlim: tuple) -> tuple | None:
+    def _y_limits_in_view(self, df: pd.DataFrame, col: str, xlim: tuple,
+                          padded: bool = True) -> tuple | None:
         x0 = mdates.num2date(xlim[0]).replace(tzinfo=None)
         x1 = mdates.num2date(xlim[1]).replace(tzinfo=None)
         visible = df.loc[(df.index >= x0) & (df.index <= x1), col].dropna()
+        visible = visible[np.isfinite(visible)]
         if visible.empty:
             return None
+        if not padded:
+            return (visible.min(), visible.max())
         margin = (visible.max() - visible.min()) * 0.05 or abs(visible.mean()) * 0.05 or 0.1
         return (visible.min() - margin, visible.max() + margin)
 
@@ -328,7 +357,44 @@ class EngPlotWidget(QWidget):
 
     def _on_xlim_changed(self, ax):
         # Defer until matplotlib has finished updating all limits
+        QTimer.singleShot(0, self._update_view)
+
+    def _update_view(self):
+        if self.lock_y_btn.isChecked():
+            self._autoscale_y_axes()
+        self._update_legend_stats()
+
+    def _autoscale_y_axes(self):
+        if self._df is None or self._ax1 is None:
+            return
+        xlim = self._ax1.get_xlim()
+        limits = []
+        for ax, col in ((self._ax1, self._left_col), (self._ax2, self._right_col)):
+            if ax is None or col not in self._df.columns:
+                continue
+            ylim = self._y_limits_in_view(
+                self._df, col, xlim, padded=not self.lock_y_btn.isChecked())
+            if ylim is not None:
+                limits.append(ylim)
+                if not self.lock_y_btn.isChecked():
+                    ax.set_ylim(ylim)
+        if self.lock_y_btn.isChecked() and limits:
+            lo, hi = min(v[0] for v in limits), max(v[1] for v in limits)
+            margin = (hi - lo) * 0.05 or abs(lo) * 0.05 or 0.1
+            ylim = lo - margin, hi + margin
+            self._ax1.set_ylim(ylim, emit=False)
+            if self._ax2 is not None:
+                self._ax2.set_ylim(ylim, emit=False)
+
+    def _on_ylim_changed(self, ax):
+        if self.lock_y_btn.isChecked() and self._ax2 is not None:
+            other = self._ax2 if ax is self._ax1 else self._ax1
+            other.set_ylim(ax.get_ylim(), emit=False)
         QTimer.singleShot(0, self._update_legend_stats)
+
+    def _toggle_y_lock(self):
+        self._autoscale_y_axes()
+        self._update_legend_stats()
 
     def _update_legend_stats(self):
         if self._df is None or self._ax1 is None:
@@ -416,7 +482,12 @@ class EngPlotWidget(QWidget):
                 if ylim:
                     ax2.set_ylim(ylim)
 
+        if self.lock_y_btn.isChecked():
+            self._autoscale_y_axes()
         ax1.callbacks.connect('xlim_changed', self._on_xlim_changed)
+        ax1.callbacks.connect('ylim_changed', self._on_ylim_changed)
+        if self._ax2 is not None:
+            self._ax2.callbacks.connect('ylim_changed', self._on_ylim_changed)
         self.canvas.draw()
         self._update_legend_stats()
 
@@ -440,6 +511,7 @@ class EngPlotWidget(QWidget):
             'last_left_trace': self.left_combo.currentText(),
             'last_right_trace': self.right_combo.currentText(),
             'last_dir': self.dir_combo.currentText(),
+            'lock_y_axes': self.lock_y_btn.isChecked(),
             **self._extra_save_state(),
         })
         self._save_config()
@@ -447,6 +519,7 @@ class EngPlotWidget(QWidget):
     def restore_state(self):
         self._extra_restore_state(self.config)
         self.setup_date_range()
+        self.lock_y_btn.setChecked(self.config.get('lock_y_axes', False))
 
         self.days_spin.setValue(self.config.get('last_days', 5))
 
@@ -473,6 +546,7 @@ class EngPlotWidget(QWidget):
         self.left_combo.currentTextChanged.connect(lambda _: self.save_state())
         self.right_combo.currentTextChanged.connect(lambda _: self.save_state())
         self.dir_combo.currentTextChanged.connect(lambda _: self.save_state())
+        self.lock_y_btn.toggled.connect(lambda _: self.save_state())
 
         # Auto-reload when trace or directory selection changes
         self.left_combo.currentTextChanged.connect(self._load_and_plot)

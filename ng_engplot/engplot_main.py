@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Unified engineering data viewer — all instruments in one tabbed window."""
 
+import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 import matplotlib as mpl
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QDate, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget
 
@@ -18,7 +20,8 @@ CONFIG_PATH = Path.home() / '.engplot.json'
 
 
 class EngPlotWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, end_date: date | None = None,
+                 y1: str | None = None, y2: str | None = None):
         super().__init__()
         self.setWindowTitle('Engineering Data Viewer')
 
@@ -26,6 +29,19 @@ class EngPlotWindow(QMainWindow):
         self.tabs.addTab(IE3EngWidget(), 'IE3')
         self.tabs.addTab(FE3EngWidget(), 'FE3')
         self.tabs.addTab(BLD1EngWidget(), 'BLD1')
+
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i)._initial_traces = {'y1': y1, 'y2': y2}
+
+        if end_date is not None:
+            requested = QDate(end_date.year, end_date.month, end_date.day)
+            for i in range(self.tabs.count()):
+                picker = self.tabs.widget(i).end_date
+                picker.setDate(requested)
+                if picker.date() != requested:
+                    print(f'{self.tabs.tabText(i)}: end date {end_date} is outside '
+                          f'the available range; using {picker.date().toString("yyyy-MM-dd")}',
+                          file=sys.stderr)
 
         self.setCentralWidget(self.tabs)
         self.resize(1400, 800)
@@ -141,7 +157,25 @@ QTabBar::tab:hover:!selected {
 """
 
 
+def _parse_end_date(value: str) -> date:
+    try:
+        parsed = date.fromisoformat(value)
+        if parsed.isoformat() != value:
+            raise ValueError
+        return parsed
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected a valid date in YYYY-MM-DD format') from None
+
+
 def main():
+    parser = argparse.ArgumentParser(description='Engineering Data Viewer')
+    parser.add_argument('--end-date', type=_parse_end_date, metavar='YYYY-MM-DD',
+                        help='Set the UI End date on every instrument tab before loading '
+                             '(limited to each tab\'s available date range)')
+    parser.add_argument('--y1', metavar='VARIABLE', help='Select the left trace by column name')
+    parser.add_argument('--y2', metavar='VARIABLE',
+                        help='Select the right trace by column name, or None to hide it')
+    args = parser.parse_args()
     app = QApplication(sys.argv)
     app.setStyleSheet(_STYLESHEET)
     app.setFont(QFont('Segoe UI, Arial, sans-serif', 11))
@@ -161,7 +195,7 @@ def main():
         'grid.alpha': 0.7,
     })
 
-    win = EngPlotWindow()
+    win = EngPlotWindow(end_date=args.end_date, y1=args.y1, y2=args.y2)
     win.show()
     sys.exit(app.exec_())
 
