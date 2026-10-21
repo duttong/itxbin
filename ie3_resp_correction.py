@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import sys
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor
@@ -60,7 +61,8 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import GroupKFold, cross_val_predict
 
-from hats_db import HATSdb
+sys.path.append('/ccg/src/db/')
+import db_utils.db_conn as db_conn  # noqa: E402
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 
@@ -127,7 +129,7 @@ def new_model():
 
 class RespCorrection:
     def __init__(self, start, end, insert, min_gain, model_tag):
-        self.db = HATSdb()
+        self.db = db_conn.HATS_ng()
         self.start, self.end = start, end
         self.insert, self.min_gain, self.model_tag = insert, min_gain, model_tag
 
@@ -207,7 +209,7 @@ class RespCorrection:
         params = [(int(m), float(f), self.model_tag)
                   for m, f in zip(df['mf_num'], factor) if np.isfinite(f)]
         for i in range(0, len(params), 5000):
-            self.db.db.doMultiInsert(sql, params[i:i + 5000], all=True)
+            self.db.doMultiInsert(sql, params[i:i + 5000], all=True)
         return len(params)
 
 
