@@ -962,6 +962,10 @@ class LogosCompareWindow(QMainWindow):
         leaving site and sample time null in ``ng_pair_avg_view``.  Its pair
         averages are still valid, so use ``hatsflask_pair_info`` to supply
         those two fields by pair ID without changing historical OTTO records.
+
+        Group on the expression, not the ``site`` alias: MySQL resolves a
+        GROUP BY name against the FROM columns first, so ``GROUP BY site``
+        would group on the view's (null) site and pool every site per month.
         """
         pnum = int(selection.parameter_num)
         start = self.start_year.value()
@@ -982,7 +986,7 @@ class LogosCompareWindow(QMainWindow):
           AND v.parameter_num = %s
           AND UPPER(s.code) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(pi.datetime) BETWEEN %s AND %s
-        GROUP BY site, month_start ORDER BY site, month_start;
+        GROUP BY UPPER(s.code), month_start ORDER BY site, month_start;
         """
         params = [pnum] + sites + [start, end]
         loader = self.loaders["fe3"]

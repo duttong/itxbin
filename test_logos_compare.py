@@ -66,6 +66,8 @@ class LogosCompareQueryTests(unittest.TestCase):
         sql, params = db.calls[0]
         self.assertIn("JOIN hats.hatsflask_pair_info pi ON pi.pair_id = v.pair_id_num", sql)
         self.assertNotIn("flask_id", sql)
+        # GROUP BY site would bind to the view's null site column, not the alias.
+        self.assertIn("GROUP BY UPPER(s.code), month_start", sql)
         self.assertEqual(params, [5, "BRW", 1998, 1998])
         self.assertEqual(result.iloc[0]["site"], "BRW")
         self.assertEqual(result.iloc[0]["month_start"], pd.Timestamp("1998-01-01"))
