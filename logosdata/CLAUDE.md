@@ -86,6 +86,12 @@ but disabled by all instrument configs.
 `self.timeseries_tab`, `self.tanks_tab`, `self.figures_tab`, and `self.logos_ai_tab` are `None`
 when their tab is disabled — guard before use.
 
+Processing, Timeseries and Tanks pages sit in a `QScrollArea` (`_scrolled()`
+in `init_ui`). A tab widget is as tall as its tallest page (~900 px), so on a
+laptop screen Qt crushed the Processing combos to slivers; now a short page
+scrolls. So `tabs.currentWidget()` is the scroll area: unwrap it with
+`.widget()` before comparing to a page (`_on_tab_changed` does).
+
 ## Key MainWindow state
 
 - `self.instrument` — Instrument instance (M4_Instrument, etc.)

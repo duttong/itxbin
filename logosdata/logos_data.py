@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QMessageBox, QSizePolicy, QSpacerItem, QCheckBox, QFrame, QShortcut,
     QLineEdit, QTextEdit, QListWidget, QListWidgetItem,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QStyledItemDelegate, QStyleOptionViewItem, QToolBar,
+    QStyledItemDelegate, QStyleOptionViewItem, QToolBar, QScrollArea,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 
@@ -1444,17 +1444,29 @@ class MainWindow(QMainWindow, TagCRUDMixin):
                 margin-top: -1px;
             }
         """)
-        tabs.addTab(processing_pane, "PROCESSING")
+        # Tab pages go in scroll areas: a tab widget is as tall as its tallest
+        # page (Timeseries/Tanks ~900px), and on a short laptop screen the
+        # window is capped below that, so Qt crushed every control (combo
+        # boxes down to unreadable slivers). Now a short page scrolls instead.
+        def _scrolled(page):
+            scroll = QScrollArea()
+            scroll.setWidget(page)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            return scroll
+
+        tabs.addTab(_scrolled(processing_pane), "PROCESSING")
 
         if 'timeseries' in _visible_tabs:
             self.timeseries_tab = TimeseriesWidget(instrument=self.instrument, parent=self)
-            tabs.addTab(self.timeseries_tab, "TIMESERIES")
+            tabs.addTab(_scrolled(self.timeseries_tab), "TIMESERIES")
         else:
             self.timeseries_tab = None
 
         if 'tanks' in _visible_tabs:
             self.tanks_tab = TanksWidget(instrument=self.instrument, parent=self)
-            tabs.addTab(self.tanks_tab, "TANKS")
+            tabs.addTab(_scrolled(self.tanks_tab), "TANKS")
         else:
             self.tanks_tab = None
 
@@ -1598,9 +1610,11 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self._on_tab_changed(self.tabs.currentIndex())
 
     def _on_tab_changed(self, _idx: int):
-        current = self.tabs.currentWidget() if self.tabs else None
-        if not current:
+        scroll = self.tabs.currentWidget() if self.tabs else None
+        if not scroll:
             return
+        # Most pages sit in a scroll area (see init_ui); compare the page.
+        current = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
         figures_active = self.figures_tab is not None and current is self.figures_tab
         # Share the actual controls so the run/date selection survives tab changes.
         if self.figures_tab is not None:
@@ -1634,8 +1648,12 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         else:
             # Size to what the pane actually needs (combos can elide), but
             # never narrower than the tab bar.
-            width = max(current.minimumSizeHint().width(),
-                        self.tabs.tabBar().sizeHint().width() + 4)
+            pane_width = current.minimumSizeHint().width()
+            if scroll is not current:
+                # Leave room for the vertical scrollbar so the page's
+                # controls don't narrow (and elide) when it appears.
+                pane_width += scroll.verticalScrollBar().sizeHint().width()
+            width = max(pane_width, self.tabs.tabBar().sizeHint().width() + 4)
             if width <= 0:
                 width = current.minimumWidth() or current.width() or 420
         self.left_container.setFixedWidth(width)
@@ -6074,7 +6092,7 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         """Hide or show the left pane (tabs and Processing controls). Only
         reachable from the Processing tab: the toolbar lives in its plot area,
         and with the pane hidden no other tab can be selected."""
-        if hidden and self.tabs.currentWidget() is not self.processing_pane:
+        if hidden and self.tabs.currentIndex() != 0:
             self.left_pane_btn.setChecked(False)
             return
         self.left_container.setVisible(not hidden)
