@@ -191,6 +191,16 @@ def set_button_pending(button, pending: bool):
         button.setStyleSheet(_PENDING_STYLE if pending else "")
 
 
+def _errorbar_yerr(err):
+    """yerr for ax.errorbar, or None when it has no finite value. matplotlib
+    raises StopIteration on an all-NaN yerr (e.g. a site whose groups are all
+    single samples, so every std is NaN), which aborted logos_data."""
+    if err is None:
+        return None
+    vals = pd.to_numeric(pd.Series(np.asarray(err).ravel()), errors="coerce")
+    return err if np.isfinite(vals).any() else None
+
+
 def adjust_brightness(color, factor=1.0):
     """Darken/lighten an RGBA color. factor < 1 darkens, > 1 lightens."""
     r, g, b, a = color
@@ -1289,7 +1299,7 @@ class TimeseriesFigure(TagCRUDMixin):
                                       PORT_SHADE.get(port_label, 1.0))
             container = ax.errorbar(
                 grp["_period"].to_numpy(), grp["mean"].to_numpy(),
-                yerr=grp["std"].to_numpy(),
+                yerr=_errorbar_yerr(grp["std"].to_numpy()),
                 marker=marker, linestyle="",
                 color=color, markersize=markersize, capsize=capsize, alpha=0.9,
                 mfc="none", mec=color, label=label,
@@ -2324,7 +2334,7 @@ class RelStdDevFigure:
             top_artist_container = self._ax_top.errorbar(
                 group[self.x_var],
                 group["mixratio"],
-                yerr=group["stddev"],
+                yerr=_errorbar_yerr(group["stddev"]),
                 fmt="o",
                 linestyle="none",
                 color=color,
@@ -2977,7 +2987,7 @@ class TimeseriesWidget(QWidget):
                 else:
                     # draw errorbar and tag all its parts
                     container = ax.errorbar(
-                        grp["sample_datetime"], grp["mean"], yerr=grp["std"],
+                        grp["sample_datetime"], grp["mean"], yerr=_errorbar_yerr(grp["std"]),
                         marker=style["marker"], linestyle="",
                         color=color, markersize=style["size"], capsize=2, alpha=style["alpha"],
                         mfc='none', mec=color, label=label
