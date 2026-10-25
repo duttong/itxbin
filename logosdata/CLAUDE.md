@@ -316,7 +316,8 @@ M4-only shows the last four years of a 32-year record.
 | Dataset | Source | Coverage |
 |---|---|---|
 | All samples | `ng_data_processing_view` (M4 injections) **+** `query_mstar_pair_data()` (M1/M3 pair means) | **1991-2026** |
-| Flask mean / Pair mean | `ng_data_processing_view`, inst_num=192 | M4 only |
+| Flask mean | `build_datasets()` (M4 injections averaged per flask) **+** `query_mstar_flask_data()` (M1/M3 rows, already flask means) | **1991-2026** |
+| Pair mean | `ng_data_processing_view`, inst_num=192 | M4 only |
 | 10-day mean / Monthly mean | `MSTAR_PAIR_AVG_SQL` via `_binned_inst_filter()` | **M1+M3+M4** |
 
 **Two-flask rule (Montzka):** an M* pair mean needs at least two distinct
@@ -330,10 +331,13 @@ means, M1/M3 pair points, logos_compare M*, the three M* exporters,
 `HAVING`, same speed. `build_datasets()` applies the same rule in pandas for
 M4. FE3/OTTO still use the view unchanged.
 
-**`All samples` spans the whole M-system**, carrying the finest per-sample data
-available at each date: M4 injections from 2022, M1/M3 flask pair means before
-that. M4 is the only one of the three with per-injection rows in
-`ng_data_processing_view`, so before 2022 the pair mean *is* the raw datum. The
+**`All samples` spans the whole M-system**: M4 injections from 2022, M1/M3
+pair means before that. M1/M3 have no per-injection rows: each `ng_mole_fractions`
+row is one flask's mean on one analysis date, imported from Montzka's cmpdfile
+`PPT` column (the workbook's `AVE` pair mean is never stored). Those flask means
+are drawn under `Flask mean` (`query_mstar_flask_data()`, merged in
+`_build_plot()`; unrejected run_type 1 rows with a pair id, reruns averaged,
+sample s.d.). The
 two halves are drawn with different markers (`o` vs `P`, the M* half dimmed to
 0.75 brightness) because the granularity genuinely changes, but they share the
 `_dataset_label` so **one legend click clears the entire raw record** — which is
@@ -343,8 +347,8 @@ appends into the existing `All samples` handle list via `setdefault().extend()`.
 There was briefly a separate `M* pair` legend entry. It meant toggling off
 `All samples` still left the pre-2022 scatter on the plot, which is not what
 anyone wants. Note M* pair means are conceptually closer to `Pair mean` than to
-`All samples`; they sit here because they are the only raw data that exists
-before 2022, not because they are per-injection.
+`All samples`; they sit here so one click clears the pre-2022 scatter, not
+because they are per-injection.
 
 - `_binned_inst_filter()` returns `inst_id IN ('M1','M3','M4')` for M4 and
   `inst_num = %s` for everything else, so the binned aggregates pool the whole
@@ -362,10 +366,9 @@ before 2022, not because they are per-injection.
 - Only 3 site-months have both M3 and M4 for a given analyte, so merging changes
   almost nothing structurally (1489 rows across the two old datasets -> 1486
   pooled). Four more site-months overlap M1/M3, but those were already pooled.
-- **`All samples` stays M4-only** and can't be extended: M1/M3 have no
-  per-injection rows in `ng_data_processing_view`, only pair averages in
-  `ng_pair_avg_view`. Same reason the Relative Stddev figure and right-click
-  navigation don't work for M*.
+- M1/M3 have no per-injection rows (only flask means, with date-only
+  `analysis_time` and no `run_time`), which is why the Relative Stddev figure
+  and right-click navigation don't work for them.
 
 ## Timeseries figure analyte list and "(P)"
 

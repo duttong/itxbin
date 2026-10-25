@@ -535,12 +535,12 @@ class TimeseriesFigure(TagCRUDMixin):
         self.dataset_handles = {}
         # When FE3 has no data (e.g. OTTO-only sites like ITN/USH), show OTTO pair by default.
         fe3_empty = df.empty and parent_widget.instrument.inst_num == 193
-        # "All samples" carries the finest per-sample data available across the
-        # whole M-system: M4 injections from 2022, and M1/M3 flask pair means
-        # before that, M4 being the only one of the three with per-injection rows
-        # in ng_data_processing_view. One toggle therefore clears the raw record,
-        # which is what you want when reading the binned means. The granularity
-        # does change across 2022, so the two are drawn with different markers.
+        # "All samples" spans the whole M-system: M4 injections from 2022, and
+        # M1/M3 pair means before that. M1/M3 store flask means (Montzka's
+        # cmpdfile PPT), not injections; those flask means are in "Flask mean".
+        # One toggle therefore clears the raw record, which is what you want
+        # when reading the binned means. The granularity does change across
+        # 2022, so the two are drawn with different markers.
         self.dataset_visibility = {"All samples": True, "Flask mean": False, "Pair mean": False, "Air1": True, "Air2": True, "10-day mean": False, "Monthly mean": False, "Otto pair mean": fe3_empty, "Otto 10-day mean": False, "Otto monthly mean": False}
         self.legend_label_map = {
             "Otto pair mean": "OTTO pair",
@@ -757,6 +757,14 @@ class TimeseriesFigure(TagCRUDMixin):
     def _build_plot(self):
         """Build full figure layout and legends."""
         datasets = self.parent_widget.build_datasets(self.df, show_flagged=self._show_flagged)
+        if self.parent_widget.instrument.inst_num == 192:
+            # M1/M3 store flask means, not injections, so they join "Flask mean"
+            # directly rather than going through build_datasets().
+            mstar_fm = self.parent_widget.query_mstar_flask_data(self.analyte)
+            if not mstar_fm.empty:
+                datasets["Flask mean"] = pd.concat(
+                    [df for df in (datasets["Flask mean"], mstar_fm) if not df.empty],
+                    ignore_index=True)
         sites_by_lat = self.parent_widget.sites_by_lat
 
         site_colors = build_site_colors(sites_by_lat, self._palette)
@@ -837,7 +845,10 @@ class TimeseriesFigure(TagCRUDMixin):
         is_m4  = self.parent_widget.instrument.inst_num == 192
         is_fe3 = self.parent_widget.instrument.inst_num == 193
         has_data = not self.df.empty or not self.insitu_df.empty
-        flask_entries  = ["All samples", "Flask mean", "Pair mean"] if not self.df.empty else []
+        # A pre-M4 M* range has an empty self.df but still draws M1/M3 under
+        # "All samples" and "Flask mean"; list whichever have artists.
+        flask_entries  = [lbl for lbl in ("All samples", "Flask mean", "Pair mean")
+                          if not self.df.empty or self.dataset_handles.get(lbl)]
         insitu_entries = ["Air1", "Air2"] if not self.insitu_df.empty else []
         tenday_entries  = ["10-day mean"] if has_data else []
         monthly_entries = ["Monthly mean"] if has_data else []
@@ -1366,11 +1377,11 @@ class TimeseriesFigure(TagCRUDMixin):
     def _draw_mstar_artists(self, ax, site_colors):
         """Draw the M1+M3 pair means as the pre-2022 half of "All samples".
 
-        M4 is the only M-system instrument with per-injection rows in
-        ng_data_processing_view, so before 2022 the finest data available is the
-        flask pair mean.  These carry the "All samples" dataset label and so
-        follow that toggle, letting one click clear the whole raw record.  They
-        keep their own marker, since the granularity really does change.
+        M1/M3 have no per-injection rows: each row is already a flask mean,
+        drawn under "Flask mean" (query_mstar_flask_data).  These pair means
+        carry the "All samples" dataset label and so follow that toggle,
+        letting one click clear the whole pre-2022 record.  They keep their own
+        marker, since the granularity really does change.
         """
         handles = {}
 
@@ -3920,6 +3931,51 @@ class TimeseriesWidget(QWidget):
                 ]
             )
         return df
+
+    def query_mstar_flask_data(self, analyte: str | None = None) -> pd.DataFrame:
+        """Query M1/M3 flask means, shaped like build_datasets()'s "Flask mean".
+
+        Each M1/M3 ng_mole_fractions row is already a flask mean (Montzka's
+        cmpdfile PPT column), one per flask per analysis date; a flask rerun on
+        another date and left unrejected is averaged here like M4's injections.
+        Same selection as build_datasets(): unrejected flask runs with a pair id,
+        so PFP samples get no flask mean.
+        """
+        cols = ["site", "sample_id", "sample_datetime", "mean", "std"]
+        if self.instrument.inst_num != 192:
+            return pd.DataFrame(columns=cols)
+        analyte = analyte or self.analyte_combo.currentText()
+        pnum = self.analytes.get(analyte)
+        sites = self.get_active_sites()
+        if pnum is None or not sites:
+            return pd.DataFrame(columns=cols)
+        sql = f"""
+        SELECT UPPER(d.site) AS site, d.sample_id, d.sample_datetime,
+               AVG(d.value) AS mean, STD(d.value) AS std, COUNT(d.value) AS n
+        FROM hats.ng_data_view d
+        WHERE d.inst_id IN ('M1', 'M3')
+          AND d.parameter_num = %s
+          AND d.rejected = 0
+          AND d.run_type_num = 1
+          AND d.pair_id_num > 0
+          AND d.value IS NOT NULL
+          AND UPPER(d.site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(d.sample_datetime) BETWEEN %s AND %s
+        GROUP BY d.site, d.sample_id, d.sample_datetime
+        ORDER BY d.site, d.sample_datetime
+        """
+        params = [pnum] + sites + [self.start_year.value(), self.end_year.value()]
+        df = pd.DataFrame(self.instrument.doquery(sql, params))
+        if df.empty:
+            return pd.DataFrame(columns=cols)
+        df["sample_datetime"] = pd.to_datetime(df["sample_datetime"])
+        df["mean"] = df["mean"].astype(float)
+        # pandas' std is the sample s.d. (NaN for one value); match it, not
+        # MySQL's population STD, so M1/M3 and M4 flask error bars agree.
+        df["std"] = np.where(df["n"] > 1,
+                             df["std"].astype(float) * np.sqrt(df["n"] / (df["n"] - 1).clip(lower=1)),
+                             np.nan)
+        return df[cols]
 
     def query_otto_pair_data(self, analyte: str | None = None) -> pd.DataFrame:
         """Query OTTO individual pair rows from ng_pair_avg_view (FE3 only)."""
