@@ -94,6 +94,22 @@ class IE3_Instrument(HATS_DB_Functions):
                                   17.275, 0.061),
     }
 
+    # Multiplicative corrections to a fill's assignment, applied in
+    # processing only (hats.scale_assignments is left as is; its comment
+    # notes the factor). For fills whose only calibrations are on an
+    # instrument known to read off for that gas, where no M-series value
+    # exists. (serial, fill_code, pnum) -> (factor, reason); scales coef0,
+    # unc_c0 and any approved drift terms.
+    # AAL072101 A and AAL072269 A (SUM cal1/cal2 2012-08..2015-05) have only
+    # STDGC H1211 values. STDGC read ~3% high vs M3 on AAL072101's earlier
+    # fills, and SUM's tank-change height ratios and M* both put the two
+    # fills ~3% high: SUM H1211 read +0.147 ppt vs M* with them, +0.027
+    # with x0.97 (2026-10-25).
+    SCALE_ASSIGNMENT_FACTORS = {
+        ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
+        ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
+    }
+
     # Tank drift. caldrift stores value(t) = coef0 + coef1*x + coef2*x**2,
     # x = decimal year - tzero. IE3/CATS apply the drift terms only where
     # the fit is trustworthy for how this instrument used the tank: at
@@ -433,9 +449,32 @@ class IE3_Instrument(HATS_DB_Functions):
         history = self._apply_unrecorded_fill_splits(serial, pnum, history)
         if self.APPLY_SCALE_DRIFT:
             history = self._attach_scale_drift(serial, pnum, history)
+        history = self._apply_scale_assignment_factors(serial, pnum, history)
 
         self._scale_assignment_cache[cache_key] = history
         return history
+
+    def _apply_scale_assignment_factors(self, serial, pnum, history):
+        """Scale named fills by SCALE_ASSIGNMENT_FACTORS.
+
+        Runs after drift is attached (the drift lookup matches on the
+        stored coef0), so the factor scales the whole value: coef0, unc_c0
+        and any drift terms.
+        """
+        out = []
+        for row in history:
+            spec = self.SCALE_ASSIGNMENT_FACTORS.get((str(serial), row.get('fill_code'), int(pnum)))
+            if spec is None:
+                out.append(row)
+                continue
+            factor, reason = spec
+            row = dict(row, coef0=row['coef0'] * factor, unc_c0=row.get('unc_c0', 0.0) * factor,
+                       factor=factor, comment=f"x{factor:g}: {reason} (SCALE_ASSIGNMENT_FACTORS)")
+            if row.get('drift'):
+                d = row['drift']
+                row['drift'] = dict(d, coef1=d['coef1'] * factor, coef2=d['coef2'] * factor)
+            out.append(row)
+        return out
 
     def _apply_scale_assignment_source_overrides(self, serial, pnum, history):
         """Fill in fill_codes with no real assignment via SCALE_ASSIGNMENT_SOURCE_OVERRIDES.
