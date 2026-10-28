@@ -32,6 +32,11 @@ class CATS_GCwerks2DB:
     # (e.g. NWR Jun-Jul 2005, Sep 2018-Jul 2019, Jun 2023) -- never a real
     # CATS sample port -- so they're dropped before loading.
     VALID_PORTS = {2, 4, 6, 8}
+    AIR_PORTS = (4, 8)
+
+    # How far back to look for an analyte's current cal method when new rows
+    # are inserted (see _carry_forward_methods()).
+    CARRY_FORWARD_LOOKBACK = "1 YEAR"
 
     INST_NUM_BY_SITE: dict[str, int] = {
         "brw": 239,
@@ -324,11 +329,50 @@ class CATS_GCwerks2DB:
                 WHERE {where_terms}
             """, query_params)
 
+    def _carry_forward_methods(self) -> dict:
+        """(parameter_num, channel) -> mf_method_num of the latest air row
+        with a computed mole fraction, looking back CARRY_FORWARD_LOOKBACK.
+
+        New rows inherit it, so the cal method chosen for an analyte keeps
+        going into newly ingested days; existing rows are never touched.
+        """
+        sql = f"""
+            SELECT m.parameter_num, m.channel, m.mf_method_num
+            FROM hats.ng_insitu_mole_fractions m
+            JOIN hats.ng_insitu_analysis a ON a.num = m.analysis_num
+            JOIN (
+                SELECT m2.parameter_num, m2.channel, MAX(a2.analysis_time) AS t
+                FROM hats.ng_insitu_mole_fractions m2
+                JOIN hats.ng_insitu_analysis a2 ON a2.num = m2.analysis_num
+                WHERE a2.inst_num = {self.inst_num}
+                  AND a2.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
+                  AND a2.analysis_time >= NOW() - INTERVAL {self.CARRY_FORWARD_LOOKBACK}
+                  AND m2.mole_fraction IS NOT NULL
+                  AND m2.mf_method_num IS NOT NULL
+                GROUP BY m2.parameter_num, m2.channel
+            ) last ON last.parameter_num = m.parameter_num
+                  AND last.channel = m.channel AND last.t = a.analysis_time
+            WHERE a.inst_num = {self.inst_num}
+              AND a.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
+              AND m.mole_fraction IS NOT NULL
+        """
+        rows = self.db.doquery(sql) or []
+        return {(int(r["parameter_num"]), r["channel"]): int(r["mf_method_num"])
+                for r in rows if r["mf_method_num"] is not None}
+
+    def _default_mf_method(self, param: int) -> int:
+        # Same as CATS_Instrument.default_mf_method(): cal1 for CCl4, else cal12.
+        return 3 if int(param) == 37 else 2
+
     def upsert_mole_fractions(self, df: pd.DataFrame, analysis_map: dict, batch_size: int = 1000):
+        # mf_method_num is set only when a row is first inserted (carried
+        # forward from the analyte's latest processed air row); the UPDATE
+        # clause leaves it alone so methods set by hand are never reset.
         mole_sql = """
             INSERT INTO hats.ng_insitu_mole_fractions (
-                analysis_num, parameter_num, channel, height, area, retention_time
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+                analysis_num, parameter_num, channel, height, area, retention_time,
+                mf_method_num
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 height         = VALUES(height),
                 area           = VALUES(area),
@@ -345,6 +389,8 @@ class CATS_GCwerks2DB:
                           if mol in self.UPLOAD_MOLS and mol not in self.analytes})
         if missing:
             print(f"Warning: no analyte mapping for GCwerks mols: {missing}")
+
+        methods = self._carry_forward_methods()
 
         params = []
         all_keys: set = set()
@@ -380,7 +426,8 @@ class CATS_GCwerks2DB:
                 if self._empty_measurement(ht, area, rt):
                     invalid_keys.add(key)
                     continue
-                params.append((analysis_num, param, channel, ht, area, rt))
+                method = methods.get((param, channel), self._default_mf_method(param))
+                params.append((analysis_num, param, channel, ht, area, rt, method))
                 all_keys.add(key)
                 if flagged:
                     flagged_keys.add(key)

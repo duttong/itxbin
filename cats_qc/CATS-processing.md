@@ -14,14 +14,22 @@ Runs unattended via crontab (`crontab -l`). Chain per site each morning:
 cats_incoming.py <site>          # 03:20 — pull incoming GC data
 catseng.py --output <site>       # 07:4x — engineering data (sample loop flow/temp/pressure)
 cats_export.py <site>            # 09:0x — export GCwerks -> /hats/gc/cats_results/*.csv
-cats_ingest.py <site> --skip-export   # 09:1x — load CSVs, sync GCwerks flags, assign
-                                       #         cal method, recompute weekly fits + MF
+cats_ingest.py <site> --skip-export   # 09:1x — load CSVs, sync GCwerks flags,
+                                       #         recompute weekly fits + MF
 ```
 
 `cats_ingest.py <site>` (no `--skip-export`) does all of export -> load ->
-mf-method-assign -> recompute in one call — use this for a manual re-run.
+recompute in one call — use this for a manual re-run.
 Add `--run-aftp` only for a one-time legacy-MF backfill; add `--no-mf` to
-skip the auto cal-method/recompute step (rare).
+skip the recompute step (rare).
+
+Cal methods are not reset by the ingest. `cats_gcwerks2db.py` gives each newly
+inserted row its analyte/channel's current method (that of the latest air row
+with a mole fraction, within a year; the default cal12, or cal1 for CCl4, if
+none), and never changes the method of an existing row. Pass `--set-methods`
+to reset the whole window to the defaults with `cats_set_mf_method.py` first;
+that overwrites methods set by hand (as the ingest did by default before
+2026-10-27).
 
 Nothing to do here normally — this is the "is it still running" reference,
 not a workflow you execute by hand.
@@ -109,7 +117,7 @@ you want every channel a pnum reports on, or `--channel` to restrict
 further; omit both to touch every analyte for the instrument. `--end` is
 optional (defaults to "from --start onward"). Idempotent — safe to rerun.
 This is also run automatically per episode by `cats_apply_cal_method.py`
-(2f) and daily by `cats_ingest.py`'s auto cal-method/recompute step (1); run
+(2f) and by `cats_ingest.py --set-methods` (not by the daily ingest, see 1); run
 it by hand for a one-off relabel outside those flows.
 
 ### 2e. Recompute mole fractions after any tag change

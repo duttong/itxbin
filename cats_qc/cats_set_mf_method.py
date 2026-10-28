@@ -26,8 +26,10 @@ requested method for the covered years and falls back to ref (method 1),
 with a printed note, only for the uncovered sub-range(s) -- it does not
 reject the whole window over one bad tank at the tail.
 
-Safe to run repeatedly (idempotent) -- intended as a daily pipeline step
-for newly-ingested rows (see cats_ingest.py).
+Safe to run repeatedly (idempotent), but it overwrites methods set by hand
+in the window. Not a daily step: new rows get their analyte's current method
+on insert (cats_gcwerks2db.py); cats_ingest.py runs this only with
+--set-methods.
 
 Run with --dry-run to see row counts before committing.
 

@@ -56,8 +56,14 @@ def ingest(
     ),
     mf: bool = typer.Option(
         True, "--mf/--no-mf",
-        help="Assign default cal methods and recompute weekly cal fits + "
-             "mole fractions via cats_set_mf_method.py/cats_batch.py (default: on)",
+        help="Recompute weekly cal fits + mole fractions via cats_batch.py (default: on)",
+    ),
+    set_methods: bool = typer.Option(
+        False, "--set-methods",
+        help="Before recomputing, reset every air row in the window to its "
+             "analyte's default cal method (cats_set_mf_method.py). Off by "
+             "default: it overwrites methods set by hand. New rows already "
+             "get the analyte's current method from cats_gcwerks2db.py.",
     ),
 ):
     """Ingest CATS data for one site.
@@ -66,8 +72,9 @@ def ingest(
       1. Export GCwerks data to /hats/gc/cats_results/ (cats_export.py)
       2. Load GCwerks CSVs into ng_insitu_analysis / ng_insitu_mole_fractions
       3. (optional, --run-aftp) Import legacy published mole fractions from /aftp/hats
-      4. (default, --mf) Assign default calibration methods, then recompute
-         weekly cal fits and mole fractions (cats_set_mf_method.py, cats_batch.py)
+      4. (default, --mf) Recompute weekly cal fits and mole fractions
+         (cats_batch.py); with --set-methods, first reset the window's cal
+         methods to the defaults (cats_set_mf_method.py)
     """
     # 1. GCwerks export
     if not skip_export:
@@ -95,19 +102,22 @@ def ingest(
             aftp_cmd.extend(["--year", str(year)])
         _run(aftp_cmd)
 
-    # 4. Recompute mole fractions: assign default cal methods, then weekly
-    # fits + mole fractions. Both steps share the same date window so a row
-    # is only ever tagged cal12/cal1 in the same run that recomputes it.
+    # 4. Recompute mole fractions: weekly fits + mole fractions. New rows
+    # already carry their analyte's current cal method (set on insert by
+    # cats_gcwerks2db.py). --set-methods resets the window to the defaults
+    # first; it shares the window so a row is only ever tagged cal12/cal1 in
+    # the same run that recomputes it.
     if mf:
         start_date, end_date = _resolve_mf_window(all_data, year)
 
-        method_cmd = [
-            sys.executable, str(BIN_DIR / "cats_qc" / "cats_set_mf_method.py"),
-            "--site", site, "--start", start_date,
-        ]
-        if end_date:
-            method_cmd.extend(["--end", end_date])
-        _run(method_cmd)
+        if set_methods:
+            method_cmd = [
+                sys.executable, str(BIN_DIR / "cats_qc" / "cats_set_mf_method.py"),
+                "--site", site, "--start", start_date,
+            ]
+            if end_date:
+                method_cmd.extend(["--end", end_date])
+            _run(method_cmd)
 
         batch_cmd = [
             sys.executable, str(BIN_DIR / "cats_batch.py"),
