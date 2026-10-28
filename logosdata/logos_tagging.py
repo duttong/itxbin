@@ -218,11 +218,14 @@ class MultiTagPanel(QWidget):
     Analytes" section is shown; otherwise it's omitted.
     """
 
-    def __init__(self, host):
+    def __init__(self, host, parent: QWidget | None = None):
         # A child Qt.Window, not a parentless Qt.Tool: XQuartz floats parentless utility
         # windows above every Mac app (and above their own tooltips). Parented, it stays
-        # on top of its main window only.
-        parent = host.window() if isinstance(host, QWidget) else None
+        # on top of its main window only. A host that is not a QWidget (a matplotlib
+        # figure) passes its own window as *parent*; parentless, the panel would drop
+        # behind the figure on every click.
+        if parent is None and isinstance(host, QWidget):
+            parent = host.window()
         super().__init__(parent, Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
         self.host = host
         self._supports_copy_all = hasattr(host, 'update_all_analytes')

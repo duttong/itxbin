@@ -1570,7 +1570,9 @@ class TimeseriesFigure(TagCRUDMixin):
             # same red-edge style a flagged point gets -- see
             # _redraw_fresh_tag_highlights().
             if self._multi_tag_panel is None:
-                panel = MultiTagPanel(self)
+                # Parent to the figure window so the panel stays in front of it.
+                manager = getattr(self._fig.canvas, "manager", None)
+                panel = MultiTagPanel(self, parent=getattr(manager, "window", None))
 
                 def _panel_close(e):
                     e.accept()
