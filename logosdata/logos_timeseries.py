@@ -2721,32 +2721,52 @@ class TimeseriesWidget(QWidget):
                 "<tt>deploy</tt> commits and pushes the edit."
             )
 
+            # "All" toggles: save every analyte, one auto-named file each, into
+            # a chosen directory.  The Plot button still previews only the
+            # analyte selected above.
+            self.export_mstar_all_toggle = self._all_analytes_toggle()
+            self.export_mstar_sel_toggle = self._all_analytes_toggle()
+            self.export_mstar_monthly_toggle = self._all_analytes_toggle()
+            self.export_mstar_global_toggle = self._all_analytes_toggle()
+
             self.export_mstar_all_btn = QPushButton("All Sites and Time")
-            self.export_mstar_all_btn.clicked.connect(self._export_mstar_data_all_sites)
+            self.export_mstar_all_btn.clicked.connect(
+                lambda _=False: self._export_mstar_data_all_sites(
+                    self.export_mstar_all_toggle.isChecked()))
             self.export_mstar_sel_btn = QPushButton("Selected Sites and Time")
-            self.export_mstar_sel_btn.clicked.connect(self._export_mstar_data_selected_sites)
+            self.export_mstar_sel_btn.clicked.connect(
+                lambda _=False: self._export_mstar_data_selected_sites(
+                    self.export_mstar_sel_toggle.isChecked()))
             self.export_mstar_monthly_btn = QPushButton("Selected Sites, Times, Monthly Means")
-            self.export_mstar_monthly_btn.clicked.connect(self._export_mstar_monthly_means)
+            self.export_mstar_monthly_btn.clicked.connect(
+                lambda _=False: self._export_mstar_monthly_means(
+                    self.export_mstar_monthly_toggle.isChecked()))
             self.export_mstar_global_btn = QPushButton("Global Means at Selected Time")
-            self.export_mstar_global_btn.clicked.connect(self._export_mstar_global_means)
+            self.export_mstar_global_btn.clicked.connect(
+                lambda _=False: self._export_mstar_global_means(
+                    self.export_mstar_global_toggle.isChecked()))
             self.edit_global_cfg_btn = QPushButton("Edit Global Means Config")
             self.edit_global_cfg_btn.clicked.connect(self._edit_global_means_config)
 
             _all_sites = lambda: [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
             save_layout.addLayout(self._export_row(
                 self.export_mstar_all_btn, _tip_all,
-                on_plot=lambda: self._preview_export(_all_sites, all_time=True)))
+                on_plot=lambda: self._preview_export(_all_sites, all_time=True),
+                toggle=self.export_mstar_all_toggle))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_sel_btn, _tip_sel,
-                on_plot=lambda: self._preview_export(self.get_active_sites)))
+                on_plot=lambda: self._preview_export(self.get_active_sites),
+                toggle=self.export_mstar_sel_toggle))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_monthly_btn, _tip_monthly,
                 on_plot=lambda: self._preview_export(self.get_active_sites,
-                                                     exporter_cls=MstarMonthlyExporter)))
+                                                     exporter_cls=MstarMonthlyExporter),
+                toggle=self.export_mstar_monthly_toggle))
             save_layout.addLayout(self._export_row(
                 self.export_mstar_global_btn, _tip_global,
                 on_plot=lambda: self._preview_export(_all_sites,
-                                                     exporter_cls=MstarGlobalMeansExporter)))
+                                                     exporter_cls=MstarGlobalMeansExporter),
+                toggle=self.export_mstar_global_toggle))
             save_layout.addLayout(self._export_row(self.edit_global_cfg_btn, _tip_cfg))
             save_group.setLayout(save_layout)
             controls.addWidget(save_group)
@@ -2795,11 +2815,28 @@ class TimeseriesWidget(QWidget):
         self.setLayout(controls)
 
     # --- Helpers ---
-    def _export_row(self, btn: QPushButton, tooltip_html: str, on_plot=None):
-        """Return a QHBoxLayout with *btn*, an optional Plot button and an info icon.
+    @staticmethod
+    def _all_analytes_toggle() -> QPushButton:
+        """A narrow checkable "All" button: save every analyte instead of one."""
+        toggle = QPushButton("All")
+        toggle.setCheckable(True)
+        toggle.setFixedWidth(36)
+        toggle.setToolTip("Save every analyte, one file each, into a directory "
+                          "you choose (file names are generated). Plot still "
+                          "shows only the analyte selected above.")
+        toggle.setStyleSheet(
+            "QPushButton:checked { background-color: #2f6fd0; color: white;"
+            " font-weight: bold; border: 1px solid #1f4f99; border-radius: 3px; }")
+        return toggle
+
+    def _export_row(self, btn: QPushButton, tooltip_html: str, on_plot=None,
+                    toggle: QPushButton | None = None):
+        """Return a QHBoxLayout with *btn*, an optional toggle, an optional Plot
+        button and an info icon.
 
         *on_plot* previews exactly what the export beside it would write, so the
-        file can be checked before it is created.
+        file can be checked before it is created.  *toggle* sits between the
+        two (the M* "All analytes" switch).
         """
         icon_path = Path(__file__).parent / 'assets' / 'icons8-info-30.png'
         info_btn = QPushButton()
@@ -2825,6 +2862,8 @@ class TimeseriesWidget(QWidget):
         row = QHBoxLayout()
         row.setSpacing(4)
         row.addWidget(btn, stretch=1)
+        if toggle is not None:
+            row.addWidget(toggle, stretch=0)
         if on_plot is not None:
             plot_btn = QPushButton("Plot")
             plot_btn.setFixedWidth(44)
@@ -3051,26 +3090,31 @@ class TimeseriesWidget(QWidget):
         fig = RelStdDevFigure(self, df, analyte)
         self.open_figures.append(fig)
 
-    def _export_mstar_data_all_sites(self):
+    def _export_mstar_data_all_sites(self, all_analytes: bool = False):
         """Export M* data for all sites and all time, minus those in MSTAR_EXPORT_EXCLUDE."""
         sites = [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
-        self._run_mstar_export(sites=sites, all_time=True)
+        self._run_mstar_export(sites=sites, all_time=True, all_analytes=all_analytes,
+                               button=self.export_mstar_all_btn)
 
-    def _export_mstar_data_selected_sites(self):
+    def _export_mstar_data_selected_sites(self, all_analytes: bool = False):
         """Export M* data for the currently checked sites and the selected year range."""
-        self._run_mstar_export(sites=self.get_active_sites(), all_time=False)
+        self._run_mstar_export(sites=self.get_active_sites(), all_time=False,
+                               all_analytes=all_analytes,
+                               button=self.export_mstar_sel_btn)
 
-    def _export_mstar_monthly_means(self):
+    def _export_mstar_monthly_means(self, all_analytes: bool = False):
         """Export M* monthly means for the checked sites and the selected year range."""
         self._run_mstar_export(sites=self.get_active_sites(), all_time=False,
-                               exporter_cls=MstarMonthlyExporter)
+                               exporter_cls=MstarMonthlyExporter,
+                               all_analytes=all_analytes,
+                               button=self.export_mstar_monthly_btn)
 
     def _edit_global_means_config(self):
         """Open the config editor; a modal dialog, so one at a time."""
         from global_means_config_dialog import GlobalMeansConfigDialog
         GlobalMeansConfigDialog(self).exec_()
 
-    def _export_mstar_global_means(self):
+    def _export_mstar_global_means(self, all_analytes: bool = False):
         """Export monthly global/hemispheric means over the selected year range.
 
         The means use the config's background sites, not the site checkboxes.
@@ -3079,7 +3123,9 @@ class TimeseriesWidget(QWidget):
         """
         sites = [s for s in self.sites_by_lat if s not in MSTAR_EXPORT_EXCLUDE]
         self._run_mstar_export(sites=sites, all_time=False,
-                               exporter_cls=MstarGlobalMeansExporter)
+                               exporter_cls=MstarGlobalMeansExporter,
+                               all_analytes=all_analytes,
+                               button=self.export_mstar_global_btn)
 
     def _preview_export(self, sites_fn, all_time: bool = False,
                         exporter_cls=MstarDataExporter, title: str = "Export M* Data"):
@@ -3099,12 +3145,87 @@ class TimeseriesWidget(QWidget):
         return getattr(self, '_palette', 'Latitude') or 'Latitude'
 
     def _run_mstar_export(self, sites: list[str] | None, all_time: bool = False,
-                          exporter_cls=MstarDataExporter):
-        """Shared logic: build exporter, prompt for path, write file."""
-        self.save_exporter(exporter_cls.from_timeseries_widget(
-            self, sites=sites, all_time=all_time))
+                          exporter_cls=MstarDataExporter, all_analytes: bool = False,
+                          button: QPushButton | None = None):
+        """Shared logic: build exporter, prompt for path, write file.
 
-    def save_exporter(self, exporter, title: str = "Export M* Data", parent=None):
+        With *all_analytes*, build one exporter per analyte and write them all
+        into one chosen directory under their default file names.  *button*
+        turns amber while the files are written.
+        """
+        if not all_analytes:
+            self.save_exporter(exporter_cls.from_timeseries_widget(
+                self, sites=sites, all_time=all_time), button=button)
+            return
+        if not sites and exporter_cls is not MstarGlobalMeansExporter:
+            QMessageBox.warning(self, "Export M* Data", "No sites selected.")
+            return
+        exporters = [exporter_cls.from_timeseries_widget(
+                         self, sites=sites, all_time=all_time, analyte=name)
+                     for name in self.analytes]
+        self.save_exporters_to_directory(exporters, button=button)
+
+    def save_exporters_to_directory(self, exporters, title: str = "Export M* Data",
+                                    button: QPushButton | None = None):
+        """Prompt for a directory and write each exporter under its default name.
+
+        Analytes with no data write no file.  Existing files are only
+        overwritten after one confirmation for the whole batch.  *button*
+        stays amber for the whole batch, its label naming the analyte being
+        written.
+        """
+        output_dir = QFileDialog.getExistingDirectory(
+            self, f"Select Output Directory for {title} (all analytes)")
+        if not output_dir:
+            return
+        out = Path(output_dir)
+
+        existing = [e.default_filename() for e in exporters
+                    if (out / e.default_filename()).exists()]
+        if existing:
+            shown = "\n".join(existing[:10]) + (
+                f"\n... and {len(existing) - 10} more" if len(existing) > 10 else "")
+            reply = QMessageBox.question(
+                self, title,
+                f"{len(existing)} file(s) already exist in {output_dir}:\n\n"
+                f"{shown}\n\nOverwrite them?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+
+        default_text = button.text() if button is not None else ""
+        written, empty, failed = [], [], []
+        try:
+            for i, exporter in enumerate(exporters):
+                if button is not None:
+                    self._set_button_loading_state(
+                        button, True, default_text,
+                        loading_text=f"Saving {exporter.parameter} "
+                                     f"({i + 1}/{len(exporters)})...")
+                path = out / exporter.default_filename()
+                try:
+                    n = exporter.export(path)
+                except Exception as exc:  # one bad analyte shouldn't stop the batch
+                    failed.append(f"{exporter.parameter}: {exc}")
+                    continue
+                if n:
+                    written.append((path.name, n))
+                else:
+                    empty.append(exporter.parameter)
+        finally:
+            if button is not None:
+                self._set_button_loading_state(button, False, default_text)
+
+        msg = (f"Wrote {sum(n for _, n in written)} records across "
+               f"{len(written)} file(s) in:\n{output_dir}")
+        if empty:
+            msg += f"\n\nNo data (no file written): {', '.join(empty)}"
+        if failed:
+            msg += "\n\nFailed:\n" + "\n".join(failed)
+        (QMessageBox.warning if failed else QMessageBox.information)(self, title, msg)
+
+    def save_exporter(self, exporter, title: str = "Export M* Data", parent=None,
+                      button: QPushButton | None = None):
         """Prompt for a destination and write *exporter*.
 
         The preview window's Save button calls this with its own exporter, so
@@ -3114,6 +3235,9 @@ class TimeseriesWidget(QWidget):
         *parent* owns the dialogs. A preview passes its own window, because a
         dialog parented to this panel hands focus back to the main window when
         it closes, dropping the figure behind it.
+
+        *button*, when given, turns amber ("Saving...") while the file is
+        written, after the path has been chosen.
         """
         owner = parent if parent is not None else self
 
@@ -3138,7 +3262,15 @@ class TimeseriesWidget(QWidget):
         )
         if not path:
             return
-        n = exporter.export(path)
+        default_text = button.text() if button is not None else ""
+        if button is not None:
+            self._set_button_loading_state(button, True, default_text,
+                                           loading_text="Saving...")
+        try:
+            n = exporter.export(path)
+        finally:
+            if button is not None:
+                self._set_button_loading_state(button, False, default_text)
         if n == 0:
             QMessageBox.warning(owner, title, "No data found for the current selection.")
         else:
