@@ -16,7 +16,7 @@ row-identity semantics belong entirely to the host.
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QApplication,
-    QMessageBox,
+    QMessageBox, QScrollArea, QFrame,
 )
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtCore import Qt, QTimer
@@ -233,7 +233,19 @@ class MultiTagPanel(QWidget):
         self._updating = False
         self._rows: list[dict] = []
 
-        layout = QVBoxLayout(self)
+        # Everything sits in a scroll area, so on a short screen the panel is
+        # capped at the screen height and scrolls instead of running off it.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(self._scroll)
+        self._content = QWidget()
+        self._scroll.setWidget(self._content)
+
+        layout = QVBoxLayout(self._content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
@@ -444,7 +456,47 @@ class MultiTagPanel(QWidget):
         header_h = self._table.horizontalHeader().height()
         rows_h = sum(self._table.rowHeight(r) for r in range(self._table.rowCount()))
         self._table.setFixedHeight(header_h + rows_h + 4)
-        self.adjustSize()
+        self._fit_to_screen()
+
+    def _available_geometry(self):
+        """The usable area of the screen the panel (or its parent) is on."""
+        anchor = self if self.isVisible() else (self.parentWidget() or self)
+        screen = QApplication.screenAt(anchor.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    def _fit_to_screen(self):
+        """Size to the full content when it fits; otherwise cap at the screen
+        height and let the scroll area take over, then pull the window back
+        onto the screen if its bottom would hang off."""
+        avail = self._available_geometry()
+        # Room for the title bar, which the frame adds outside our geometry.
+        frame_extra = max(self.frameGeometry().height() - self.height(), 30)
+        content = self._content.sizeHint()
+        bar_w = self._scroll.verticalScrollBar().sizeHint().width()
+        want_h = content.height()
+        max_h = avail.height() - frame_extra
+        height = min(want_h, max_h)
+        # Leave room for the scrollbar when it is going to show.
+        width = content.width() + (bar_w if want_h > max_h else 0)
+        self.resize(max(width, self.minimumWidth()), height)
+
+        if self.isVisible():
+            self._keep_on_screen(avail, frame_extra)
+
+    def _keep_on_screen(self, avail, frame_extra):
+        geo = self.frameGeometry()
+        y = geo.y()
+        if geo.bottom() > avail.bottom():
+            y = max(avail.top(), avail.bottom() - self.height() - frame_extra)
+        if y != geo.y():
+            self.move(geo.x(), y)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Screen geometry is only reliable once shown; re-fit then.
+        QTimer.singleShot(0, self._fit_to_screen)
 
     def _save_comment(self):
         if not self._mf_nums:
