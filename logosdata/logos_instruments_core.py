@@ -452,6 +452,60 @@ class HATS_DB_Functions(LOGOS_Instruments):
         out.drop(columns=['analysis_time'], inplace=True)
         return out
 
+    def link_hatsflask_events(self, start_time, end_time=None):
+        """ Set ng_analysis.hatsflask_event_num for this instrument's flask analyses
+        between start_time and end_time (inclusive; open-ended if end_time is None).
+        The event is the hatsflask_event row with the same (pair_id, flask_id); a row
+        whose pair/flask no longer matches any event goes back to NULL, so corrections
+        made in ng_analysis re-link on the next load. Pair means stored with
+        flask_id = 0 (OTTO) are left alone. Skips with a note until the column exists
+        (DDL in sql/ng_analysis_hatsflask_event_num.sql).
+        """
+        if pd.isna(start_time):
+            return
+        if not hasattr(HATS_DB_Functions, '_has_hatsflask_event_num'):
+            rows = self.db.doquery(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = 'hats' AND TABLE_NAME = 'ng_analysis' "
+                "AND COLUMN_NAME = 'hatsflask_event_num'")
+            HATS_DB_Functions._has_hatsflask_event_num = bool(rows and rows[0]['n'])
+        if not HATS_DB_Functions._has_hatsflask_event_num:
+            print('ng_analysis.hatsflask_event_num does not exist yet; skipping event links.')
+            return
+
+        start = pd.Timestamp(start_time).strftime('%Y-%m-%d %H:%M:%S')
+        params = [self.inst_num, start]
+        end_sql = ''
+        if end_time is not None:
+            end_sql = 'AND a.analysis_time <= %s'
+            params.append(pd.Timestamp(end_time).strftime('%Y-%m-%d %H:%M:%S'))
+
+        sql = f"""
+            UPDATE hats.ng_analysis a
+              LEFT JOIN hats.hatsflask_event e
+                ON e.pair_id = a.pair_id_num AND e.flask_id = a.flask_id
+               SET a.hatsflask_event_num = e.num
+             WHERE a.inst_num = %s
+               AND a.analysis_time >= %s {end_sql}
+               AND a.pair_id_num > 0
+               AND a.flask_id <> 0
+        """
+        self.db.doquery(sql, params)
+
+        unlinked = self.db.doquery(f"""
+            SELECT a.pair_id_num, a.flask_id, COUNT(*) AS n
+              FROM hats.ng_analysis a
+             WHERE a.inst_num = %s
+               AND a.analysis_time >= %s {end_sql}
+               AND a.pair_id_num > 0
+               AND a.flask_id <> 0
+               AND a.hatsflask_event_num IS NULL
+             GROUP BY a.pair_id_num, a.flask_id
+        """, params) or []
+        for r in unlinked:
+            print(f"Warning: pair {r['pair_id_num']} flask {r['flask_id']} has no "
+                  f"hatsflask event ({r['n']} analyses unlinked)")
+
     def upsert_calibrations(self, df, parameter_num):
         """
         Aggregate unflagged tank measurements from df and upsert into

@@ -440,6 +440,8 @@ class FE3_Prepare(fe3_inst):
                 k = (r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'), int(r['port']))
                 existing.setdefault(k, r['num'])
 
+        self.link_hatsflask_events(df['time'].min(), df['time'].max())
+
         # 3) Flatten existing to analysis_time_str -> num for mole fraction lookup.
         # analysis_times are unique per row (one ITX file per channel injection),
         # so collapsing port is safe here.

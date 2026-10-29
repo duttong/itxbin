@@ -635,7 +635,8 @@ class M4_SampleLogs(M4_Instrument):
             These routines work on the whole df. Make sure df is trimmed to the pertinent data. """
         self.insert_ng_analysis(df)
         self.update_pfp_flask_port(df)
-        df = self.return_analysis_nums(df) 
+        self.link_hatsflask_events(df['dt_run'].min(), df['dt_run'].max())
+        df = self.return_analysis_nums(df)
         return df
 
     def insert_ng_analysis(self, df):
