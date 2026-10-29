@@ -1644,6 +1644,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
                 self.processing_pane.minimumSizeHint().width(),
                 self.processing_pane.minimumWidth(),
                 self.processing_pane.width(),
+                # Never narrower than the tab bar, or the tabs scroll.
+                self.tabs.tabBar().sizeHint().width() + 4,
             )
         else:
             # Size to what the pane actually needs (combos can elide), but
