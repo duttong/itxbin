@@ -363,6 +363,11 @@ def weekly_cal_fits(
 
     rows = []
     for week, grp in cal.groupby('week_start'):
+        # A cal tank whose weekly mean response is NaN/inf (e.g. no usable
+        # peaks that week) passes the ptp guard below -- np.ptp is NaN, not
+        # 0 -- and then crashes np.polyfit (SVD does not converge). Drop it so
+        # the week falls through to the usual "not enough tanks" skip.
+        grp = grp[np.isfinite(grp['mean']) & np.isfinite(grp['mole_fraction'])]
         grp = grp.sort_values('port')
         xs = grp['mean'].to_numpy()
         ys = grp['mole_fraction'].to_numpy()
