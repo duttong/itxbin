@@ -56,6 +56,16 @@
   it is placed in the full SSV sequence by a unique substring match (or a
   `main_offset` key if the FE3 app ever writes one). DDL in
   `sql/ng_analysis_test_num.sql`.
+- `hats.ng_analysis.hatsflask_event_num` — the analysis's `hatsflask_event.num`
+  (added 2026-10-29, as PRS's `hats.analysis.hatsflask_event_num`).
+  `ng_data_view` joins `hatsflask_event_view` on it for sample date, site and
+  met data; never go through `hatsflask_inv.event_num`, which is only each
+  flask's *current* event. Loaders set it with
+  `HATS_DB_Functions.link_hatsflask_events()` from the `(pair_id, flask_id)`
+  match (M4 in `m4_samplogs.py`, FE3 in `fe3_gcwerks2db.py`), warning on pairs
+  with no event. OTTO pair means (`flask_id = 0`) carry the pair's first event.
+  BLD1 rows have no pair id and stay NULL. DDL and the typo review query in
+  `sql/ng_analysis_hatsflask_event_num.sql`
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions
