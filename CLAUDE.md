@@ -409,7 +409,8 @@ CATS: inst_num 246 BRW, 247 NWR, 248 MLO, 249 SMO, 250 SPO (defined in
   → cats_batch (fits + MF). It does not reset cal methods unless given
   `--set-methods` (runs `cats_set_mf_method.py` on the window); instead
   `cats_gcwerks2db.py` sets `mf_method_num` only on insert, carried forward
-  from the analyte/channel's latest air row with a mole fraction
+  from the analyte/channel's latest air row (with or without a mole fraction,
+  so an analyte left on ref for lack of scale assignments stays on ref)
 - Port layout (all sites): port 2=cal1 (Std), port 4=air1, port 6=cal2 (Ref),
   port 8=air2; cal2 is near-ambient and used as the normalization reference
 - Mole fractions: `mf = normalized_resp × coef0` from `hats.scale_assignments`

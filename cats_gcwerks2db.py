@@ -330,11 +330,14 @@ class CATS_GCwerks2DB:
             """, query_params)
 
     def _carry_forward_methods(self) -> dict:
-        """(parameter_num, channel) -> mf_method_num of the latest air row
-        with a computed mole fraction, looking back CARRY_FORWARD_LOOKBACK.
+        """(parameter_num, channel) -> mf_method_num of the latest air row,
+        looking back CARRY_FORWARD_LOOKBACK.
 
         New rows inherit it, so the cal method chosen for an analyte keeps
-        going into newly ingested days; existing rows are never touched.
+        going into newly ingested days; existing rows are never touched. Rows
+        without a mole fraction count: an analyte on ref with no scale
+        assignment for its tanks has none, and must stay on ref rather than
+        fall through to the cal12 default.
         """
         sql = f"""
             SELECT m.parameter_num, m.channel, m.mf_method_num
@@ -347,14 +350,12 @@ class CATS_GCwerks2DB:
                 WHERE a2.inst_num = {self.inst_num}
                   AND a2.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
                   AND a2.analysis_time >= NOW() - INTERVAL {self.CARRY_FORWARD_LOOKBACK}
-                  AND m2.mole_fraction IS NOT NULL
                   AND m2.mf_method_num IS NOT NULL
                 GROUP BY m2.parameter_num, m2.channel
             ) last ON last.parameter_num = m.parameter_num
                   AND last.channel = m.channel AND last.t = a.analysis_time
             WHERE a.inst_num = {self.inst_num}
               AND a.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
-              AND m.mole_fraction IS NOT NULL
         """
         rows = self.db.doquery(sql) or []
         return {(int(r["parameter_num"]), r["channel"]): int(r["mf_method_num"])
@@ -366,7 +367,7 @@ class CATS_GCwerks2DB:
 
     def upsert_mole_fractions(self, df: pd.DataFrame, analysis_map: dict, batch_size: int = 1000):
         # mf_method_num is set only when a row is first inserted (carried
-        # forward from the analyte's latest processed air row); the UPDATE
+        # forward from the analyte's latest air row); the UPDATE
         # clause leaves it alone so methods set by hand are never reset.
         mole_sql = """
             INSERT INTO hats.ng_insitu_mole_fractions (
