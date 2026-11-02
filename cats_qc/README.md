@@ -21,7 +21,7 @@ nothing:
 |---|---|---|---|
 | `cal_step` | 328 (reject) | Abrupt cal-port response shifts | per analyte + channel |
 | `baseline` | 329 (reject) | Abnormal chromatogram shape | per **physical channel** |
-| `cal_window` | 286 (reject) | Mole fraction outside local calibration noise | per analyte + channel |
+| `cal_window` | 286 (reject) | Mole fraction more than 5 air sigmas from the local air median | per analyte + channel |
 | `cal_method_qc` (not a `cats_tagging.py` algorithm) | n/a -- recommendation only | Non-atmospheric discontinuities caused by the wrong per-period calibration method | per analyte + channel, BRW N2O/SF6 (q) only for v1 |
 
 ## cats_cal_step_qc.py + cats_tagging.py
@@ -322,10 +322,8 @@ WHERE inst_num = 244 AND gcwerks_channel_num = 0
 
 ## cats_cal_window_qc.py -- "Mole fraction falls outside of calibration" (tag 286)
 
-Finds air1/air2 mole fractions that drift beyond what the instrument's own
-current noise level can explain, using the reference tank (CAL2_PORT, the
-near-ambient tank normalization is anchored to -- see `../CLAUDE.md`) as a
-live noise gauge rather than a fixed tolerance.
+A plain outlier filter: finds air1/air2 mole fractions far from nearby air. It
+uses air only, no tank values, despite the tag's dictionary name.
 
 **Must run after `cal_step` and `baseline`** -- see "Run order" below.
 
@@ -344,36 +342,28 @@ threshold.
 
 ### How detection works
 
-1. **Reference-tank noise as the yardstick.** For each candidate air1/air2
-   reading, `ref_std` is the plain standard deviation (ddof=0) of the
-   reference tank's `mole_fraction` values inside a window centered on that
-   reading -- a direct, contemporaneous measurement of how noisy the
-   instrument currently is, independent of atmospheric variability.
-2. **Local air median as the baseline.** `air_median` is the median
-   `mole_fraction` of every air1+air2 reading in the same window, computed
-   leave-one-out (the candidate's own value is excluded) -- same rationale
-   as `cats_baseline_qc.py`'s local reference: including the candidate lets
-   an anomalous point drag its own baseline toward itself, always biasing
-   toward under-detection. Air1 and air2 are pooled into one median, not
-   scored separately, since both read the same air intake through the same
-   normalization.
-3. **Asymmetric bounds** (`--sigma-high`/`--sigma-low`, default 3/2): flag
-   when the reading is more than `sigma_high` reference-tank sigmas *above*
-   `air_median`, or more than `sigma_low` sigmas *below* it. Downward
-   excursions (partial peaks, leaks, a starved sample loop) are judged more
-   strictly than upward ones (e.g. brief contamination spikes).
-4. **Window** (`--window-days`, default 10, i.e. +/-5 days): wide enough to
-   collect a stable reference/air sample at CATS' cal/air cadence, narrow
-   enough that both statistics reflect what the instrument and atmosphere
-   were doing right around that point rather than a stale trailing average.
-5. **Minimum context** (`--min-ref-points`/`--min-air-points`, default 4
-   each): a candidate whose window has too few reference or (leave-one-out)
-   air neighbors gets `NaN` stats and is never flagged -- same "not enough
-   context to judge" convention as `cal_step`'s `scale=NaN` rows.
+1. **Local air statistics.** `air_median` is the median `mole_fraction` of the
+   other air1+air2 readings in the window, and `air_sigma` is 1.4826 x their
+   median absolute deviation. The candidate's own value is left out of both,
+   so an anomalous point can't hide itself. Air1 and air2 are pooled, since
+   both read the same air intake through the same normalization.
+2. **Same bound either side** (`--sigma`, default 5): flag when the reading is
+   more than `sigma` air sigmas from `air_median`. An asymmetric bound removes
+   more low points than high ones and pushes monthly means up.
+3. **Window** (`--window-days`, default 10, i.e. +/-5 days).
+4. **Minimum context** (`--min-air-points`, default 20): a candidate with too
+   few air neighbors, or whose neighbors have no spread, is never flagged.
+
+An episode longer than about half the window moves the median with it and is
+not flagged, so those still need a manual tag.
+
+Before 2026-11-02 this flagged >3 sigma above / >2 sigma below the air median
+using Cal 2 noise as sigma, which tagged about 9% of all CATS air. Tags from
+that rule remain wherever `cal_window` hasn't been rerun.
 
 ### Already-rejected data is excluded from the statistics, not from candidacy
 
-`ref_std` and `air_median` are built only from rows **not already rejected
+`air_sigma` and `air_median` are built only from rows **not already rejected
 for some other reason** (a cal-port glitch caught by `cal_step`, a bad
 chromatogram caught by `baseline`, manual review, GCwerks sync, etc.) --
 already-known-bad points shouldn't count toward "what normal noise/air looks

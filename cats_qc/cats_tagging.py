@@ -29,7 +29,7 @@ cats_cal_step_qc.build_cal_step_qc -- (batch, pnum, channel, start, end,
 
 ORDERING: cal_window must run after cal_step and baseline, and after mole
 fractions have been recomputed against their rejection state -- its
-reference-tank/air statistics exclude already-rejected rows (see
+air statistics exclude already-rejected rows (see
 cats_cal_window_qc.py), and tagging alone never recomputes mole fractions
 (see ../CLAUDE.md). `--algo all` handles both automatically: ALGORITHMS'
 insertion order runs cal_step -> baseline -> cal_window, and main() calls
@@ -103,8 +103,8 @@ ALGORITHMS: dict[str, QcAlgorithm] = {
     # (time-nearest) neighbors' median shape -- see cats_baseline_qc.py.
     "baseline": QcAlgorithm(tag_num=329, build=build_baseline_tag_qc),
     # "Mole fraction falls outside of calibration": air1/air2 mole fraction
-    # deviates from its local air median by more than a reference-tank-noise
-    # multiple (asymmetric: 3 sigma high, 2 sigma low) -- see
+    # is more than 5 air sigmas from its local air median, either side; tank
+    # values are not consulted -- see
     # cats_cal_window_qc.py. tag_num is imported (not hardcoded here) since
     # cats_cal_window_qc.py's own logic needs the same number to exclude its
     # own prior tags from its "already rejected" pool filter.
@@ -112,7 +112,7 @@ ALGORITHMS: dict[str, QcAlgorithm] = {
 }
 
 # Algorithms whose build() reads mole_fraction values that depend on
-# up-to-date rejection state (cal_window's reference-tank/air statistics
+# up-to-date rejection state (cal_window's air statistics
 # exclude already-rejected rows -- see cats_cal_window_qc.py). Tagging alone
 # never recomputes mole fractions (see ../CLAUDE.md's calibrations/
 # tag-propagation notes), so main() recomputes+upserts them for these
@@ -309,14 +309,10 @@ def main() -> int:
                    help="cal_step: trailing local window (days) for the typical-noise scale (default: 30)")
     p.add_argument("--window-days", type=float, default=10.0,
                    help="cal_window: full window width, centered on each candidate (default: 10)")
-    p.add_argument("--sigma-high", type=float, default=3.0,
-                   help="cal_window: reference-tank sigmas above the local air median to flag (default: 3)")
-    p.add_argument("--sigma-low", type=float, default=2.0,
-                   help="cal_window: reference-tank sigmas below the local air median to flag (default: 2)")
-    p.add_argument("--min-ref-points", type=int, default=4,
-                   help="cal_window: minimum in-window reference-tank readings to trust ref_std (default: 4)")
-    p.add_argument("--min-air-points", type=int, default=4,
-                   help="cal_window: minimum other in-window air readings to trust air_median (default: 4)")
+    p.add_argument("--sigma", type=float, default=5.0,
+                   help="cal_window: air sigmas from the local air median to flag, either side (default: 5)")
+    p.add_argument("--min-air-points", type=int, default=20,
+                   help="cal_window: minimum other in-window air readings to trust the median and sigma (default: 20)")
     p.add_argument("--dry-run", action="store_true", help="Report counts; write nothing")
     p.add_argument("--skip-recalc", action="store_true",
                    help="cal_window: skip the automatic cats_batch-style mole-fraction "
@@ -344,9 +340,7 @@ def main() -> int:
         ),
         "cal_window": dict(
             window_days=args.window_days,
-            sigma_high=args.sigma_high,
-            sigma_low=args.sigma_low,
-            min_ref_points=args.min_ref_points,
+            sigma=args.sigma,
             min_air_points=args.min_air_points,
         ),
     }

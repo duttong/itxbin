@@ -70,7 +70,7 @@ python3 cats_tagging.py --site <site> --algo all --gas all \
 
 Idempotent per (site, analyte, channel, start, end, algo) — safe to rerun
 after retuning a threshold flag (`--mad-multiplier`, `--ratio-threshold`,
-`--sigma-high/low`, etc.); each rerun deletes-then-reinserts that algorithm's
+`--sigma`, etc.); each rerun deletes-then-reinserts that algorithm's
 tag across the requested scope.
 
 ### 2c. Manual review — logos_data GUI
@@ -315,8 +315,8 @@ sequences these correctly):
   then tags every analyte on that channel from the persisted scores.
 - **`cal_window`** (tag 286, *Mole fraction falls outside of calibration
   range*) — per analyte+channel. **Runs last.** Flags air1/air2 mole
-  fractions >3σ above / >2σ below the local (±5 day) air median, using
-  reference-tank (cal2) noise as the yardstick; requires mole fractions
+  fractions more than 5 air σ (MAD-based) from the local (±5 day) air
+  median, either side; tank values are not used. Requires mole fractions
   already recomputed against `cal_step`/`baseline` rejections (handled
   automatically by `--algo all`).
 
