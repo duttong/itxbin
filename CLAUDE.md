@@ -117,6 +117,18 @@
   `(ng_insitu_mole_fraction_num PK, factor, model, created)`; no row = 1.
   See "IE3 AC-cycle response correction" below. DDL in
   `sql/ng_insitu_resp_corrections.sql`
+- `hats.ng_integ_sets` / `ng_integ_parameters` / `ng_integ_peakid` — GCwerks
+  integration parameter and peak ID files, one set per file per `(inst_num,
+  channel)`, one row per line (DDL `sql/ng_integ_params.sql`). `param_set
+  'gcwerks'` is a copy of GCwerks' files (`<name>.edited` wins), kept in step by
+  `logosint_params_import.py [insts] -i` (sha1 per file; unchanged files skipped).
+  `'logosint'` is edits saved from the omi logos_integ page, read in front of the
+  gcwerks set name by name; GCwerks never reads them. Saves and reverts set
+  `retired_at` instead of deleting. `hats.ng_integ_lines_view` gives the current
+  sets back as file lines; logosint (`explain`, `peaks`) reads it with the
+  `mysql` client, or from stdin (`--params-stdin`, how the page calls it).
+  Folder -> inst_num: CATS sites 239-244 (`smo_cats` 243), `smo` = IE3 236,
+  `pr1` = /nfs/hats/Perseus-1; `std` has no inst_num and is not imported.
 - `hats.ng_preferred_channel` — preferred channel per `(inst_num,
   parameter_num, start_date)`; used by `return_preferred_channel()` on FE3
   and IE3 instruments (e.g. IE3 CFC12→`b`, CFC11→`c`)
