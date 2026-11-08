@@ -521,7 +521,8 @@ def main():
     ap.add_argument("tsv", nargs="+", help="logosint integrate outputs; the first is the baseline when there are several")
     ap.add_argument("--gas", help="only gases starting with this (case ignored)")
     ap.add_argument("--monthly", help="write per-month metrics for every file to this CSV")
-    ap.add_argument("--plot", help="write one PNG per gas (cal1/cal2 and air/cal2 for every file) to this folder")
+    ap.add_argument("--plot", help="write one PNG per gas (cal1/cal2 and air/cal2 for every file) to this folder, "
+                    "and with two or more files also <gas>_diff.png (the first file minus the others, run by run)")
     ap.add_argument("--diff", help="write <gas>_diff.png per gas to this folder: the first file minus each other, run by run")
     ap.add_argument("--exclude", action="append", metavar="CH:START,END",
                     help="leave out a known bad period on a channel for every file (repeatable; CH * = all)")
@@ -573,8 +574,10 @@ def main():
         print(f"\nmonthly metrics to {a.monthly}")
     if a.plot:
         plot(norms, labels, Path(a.plot), changes)
-        print(f"plots to {a.plot}")
-    if a.diff:
+        if len(norms) > 1:
+            plot_diff(norms, labels, Path(a.plot))
+        print(f"plots to {a.plot}" + (" (with <gas>_diff.png)" if len(norms) > 1 else ""))
+    if a.diff and a.diff != a.plot:
         plot_diff(norms, labels, Path(a.diff))
         print(f"difference plots to {a.diff}")
 
