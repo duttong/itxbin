@@ -15,6 +15,15 @@ set retired.  As gcupdate does, <name>.edited is read in place of <name>.
 the database (<gcdir>/logosint/channelN/...) as 'logosint' sets, where none is
 current yet.
 
+--proposal DIR --channel N loads a folder of proposed files (DIR/parameters, DIR/peakid, GCwerks'
+layout and names, as logosint integrate --params-dir reads them) as 'logosint' sets for one
+instrument and channel: the logos_integ page then shows them under Params: logosint, and the
+LOGOS Integrator uses them. GCwerks never reads them. A name already current in the logosint
+set is replaced (retired, kept in the table) when its text differs; other logosint sets are left.
+
+  logosint_params_import.py brw --proposal ~/logosint_pilot/brw_ch1/proposal --channel 1      # dry run
+  logosint_params_import.py brw --proposal ~/logosint_pilot/brw_ch1/proposal --channel 1 -i
+
 Dry run by default; -i writes.
 """
 
@@ -271,13 +280,53 @@ def import_inst(db, inst, write, overlay, verbose):
               + (f"; logosint copies: {', '.join(over)}" if over else ""))
 
 
+def import_proposal(db, inst, channel, folder, by, write):
+    """Load a proposal folder's files as current 'logosint' sets for one instrument and channel."""
+    inst_num = INSTRUMENTS[inst]
+    folder = os.path.abspath(os.path.expanduser(folder))
+    if not any(os.path.isdir(os.path.join(folder, k)) for k in KINDS):
+        sys.exit(f"{folder}: no parameters/ or peakid/ folder")
+    cur = current_sets(db, inst_num, channel, "logosint")
+    done = []
+    for kind in KINDS:
+        for name, member, path in files_in(os.path.join(folder, kind)):
+            if member:
+                continue
+            with open(path) as f:
+                text = f.read()
+            key = (kind, name, member)
+            sha = hashlib.sha1(text.encode("utf-8")).hexdigest()
+            old = cur.get(key)
+            if old and old[1] == sha:
+                done.append(f"{kind}/{name} unchanged")
+                continue
+            if old:
+                retire(db, old[0], by)
+            num_, n, bad = insert_set(db, inst_num, channel, kind, "logosint", name, member, text, by,
+                                      comment="proposal " + path, replaces=old[0] if old else None)
+            done.append(f"{kind}/{name} {'replaced' if old else 'new'} ({n} lines" + (f", {bad} kept as comments" if bad else "") + ")")
+    db.doquery("COMMIT" if write else "ROLLBACK", commit=False)
+    print(f"{inst} ({inst_num}) channel{channel} logosint set from {folder}: " + ("; ".join(done) or "no files"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("insts", nargs="*", help="GCwerks folders (default all): " + " ".join(INSTRUMENTS))
     ap.add_argument("-i", "--insert", action="store_true", help="write to the database (default: dry run)")
     ap.add_argument("--overlay", action="store_true", help="also copy the page's old logosint/ files as logosint sets")
     ap.add_argument("-v", "--verbose", action="store_true", help="name files with lines that did not parse")
+    ap.add_argument("--proposal", metavar="DIR", help="load DIR/parameters and DIR/peakid as logosint sets (needs one instrument and --channel)")
+    ap.add_argument("--channel", type=int, help="the channel for --proposal")
+    ap.add_argument("--by", default=None, help="created_by for --proposal (default: agent-proposal/<your login>)")
     a = ap.parse_args()
+    if a.proposal:
+        if len(a.insts) != 1 or a.insts[0] not in INSTRUMENTS or a.channel is None:
+            ap.error("--proposal needs exactly one instrument folder and --channel")
+        by = a.by or f"agent-proposal/{os.environ.get('USER', 'unknown')}"
+        import_proposal(db_conn.HATS_ng(), a.insts[0], a.channel, a.proposal, by, a.insert)
+        if not a.insert:
+            print("dry run: nothing written (use -i)")
+        return
     insts = a.insts or list(INSTRUMENTS)
     bad = [i for i in insts if i not in INSTRUMENTS]
     if bad:
