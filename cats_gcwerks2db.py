@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Load CATS GCwerks export data into HATS ng_insitu tables."""
+"""Load CATS GCwerks export data into HATS ng_insitu tables.
+
+--source logosint loads logosint's export (logosint_export.py, /hats/gc/cats_results/logosint/)
+instead of GCwerks': same files and columns, but no GCwerks flags are read or synced (tag 324
+rows already in the DB are left as they are), and a gas with no value at all in a row (logosint
+refused that run's parameter file) is left alone in the DB rather than deleted; explicit zeros
+still mean "not measured", but a row with tags (a manual reject, a GCwerks flag) is kept rather
+than deleted, so the run stays rejected. --dry-run writes nothing and reports what a load would change.
+"""
 
 import time
 from pathlib import Path
@@ -94,8 +102,18 @@ class CATS_GCwerks2DB:
         "CH3Br":    27,
     }
 
-    def __init__(self, site: str, flagged: bool = False):
+    SOURCES = ("gcwerks", "logosint")
+
+    def __init__(self, site: str, flagged: bool = False, source: str = "gcwerks", dry_run: bool = False):
         site = site.lower()
+        if source not in self.SOURCES:
+            raise ValueError(f"source must be one of {self.SOURCES}")
+        self.source = source
+        self.dry_run = dry_run
+        self.results_dir = self.RESULTS_DIR / "logosint" if source == "logosint" else self.RESULTS_DIR
+        if source == "logosint" and flagged:
+            print("  logosint results carry no GCwerks flags: not syncing tag 324 (existing 324 tags kept).")
+            flagged = False
         if site not in self.VALID_SITES:
             raise ValueError(f"Invalid site {site!r}. Valid sites: {sorted(self.VALID_SITES)}")
         self.site = site
@@ -139,7 +157,7 @@ class CATS_GCwerks2DB:
     def _gcwerks_files(self) -> list[Path]:
         """All full-dataset (non-2yr) CSVs for this site."""
         return sorted(
-            f for f in self.RESULTS_DIR.glob(f"{self.site}_*.csv")
+            f for f in self.results_dir.glob(f"{self.site}_*.csv")
             if "_2yr" not in f.name
         )
 
@@ -152,9 +170,9 @@ class CATS_GCwerks2DB:
         files = self._gcwerks_files()
         if not files:
             raise FileNotFoundError(
-                f"No CATS CSV files found for site {self.site!r} in {self.RESULTS_DIR}"
+                f"No CATS CSV files found for site {self.site!r} in {self.results_dir}"
             )
-        print(f"  Reading {len(files)} GCwerks CSV files...")
+        print(f"  Reading {len(files)} {self.source} CSV files from {self.results_dir}...")
 
         frames = []
         for f in files:
@@ -184,7 +202,7 @@ class CATS_GCwerks2DB:
         files = self._gcwerks_files()
         if not files:
             raise FileNotFoundError(
-                f"No CATS CSV files found for site {self.site!r} in {self.RESULTS_DIR}"
+                f"No CATS CSV files found for site {self.site!r} in {self.results_dir}"
             )
         print(f"  Reading {len(files)} GCwerks CSV files (flagged)...")
 
@@ -284,8 +302,9 @@ class CATS_GCwerks2DB:
             (r.analysis_time_str, r.run_time_str, self.site_num, self.inst_num, int(r.port))
             for r in df.itertuples(index=False)
         ]
-        for i in range(0, len(params), batch_size):
-            self.db.doMultiInsert(analysis_sql, params[i:i + batch_size], all=True)
+        if not self.dry_run:
+            for i in range(0, len(params), batch_size):
+                self.db.doMultiInsert(analysis_sql, params[i:i + batch_size], all=True)
 
         analysis_map = {}
         unique_times = df["analysis_time_str"].unique().tolist()
@@ -424,6 +443,8 @@ class CATS_GCwerks2DB:
                 flag_val = getattr(r, flag_col, False)
                 flagged = flag_val is True
                 key = (analysis_num, param, channel)
+                if self.source == "logosint" and ht is None and area is None and rt is None:
+                    continue   # not in logosint's export (refused run): leave the DB's row alone
                 if self._empty_measurement(ht, area, rt):
                     invalid_keys.add(key)
                     continue
@@ -433,9 +454,21 @@ class CATS_GCwerks2DB:
                 if flagged:
                     flagged_keys.add(key)
 
-            if len(params) >= batch_size:
+            if len(params) >= batch_size and not self.dry_run:
                 self.db.doMultiInsert(mole_sql, params, all=True)
                 params = []
+
+        if self.source == "logosint" and invalid_keys:
+            # Rows someone tagged (a manual reject, a GCwerks flag) keep their value and tags when
+            # logosint finds no peak there: the run stays rejected and the tagging work isn't lost.
+            kept = self._tagged_keys(invalid_keys)
+            if kept:
+                print(f"  Keeping {len(kept)} tagged rows where logosint found no peak.")
+                invalid_keys = invalid_keys - kept
+
+        if self.dry_run:
+            self._dry_run_report(params, invalid_keys, analysis_map)
+            return
 
         if params:
             self.db.doMultiInsert(mole_sql, params, all=True)
@@ -485,6 +518,65 @@ class CATS_GCwerks2DB:
                     tag_params = []
             if tag_params:
                 self.db.doMultiInsert(tag_sql, tag_params, all=True)
+
+    def _tagged_keys(self, keys: set, batch_size: int = 1000) -> set:
+        """The (analysis_num, parameter_num, channel) keys among these whose row has any tag."""
+        out = set()
+        keys = sorted(keys)
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i:i + batch_size]
+            where = " OR ".join(["(m.analysis_num = %s AND m.parameter_num = %s AND m.channel = %s)"] * len(chunk))
+            rows = self.db.doquery(
+                "SELECT DISTINCT m.analysis_num, m.parameter_num, m.channel FROM hats.ng_insitu_mole_fractions m "
+                f"JOIN hats.ng_insitu_mole_fraction_tags t ON t.ng_insitu_mole_fraction_num = m.num WHERE {where}",
+                [v for k in chunk for v in k]) or []
+            out |= {(int(r["analysis_num"]), int(r["parameter_num"]), r["channel"]) for r in rows}
+        return out
+
+    def _dry_run_report(self, params: list, invalid_keys: set, analysis_map: dict, batch_size: int = 1000) -> None:
+        """What a load would change, against the DB's rows: per analyte and channel, new rows,
+        height changes (median and share over 0.1%), and rows that would be deleted (with tags)."""
+        nums = sorted({p[0] for p in params} | {k[0] for k in invalid_keys})
+        have = {}
+        tagged = set()
+        tag_nums: dict = {}
+        for i in range(0, len(nums), batch_size):
+            chunk = nums[i:i + batch_size]
+            marks = ",".join(["%s"] * len(chunk))
+            for r in self.db.doquery(
+                f"SELECT num, analysis_num, parameter_num, channel, height FROM hats.ng_insitu_mole_fractions "
+                f"WHERE analysis_num IN ({marks})", chunk) or []:
+                have[(int(r["analysis_num"]), int(r["parameter_num"]), r["channel"])] = (r["num"], r["height"])
+            for r in self.db.doquery(
+                f"SELECT m.analysis_num, m.parameter_num, m.channel, t.tag_num FROM hats.ng_insitu_mole_fraction_tags t "
+                f"JOIN hats.ng_insitu_mole_fractions m ON m.num = t.ng_insitu_mole_fraction_num "
+                f"WHERE m.analysis_num IN ({marks})", chunk) or []:
+                k = (int(r["analysis_num"]), int(r["parameter_num"]), r["channel"])
+                tagged.add(k)
+                tag_nums.setdefault(k, set()).add(int(r["tag_num"]))
+        rows = []
+        for a_num, param, ch, ht, area, rt, _m in params:
+            old = have.get((a_num, param, ch))
+            rows.append({"param": param, "channel": ch, "new": old is None,
+                         "dht": None if old is None or not old[1] or ht is None else 100.0 * (float(ht) / float(old[1]) - 1.0)})
+        d = pd.DataFrame(rows)
+        dels = [k for k in invalid_keys if k in have]
+        print(f"  DRY RUN, nothing written. {len(params)} rows to upsert, {len(set(analysis_map.values()))} existing analyses matched.")
+        if not d.empty:
+            g = d.groupby(["param", "channel"])
+            out = pd.DataFrame({
+                "rows": g.size(), "new": g["new"].sum(),
+                "median dht%": g["dht"].median().round(3),
+                "|dht|>0.1%": g["dht"].apply(lambda x: f"{100.0 * (x.abs() > 0.1).mean():.1f}%" if x.notna().any() else ""),
+            })
+            print(out.to_string())
+        counts: dict = {}
+        for k in dels:
+            for t in tag_nums.get(k, ()):
+                counts[t] = counts.get(t, 0) + 1
+        print(f"  would delete {len(dels)} existing rows (no peak in this export), "
+              f"{sum(1 for k in dels if k in tagged)} of them with tags"
+              + (" (tag_num: rows " + ", ".join(f"{t}: {n}" for t, n in sorted(counts.items())) + ")" if counts else ""))
 
     def load(self, duration_months: int | None = 2, year: int | None = None):
         """Read GCwerks CSVs and upsert into ng_insitu tables.
@@ -538,12 +630,15 @@ def load(
     all_data: bool = typer.Option(False, "--all", help="Process all data"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
     flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
+    source: str = typer.Option("gcwerks", "--source", help="gcwerks (cats_results/) or logosint (cats_results/logosint/, no flags)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="write nothing; report what a load would change"),
 ):
     """Load CATS GCwerks export data into HATS ng_insitu tables.
 
-    Run cats_export.py first to refresh the per-molecule CSV files from GCwerks.
+    Run cats_export.py first to refresh the per-molecule CSV files from GCwerks
+    (or logosint_export.py for --source logosint).
     """
-    cats = CATS_GCwerks2DB(site, flagged=flagged)
+    cats = CATS_GCwerks2DB(site, flagged=flagged, source=source, dry_run=dry_run)
     if all_data:
         cats.load(duration_months=None)
     else:
