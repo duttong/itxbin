@@ -16,11 +16,18 @@ noise, step and flip column; higher for found.
   drift%   cal1/cal2 should be flat for a tank pair: robust sd of its monthly medians
            about a straight line per tank pair (needs 3+ months)
   step%    cal1/cal2 change across each parameter file change inside a tank pair
-           (median of 3 days after vs before), largest and median
+           (median of 3 days after vs before), largest and median; only where both 3-day
+           windows are quiet (their scatter under twice the tank pair's), since files are
+           often changed during a disturbance, which would otherwise show as the step
+  worst    the worst month for found% (lowest) and cal1% (highest), months with 100+ live runs
+  files    distinct parameter + peak ID file pairs in force, and the shortest time one was
+           in force (days, first to last run): fewer and longer is the aim
   flip%    injections whose baseline codes differ from the month's usual codes
   found%   injections with a peak (air, cal1 and cal2 together), leaving out dead runs
-  dead%    runs with no usable signal: no peak ID window on the channel found a peak
-           (integrate's `named` column is 0; older files: every gas in the file missing)
+  dead%    runs with no usable signal: no file being scored found a peak in any of the
+           channel's peak ID windows (integrate's `named` is 0 in every file; older files:
+           every gas in the file missing).  A run one file finds nothing in but another does
+           is not dead: that file failed there, and its found% shows it.
   bnd s    robust sd of start - rt and end - rt on cal2, in seconds
 
 Only the sample ports are scored (2, 4, 6, 8), as cats_gcwerks2db loads; odd ports are
@@ -219,11 +226,13 @@ def gas_metrics(g, changes):
     steps = []
     gg = g.sort_values("time")
     change_rows = gg[gg["params"].ne(gg["params"].shift()) & gg["params"].shift().notna()]
+    pair_noise = {k: short_term(s["normalized_resp"]) for k, s in c1.groupby("pair")}
     for _, r in change_rows.iterrows():
         s = c1[c1["pair"] == r["pair"]]
         before = s.loc[(s["time"] < r["time"]) & (s["time"] >= r["time"] - STEP_WINDOW), "normalized_resp"]
         after = s.loc[(s["time"] >= r["time"]) & (s["time"] < r["time"] + STEP_WINDOW), "normalized_resp"]
-        if len(before) >= 3 and len(after) >= 3:
+        quiet = 2.0 * pair_noise.get(r["pair"], np.nan)
+        if len(before) >= 3 and len(after) >= 3 and short_term(before) < quiet and short_term(after) < quiet:
             steps.append(100.0 * abs(after.median() / before.median() - 1.0))
     m["step%max"] = max(steps) if steps else np.nan
     m["step%med"] = float(np.median(steps)) if steps else np.nan
@@ -237,7 +246,15 @@ def gas_metrics(g, changes):
         m["flip%"] = 100.0 * (okc != key[ok].map(usual)).mean()
     else:
         m["flip%"] = np.nan   # GCwerks' export has no codes
-    m["bnd s"] = np.nanmean([rsd(c2["start"] - c2["rt"]), rsd(c2["end"] - c2["rt"])]) if len(c2) else np.nan
+    bnd = [rsd(c2["start"] - c2["rt"]), rsd(c2["end"] - c2["rt"])] if len(c2) else []
+    m["bnd s"] = float(np.nanmean(bnd)) if np.isfinite(bnd).any() else np.nan
+    # file pairs in force and the shortest one's time in force
+    if g["params"].notna().any():
+        pairs = g.dropna(subset=["params"]).groupby([g["params"], g["peakid"].fillna("")])["time"].agg(["min", "max"])
+        m["files"] = len(pairs)
+        m["short d"] = float(((pairs["max"] - pairs["min"]).dt.total_seconds() / 86400).min())
+    else:
+        m["files"], m["short d"] = np.nan, np.nan
     m["n"] = int(len(g))
     return m
 
@@ -266,13 +283,15 @@ def cross_metrics(norm, changes):
     return {g: float(np.nanmean(v)) for g, v in out.items()}
 
 
-def score(path, want, changes, span=None, gases=None):
+def score(path, want, changes, span=None, gases=None, dead=None):
     if path.startswith("export:"):
         df, folder = read_export(path.split(":", 1)[1], *span), path.split(":", 1)[1]
         if gases is not None:
             df = df[df["gas"].isin(gases)]
     else:
         df, folder, head = read_tsv(path)
+    if dead is not None:
+        df["dead"] = pd.MultiIndex.from_arrays([df["run"], df["channel"].astype(int)]).isin(dead)
     if want:
         df = df[df["gas"].str.lower().str.startswith(want.lower())]
     norm = {gas: normalize(g) for gas, g in df.groupby("gas")}
@@ -281,10 +300,16 @@ def score(path, want, changes, span=None, gases=None):
     for gas, g in sorted(norm.items()):
         m = gas_metrics(g, changes)
         m["x%"] = x.get(gas, np.nan)
-        rows.append({"gas": gas, **m})
+        mons = []
         for mon, s in g.groupby(g["time"].dt.to_period("M")):
             mm = gas_metrics(s, changes)
+            mm["live"] = int((~s["dead"]).sum())
+            mons.append(mm)
             monthly.append({"gas": gas, "month": str(mon), **mm})
+        full = [x for x in mons if x["live"] >= 100]
+        m["worst found%"] = min((x["found%"] for x in full if np.isfinite(x["found%"])), default=np.nan)
+        m["worst cal1%"] = max((x["cal1%"] for x in full if np.isfinite(x["cal1%"])), default=np.nan)
+        rows.append({"gas": gas, **m})
     return pd.DataFrame(rows).set_index("gas"), pd.DataFrame(monthly), folder, norm
 
 
@@ -347,8 +372,14 @@ def main():
     inst = a.inst or FOLDER_INST.get(folder or "")
     changes = tank_changes(inst) if inst else []
     gases = set().union(*[set(d["gas"]) for d, _, _ in spans])
+    # Dead only where every file found nothing (see dead% above).
+    dead = None
+    for d, _, _ in spans:
+        mine = set(zip(d.loc[d["dead"], "run"], d.loc[d["dead"], "channel"].astype(int)))
+        dead = mine if dead is None else dead & mine
+    dead = pd.MultiIndex.from_tuples(sorted(dead), names=["run", "channel"]) if dead else pd.MultiIndex.from_tuples([], names=["run", "channel"])
     for p in a.tsv:
-        r, mon, _, norm = score(p, a.gas, changes, span, gases)
+        r, mon, _, norm = score(p, a.gas, changes, span, gases, dead)
         lab = p.replace(":", "_") if p.startswith("export:") else Path(p).stem
         results.append(r)
         labels.append(lab)
@@ -356,7 +387,8 @@ def main():
         mon.insert(0, "file", lab)
         monthly.append(mon)
 
-    cols = ["found%", "dead%", "cal2%", "cal1%", "air%", "x%", "drift%", "step%max", "step%med", "flip%", "bnd s"]
+    cols = ["found%", "worst found%", "dead%", "cal2%", "cal1%", "worst cal1%", "air%", "x%", "drift%",
+            "step%max", "step%med", "flip%", "bnd s", "files", "short d"]
     pd.set_option("display.width", 200)
     for lab, r in zip(labels, results):
         print(f"\n== {lab}")
