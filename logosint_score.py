@@ -48,6 +48,7 @@ same runs.
   logosint integrate --site brw --start 2601 --end 2611 --channel 2 --params-dir cand1 --out cand1.tsv
   logosint_score.py gcw.tsv cand1.tsv [--gas cfc11] [--monthly out.csv] [--plot DIR]
   logosint_score.py gcw.tsv cand1.tsv --exclude 2:2026-06-16,2026-09-29   # CH:START,END, repeatable
+  logosint_score.py export:brw cand1.tsv --diff DIR   # per-run GCwerks minus logosint plots
   logosint_score.py export:brw cand1.tsv    # export:SITE = GCwerks' own heights in /hats/gc/cats_results,
                                             # over the time span of the other files (no boundaries or codes)
 """
@@ -471,12 +472,57 @@ def plot(norms, labels, outdir, changes):
         plt.close(fig)
 
 
+def plot_diff(norms, labels, outdir):
+    """<gas>_diff.png: the first file minus each other file, run by run: height (%) and
+    normalized response (air/cal2, cal1/cal2; %), by port."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    outdir.mkdir(parents=True, exist_ok=True)
+    base = norms[0]
+    colors = {CAL1: "tab:green", CAL2: "tab:red", 4: "tab:blue", 8: "tab:cyan"}
+    names = {CAL1: "cal1 (2)", CAL2: "cal2 (6)", 4: "air1 (4)", 8: "air2 (8)"}
+    for gas in sorted(base):
+        others = [(n[gas], lab) for n, lab in zip(norms[1:], labels[1:]) if gas in n]
+        if not others:
+            continue
+        b = base[gas]
+        b = b[b["status"].eq("ok") & b["height"].gt(0)][["run", "time", "port", "height", "normalized_resp"]]
+        fig, ax = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+        for o, lab in others:
+            o = o[o["status"].eq("ok") & o["height"].gt(0)][["run", "height", "normalized_resp"]]
+            m = b.merge(o, on="run", suffixes=("_b", "_o"))
+            dh = 100.0 * (m["height_b"] / m["height_o"] - 1.0)
+            dn = 100.0 * (m["normalized_resp_b"] / m["normalized_resp_o"] - 1.0)
+            for port in SAMPLE_PORTS:
+                k = m["port"] == port
+                kw = dict(ms=1.5, color=colors[port], label=f"{names[port]}" + (f" vs {lab}" if len(others) > 1 else ""))
+                ax[0].plot(m.loc[k, "time"], dh[k], ".", **kw)
+                ax[1].plot(m.loc[k, "time"], dn[k], ".", **kw)
+            for a, d in ((ax[0], dh), (ax[1], dn)):
+                d = d[np.isfinite(d)]
+                if len(d):
+                    lo, hi = np.nanpercentile(d, [1, 99])
+                    pad = max(0.2 * (hi - lo), 0.05)
+                    a.set_ylim(lo - pad, hi + pad)
+        ax[0].axhline(0, color="0.5", lw=0.6)
+        ax[1].axhline(0, color="0.5", lw=0.6)
+        ax[0].set_ylabel("height, %")
+        ax[1].set_ylabel("normalized response, %")
+        ax[0].set_title(f"{gas}: {labels[0]} minus {', '.join(l for _, l in others)} (per run)")
+        ax[0].legend(markerscale=6, ncol=4, fontsize=8)
+        fig.tight_layout()
+        fig.savefig(outdir / f"{gas}_diff.png", dpi=110)
+        plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("tsv", nargs="+", help="logosint integrate outputs; the first is the baseline when there are several")
     ap.add_argument("--gas", help="only gases starting with this (case ignored)")
     ap.add_argument("--monthly", help="write per-month metrics for every file to this CSV")
     ap.add_argument("--plot", help="write one PNG per gas (cal1/cal2 and air/cal2 for every file) to this folder")
+    ap.add_argument("--diff", help="write <gas>_diff.png per gas to this folder: the first file minus each other, run by run")
     ap.add_argument("--exclude", action="append", metavar="CH:START,END",
                     help="leave out a known bad period on a channel for every file (repeatable; CH * = all)")
     ap.add_argument("--inst", type=int, help="inst_num for the tank history (default from the folder in the TSV header)")
@@ -528,6 +574,9 @@ def main():
     if a.plot:
         plot(norms, labels, Path(a.plot), changes)
         print(f"plots to {a.plot}")
+    if a.diff:
+        plot_diff(norms, labels, Path(a.diff))
+        print(f"difference plots to {a.diff}")
 
 
 if __name__ == "__main__":
