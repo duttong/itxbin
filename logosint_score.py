@@ -18,10 +18,13 @@ noise, step and flip column; higher for found.
   step%    cal1/cal2 change across each parameter file change inside a tank pair
            (median of 3 days after vs before), largest and median
   flip%    injections whose baseline codes differ from the month's usual codes
-  found%   injections with a peak (air, cal1 and cal2 together)
+  found%   injections with a peak (air, cal1 and cal2 together), leaving out dead runs
+  dead%    runs with no usable signal: no peak ID window on the channel found a peak
+           (integrate's `named` column is 0; older files: every gas in the file missing)
   bnd s    robust sd of start - rt and end - rt on cal2, in seconds
 
-Cal1 statistics leave out the first day after a tank change on port 2 or 6. DB
+Only the sample ports are scored (2, 4, 6, 8), as cats_gcwerks2db loads; odd ports are
+valve faults.  Cal1 statistics leave out the first day after a tank change on port 2 or 6. DB
 rejection tags are not applied; the statistics are robust (median absolute
 deviation) so the odd bad run doesn't dominate, and every candidate sees the
 same runs.
@@ -44,6 +47,7 @@ import pandas as pd
 sys.path.extend(["/ccg/src/db", "/ccg/src/db/db_utils", str(Path(__file__).resolve().parent)])
 
 CAL1, CAL2, AIR = 2, 6, (4, 8)       # CATS port layout, every site
+SAMPLE_PORTS = (CAL1, CAL2) + AIR
 RUN_TIME_GAP = pd.Timedelta(minutes=90)
 SETTLE = pd.Timedelta(hours=24)       # after a cal tank change
 STEP_WINDOW = pd.Timedelta(days=3)
@@ -81,8 +85,19 @@ def read_tsv(path):
     df = df[df["status"] != "refused"].copy()
     df["time"] = pd.to_datetime(df["unix_time"], unit="s")
     df["port"] = pd.to_numeric(df["port"], errors="coerce")
+    df = df[df["port"].isin(SAMPLE_PORTS)].copy()
     df["height"] = pd.to_numeric(df["height"], errors="coerce").fillna(0.0)
+    df["dead"] = dead_runs(df)
     return df, folder, head
+
+
+def dead_runs(df):
+    """True where the run had no usable signal on that channel: integrate's `named` is 0,
+    or, without that column, every gas in the file missed on that run and channel."""
+    if "named" in df.columns and df["named"].notna().any():
+        return pd.to_numeric(df["named"], errors="coerce").fillna(1).eq(0)
+    hit = (df["status"].eq("ok") & df["height"].gt(0)).groupby([df["run"], df["channel"]]).transform("any")
+    return ~hit
 
 
 CHANNEL_OF = {"q": 0, "a": 1, "f": 2, "cc": 3}
@@ -111,12 +126,14 @@ def read_export(site, t0, t1):
                 "flag": d[hc].str.extract(r"([F*BO])$")[0],
             }))
     df = pd.concat(frames, ignore_index=True).drop_duplicates(["time", "port", "gas"])
+    df = df[df["port"].isin(SAMPLE_PORTS)].copy()
     df["run"] = df["time"].dt.strftime("%y%m%d.%H%M.") + df["port"].astype("Int64").astype(str)
     df["unix_time"] = df["time"].astype("int64") // 10**9
     df["height"] = df["height"].fillna(0.0)
     df["status"] = np.where(df["height"] > 0, "ok", "missing")
     for c in ("start", "end", "codes", "params"):
         df[c] = np.nan
+    df["dead"] = dead_runs(df)
     return df
 
 
@@ -169,7 +186,9 @@ def gas_metrics(g, changes):
     """Metrics for one gas over the rows given (already normalized)."""
     m = {}
     ok = g["status"].eq("ok") & g["height"].gt(0)
-    m["found%"] = 100.0 * ok.mean() if len(g) else np.nan
+    live = ~g["dead"]
+    m["found%"] = 100.0 * ok[live].mean() if live.any() else np.nan
+    m["dead%"] = 100.0 * g["dead"].mean() if len(g) else np.nan
     c2 = g[(g["port"] == CAL2) & ok & (g["ref_port"] == CAL2)]
     m["cal2%"] = 100.0 * rsd(c2["height"] / c2["smoothed"] - 1.0) if len(c2) else np.nan
     pair, settling = pair_of(g["time"], changes)
@@ -330,7 +349,7 @@ def main():
         mon.insert(0, "file", lab)
         monthly.append(mon)
 
-    cols = ["found%", "cal2%", "cal1%", "air%", "x%", "drift%", "step%max", "step%med", "flip%", "bnd s"]
+    cols = ["found%", "dead%", "cal2%", "cal1%", "air%", "x%", "drift%", "step%max", "step%med", "flip%", "bnd s"]
     pd.set_option("display.width", 200)
     for lab, r in zip(labels, results):
         print(f"\n== {lab}")
