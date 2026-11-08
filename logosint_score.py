@@ -31,7 +31,10 @@ noise, step and flip column; higher for found.
   bnd s    robust sd of start - rt and end - rt on cal2, in seconds
 
 Only the sample ports are scored (2, 4, 6, 8), as cats_gcwerks2db loads; odd ports are
-valve faults.  Cal1 statistics leave out the first day after a tank change on port 2 or 6. DB
+valve faults.  --exclude leaves known bad periods out for every file (for example BRW channel 2,
+2026-06-16 to 2026-09-29, when poor column temperature control made the chromatography
+unusable and GCwerks' file switched detection off with DI 1): a file that rightly finds
+nothing there isn't penalized, and one that finds junk there isn't rewarded.  Cal1 statistics leave out the first day after a tank change on port 2 or 6. DB
 rejection tags are not applied; the statistics are robust (median absolute
 deviation) so the odd bad run doesn't dominate, and every candidate sees the
 same runs.
@@ -39,6 +42,7 @@ same runs.
   logosint integrate --site brw --start 2601 --end 2611 --channel 2 --set gcwerks --out gcw.tsv
   logosint integrate --site brw --start 2601 --end 2611 --channel 2 --params-dir cand1 --out cand1.tsv
   logosint_score.py gcw.tsv cand1.tsv [--gas cfc11] [--monthly out.csv] [--plot DIR]
+  logosint_score.py gcw.tsv cand1.tsv --exclude 2:2026-06-16,2026-09-29   # CH:START,END, repeatable
   logosint_score.py export:brw cand1.tsv    # export:SITE = GCwerks' own heights in /hats/gc/cats_results,
                                             # over the time span of the other files (no boundaries or codes)
 """
@@ -283,13 +287,36 @@ def cross_metrics(norm, changes):
     return {g: float(np.nanmean(v)) for g, v in out.items()}
 
 
-def score(path, want, changes, span=None, gases=None, dead=None):
+def parse_exclude(items):
+    """CH:START,END (dates or date-times, end exclusive; CH * for all) -> list of tuples."""
+    out = []
+    for it in items or []:
+        ch, _, rest = it.partition(":")
+        a, _, b = rest.partition(",")
+        if not (ch and a and b):
+            raise SystemExit(f"--exclude wants CH:START,END, got {it}")
+        out.append((None if ch == "*" else int(ch), pd.Timestamp(a), pd.Timestamp(b)))
+    return out
+
+
+def drop_excluded(df, excl):
+    keep = pd.Series(True, index=df.index)
+    for ch, a, b in excl:
+        hit = (df["time"] >= a) & (df["time"] < b)
+        if ch is not None:
+            hit &= pd.to_numeric(df["channel"], errors="coerce").eq(ch)
+        keep &= ~hit
+    return df[keep]
+
+
+def score(path, want, changes, span=None, gases=None, dead=None, excl=()):
     if path.startswith("export:"):
         df, folder = read_export(path.split(":", 1)[1], *span), path.split(":", 1)[1]
         if gases is not None:
             df = df[df["gas"].isin(gases)]
     else:
         df, folder, head = read_tsv(path)
+    df = drop_excluded(df, excl)
     if dead is not None:
         df["dead"] = pd.MultiIndex.from_arrays([df["run"], df["channel"].astype(int)]).isin(dead)
     if want:
@@ -359,6 +386,8 @@ def main():
     ap.add_argument("--gas", help="only gases starting with this (case ignored)")
     ap.add_argument("--monthly", help="write per-month metrics for every file to this CSV")
     ap.add_argument("--plot", help="write one PNG per gas (cal1/cal2 and air/cal2 for every file) to this folder")
+    ap.add_argument("--exclude", action="append", metavar="CH:START,END",
+                    help="leave out a known bad period on a channel for every file (repeatable; CH * = all)")
     ap.add_argument("--inst", type=int, help="inst_num for the tank history (default from the folder in the TSV header)")
     a = ap.parse_args()
 
@@ -366,7 +395,9 @@ def main():
     files = [p for p in a.tsv if not p.startswith("export:")]
     if not files:
         ap.error("give at least one integrate output; export:SITE takes its time span from them")
+    excl = parse_exclude(a.exclude)
     spans = [read_tsv(p) for p in files]
+    spans = [(drop_excluded(d, excl), f, h) for d, f, h in spans]
     folder = spans[0][1]
     span = (min(d["time"].min() for d, _, _ in spans), max(d["time"].max() for d, _, _ in spans) + pd.Timedelta(seconds=1))
     inst = a.inst or FOLDER_INST.get(folder or "")
@@ -379,7 +410,7 @@ def main():
         dead = mine if dead is None else dead & mine
     dead = pd.MultiIndex.from_tuples(sorted(dead), names=["run", "channel"]) if dead else pd.MultiIndex.from_tuples([], names=["run", "channel"])
     for p in a.tsv:
-        r, mon, _, norm = score(p, a.gas, changes, span, gases, dead)
+        r, mon, _, norm = score(p, a.gas, changes, span, gases, dead, excl)
         lab = p.replace(":", "_") if p.startswith("export:") else Path(p).stem
         results.append(r)
         labels.append(lab)
