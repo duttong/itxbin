@@ -96,8 +96,15 @@ def dead_runs(df):
     or, without that column, every gas in the file missed on that run and channel."""
     if "named" in df.columns and df["named"].notna().any():
         return pd.to_numeric(df["named"], errors="coerce").fillna(1).eq(0)
+    # Without it, a run counts as dead only on a channel with two or more gases in the file;
+    # with one gas, a miss and a dead run look the same, so nothing is marked dead.
     hit = (df["status"].eq("ok") & df["height"].gt(0)).groupby([df["run"], df["channel"]]).transform("any")
-    return ~hit
+    gases = df.groupby("channel")["gas"].transform("nunique")
+    one = sorted(df.loc[gases < 2, "gas"].unique())
+    if one:
+        print(f"no named column (older logosint) and one gas on its channel: {', '.join(one)}; "
+              "dead runs can't be told from misses there, so found% counts them", file=sys.stderr)
+    return ~hit & (gases >= 2)
 
 
 CHANNEL_OF = {"q": 0, "a": 1, "f": 2, "cc": 3}
