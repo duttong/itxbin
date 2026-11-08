@@ -20,6 +20,11 @@ noise, step and flip column; higher for found.
            windows are quiet (their scatter under twice the tank pair's), since files are
            often changed during a disturbance, which would otherwise show as the step
   worst    the worst month for found% (lowest) and cal1% (highest), months with 100+ live runs
+  label%   is it the right peak? cal1/cal2 against the ratio of the two tanks' assigned values
+           (tanks on ports 2 and 6 from ng_port_info, values from scale_assignments, by date):
+           median and worst month of |observed/expected - 1|.  A few percent is ECD
+           nonlinearity and the same for every file; tens of percent means a wrong peak.
+           GCwerks' labels are not truth: some peaks, mostly small ones, are mislabelled.
   files    distinct parameter + peak ID file pairs in force, and the shortest time one was
            in force (days, first to last run): fewer and longer is the aim
   flip%    injections whose baseline codes differ from the month's usual codes
@@ -168,6 +173,71 @@ def tank_changes(inst_num):
         return []
 
 
+def tank_ratio_lookup(inst_num, gases):
+    """gas -> function(times) giving the expected cal1/cal2 (assigned value of the cal1 tank over
+    the cal2 tank at each time), or None for a gas without values."""
+    try:
+        from db_utils import db_conn
+        db = db_conn.HATS_ng()
+        pn = {}
+        for r in db.doquery("SELECT DISTINCT param_num, display_name FROM hats.analyte_list WHERE inst_num = %s", [inst_num]) or []:
+            pn[str(r["display_name"]).upper()] = int(r["param_num"])
+        ports = db.doquery("SELECT port_num, serial_number, start_datetime FROM hats.ng_port_info "
+                           "WHERE inst_num = %s AND port_num IN (%s, %s) ORDER BY start_datetime", [inst_num, CAL1, CAL2]) or []
+        serials = sorted({r["serial_number"] for r in ports if r["serial_number"]})
+        pnums = sorted({pn[g.split("_")[0].upper()] for g in gases if g.split("_")[0].upper() in pn})
+        if not serials or not pnums:
+            return {}
+        q = ("SELECT serial_number, parameter_num, coef0, start_date, end_date FROM {}.scale_assignments_view "
+             "WHERE current_assignment = 1 AND serial_number IN ({}) AND parameter_num IN ({})")
+        marks = lambda n: ",".join(["%s"] * n)
+        rows = []
+        for schema in ("hats", "reftank"):
+            try:
+                got = db.doquery(q.format(schema, marks(len(serials)), marks(len(pnums))), serials + pnums) or []
+            except Exception:
+                got = []
+            for r in got:
+                r["schema"] = schema
+            rows.extend(got)
+    except Exception as e:
+        print(f"no tank values ({e}); label% left out", file=sys.stderr)
+        return {}
+    av = pd.DataFrame(rows)
+    if av.empty:
+        return {}
+    av["start"] = pd.to_datetime(av["start_date"])
+    av["end"] = pd.to_datetime(av["end_date"].astype(str).str.replace("9999-12-31", "2262-01-01"), errors="coerce")
+    av["rank"] = av["schema"].map({"hats": 0, "reftank": 1})
+    pt = pd.DataFrame(ports)
+    pt["start"] = pd.to_datetime(pt["start_datetime"])
+
+    def serial_at(port, times):
+        tl = pt[pt["port_num"] == port].sort_values("start")
+        idx = np.searchsorted(tl["start"].to_numpy(dtype="datetime64[ns]"), times.to_numpy(dtype="datetime64[ns]"), side="right") - 1
+        vals = tl["serial_number"].to_numpy()
+        return pd.Series(np.where(idx >= 0, vals[np.clip(idx, 0, len(vals) - 1)], None), index=times.index)
+
+    def value(serials_, times, pnum):
+        out = pd.Series(np.nan, index=times.index)
+        sub = av[av["parameter_num"] == pnum].sort_values("rank")
+        for ser in serials_.dropna().unique():
+            mine = sub[sub["serial_number"] == ser]
+            where = serials_ == ser
+            for _, r in mine.iloc[::-1].iterrows():    # hats rows last, so they win
+                hit = where & (times >= r["start"]) & (times <= r["end"])
+                out[hit] = float(r["coef0"])
+        return out
+
+    funcs = {}
+    for g in gases:
+        p = pn.get(g.split("_")[0].upper())
+        if p is None:
+            continue
+        funcs[g] = (lambda times, p=p: value(serial_at(CAL1, times), times, p) / value(serial_at(CAL2, times), times, p))
+    return funcs
+
+
 def normalize(g):
     """height / smoothed cal2 (else cal1) for one gas, with logos_data's Normalizing."""
     from logosdata.logos_instruments_core import Normalizing
@@ -200,7 +270,24 @@ def pair_of(t, changes):
     return idx, settling
 
 
-def gas_metrics(g, changes):
+def label_check(g, expected):
+    """Monthly |median cal1/cal2 / expected - 1| in %, for months with 20+ settled cal1 runs."""
+    if expected is None:
+        return pd.Series(dtype=float)
+    ok = g["status"].eq("ok") & g["height"].gt(0)
+    c1 = g[(g["port"] == CAL1) & ok & (g["ref_port"] == CAL2) & ~g["settling"]]
+    if c1.empty:
+        return pd.Series(dtype=float)
+    mon = c1["time"].dt.to_period("M")
+    obs = c1.groupby(mon)["normalized_resp"].median()
+    n = c1.groupby(mon).size()
+    mid = pd.Series(obs.index.to_timestamp() + pd.Timedelta(days=15), index=obs.index)
+    exp = pd.Series(expected(mid).to_numpy(), index=obs.index)
+    dev = 100.0 * (obs / exp - 1.0).abs()
+    return dev[(n >= 20) & np.isfinite(dev)]
+
+
+def gas_metrics(g, changes, expected=None):
     """Metrics for one gas over the rows given (already normalized)."""
     m = {}
     ok = g["status"].eq("ok") & g["height"].gt(0)
@@ -211,6 +298,9 @@ def gas_metrics(g, changes):
     m["cal2%"] = 100.0 * rsd(c2["height"] / c2["smoothed"] - 1.0) if len(c2) else np.nan
     pair, settling = pair_of(g["time"], changes)
     g = g.assign(pair=pair, settling=settling)
+    lab = label_check(g, expected)
+    m["label%"] = float(lab.median()) if len(lab) else np.nan
+    m["worst label%"] = float(lab.max()) if len(lab) else np.nan
     c1 = g[(g["port"] == CAL1) & ok & (g["ref_port"] == CAL2) & ~g["settling"]]
     per_pair = [short_term(s["normalized_resp"]) for _, s in c1.groupby("pair") if len(s) > 3]
     per_pair = [v for v in per_pair if np.isfinite(v)]
@@ -309,7 +399,7 @@ def drop_excluded(df, excl):
     return df[keep]
 
 
-def score(path, want, changes, span=None, gases=None, dead=None, excl=()):
+def score(path, want, changes, span=None, gases=None, dead=None, excl=(), ratios=None):
     if path.startswith("export:"):
         df, folder = read_export(path.split(":", 1)[1], *span), path.split(":", 1)[1]
         if gases is not None:
@@ -324,8 +414,9 @@ def score(path, want, changes, span=None, gases=None, dead=None, excl=()):
     norm = {gas: normalize(g) for gas, g in df.groupby("gas")}
     x = cross_metrics(norm, changes)
     rows, monthly = [], []
+    ratios = ratios or {}
     for gas, g in sorted(norm.items()):
-        m = gas_metrics(g, changes)
+        m = gas_metrics(g, changes, ratios.get(gas))
         m["x%"] = x.get(gas, np.nan)
         mons = []
         for mon, s in g.groupby(g["time"].dt.to_period("M")):
@@ -409,8 +500,9 @@ def main():
         mine = set(zip(d.loc[d["dead"], "run"], d.loc[d["dead"], "channel"].astype(int)))
         dead = mine if dead is None else dead & mine
     dead = pd.MultiIndex.from_tuples(sorted(dead), names=["run", "channel"]) if dead else pd.MultiIndex.from_tuples([], names=["run", "channel"])
+    ratios = tank_ratio_lookup(inst, gases) if inst else {}
     for p in a.tsv:
-        r, mon, _, norm = score(p, a.gas, changes, span, gases, dead, excl)
+        r, mon, _, norm = score(p, a.gas, changes, span, gases, dead, excl, ratios)
         lab = p.replace(":", "_") if p.startswith("export:") else Path(p).stem
         results.append(r)
         labels.append(lab)
@@ -418,8 +510,8 @@ def main():
         mon.insert(0, "file", lab)
         monthly.append(mon)
 
-    cols = ["found%", "worst found%", "dead%", "cal2%", "cal1%", "worst cal1%", "air%", "x%", "drift%",
-            "step%max", "step%med", "flip%", "bnd s", "files", "short d"]
+    cols = ["found%", "worst found%", "dead%", "label%", "worst label%", "cal2%", "cal1%", "worst cal1%",
+            "air%", "x%", "drift%", "step%max", "step%med", "flip%", "bnd s", "files", "short d"]
     pd.set_option("display.width", 200)
     for lab, r in zip(labels, results):
         print(f"\n== {lab}")
