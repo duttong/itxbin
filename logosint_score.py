@@ -175,7 +175,9 @@ def gas_metrics(g, changes):
     pair, settling = pair_of(g["time"], changes)
     g = g.assign(pair=pair, settling=settling)
     c1 = g[(g["port"] == CAL1) & ok & (g["ref_port"] == CAL2) & ~g["settling"]]
-    m["cal1%"] = 100.0 * np.nanmedian([short_term(s["normalized_resp"]) for _, s in c1.groupby("pair") if len(s) > 3] or [np.nan])
+    per_pair = [short_term(s["normalized_resp"]) for _, s in c1.groupby("pair") if len(s) > 3]
+    per_pair = [v for v in per_pair if np.isfinite(v)]
+    m["cal1%"] = 100.0 * float(np.median(per_pair)) if per_pair else np.nan   # none: a gap month
     air = [short_term(g.loc[(g["port"] == p) & ok, "normalized_resp"]) for p in AIR]
     m["air%"] = 100.0 * np.nanmean(air) if np.isfinite(air).any() else np.nan
     # drift: monthly medians of cal1/cal2 about a line per tank pair
