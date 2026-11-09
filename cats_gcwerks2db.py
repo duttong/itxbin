@@ -76,6 +76,14 @@ class CATS_GCwerks2DB:
         "H1211", "CCl4", "CH3CCl3", "CHCl3",
     })
 
+    # (site, mol) -> analysis time from which that analyte is no longer loaded: no new rows,
+    # and existing rows are neither updated nor deleted (they carry the reject tag that ended it).
+    # BRW CH3CCl3: a contaminant in the cal tanks installed 2023-06-16 co-elutes, so CH3CCl3 can't
+    # be measured on cal runs (logosint channel 2 pilot; tag 40 via sql/brw_ch3ccl3_stop_230616.sql).
+    STOP_AFTER: dict = {
+        ("brw", "CH3CCl3"): "2023-06-16 15:54:00",
+    }
+
     # GCwerks mol name → parameter_num.  Used as a fallback until
     # hats.analyte_list is populated for the CATS inst_nums.
     # Mol names come from the GCwerks column prefix after stripping the channel
@@ -423,6 +431,9 @@ class CATS_GCwerks2DB:
                 continue
             for (mol, ch), cols in col_map.items():
                 if mol not in self.UPLOAD_MOLS:
+                    continue
+                stop = self.STOP_AFTER.get((self.site, mol))
+                if stop is not None and r.analysis_time_str >= stop:
                     continue
                 param = self.analytes.get(mol)
                 if param is None:

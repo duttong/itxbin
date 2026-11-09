@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Ingest CATS GC data: export from GCwerks, load into DB, recompute mole
-fractions, optionally import legacy published mole fractions."""
+"""Ingest CATS GC data: export from GCwerks (or logosint), load into DB, recompute mole
+fractions, optionally import legacy published mole fractions.
+
+--source logosint exports with logosint_export.py (the site's logosint parameter set, to
+/hats/gc/cats_results/logosint/) and loads with cats_gcwerks2db.py --source logosint (no GCwerks
+flags; tag 324 left as it is). With --all, export the range first (logosint_export.py SITE --all
+--start YYMM) and pass --skip-export."""
 
 import subprocess
 import sys
@@ -13,6 +18,7 @@ app = typer.Typer(add_completion=False, help="Ingest CATS GC data into the HATS 
 
 BIN_DIR = Path(__file__).resolve().parent
 CATS_EXPORT = Path("/home/hats/gdutton/bin/cats_export.py")
+LOGOSINT_EXPORT = BIN_DIR / "logosint_export.py"
 
 # Must match CATS_Instrument.start_date in logosdata/logos_instruments_insitu.py
 CATS_START_DATE = "1998-01-01"
@@ -50,7 +56,8 @@ def ingest(
     all_data: bool = typer.Option(False, "--all", help="Process all data (overrides --year)"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
     flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
-    skip_export: bool = typer.Option(False, "--skip-export", help="Skip GCwerks CSV export step"),
+    skip_export: bool = typer.Option(False, "--skip-export", help="Skip the CSV export step"),
+    source: str = typer.Option("gcwerks", "--source", help="gcwerks (default) or logosint: whose integrations to export and load"),
     run_aftp: bool = typer.Option(
         False, "--run-aftp", help="Also import legacy published mole fractions from /aftp (one-time backfill; off by default)"
     ),
@@ -69,23 +76,40 @@ def ingest(
     """Ingest CATS data for one site.
 
     Steps:
-      1. Export GCwerks data to /hats/gc/cats_results/ (cats_export.py)
-      2. Load GCwerks CSVs into ng_insitu_analysis / ng_insitu_mole_fractions
+      1. Export GCwerks data to /hats/gc/cats_results/ (cats_export.py), or with --source
+         logosint, logosint's to /hats/gc/cats_results/logosint/ (logosint_export.py)
+      2. Load the CSVs into ng_insitu_analysis / ng_insitu_mole_fractions
       3. (optional, --run-aftp) Import legacy published mole fractions from /aftp/hats
       4. (default, --mf) Recompute weekly cal fits and mole fractions
          (cats_batch.py); with --set-methods, first reset the window's cal
          methods to the defaults (cats_set_mf_method.py)
     """
-    # 1. GCwerks export
+    if source not in ("gcwerks", "logosint"):
+        typer.secho("--source must be gcwerks or logosint", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    logosint = source == "logosint"
+
+    # 1. Export (GCwerks, or logosint for the same window)
     if not skip_export:
-        cmd = [sys.executable, str(CATS_EXPORT), site]
-        if flagged:
-            cmd.append("--flagged")
+        if logosint:
+            if all_data:
+                typer.secho("--source logosint --all: export the range first (logosint_export.py SITE --all --start YYMM) "
+                            "and pass --skip-export", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+            cmd = [sys.executable, str(LOGOSINT_EXPORT), site]
+            if year is not None:
+                cmd += ["--start", f"{year % 100:02d}01", "--end", f"{(year + 1) % 100:02d}01"]
+        else:
+            cmd = [sys.executable, str(CATS_EXPORT), site]
+            if flagged:
+                cmd.append("--flagged")
         _run(cmd)
 
-    # 2. Load GCwerks results into DB
+    # 2. Load results into DB
     gcwerks_cmd = [sys.executable, str(BIN_DIR / "cats_gcwerks2db.py"), site]
-    if flagged:
+    if logosint:
+        gcwerks_cmd += ["--source", "logosint", "--no-flagged"]
+    elif flagged:
         gcwerks_cmd.append("--flagged")
     if all_data:
         gcwerks_cmd.append("--all")
