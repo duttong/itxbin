@@ -20,6 +20,9 @@ layout and names, as logosint integrate --params-dir reads them) as 'logosint' s
 instrument and channel: the logos_integ page then shows them under Params: logosint, and the
 LOGOS Integrator uses them. GCwerks never reads them. A name already current in the logosint
 set is replaced (retired, kept in the table) when its text differs; other logosint sets are left.
+The logosint set sits in front of GCwerks' name by name, so each GCwerks file dated after the
+proposal's first file is masked with a logosint copy of the proposal file that governs its date;
+otherwise GCwerks' later files would take over again from their own dates.
 
   logosint_params_import.py brw --proposal ~/logosint_pilot/brw_ch1/proposal --channel 1      # dry run
   logosint_params_import.py brw --proposal ~/logosint_pilot/brw_ch1/proposal --channel 1 -i
@@ -287,13 +290,28 @@ def import_proposal(db, inst, channel, folder, by, write):
     if not any(os.path.isdir(os.path.join(folder, k)) for k in KINDS):
         sys.exit(f"{folder}: no parameters/ or peakid/ folder")
     cur = current_sets(db, inst_num, channel, "logosint")
+    gcw = current_sets(db, inst_num, channel, "gcwerks")
     done = []
     for kind in KINDS:
+        files = []
         for name, member, path in files_in(os.path.join(folder, kind)):
             if member:
                 continue
             with open(path) as f:
-                text = f.read()
+                files.append((name, path, f.read()))
+        dated = sorted((start_time(n) or datetime.min, n, p, t) for n, p, t in files)
+        first = dated[0][0] if dated else None
+        # GCwerks files after the proposal starts: mask each with the proposal file in force then.
+        masks = []
+        if first is not None:
+            for (k, gname, gmember) in gcw:
+                st = start_time(gname)
+                if k != kind or gmember or st is None or st <= first or any(n == gname for _, n, _, _ in dated):
+                    continue
+                gov = [d for d in dated if d[0] <= st][-1]
+                masks.append((gname, gov[2] + f" (masks GCwerks {gname})", gov[3]))
+        for name, path, text in [(n, p, t) for _, n, p, t in dated] + masks:
+            member = ""
             key = (kind, name, member)
             sha = hashlib.sha1(text.encode("utf-8")).hexdigest()
             old = cur.get(key)
