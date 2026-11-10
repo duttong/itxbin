@@ -14,6 +14,8 @@ from pathlib import Path
 import pandas as pd
 import typer
 
+import logosint_lock
+
 app = typer.Typer(add_completion=False, help="Ingest CATS GC data into the HATS database.")
 
 BIN_DIR = Path(__file__).resolve().parent
@@ -88,6 +90,10 @@ def ingest(
         typer.secho("--source must be gcwerks or logosint", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
     logosint = source == "logosint"
+    if logosint:
+        # One logosint run per site at a time: the reintegration worker (logosint_jobs.py) holds the
+        # same lock for a whole job. Held until this process exits.
+        _site_lock = logosint_lock.acquire(site, log=lambda m: typer.secho(m, fg=typer.colors.YELLOW))
 
     # 1. Export (GCwerks, or logosint for the same window)
     if not skip_export:

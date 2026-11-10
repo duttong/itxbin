@@ -7,6 +7,11 @@ rows already in the DB are left as they are), and a gas with no value at all in 
 refused that run's parameter file) is left alone in the DB rather than deleted; explicit zeros
 still mean "not measured", but a row with tags (a manual reject, a GCwerks flag) is kept rather
 than deleted, so the run stays rejected. --dry-run writes nothing and reports what a load would change.
+
+--start / --end (YYYY-MM-DD[ HH:MM] or YYMM; end exclusive) limit a load to rows in that window, and
+--channel (CATS channel letters as in the export columns: q, a, f, ...) to the gases on those channels.
+Rows are read, upserted and (for "no peak" rows) deleted only inside the window and channels; the
+default two-month window does not apply when --start or --end is given.
 """
 
 import bisect
@@ -170,18 +175,48 @@ class CATS_GCwerks2DB:
             if "_2yr" not in f.name
         )
 
-    def read_gcwerks(self, start_date=None) -> pd.DataFrame:
-        """Merge all per-molecule CSVs into one wide DataFrame keyed on (time, port).
+    @classmethod
+    def _columns_channel(cls, columns) -> set:
+        """Channel letters of a CSV's measurement columns (None for a column with no suffix)."""
+        return {ch for (_mol, ch) in cls._parse_measurement_columns(columns)}
 
-        start_date filters each file immediately after loading so the merge
-        works on a small window rather than the full history.
-        """
+    @classmethod
+    def _limit_channels(cls, df: pd.DataFrame, channels) -> pd.DataFrame:
+        """Drop measurement columns of other channels (a file holding several would otherwise leak them)."""
+        if not channels:
+            return df
+        drop = [col for (mol, ch), cols in cls._parse_measurement_columns(df.columns).items()
+                if ch not in channels for col in cols.values()]
+        return df.drop(columns=drop)
+
+    def _select_files(self, channels=None) -> list[Path]:
+        """The site's CSV files, limited to those whose gases are on one of `channels`
+        (a file holds one gas, so its header names its channel)."""
         files = self._gcwerks_files()
+        if channels:
+            keep = []
+            for f in files:
+                cols = [c.strip() for c in pd.read_csv(f, skipinitialspace=True, nrows=0).columns]
+                if self._columns_channel(cols) & set(channels):
+                    keep.append(f)
+            files = keep
         if not files:
             raise FileNotFoundError(
-                f"No CATS CSV files found for site {self.site!r} in {self.results_dir}"
+                f"No CATS CSV files found for site {self.site!r}"
+                + (f" channel(s) {sorted(channels)}" if channels else "") + f" in {self.results_dir}"
             )
-        print(f"  Reading {len(files)} {self.source} CSV files from {self.results_dir}...")
+        return files
+
+    def read_gcwerks(self, start_date=None, end_date=None, channels=None) -> pd.DataFrame:
+        """Merge all per-molecule CSVs into one wide DataFrame keyed on (time, port).
+
+        start_date / end_date (exclusive) filter each file immediately after loading so
+        the merge works on a small window rather than the full history. channels limits
+        the files read to those gases.
+        """
+        files = self._select_files(channels)
+        print(f"  Reading {len(files)} {self.source} CSV files from {self.results_dir}"
+              + (f" (channel {','.join(sorted(channels))})" if channels else "") + "...")
 
         frames = []
         for f in files:
@@ -190,6 +225,9 @@ class CATS_GCwerks2DB:
             df["time"] = pd.to_datetime(df["time"])
             if start_date is not None:
                 df = df.loc[df["time"] >= start_date]
+            if end_date is not None:
+                df = df.loc[df["time"] < end_date]
+            df = self._limit_channels(df, channels)
             df["port"] = pd.to_numeric(df["port"], errors="coerce")
             for col in df.columns:
                 if col not in ("time", "port"):
@@ -203,16 +241,13 @@ class CATS_GCwerks2DB:
 
         return merged.sort_values("time").drop_duplicates("time", keep="last").reset_index(drop=True)
 
-    def read_gcwerks_flagged(self, start_date=None) -> pd.DataFrame:
+    def read_gcwerks_flagged(self, start_date=None, end_date=None, channels=None) -> pd.DataFrame:
         """Merge per-molecule CSVs, preserving GCwerks flag characters (* / F).
 
-        start_date filters each file immediately after loading.
+        start_date / end_date (exclusive) filter each file immediately after loading;
+        channels limits the files read.
         """
-        files = self._gcwerks_files()
-        if not files:
-            raise FileNotFoundError(
-                f"No CATS CSV files found for site {self.site!r} in {self.results_dir}"
-            )
+        files = self._select_files(channels)
         print(f"  Reading {len(files)} GCwerks CSV files (flagged)...")
 
         frames = []
@@ -222,6 +257,9 @@ class CATS_GCwerks2DB:
             df["time"] = pd.to_datetime(df["time"])
             if start_date is not None:
                 df = df.loc[df["time"] >= start_date]
+            if end_date is not None:
+                df = df.loc[df["time"] < end_date]
+            df = self._limit_channels(df, channels)
             df["port"] = pd.to_numeric(df["port"], errors="coerce")
 
             col_map = self._parse_measurement_columns(df.columns)
@@ -601,29 +639,60 @@ class CATS_GCwerks2DB:
               f"{sum(1 for k in dels if k in tagged)} of them with tags"
               + (" (tag_num: rows " + ", ".join(f"{t}: {n}" for t, n in sorted(counts.items())) + ")" if counts else ""))
 
-    def load(self, duration_months: int | None = 2, year: int | None = None):
+    @staticmethod
+    def parse_when(s) -> "pd.Timestamp | None":
+        """'YYMM' -> start of that month; anything else pandas reads (YYYY-MM-DD[ HH:MM])."""
+        if s is None or isinstance(s, pd.Timestamp):
+            return s
+        s = str(s).strip()
+        if len(s) == 4 and s.isdigit():
+            yy = int(s[:2])
+            return pd.Timestamp(1900 + yy if yy >= 70 else 2000 + yy, int(s[2:]), 1)
+        return pd.Timestamp(s)
+
+    def load(self, duration_months: int | None = 2, year: int | None = None,
+             start=None, end=None, channels=None):
         """Read GCwerks CSVs and upsert into ng_insitu tables.
+
+        start / end (end exclusive) limit the rows loaded to a time window and replace the
+        default lookback; channels (letters such as 'q', 'a', 'f') limit the gases loaded.
+        Nothing outside the window and channels is read, written or deleted.
 
         Run cats_export.py first to refresh the CSV files from GCwerks.
         """
         t0 = time.time()
+        channels = {c.strip().lower() for c in channels if c.strip()} if channels else None
+        bad = (channels or set()) - self.CATS_CHANNELS
+        if bad:
+            raise ValueError(f"unknown channel(s) {sorted(bad)}; valid: {sorted(self.CATS_CHANNELS)}")
+        w_start, w_end = self.parse_when(start), self.parse_when(end)
+        if w_start is not None and w_end is not None and w_end <= w_start:
+            raise ValueError(f"--end {w_end} is not after --start {w_start}")
 
         # Determine start_date early so read methods can filter each file
         # before merging, avoiding full-history merges for short windows.
-        if year is not None:
+        end_date = None
+        if w_start is not None or w_end is not None:
+            start_date, end_date = w_start, w_end
+        elif year is not None:
             start_date = pd.Timestamp(f"{year}-01-01")
         elif duration_months is not None:
             start_date = pd.Timestamp.now() - DateOffset(months=duration_months)
         else:
             start_date = None
 
-        label = f"{year}" if year else (f"last {duration_months}mo" if duration_months else "all data")
+        if w_start is not None or w_end is not None:
+            label = f"{w_start if w_start is not None else 'beginning'} to {w_end if w_end is not None else 'end'}"
+        else:
+            label = f"{year}" if year else (f"last {duration_months}mo" if duration_months else "all data")
+        if channels:
+            label += f", channel {','.join(sorted(channels))}"
         print(f"CATS {self.site.upper()} — {label}")
 
         if self.flagged:
-            df = self.read_gcwerks_flagged(start_date=start_date)
+            df = self.read_gcwerks_flagged(start_date=start_date, end_date=end_date, channels=channels)
         else:
-            df = self.read_gcwerks(start_date=start_date)
+            df = self.read_gcwerks(start_date=start_date, end_date=end_date, channels=channels)
 
         # For year mode trim the upper bound; duration_months used today as anchor
         # so no upper trim needed.
@@ -655,17 +724,28 @@ def load(
     flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
     source: str = typer.Option("gcwerks", "--source", help="gcwerks (cats_results/) or logosint (cats_results/logosint/, no flags)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="write nothing; report what a load would change"),
+    start: str | None = typer.Option(None, "--start", help="first time to load: YYYY-MM-DD[ HH:MM] or YYMM (replaces the default 2-month window)"),
+    end: str | None = typer.Option(None, "--end", help="end of the window, exclusive: YYYY-MM-DD[ HH:MM] or YYMM"),
+    channel: str | None = typer.Option(None, "--channel", help="only gases on these channel letters, comma separated (q, a, f, ...)"),
 ):
     """Load CATS GCwerks export data into HATS ng_insitu tables.
 
     Run cats_export.py first to refresh the per-molecule CSV files from GCwerks
     (or logosint_export.py for --source logosint).
     """
+    if (start or end) and year is not None:
+        typer.secho("--start/--end cannot be combined with --year", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    channels = [c for c in channel.split(",")] if channel else None
     cats = CATS_GCwerks2DB(site, flagged=flagged, source=source, dry_run=dry_run)
-    if all_data:
-        cats.load(duration_months=None)
-    else:
-        cats.load(year=year)
+    try:
+        if all_data:
+            cats.load(duration_months=None, start=start, end=end, channels=channels)
+        else:
+            cats.load(year=year, start=start, end=end, channels=channels)
+    except (ValueError, FileNotFoundError) as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
 
 
 if __name__ == "__main__":
