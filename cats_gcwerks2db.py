@@ -9,6 +9,7 @@ still mean "not measured", but a row with tags (a manual reject, a GCwerks flag)
 than deleted, so the run stays rejected. --dry-run writes nothing and reports what a load would change.
 """
 
+import bisect
 import time
 from pathlib import Path
 
@@ -42,8 +43,8 @@ class CATS_GCwerks2DB:
     VALID_PORTS = {2, 4, 6, 8}
     AIR_PORTS = (4, 8)
 
-    # How far back to look for an analyte's current cal method when new rows
-    # are inserted (see _carry_forward_methods()).
+    # How far before a load's first row to look for existing air rows whose cal
+    # method new rows take (see _carry_forward_methods()).
     CARRY_FORWARD_LOOKBACK = "1 YEAR"
 
     INST_NUM_BY_SITE: dict[str, int] = {
@@ -356,37 +357,47 @@ class CATS_GCwerks2DB:
                 WHERE {where_terms}
             """, query_params)
 
-    def _carry_forward_methods(self) -> dict:
-        """(parameter_num, channel) -> mf_method_num of the latest air row,
-        looking back CARRY_FORWARD_LOOKBACK.
+    def _carry_forward_methods(self, t0: str, t1: str) -> dict:
+        """(parameter_num, channel) -> (sorted analysis times, methods) of the
+        existing air rows from CARRY_FORWARD_LOOKBACK before t0 through t1.
 
-        New rows inherit it, so the cal method chosen for an analyte keeps
-        going into newly ingested days; existing rows are never touched. Rows
+        A new row takes the method of the nearest air row at or before its own
+        time (_method_for), so the cal method chosen for a period keeps going
+        into newly ingested days, and a row inserted into the past (a reload
+        that finds a peak the old integration didn't) gets the method of its
+        own period rather than today's. Existing rows are never touched. Rows
         without a mole fraction count: an analyte on ref with no scale
         assignment for its tanks has none, and must stay on ref rather than
         fall through to the cal12 default.
         """
         sql = f"""
-            SELECT m.parameter_num, m.channel, m.mf_method_num
+            SELECT m.parameter_num, m.channel, a.analysis_time, m.mf_method_num
             FROM hats.ng_insitu_mole_fractions m
             JOIN hats.ng_insitu_analysis a ON a.num = m.analysis_num
-            JOIN (
-                SELECT m2.parameter_num, m2.channel, MAX(a2.analysis_time) AS t
-                FROM hats.ng_insitu_mole_fractions m2
-                JOIN hats.ng_insitu_analysis a2 ON a2.num = m2.analysis_num
-                WHERE a2.inst_num = {self.inst_num}
-                  AND a2.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
-                  AND a2.analysis_time >= NOW() - INTERVAL {self.CARRY_FORWARD_LOOKBACK}
-                  AND m2.mf_method_num IS NOT NULL
-                GROUP BY m2.parameter_num, m2.channel
-            ) last ON last.parameter_num = m.parameter_num
-                  AND last.channel = m.channel AND last.t = a.analysis_time
             WHERE a.inst_num = {self.inst_num}
               AND a.port IN ({','.join(str(p) for p in self.AIR_PORTS)})
+              AND a.analysis_time >= '{t0}' - INTERVAL {self.CARRY_FORWARD_LOOKBACK}
+              AND a.analysis_time <= '{t1}'
+              AND m.mf_method_num IS NOT NULL
+            ORDER BY a.analysis_time
         """
-        rows = self.db.doquery(sql) or []
-        return {(int(r["parameter_num"]), r["channel"]): int(r["mf_method_num"])
-                for r in rows if r["mf_method_num"] is not None}
+        out: dict = {}
+        for r in self.db.doquery(sql) or []:
+            key = (int(r["parameter_num"]), r["channel"])
+            times, methods = out.setdefault(key, ([], []))
+            times.append(pd.Timestamp(r["analysis_time"]).strftime("%Y-%m-%d %H:%M:%S"))
+            methods.append(int(r["mf_method_num"]))
+        return out
+
+    def _method_for(self, methods: dict, param: int, channel: str, t: str) -> int:
+        """Method of the nearest existing air row at or before t (else the
+        first one after it, else the analyte's default)."""
+        hit = methods.get((param, channel))
+        if not hit:
+            return self._default_mf_method(param)
+        times, meths = hit
+        i = bisect.bisect_right(times, t)
+        return meths[i - 1] if i > 0 else meths[0]
 
     def _default_mf_method(self, param: int) -> int:
         # Same as CATS_Instrument.default_mf_method(): cal1 for CCl4, else cal12.
@@ -418,7 +429,8 @@ class CATS_GCwerks2DB:
         if missing:
             print(f"Warning: no analyte mapping for GCwerks mols: {missing}")
 
-        methods = self._carry_forward_methods()
+        methods = self._carry_forward_methods(df["analysis_time_str"].min(), df["analysis_time_str"].max()) \
+            if len(df) else {}
 
         params = []
         all_keys: set = set()
@@ -459,7 +471,7 @@ class CATS_GCwerks2DB:
                 if self._empty_measurement(ht, area, rt):
                     invalid_keys.add(key)
                     continue
-                method = methods.get((param, channel), self._default_mf_method(param))
+                method = self._method_for(methods, param, channel, r.analysis_time_str)
                 params.append((analysis_num, param, channel, ht, area, rt, method))
                 all_keys.add(key)
                 if flagged:

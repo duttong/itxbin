@@ -420,9 +420,14 @@ CATS: inst_num 246 BRW, 247 NWR, 248 MLO, 249 SMO, 250 SPO (defined in
 - `cats_ingest.py` — orchestrator: export → gcwerks2db → aftp2db
   → cats_batch (fits + MF). It does not reset cal methods unless given
   `--set-methods` (runs `cats_set_mf_method.py` on the window); instead
-  `cats_gcwerks2db.py` sets `mf_method_num` only on insert, carried forward
-  from the analyte/channel's latest air row (with or without a mole fraction,
-  so an analyte left on ref for lack of scale assignments stays on ref)
+  `cats_gcwerks2db.py` sets `mf_method_num` only on insert, from the
+  analyte/channel's nearest air row at or before the new row's time (with or
+  without a mole fraction, so an analyte left on ref for lack of scale
+  assignments stays on ref). Until 2026-11-09 it copied the *latest* row's
+  method, so reloads stamped today's method on rows inserted into the past;
+  `mf_method_num` also defaults to 1 (ref) in the table, so an insert that
+  omits it lands on ref. Short ref runs this left were fixed with
+  `sql/cats_short_ref_runs_261109.sql`
 - Port layout (all sites): port 2=cal1 (Std), port 4=air1, port 6=cal2 (Ref),
   port 8=air2; cal2 is near-ambient and used as the normalization reference
 - Mole fractions: `mf = normalized_resp × coef0` from `hats.scale_assignments`

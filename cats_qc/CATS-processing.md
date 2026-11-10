@@ -24,9 +24,11 @@ Add `--run-aftp` only for a one-time legacy-MF backfill; add `--no-mf` to
 skip the recompute step (rare).
 
 Cal methods are not reset by the ingest. `cats_gcwerks2db.py` gives each newly
-inserted row its analyte/channel's current method (that of the latest air row
-with a mole fraction, within a year; the default cal12, or cal1 for CCl4, if
-none), and never changes the method of an existing row. Pass `--set-methods`
+inserted row the method of its analyte/channel's nearest air row at or before
+the new row's time (looking back up to a year; the first row after it if there is
+none before; the default cal12, or cal1 for CCl4, if none at all), and never
+changes the method of an existing row. A row a reload inserts into the past
+therefore gets its own period's method, not today's. Pass `--set-methods`
 to reset the whole window to the defaults with `cats_set_mf_method.py` first;
 that overwrites methods set by hand (as the ingest did by default before
 2026-10-27).
