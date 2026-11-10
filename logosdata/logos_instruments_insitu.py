@@ -119,7 +119,8 @@ class IE3_Instrument(HATS_DB_Functions):
     # before. Two-point fits through a refill or through reactive loss
     # (e.g. AAL070764 CCl4 fill C) fail the gate. DRIFT_EXCLUDE turns drift
     # off for named (serial, fill_code, pnum) fills that pass the gate but
-    # are known to be wrong (pnum None = every gas in that fill). Decisions
+    # are known to be wrong (pnum None = every gas in that fill);
+    # DRIFT_INCLUDE lets named fills with n < DRIFT_MIN_N through. Decisions
     # are kept in self.drift_decisions.
     APPLY_SCALE_DRIFT = True
     DRIFT_MIN_N = 3
@@ -136,6 +137,19 @@ class IE3_Instrument(HATS_DB_Functions):
         ('ALM-066023', 'B', None), ('ALM067679', 'A', None), ('ALM067683', 'A', None),
         ('CC416397', 'A', None), ('CC456880', 'A', None), ('CC456884', 'A', None),
         ('CC456917', 'A', None),
+    }
+    # Fills whose drift is applied although they have fewer than
+    # DRIFT_MIN_N calibrations; DRIFT_MAX_PCT and DRIFT_EXCLUDE still apply.
+    # Keyed on (serial, fill_code, pnum): each fill code is a separate air
+    # fill in that cylinder, so an entry never carries over to another fill
+    # or gas. Add a fill only when calibrations bracket its time on the
+    # instrument and an independent instrument shows the same drift.
+    # AAL070409 A CCl4 (NWR Cal 1 2005-02..2008-07): caldrift's two STDGC
+    # points (86.64 2005-01, 84.51 2008-07) give -0.61 ppt/yr; M3 shows the
+    # same loss (85.98 2005-02, 82.68 2008-09). Without it, NWR cal1 stepped
+    # -1.4 ppt at the 2005-02-18 install (2026-11-09).
+    DRIFT_INCLUDE = {
+        ('AAL070409', 'A', 37),
     }
 
     # IE3 ran pre-production test data before 2026; hide it from the GUI run
@@ -624,7 +638,8 @@ class IE3_Instrument(HATS_DB_Functions):
                     decision['result'] = 'excluded'
                 elif fill['fill_code'] in split_fills:
                     decision['result'] = 'unrecorded-fill split'
-                elif (r.get('n') or 0) < self.DRIFT_MIN_N:
+                elif ((r.get('n') or 0) < self.DRIFT_MIN_N
+                        and (str(serial), fill['fill_code'], int(pnum)) not in self.DRIFT_INCLUDE):
                     decision['result'] = f"n<{self.DRIFT_MIN_N}"
                 elif max_pct > self.DRIFT_MAX_PCT:
                     decision['result'] = f">{self.DRIFT_MAX_PCT:g}%"

@@ -758,8 +758,14 @@ tank's response (crimson diamond).
   evaluated as coef0 + coef1·x + coef2·x² (x = decimal year − tzero, as
   caldrift) by `fill_value_at()`, which `scale_assignment_values_for_dates()`,
   `_scale_simple_fill_coef0()` and `ie3_cal_test._fill_value_for_date()` all
-  use. As of 2026-09-28 the gate approves nothing: every nonzero coef1 on a
+  use. As of 2026-09-28 the gate approved nothing: every nonzero coef1 on a
   tank IE3/CATS used is either n<3, over 5%, or a refill artifact.
+  `DRIFT_INCLUDE` names `(serial, fill_code, pnum)` fills that skip the n
+  test (the 5% cap and `DRIFT_EXCLUDE` still apply). Use it only where
+  calibrations bracket the tank's time on the instrument and a second
+  instrument shows the same drift. Each fill code is a separate air fill, so
+  never key an entry on serial alone. First entry 2026-11-09: AAL070409 A
+  CCl4 (NWR Cal 1 2005-08, -0.61 ppt/yr, STDGC and M3 agree).
   `ref_tank_coef0()`/`ref_tank_unc_c0()` (core `scale_assignments()`) and
   `cal_tank_coefs()` in `ie3_cal_test.py` still read flat `coef0`. The
   M4/FE3/Perseus path (`populate_cal_mf()`) is unchanged: it warns on a
