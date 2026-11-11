@@ -17,6 +17,7 @@ cheap way to detect "what changed since last run." Each invocation therefore
 recomputes an instrument's entire history and upserts it (ON DUPLICATE KEY
 UPDATE); at a few dozen analytes x a few hundred months per instrument this
 is cheap even though the source aggregation scans the full ng_insitu_* history.
+Use --gas to recompute the full history of a comma-separated list of gases.
 A row is deleted only if its (site_num, parameter_num, month) no longer
 appears in the freshly computed set -- e.g. every injection in a month has
 since been rejected.
@@ -34,6 +35,7 @@ Usage:
   python3 insitu_monthly_means_batch.py ie3 -i
   python3 insitu_monthly_means_batch.py cats brw -i
   python3 insitu_monthly_means_batch.py cats brw nwr mlo -i
+  python3 insitu_monthly_means_batch.py cats smo --gas cfc12,cfc113 -i
   python3 insitu_monthly_means_batch.py rits -i
   python3 insitu_monthly_means_batch.py --all -i
 
@@ -102,11 +104,38 @@ def _build_instruments(args) -> list:
     raise SystemExit("Specify 'ie3', 'cats [sites...]', 'rits [sites...]', or --all.")
 
 
-def compute_monthly_means(inst) -> pd.DataFrame:
-    """Aggregate hats.ng_insitu_data_view for one instrument into monthly
-    mean/std/n per (site_num, parameter_num, month), across every analyte
-    at once (the preferred-channel filter is a per-row correlated subquery,
-    so one GROUP BY covers the whole instrument)."""
+def _resolve_gases(db, gas_list: str) -> tuple[int, ...]:
+    """Resolve comma-separated HATS gas formulas, ignoring case and hyphens."""
+    gases = dict.fromkeys(gas.strip().lower().replace('-', '') for gas in gas_list.split(','))
+    if '' in gases:
+        raise ValueError("Specify one or more gas formulas separated by commas, e.g. cfc12,cfc113.")
+    placeholders = ', '.join(['%s'] * len(gases))
+    rows = db.doquery(
+        f"SELECT num, LOWER(REPLACE(formula, '-', '')) AS gas FROM gmd.parameter "
+        f"WHERE LOWER(REPLACE(formula, '-', '')) IN ({placeholders})",
+        tuple(gases),
+    ) or []
+    matches = {gas: set() for gas in gases}
+    for row in rows:
+        matches[row['gas']].add(int(row['num']))
+    unknown = [gas for gas, ids in matches.items() if not ids]
+    if unknown:
+        raise ValueError("Unknown gas formula(s): " + ', '.join(unknown))
+    ambiguous = [gas for gas, ids in matches.items() if len(ids) > 1]
+    if ambiguous:
+        raise ValueError("Ambiguous gas formula(s): " + ', '.join(ambiguous))
+    return tuple(sorted(set.union(*matches.values())))
+
+
+def _gas_filter(column: str, parameter_nums: tuple[int, ...]) -> str:
+    if not parameter_nums:
+        return ''
+    ids = ', '.join(str(int(num)) for num in parameter_nums)
+    return f"AND {column} IN ({ids})"
+
+
+def compute_monthly_means(inst, parameter_nums: tuple[int, ...] = ()) -> pd.DataFrame:
+    """Aggregate monthly air data per site and gas, using the preferred channel."""
     ports = ','.join(str(p) for p in inst.AIR_PORTS)
     floor_clause = (
         f"AND v.analysis_time >= '{inst.DATA_START_DATE}'"
@@ -123,6 +152,7 @@ def compute_monthly_means(inst) -> pd.DataFrame:
       AND v.port IN ({ports})
       AND v.rejected = 0
       {floor_clause}
+      {_gas_filter('v.parameter_num', parameter_nums)}
       AND v.channel = COALESCE(
             (SELECT pc.channel FROM hats.ng_preferred_channel pc
              WHERE pc.inst_num = v.inst_num AND pc.parameter_num = v.parameter_num
@@ -141,14 +171,14 @@ def compute_monthly_means(inst) -> pd.DataFrame:
     return df
 
 
-def refresh(inst, write: bool, verbose: bool) -> None:
+def refresh(inst, write: bool, verbose: bool, parameter_nums: tuple[int, ...] = ()) -> None:
     label = _instrument_label(inst)
     t0 = time.time()
-    df = compute_monthly_means(inst)
+    df = compute_monthly_means(inst, parameter_nums)
     n_analytes = df['parameter_num'].nunique() if not df.empty else 0
     print(f"{label}: {len(df)} site-month-analyte rows across {n_analytes} "
           f"analytes (query {time.time() - t0:.1f}s)")
-    if df.empty:
+    if df.empty and not parameter_nums:
         return
 
     if not write:
@@ -174,8 +204,9 @@ def refresh(inst, write: bool, verbose: bool) -> None:
         )
         for r in df.itertuples(index=False)
     ]
-    inst.db.doquery(upsert_sql, params, commit=True, multiInsert=True)
-    print(f"  Upserted {len(params)} rows into hats.ng_insitu_monthly_means.")
+    if params:
+        inst.db.doquery(upsert_sql, params, commit=True, multiInsert=True)
+        print(f"  Upserted {len(params)} rows into hats.ng_insitu_monthly_means.")
 
     # An upsert never removes a row -- if every injection in a previously
     # published month has since been rejected, that (site, parameter, month)
@@ -186,7 +217,7 @@ def refresh(inst, write: bool, verbose: bool) -> None:
     }
     existing = inst.db.doquery(
         "SELECT site_num, parameter_num, month FROM hats.ng_insitu_monthly_means "
-        f"WHERE inst_num = {inst.inst_num}"
+        f"WHERE inst_num = {inst.inst_num} {_gas_filter('parameter_num', parameter_nums)}"
     ) or []
     stale = [
         (inst.inst_num, int(e['site_num']), int(e['parameter_num']), e['month'])
@@ -213,6 +244,8 @@ def main():
                               "site codes (brw, nwr, mlo, smo, spo); omit for all.")
     parser.add_argument('--all', action='store_true',
                          help="Refresh IE3 and every CATS site (not RITS).")
+    parser.add_argument('--gas', metavar='GAS[,GAS...]',
+                         help="Refresh only these gas formulas, e.g. cfc12,cfc113 (default: all gases).")
     parser.add_argument('-i', '--insert', action='store_true',
                          help="Write results to DB (default: dry run).")
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -223,8 +256,13 @@ def main():
         parser.error("Specify 'ie3', 'cats [sites...]', 'rits [sites...]', or --all.")
 
     t0 = time.time()
-    for inst in _build_instruments(args):
-        refresh(inst, write=args.insert, verbose=args.verbose)
+    instruments = _build_instruments(args)
+    try:
+        parameter_nums = _resolve_gases(instruments[0].db, args.gas) if args.gas is not None else ()
+    except ValueError as error:
+        parser.error(str(error))
+    for inst in instruments:
+        refresh(inst, write=args.insert, verbose=args.verbose, parameter_nums=parameter_nums)
     print(f"\nDone. Elapsed {time.time() - t0:.1f}s")
 
 
