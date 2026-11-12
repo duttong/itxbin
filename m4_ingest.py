@@ -73,6 +73,17 @@ def sync_raw(raw_dir: Path, incoming: Path, threshold: datetime.date, max_worker
         if entry.is_dir():
             d = parse_bd_date(entry.name)
             if d and d >= threshold:
+                # A run dir with no .D data (an aborted sequence, e.g. bd110526)
+                # makes GCwerks' chemstation import stop at it, so every later
+                # run dir is silently never imported. Skip it, and drop any
+                # copy already in incoming.
+                if not any(entry.glob("*.D")):
+                    dest = incoming / entry.name
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                        logging.info(f"Removed empty run directory: {dest}")
+                    logging.info(f"Skipping {entry}: no .D data")
+                    continue
                 to_sync.append(entry)
     if not to_sync:
         return
