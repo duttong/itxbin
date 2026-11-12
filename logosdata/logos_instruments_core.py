@@ -931,9 +931,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
         instrument, and fills for one tank are scattered across inst_nums.
         """
         original_tank = tank
-        # Extract only the digits before the first "_" in the tank variable
-        match = re.search(r'(\d+)[^\d_]*_', tank)
-        tank = match.group(1) if match else ''.join(filter(str.isdigit, tank))
+        tank = self._scale_tank_digits(tank)
 
         date_clause = ""
         if run_date is not None:
@@ -965,6 +963,44 @@ class HATS_DB_Functions(LOGOS_Instruments):
             }
         Warning(f"Scale values not found for tank {tank} and parameter number {pnum}.")
         return None
+
+    @staticmethod
+    def _scale_tank_digits(tank):
+        """The digits scale_values() matches a tank on: those before the first "_",
+        else every digit in the label (esx-3608 -> 3608)."""
+        match = re.search(r'(\d+)[^\d_]*_', tank)
+        return match.group(1) if match else ''.join(filter(str.isdigit, tank))
+
+    def _scale_fills(self, tank, pnum):
+        """Every current-scale fill scale_values() could pick for tank and pnum
+        (its query without the date limit), newest start_date first."""
+        sql = f"""
+            SELECT start_date, end_date, fill_code, serial_number, level,
+                   coef0, coef1, coef2
+            FROM hats.scale_assignments_view
+            where serial_number like '%{self._scale_tank_digits(tank)}%'
+              and parameter_num = {pnum}
+              and current_scale = 1
+            ORDER BY start_date DESC;
+        """
+        rows = [r for r in (self.db.doquery(sql) or []) if r['start_date'] is not None]
+        return sorted(rows, key=lambda r: r['start_date'], reverse=True)
+
+    def _scale_values_from_fills(self, tank, pnum, run_date, fills_cache):
+        """scale_values(tank, pnum, run_date) from fills fetched once per tank.
+
+        Picks the newest fill starting on or before run_date's UTC date, as the
+        SQL does. Where that is ambiguous (two fills share the start_date, and
+        LIMIT 1 picks either) or nothing qualifies (legacy fallback), it asks
+        scale_values() itself, so the result is what it always was.
+        """
+        if tank not in fills_cache:
+            fills_cache[tank] = self._scale_fills(tank, pnum)
+        day = pd.Timestamp(pd.Timestamp(run_date).strftime('%Y-%m-%d')).date()
+        eligible = [r for r in fills_cache[tank] if r['start_date'] <= day]
+        if not eligible or (len(eligible) > 1 and eligible[1]['start_date'] == eligible[0]['start_date']):
+            return self.scale_values(tank, pnum, run_date=run_date)
+        return pd.DataFrame([eligible[0]]).iloc[0].to_dict()
 
     def qurey_return_scale_num(self, pnum):
         """ Query the scale number for a given parameter number. """
@@ -1014,6 +1050,9 @@ class HATS_DB_Functions(LOGOS_Instruments):
 
         # cache for scale values keyed by ref_tank
         scale_cache = {}
+        # every fill of each ref tank for this pnum, fetched once: one query per
+        # (tank, run) cost ~60 ms x ~14 runs x 41 analytes, half the daily M4 batch
+        fills_cache = {}
 
         for rt, grp in df.groupby('run_time'):
             mask = grp['run_type_num'] == self.STANDARD_RUN_TYPE
@@ -1027,7 +1066,7 @@ class HATS_DB_Functions(LOGOS_Instruments):
             # can change between runs, so key the cache on the run date too.
             cache_key = (ref_tank, rt)
             if cache_key not in scale_cache:
-                scale_cache[cache_key] = self.scale_values(ref_tank, pnum, run_date=rt)
+                scale_cache[cache_key] = self._scale_values_from_fills(ref_tank, pnum, rt, fills_cache)
             coefs = scale_cache[cache_key]
 
             if coefs is None:
