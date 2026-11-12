@@ -477,20 +477,14 @@ instance) uses its own port layout with a distinct structural "Ref" port:
 - For M4 CFC-113/113a, the GUI recalc paths load the partner pnum from DB
   internally; authoritative recalc should be done with `m4_batch.py -p 32 -i`
 
-## sample_sheets_account.py
+## Sample sheets (sample_sheets/)
 
-Audits archived sample sheets against `hats.Status_MetData`.
-
-- Archive root: `/hats/gc/sample_sheets/archived/{site}/`
-- Filename pattern matched: `logos_{site}_{pairid}_*`
-- Takes a single site argument, or `--all` to audit every archived site at
-  once (the two are mutually exclusive; one is required). `--all` joins DB
-  records to archive dirs per `Station`.
-- Default output: CSV (`pairid, sample_datetime, site`) of DB records with no
-  archived PDF; sorted by pairid unless `--sort-datetime` is given
-- `--orphans`: instead report archived PDFs whose PairID has no DB record
-  (sample_datetime will be empty since these are absent from the DB)
-- Summary line (record counts) is written to stderr so CSV redirects are clean
+The sample sheet code is its own repo, `sample_sheets/` (github
+duttong/check_sheets, deployed to `/hats/gc/itxbin/sample_sheets` by `deploy`),
+with its own README.md and CLAUDE.md: the AI readers behind `checkin` and
+`checkin_ccg`, the PDF splitter, the CCG archive script, the nightly `scanned`
+recount and the archive audit (`sample_sheets_account.py`). `checkin` and
+`checkin_ccg` here are links into the deployed copy.
 
 ## logos_tanks.py / logos_tanks
 
