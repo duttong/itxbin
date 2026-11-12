@@ -114,6 +114,13 @@ def channel_gases(site, letter):
     return gases
 
 
+def listed_channels(inst_num):
+    """{(display_name, channel)} in hats.analyte_list for an instrument: what cats_batch.py --gas accepts."""
+    rows = connect().doquery("SELECT display_name, channel FROM hats.analyte_list WHERE inst_num = %s",
+                             [int(inst_num)]) or []
+    return {(r["display_name"], (r["channel"] or "").lower()) for r in rows}
+
+
 def plan(job):
     """Resolve a job to (commands, notes) or raise ValueError with a message for the page.
     commands: list of (label, argv)."""
@@ -173,7 +180,12 @@ def plan(job):
         gases = channel_gases(site, letter)
         if not gases:
             notes.append(f"no gases found for channel {letter} in {LOGOSINT_RESULTS}: batch step skipped")
+        listed = listed_channels(job["inst_num"]) if gases else set()
         for mol, gas in gases:
+            if (mol, letter) not in listed:
+                notes.append(f"{gas}: not in hats.analyte_list for inst_num {job['inst_num']} "
+                             f"(cats_batch.py can't run it), batch skipped; heights are still loaded")
+                continue
             stop = L.STOP_AFTER.get((site, mol))
             if stop is not None and start >= pd.Timestamp(stop):
                 notes.append(f"{gas}: range starts after its STOP_AFTER ({stop}), batch skipped")
