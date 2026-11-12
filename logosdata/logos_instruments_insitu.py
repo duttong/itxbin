@@ -873,14 +873,6 @@ class IE3_Instrument(HATS_DB_Functions):
         """
         if df.empty or 'mole_fraction' not in df.columns:
             return
-        sql = """
-            UPDATE hats.ng_insitu_mole_fractions
-            SET mole_fraction = %s, unc = %s, ng_response_id = %s,
-                detrend_method_num = %s, mf_method_num = %s
-            WHERE analysis_num = %s
-              AND parameter_num = %s
-              AND channel = %s;
-        """
         df = df.copy()
         df['mole_fraction'] = (
             pd.to_numeric(df['mole_fraction'], errors='coerce')
@@ -897,20 +889,49 @@ class IE3_Instrument(HATS_DB_Functions):
             df['unc'] = np.nan
         if 'ng_response_id' not in df.columns:
             df['ng_response_id'] = None
-        for _, row in df.iterrows():
-            mf = row['mole_fraction']
-            unc = row['unc']
-            rid = row['ng_response_id']
-            self.db.doquery(sql, [
-                None if pd.isna(mf) else float(mf),
-                None if pd.isna(unc) else float(unc),
-                None if pd.isna(rid) else int(rid),
-                int(row['detrend_method_num']),
-                int(row['mf_method_num']),
-                row['analysis_num'],
-                row['parameter_num'],
-                row['channel'],
-            ])
+        # A key listed twice keeps its last row, as the old one-UPDATE-per-row loop did.
+        df = df.drop_duplicates(['analysis_num', 'parameter_num', 'channel'], keep='last')
+        rows = [
+            (
+                int(r.analysis_num),
+                int(r.parameter_num),
+                None if pd.isna(r.channel) else str(r.channel),
+                None if pd.isna(r.mole_fraction) else float(r.mole_fraction),
+                None if pd.isna(r.unc) else float(r.unc),
+                None if pd.isna(r.ng_response_id) else int(r.ng_response_id),
+                int(r.detrend_method_num),
+                int(r.mf_method_num),
+            )
+            for r in df[['analysis_num', 'parameter_num', 'channel', 'mole_fraction', 'unc',
+                         'ng_response_id', 'detrend_method_num', 'mf_method_num']].itertuples(index=False)
+        ]
+        for i in range(0, len(rows), self.MF_UPDATE_CHUNK):
+            chunk = rows[i:i + self.MF_UPDATE_CHUNK]
+            self.db.doquery(self._mf_update_sql(len(chunk)), [v for row in chunk for v in row])
+
+    # Rows per UPDATE in upsert_mole_fractions(). One UPDATE per row cost ~60 s for a
+    # 5-year CATS gas (~85k round trips); a joined UPDATE of a few thousand rows is one.
+    MF_UPDATE_CHUNK = 2000
+
+    @staticmethod
+    def _mf_update_sql(n):
+        """UPDATE joining ng_insitu_mole_fractions to n literal rows on its unique key
+        (analysis_num, parameter_num, channel). Like a plain UPDATE it never inserts: a key
+        with no row is skipped, and a NULL channel matches nothing."""
+        cols = ('analysis_num', 'parameter_num', 'channel', 'mole_fraction', 'unc',
+                'ng_response_id', 'detrend_method_num', 'mf_method_num')
+        first = 'SELECT ' + ', '.join(f'%s AS {c}' for c in cols)
+        rest = ' UNION ALL SELECT ' + ', '.join(['%s'] * len(cols))
+        return f"""
+            UPDATE hats.ng_insitu_mole_fractions m
+            JOIN ({first}{rest * (n - 1)}) v
+              ON m.analysis_num = v.analysis_num
+             AND m.parameter_num = v.parameter_num
+             AND m.channel = v.channel
+            SET m.mole_fraction = v.mole_fraction, m.unc = v.unc,
+                m.ng_response_id = v.ng_response_id,
+                m.detrend_method_num = v.detrend_method_num,
+                m.mf_method_num = v.mf_method_num"""
 
     def update_flags_all_analytes(self, pending_adds, pending_removes=None):
         """
