@@ -66,6 +66,21 @@
   with no event. OTTO pair means (`flask_id = 0`) carry the pair's first event.
   BLD1 rows have no pair id and stay NULL. DDL and the typo review query in
   `sql/ng_analysis_hatsflask_event_num.sql`
+- `hats.ng_analysis.ccgg_event_num` — the `ccgg.flask_event.num` of a CCGG
+  flask (0 = none); `ng_data_view` left-joins `ccgg.flask_event_view` on it for
+  sample_id, site, sample date and lat/lon/alt, for any run type. M4 sets it
+  for PFPs, and for CCGG flasks run as flasks under their own id
+  (`m4_samplogs.resolve_ccgg_flask_event()`: label `grf_12_may_26_#C14#11`,
+  parsed for any site; needs one `ccgg.flask_event` with that id and site on
+  the sample date, else exactly one within a day). Such single-flask events
+  drop out of `MSTAR_PAIR_AVG_SQL` (two-flask rule) but not
+  `ng_pair_avg_view`. FE3 sets it for CCGG flasks typed into the FE3 app by their own ID
+  (letters, `#`, `-`, e.g. GRF firn air `C14#11`, `SIO-22`; FE3_acquisition
+  9c45f95): the app stores the bare ID in the meta flask dict (no PairID, so
+  `pair_id_num`/`flask_id` stay 0) and the event in meta[4]
+  `ccgg_event_nums`. `fe3_gcwerks2db.py` writes that, or looks the ID up in
+  `ccgg.flask_event` (latest event within 730 days before the analysis) for
+  meta files without it; an update never overwrites a non-zero value with 0
 - `hats.ng_mole_fractions` — computed mole fraction output table (upserted by
   batch scripts and logos_data)
 - `hats.ng_mole_fraction_tags` — tag table for M4/FE3/BLD1 mole fractions

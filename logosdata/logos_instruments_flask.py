@@ -258,12 +258,18 @@ class M4_Instrument(HATS_DB_Functions):
             df['port'].astype(int).astype(str) + ')'
         )
 
-        # flask_port label
+        # flask_port label: PairID-FlaskID for HATS flasks; the CCGG flask id
+        # itself (e.g. GRF 'C14#11') for CCGG flasks run as flasks, which have
+        # no HATS pair and a non-numeric sample_id
         mask = (df['run_type_num'] == 1)
+        pair = pd.to_numeric(df.loc[mask, 'pair_id_num'], errors='coerce').fillna(0).astype(int)
+        sid = df.loc[mask, 'sample_id']
+        sid_num = pd.to_numeric(sid, errors='coerce')
+        ident = pair.astype(str) + '-' + sid_num.fillna(0).astype(int).astype(str)
+        ccgg_flask = pair.eq(0) & sid_num.isna() & sid.notna()
+        ident = ident.where(~ccgg_flask, sid.astype(str).str.strip())
         df.loc[mask, 'port_label'] = (
-            df.loc[mask, 'site'] + ' ' +
-            df.loc[mask, 'pair_id_num'].astype(int).astype(str) + '-' +
-            df.loc[mask, 'sample_id'].astype(int).astype(str) + ' (' +
+            df.loc[mask, 'site'] + ' ' + ident + ' (' +
             df.loc[mask, 'port'].astype(int).astype(str) + ')'
         )
 
@@ -731,12 +737,18 @@ class FE3_Instrument(HATS_DB_Functions):
             .fillna(df.loc[mask, 'port_info'])
             .str.strip()
         )
+        # flask identity: PairID-FlaskID for HATS flasks; the CCGG flask id
+        # itself (e.g. GRF 'C14#11', 'SIO-22') for CCGG event flasks, which
+        # have no HATS pair and a non-numeric sample_id
+        pair = pd.to_numeric(df.loc[mask, 'pair_id_num'], errors='coerce').fillna(0).astype(int)
+        sid = df.loc[mask, 'sample_id']
+        sid_num = pd.to_numeric(sid, errors='coerce')
+        ident = pair.astype(str) + '-' + sid_num.fillna(0).astype(int).astype(str)
+        ccgg_flask = pair.eq(0) & sid_num.isna() & sid.notna()
+        ident = ident.where(~ccgg_flask, sid.astype(str).str.strip())
         # now concatenate everything off that prefix
         df.loc[mask, 'port_label'] = (
-            prefix + ' ' +
-            #df.loc[mask, 'port_info'].fillna('') +
-            df.loc[mask, 'pair_id_num'].fillna(0).astype(int).astype(str) + '-' +
-            df.loc[mask, 'sample_id'].fillna(0).astype(int).astype(str) + ' (' +
+            prefix + ' ' + ident + ' (' +
             df.loc[mask, 'flask_port'].astype(int).astype(str) + ')'
         )
 

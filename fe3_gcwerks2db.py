@@ -10,6 +10,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from logos_instruments import FE3_Instrument as fe3_inst
 
+# A non-HATS (CCGG event) flask ID as the FE3 app accepts it (CCGG_FLASK_ID_RE
+# in FE3_acquisition/display.py): letters, digits, # _ -, up to 20 chars.
+CCGG_FLASK_ID_RE = r'^[A-Za-z0-9][A-Za-z0-9#_-]{0,19}$'
+# Only link a CCGG event sampled at most this long before the analysis, so a
+# reused ID (e.g. a 2025 'TST' entry vs the 2005 MSC 'TST' event) is not linked.
+MAX_CCGG_EVENT_AGE_DAYS = 730
+
 
 class FE3_Prepare(fe3_inst):
     """ Class for preparing data for the HATS DB. This class is used to prepare data
@@ -84,6 +91,25 @@ class FE3_Prepare(fe3_inst):
                 labels[offset + k] = sample
         return test_num, labels
 
+    @staticmethod
+    def read_ccgg_events(meta, n_flasks):
+        """ Returns the CCGG event number of each flask in the meta file's flask
+            dict, in the same order (0 where there is none).
+
+            The FE3 app writes them for non-HATS flask IDs (e.g. GRF 'C14#11',
+            'SIO-22') in the optional 5th element: {'ccgg_event_nums': {'0': 567872}},
+            keyed like the flask dict.
+        """
+        extra = meta[4] if len(meta) > 4 and isinstance(meta[4], dict) else {}
+        events = extra.get('ccgg_event_nums') or {}
+        out = []
+        for i in range(n_flasks):
+            try:
+                out.append(int(events.get(str(i), events.get(i, 0)) or 0))
+            except (TypeError, ValueError):
+                out.append(0)
+        return out
+
     def two_digit_year(self, year) -> str:
         """Return the last two digits of a year as a zero-padded string.
 
@@ -136,11 +162,13 @@ class FE3_Prepare(fe3_inst):
                 return None
             run_type = data[3] if len(data)>3 else self.run_type(data[0])
             test_num, test_labels = self.read_test_info(path, data, run_type)
+            flasks = list(data[1].values())
             return {
                 'time':    self.return_datetime(path),
                 'dir':     path.name[5:20],
                 'seq':     data[0],
-                'flasks':  list(data[1].values()),
+                'flasks':  flasks,
+                'ccgg_events': self.read_ccgg_events(data, len(flasks)),
                 'ports':   list(data[2].values()),
                 'type':    run_type,
                 'test_num':    test_num,
@@ -272,7 +300,8 @@ class FE3_Prepare(fe3_inst):
             If a serial number of a tank is in this field it with leave it as the pairid variable. 
         """
         if str(id_str).find('-') > 0:
-            pairid, flaskid = id_str.split('-')
+            # split once: a CCGG flask id can hold its own '-' (e.g. 'SIO-22')
+            pairid, flaskid = id_str.split('-', 1)
             try:
                 test = int(pairid)
                 return pairid, flaskid, 'flask'
@@ -311,9 +340,16 @@ class FE3_Prepare(fe3_inst):
             # fe3_import always excludes the first ITX file (the port-10 setup
             # injection), so seq[0] is always the dropped char.
             port_id, flask_port = self._seq2list(grp, drop_initial=True, run_id=grp.name)
+            events = grp['ccgg_events'].iat[0] if 'ccgg_events' in grp.columns else None
+            if events is None or isinstance(events, float):
+                events = []
+            events = list(events)
+            ccgg = [events[i] if isinstance(i, int) and i < len(events) else 0
+                    for i in flask_port]
             return grp.assign(
                 port_id    = port_id,
                 flask_port = flask_port,
+                ccgg_event_num = ccgg,
             )
 
         clean = df.groupby('dir', group_keys=False) \
@@ -343,8 +379,57 @@ class FE3_Prepare(fe3_inst):
         clean = pd.concat([clean, split_df], axis=1)
         clean['pair_id_num'] = pd.to_numeric(clean['pair_id_num'], errors='coerce').astype('Int64')
         clean['flask_id']    = pd.to_numeric(clean['flask_id'],    errors='coerce').astype('Int64')
+        clean['ccgg_event_num'] = (pd.to_numeric(clean['ccgg_event_num'], errors='coerce')
+                                   .fillna(0).astype(int)
+                                   if 'ccgg_event_num' in clean.columns else 0)
+        clean = self.resolve_ccgg_events(clean)
 
         return clean
+
+    def resolve_ccgg_events(self, df):
+        """ Fill ccgg_event_num for flask injections of non-HATS flask IDs
+            (letters, '#', '-', e.g. GRF 'C14#11') whose meta file has no event
+            number: older app versions, or an ID the operator recorded without
+            a match. Uses the most recent ccgg.flask_event with that id sampled
+            on or before the analysis date and at most MAX_CCGG_EVENT_AGE_DAYS
+            before it, as the FE3 app does. HATS flasks
+            (pair_id_num > 0, or a digits-only id) and Test-run sample IDs
+            are left alone.
+        """
+        flask_pos = pd.to_numeric(df['flask_port'], errors='coerce').notna()
+        ids = df['port_info'].fillna('').astype(str).str.strip()
+        not_test = (df['type'].astype(str).ne('test') if 'type' in df.columns
+                    else pd.Series(True, index=df.index))
+        need = (flask_pos & not_test & df['ccgg_event_num'].eq(0)
+                & df['pair_id_num'].fillna(0).eq(0)
+                & ids.str.match(CCGG_FLASK_ID_RE) & ~ids.str.isdigit())
+        if not need.any():
+            return df
+
+        wanted = sorted(ids[need].unique())
+        placeholders = ','.join(['%s'] * len(wanted))
+        rows = self.db.doquery(
+            f"SELECT num, id, date FROM ccgg.flask_event WHERE id IN ({placeholders})",
+            wanted) or []
+        by_id = {}
+        for r in rows:
+            by_id.setdefault(str(r['id']).upper(), []).append(
+                (pd.Timestamp(r['date']), int(r['num'])))
+
+        missing = set()
+        for i in df.index[need]:
+            cands = by_id.get(ids[i].upper(), [])
+            day = pd.Timestamp(df.at[i, 'time']).normalize()
+            oldest = day - pd.Timedelta(days=MAX_CCGG_EVENT_AGE_DAYS)
+            cands = [c for c in cands if oldest <= c[0] <= day]
+            if cands:
+                df.at[i, 'ccgg_event_num'] = max(cands)[1]
+            else:
+                missing.add(ids[i])
+        for flid in sorted(missing):
+            logging.warning("Flask %r has no CCGG event in the %d days before its analysis; "
+                            "ccgg_event_num left 0", flid, MAX_CCGG_EVENT_AGE_DAYS)
+        return df
 
     def gcwerks_2_hatsdb(self, df: pd.DataFrame, batch_size: int = 500):
         """
@@ -352,7 +437,7 @@ class FE3_Prepare(fe3_inst):
         inserting new rows and updating any changed fields.
         Assumes df has columns:
           time, run_time, run_type_num, port, port_info,
-          flask_port, pair_id_num, flask_id, test_num,
+          flask_port, pair_id_num, flask_id, test_num, ccgg_event_num,
         plus for each molecule fields: <mol>_ht, <mol>_area, <mol>_rt.
         """
         # 1) Prepare DataFrame and format datetime fields as strings
@@ -366,6 +451,7 @@ class FE3_Prepare(fe3_inst):
         df['flask_port']   = pd.to_numeric(df['flask_port'], errors='coerce').fillna(0).astype(int)
         df['pair_id_num']  = pd.to_numeric(df['pair_id_num'], errors='coerce').fillna(0).astype(int)
         df['flask_id']     = pd.to_numeric(df['flask_id'], errors='coerce').fillna(0).astype(int)
+        df['ccgg_event_num'] = pd.to_numeric(df.get('ccgg_event_num', 0), errors='coerce').fillna(0).astype(int)
         
         # 2) Pre-fetch existing ng_analysis rows by (analysis_time, port).
         # ng_analysis has no UNIQUE key other than the PK, so ON DUPLICATE KEY
@@ -392,7 +478,7 @@ class FE3_Prepare(fe3_inst):
                 update_params.append((
                     r.run_time_str, int(r.run_type_num),
                     r.port_info, r.flask_port, int(r.pair_id_num), int(r.flask_id),
-                    int(r.test_num),
+                    int(r.test_num), int(r.ccgg_event_num), int(r.ccgg_event_num),
                     existing[key],
                 ))
             else:
@@ -400,10 +486,11 @@ class FE3_Prepare(fe3_inst):
                     r.analysis_time_str, self.inst_num, r.run_time_str,
                     int(r.run_type_num), int(r.port), r.port_info,
                     r.flask_port, int(r.pair_id_num), int(r.flask_id),
-                    int(r.test_num),
+                    int(r.test_num), int(r.ccgg_event_num),
                 ))
 
         if update_params:
+            # ccgg_event_num: keep an event set by hand when the loader found none
             update_sql = """
                 UPDATE hats.ng_analysis
                    SET run_time     = %s,
@@ -412,7 +499,8 @@ class FE3_Prepare(fe3_inst):
                        flask_port   = %s,
                        pair_id_num  = %s,
                        flask_id     = %s,
-                       test_num     = %s
+                       test_num     = %s,
+                       ccgg_event_num = IF(%s > 0, %s, ccgg_event_num)
                  WHERE num = %s
             """
             for i in range(0, len(update_params), batch_size):
@@ -422,8 +510,9 @@ class FE3_Prepare(fe3_inst):
             insert_sql = """
                 INSERT INTO hats.ng_analysis (
                     analysis_time, inst_num, run_time, run_type_num, port,
-                    port_info, flask_port, pair_id_num, flask_id, test_num
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    port_info, flask_port, pair_id_num, flask_id, test_num,
+                    ccgg_event_num
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """
             for i in range(0, len(insert_params), batch_size):
                 self.db.doMultiInsert(insert_sql, insert_params[i:i+batch_size], all=True)

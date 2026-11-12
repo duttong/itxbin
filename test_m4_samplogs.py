@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pandas as pd
 
-from m4_samplogs import M4_SampleLogs, M4_Serial_Numbers, parse_test_num
+from m4_samplogs import M4_SampleLogs, M4_Serial_Numbers, parse_run_index_sample_info, parse_test_num
 
 
 class TestLabels(unittest.TestCase):
@@ -106,6 +106,59 @@ class TestAnalysisIngest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'database unavailable'):
             self.ingest.insert_ng_analysis(self.frame([('T1073_7099', 1)]))
         self.ingest.db.doMultiInsert.assert_not_called()
+
+
+class TestCcgFlaskEvents(unittest.TestCase):
+    """CCGG flasks run on M4 as flasks under their own id (GRF firn air)."""
+
+    def setUp(self):
+        self.ingest = M4_SampleLogs.__new__(M4_SampleLogs)
+        self.ingest.db = Mock()
+
+    @staticmethod
+    def row(tank, site='GRF', sample_time='260512', samptype='flask', pair_id=0):
+        return {'samptype': samptype, 'tank': tank, 'site': site,
+                'sample_time': sample_time, 'pair_id': pair_id}
+
+    @staticmethod
+    def event(num, flask_id='C14#11', date='2026-05-12'):
+        return {'num': num, 'id': flask_id, 'date': pd.Timestamp(date).date(), 'site': 'GRF'}
+
+    def test_label_parses_hash_ids(self):
+        for label, tank in [('grf_12_may_26_#C14#11', 'C14#11'),
+                            ('grf_23_may_26_#SIO-22', 'SIO-22'),
+                            ('brw_16_oct_26_#5612-31199', '5612-31199')]:
+            with self.subTest(label=label):
+                self.assertEqual(parse_run_index_sample_info(label)['tank'], tank)
+
+    def test_site_date_match(self):
+        self.ingest.db.doquery.return_value = [self.event(567872)]
+        self.assertEqual(self.ingest.fetch_ccgg_event_num(self.row('C14#11')), 567872)
+        sql, params = self.ingest.db.doquery.call_args.args
+        self.assertIn('e.id = %s', sql)
+        self.assertEqual(params, ('C14#11', 'GRF', '2026-05-12', '2026-05-12'))
+
+    def test_one_day_off_match(self):
+        self.ingest.db.doquery.return_value = [self.event(567872, date='2026-05-13')]
+        self.assertEqual(self.ingest.fetch_ccgg_event_num(self.row('C14#11')), 567872)
+
+    def test_ambiguous_or_missing_is_empty(self):
+        for rows in ([], [self.event(1, date='2026-05-11'), self.event(2, date='2026-05-13')]):
+            with self.subTest(rows=rows):
+                self.ingest.db.doquery.return_value = rows
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertIsNone(self.ingest.fetch_ccgg_event_num(self.row('C14#11')))
+
+    def test_hats_pairs_and_tanks_are_not_looked_up(self):
+        for row in (self.row('5612-31199', site='BRW'),          # HATS flask-pair label
+                    self.row('C14#11', pair_id=31199),           # has a HATS pair
+                    self.row('C14#11', samptype='std'),
+                    self.row('1234'),                            # bare number
+                    self.row('C14#11', site=None),               # no site/date in label
+                    self.row('C14#11', sample_time=None)):
+            with self.subTest(row=row):
+                self.assertIsNone(self.ingest.fetch_ccgg_event_num(row))
+        self.ingest.db.doquery.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -35,7 +35,9 @@ m4_ingest.py pipeline:
                        else 0; validated test labels use run_type_num=10;
                        manual assignments on unchanged unprefixed
                        labels survive reimport; sample/run types are unchanged
-     - ccgg_event_num  CCGG event number for PFP flasks at MLO/MKO, else NULL
+     - ccgg_event_num  CCGG event number for PFP flasks, and for CCGG flasks run
+                       as flasks under their own id (e.g. GRF firn air
+                       grf_12_may_26_#C14#11), else NULL
      - flask_port      for PFP runs: the individual flask valve number extracted
                        from port_info (updated separately via update_pfp_flask_port)
 
@@ -74,11 +76,16 @@ import re
 from logos_instruments import M4_Instrument
 
 FLASK_PAIR_LABEL_RE = re.compile(r'^(?P<flask>\d+)_?-(?P<pair>\d+)$')
+# A CCGG flask id (not a HATS flask-pair label), e.g. GRF 'C14#11' or 'SIO-22'.
+# Same set as the FE3 app's CCGG_FLASK_ID_RE; needs a letter or '#' so it
+# never takes a bare number.
+CCGG_FLASK_ID_RE = re.compile(r'^(?=.*[A-Za-z#])[A-Za-z0-9][A-Za-z0-9#_-]{0,19}$')
 PFP_TANK_RE = re.compile(r'^(?P<flask>\d{1,2})-(?P<package>\d{4}|x{4})$', re.IGNORECASE)
 RUN_INDEX_SAMPLE_INFO_RE = re.compile(
     r'^(?P<site>[A-Za-z0-9]{3})_?'
     r'(?P<sample_time>(?:\d{1,2}[-_])?[A-Za-z]{3}[-_][0-9]{2})_?'
-    r'#(?P<tank>[\w-]+)$'
+    # '#' is allowed in the id for CCGG flasks such as GRF 'C14#11'
+    r'#(?P<tank>[\w#-]+)$'
 )
 TEST_LABEL_RE = re.compile(r'^T(?P<test_num>[0-9]{4})(?:[_ -]|$)', re.IGNORECASE)
 
@@ -390,8 +397,12 @@ class M4_SampleLogs(M4_Instrument):
             direction='nearest'
         ).dropna(subset=['dt_sync'])
         
-        # Extract site, sample_time, and tank info from the 'info' column
-        mask_valid = mm['info'].str.lower().str[:3].isin(valid_sites)
+        # Extract site, sample_time, and tank info from the 'info' column.
+        # A label in the full site_dd_mon_yy_#id form is parsed whatever its
+        # site, so CCGG flasks from sites with no HATS pairs (GRF firn air,
+        # grf_12_may_26_#C14#11) keep their site and sample date.
+        mask_valid = (mm['info'].str.lower().str[:3].isin(valid_sites)
+                      | mm['info'].fillna('').str.strip().str.fullmatch(RUN_INDEX_SAMPLE_INFO_RE))
         extracted = mm.loc[mask_valid, 'info'].str.extract(RUN_INDEX_SAMPLE_INFO_RE)
         mm.loc[mask_valid, ['site', 'sample_time', 'tank']] = extracted[['site', 'sample_time', 'tank']]
         
@@ -577,13 +588,59 @@ class M4_SampleLogs(M4_Instrument):
             return None
         return self._event_match(recent[0], 'recent_package')
 
+    def resolve_ccgg_flask_event(self, row):
+        """Resolve a CCGG flask run as a flask (not a PFP) to its CCGG event.
+
+        For flask rows with no HATS pair whose label gives a site, sample date
+        and a CCGG flask id, e.g. GRF firn air 'grf_12_may_26_#C14#11'. Needs
+        one ccgg.flask_event with that id and site on the sample date, or,
+        failing that, exactly one within a day of it (a local vs UTC date).
+        """
+        if str(row.get('samptype', '')).lower() != 'flask':
+            return None
+        pair_id = pd.to_numeric(row.get('pair_id'), errors='coerce')
+        if pd.notna(pair_id) and pair_id > 0:
+            return None
+        flask_id = str(row.get('tank', '') or '').strip()
+        if (not flask_id or flask_id.lower() in {'nan', 'none'}
+                or FLASK_PAIR_LABEL_RE.fullmatch(flask_id)
+                or not CCGG_FLASK_ID_RE.fullmatch(flask_id)):
+            return None
+        site = str(row.get('site', '') or '').strip()
+        sample_date = self._sample_date(row.get('sample_time'))
+        if not re.fullmatch(r'[A-Za-z0-9]{3}', site) or not sample_date:
+            return None
+
+        sql = """
+            SELECT e.num, e.id, e.date, s.code AS site
+            FROM ccgg.flask_event e
+            JOIN gmd.site s ON s.num = e.site_num
+            WHERE e.id = %s
+              AND LOWER(s.code) = LOWER(%s)
+              AND e.date BETWEEN DATE_SUB(%s, INTERVAL 1 DAY) AND DATE_ADD(%s, INTERVAL 1 DAY)
+            ORDER BY e.num;
+        """
+        rows = self.db.doquery(sql, (flask_id, site, sample_date, sample_date)) or []
+        exact = [r for r in rows if str(r['date']) == sample_date]
+        if len(exact) == 1:
+            return self._event_match(exact[0], 'flask_site_date')
+        if not exact and len(rows) == 1:
+            return self._event_match(rows[0], 'flask_site_near_date')
+        print(f"Warning: M4 flask {site} {sample_date} #{flask_id}: "
+              f"{len(exact) or len(rows)} CCGG events match; ccgg_event_num left empty")
+        return None
+
     def fetch_ccgg_event_num(self, row):
-        """Determine and return the CCGG event number for one PFP flask."""
+        """Determine and return the CCGG event number for one PFP flask, or
+        for one CCGG flask run as a flask."""
         try:
-            match = self.resolve_pfp_event(row)
+            if str(row.get('samptype', '')).lower() == 'pfp':
+                match = self.resolve_pfp_event(row)
+            else:
+                match = self.resolve_ccgg_flask_event(row)
             return match['event_num'] if match else None
         except Exception as exc:
-            print(f"Error resolving PFP event for {row.get('tank')}: {exc}")
+            print(f"Error resolving CCGG event for {row.get('tank')}: {exc}")
             return None
     
     def save_samplelogs(self, merged_df):
