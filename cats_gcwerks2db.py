@@ -6,7 +6,8 @@ instead of GCwerks': same files and columns, but no GCwerks flags are read or sy
 rows already in the DB are left as they are), and a gas with no value at all in a row (logosint
 refused that run's parameter file) is left alone in the DB rather than deleted; explicit zeros
 still mean "not measured", but a row with tags (a manual reject, a GCwerks flag) is kept rather
-than deleted, so the run stays rejected. --dry-run writes nothing and reports what a load would change.
+than deleted, so the run stays rejected. A gas logosint excluded (XB: the ECD pegged high; rt -1 in
+the export) is deleted with its tags, tagged or not. --dry-run writes nothing and reports what a load would change.
 
 --start / --end (YYYY-MM-DD[ HH:MM] or YYMM; end exclusive) limit a load to rows in that window, and
 --channel (CATS channel letters as in the export columns: q, a, f, ...) to the gases on those channels.
@@ -474,6 +475,7 @@ class CATS_GCwerks2DB:
         all_keys: set = set()
         flagged_keys: set = set()
         invalid_keys: set = set()
+        excluded_keys: set = set()   # logosint XB exclusions (rt -1 in the export)
 
         for r in df.itertuples(index=False):
             analysis_num = analysis_map.get(r.analysis_time_str)
@@ -506,6 +508,9 @@ class CATS_GCwerks2DB:
                 key = (analysis_num, param, channel)
                 if self.source == "logosint" and ht is None and area is None and rt is None:
                     continue   # not in logosint's export (refused run): leave the DB's row alone
+                if self.source == "logosint" and rt is not None and rt < 0:
+                    excluded_keys.add(key)   # XB: the peak is gone, tags and all
+                    continue
                 if self._empty_measurement(ht, area, rt):
                     invalid_keys.add(key)
                     continue
@@ -528,7 +533,7 @@ class CATS_GCwerks2DB:
                 invalid_keys = invalid_keys - kept
 
         if self.dry_run:
-            self._dry_run_report(params, invalid_keys, analysis_map)
+            self._dry_run_report(params, invalid_keys, analysis_map, excluded_keys)
             return
 
         if params:
@@ -541,6 +546,10 @@ class CATS_GCwerks2DB:
         if invalid_keys:
             self._delete_mole_fraction_keys(invalid_keys, batch_size=batch_size)
             print(f"  Removed/skipped {len(invalid_keys)} empty measurement rows.")
+        if excluded_keys:
+            # Unlike a plain missing peak, an XB exclusion goes even where tagged.
+            self._delete_mole_fraction_keys(excluded_keys, batch_size=batch_size)
+            print(f"  Removed {len(excluded_keys)} rows logosint excluded (XB), with their tags.")
 
         # Sync GCwerks flag tags (tag_num=324): delete stale then reinsert current.
         if self.flagged and all_keys:
@@ -594,10 +603,10 @@ class CATS_GCwerks2DB:
             out |= {(int(r["analysis_num"]), int(r["parameter_num"]), r["channel"]) for r in rows}
         return out
 
-    def _dry_run_report(self, params: list, invalid_keys: set, analysis_map: dict, batch_size: int = 1000) -> None:
+    def _dry_run_report(self, params: list, invalid_keys: set, analysis_map: dict, excluded_keys: set = frozenset(), batch_size: int = 1000) -> None:
         """What a load would change, against the DB's rows: per analyte and channel, new rows,
         height changes (median and share over 0.1%), and rows that would be deleted (with tags)."""
-        nums = sorted({p[0] for p in params} | {k[0] for k in invalid_keys})
+        nums = sorted({p[0] for p in params} | {k[0] for k in invalid_keys} | {k[0] for k in excluded_keys})
         have = {}
         tagged = set()
         tag_nums: dict = {}
@@ -638,6 +647,10 @@ class CATS_GCwerks2DB:
         print(f"  would delete {len(dels)} existing rows (no peak in this export), "
               f"{sum(1 for k in dels if k in tagged)} of them with tags"
               + (" (tag_num: rows " + ", ".join(f"{t}: {n}" for t, n in sorted(counts.items())) + ")" if counts else ""))
+        xdel = [k for k in excluded_keys if k in have]
+        if excluded_keys:
+            print(f"  would delete {len(xdel)} existing rows logosint excluded (XB), "
+                  f"{sum(1 for k in xdel if k in tagged)} of them with tags (deleted with them)")
 
     @staticmethod
     def parse_when(s) -> "pd.Timestamp | None":

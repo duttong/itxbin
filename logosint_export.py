@@ -9,6 +9,9 @@ cats_gcwerks2db.py --source logosint loads them.
 - A peak logosint found: its retention time, height and area.
 - No peak in the window (status missing): 0.00, 0.00, 0.0, which the loader treats
   as "not measured" (as it does GCwerks' zeros).
+- XB dropped the peak, or the ECD is pegged where the gas would be (status excluded):
+  rt -1.00, 0.00, 0.0. The loader deletes that row with its tags, tagged or not: the
+  peak isn't there.
 - A run logosint refused (its parameter file uses a command logosint doesn't have):
   no row for that gas at all, so the loader leaves the DB's value alone.
 - No flag marks: GCwerks' flags (tag 324) are not carried into logosint results.
@@ -76,7 +79,7 @@ def integrate(site, start, end, channels, pset, binary):
 
 def to_frames(df):
     """gas -> DataFrame in gcexport layout (refused runs left out)."""
-    df = df[df["status"].isin(["ok", "missing"])].copy()
+    df = df[df["status"].isin(["ok", "missing", "excluded"])].copy()
     parts = df["run"].str.split(".")
     df["time"] = pd.to_datetime(parts.str[0] + parts.str[1], format="%y%m%d%H%M")
     df["port"] = pd.to_numeric(df["port"], errors="coerce")
@@ -86,7 +89,8 @@ def to_frames(df):
         ok = g["status"].eq("ok")
         f = pd.DataFrame({
             "time": g["time"], "port": g["port"].astype(int),
-            f"{gas}_rt": g["rt"].where(ok, 0.0), f"{gas}_ht": g["height"].where(ok, 0.0),
+            f"{gas}_rt": g["rt"].where(ok, g["status"].eq("excluded").map({True: -1.0, False: 0.0})),
+            f"{gas}_ht": g["height"].where(ok, 0.0),
             f"{gas}_area": g["area"].where(ok, 0.0),
         })
         out[gas] = f.sort_values(["time", "port"])
