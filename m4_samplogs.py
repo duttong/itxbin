@@ -59,6 +59,8 @@ m4_ingest.py pipeline:
    tank_serial_num is still NULL, extracts a key from port_info using regex
    (sx/esx pattern or first 4+-digit run), looks it up in reftank.fill, and
    writes the canonical serial number back to ng_analysis.tank_serial_num.
+   Test runs (run_type_num=10) are labelled with flask numbers, so for them
+   only an sx tag or a token that is exactly a reftank.fill serial is used.
    This means tanks listed in tank_serial_num can be reliably linked to the
    reftank.fill metadata.
 
@@ -875,9 +877,14 @@ class M4_Serial_Numbers(M4_Instrument):
 
     SX_RE  = re.compile(r"(?i)\b(?:e)?sx[\s_-]*([0-9]{3,})(?![0-9])")  # esx-3531 / sx_3531 / sx 3531
     DIG_RE = re.compile(r"([0-9]{4,})")
-      
+    # A whole label token that could be a full tank serial (letters and digits,
+    # e.g. DT0049855, AAL-072123); test labels are matched on these exactly.
+    SERIAL_TOKEN_RE = re.compile(r"^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9-]{5,}$")
+    TEST_RUN_TYPE = 10
+
     def __init__(self):
         super().__init__()
+        self._fill_serial_cache = {}
     
     def find_missing_serials(self):
         """ Finds missing serial numbers in the M4 instrument. """
@@ -919,22 +926,64 @@ class M4_Serial_Numbers(M4_Instrument):
         return None
 
     def lookup_fill_serial(self, port_key):
+        """Substring match of a port key in reftank.fill; None unless exactly one serial.
+
+        Results (and the ambiguity warning) are cached per key, so a tank
+        run on several injections is looked up and reported once.
+        """
         if port_key is None or (isinstance(port_key, float) and pd.isna(port_key)):
             return None
-        key = str(port_key).replace("'", "''")
-        sql = f"SELECT serial_number FROM reftank.fill WHERE serial_number LIKE '%{key}%';"
-        rows = self.db.doquery(sql)
-        if not rows:
-            return None
+        port_key = str(port_key)
+        if port_key in self._fill_serial_cache:
+            return self._fill_serial_cache[port_key]
 
+        key = port_key.replace("'", "''")
+        sql = f"SELECT serial_number FROM reftank.fill WHERE serial_number LIKE '%{key}%';"
+        rows = self.db.doquery(sql) or []
         serials = [r.get('serial_number') for r in rows if r.get('serial_number')]
-        if not serials:
-            return None
         unique_serials = list(dict.fromkeys(serials))
+        result = None
         if len(unique_serials) > 1:
             print(f"Warning: multiple distinct serial_number matches for port_key {port_key}: {unique_serials}")
+        elif unique_serials:
+            result = unique_serials[0]
+        self._fill_serial_cache[port_key] = result
+        return result
+
+    def test_label_serial(self, port_info):
+        """Tank serial named in a Test run label, or None.
+
+        Test run (run_type_num 10) labels are per-injection sample ids, mostly
+        flask numbers (t1093_7187 is HATS flask 7187), so the substring match
+        used for tank labels would turn a flask number into some unrelated tank
+        serial. Here only an explicit sx tag (t1080_sx-3574) or a whole token
+        that is exactly a reftank.fill serial (t1062_DT0049855_w_reg) counts.
+        """
+        if port_info is None or (isinstance(port_info, float) and pd.isna(port_info)):
             return None
-        return unique_serials[0]
+        s = TEST_LABEL_RE.sub('', str(port_info).strip(), count=1)
+
+        m = self.SX_RE.search(s)
+        if m:
+            return self.lookup_fill_serial(f"sx-{m.group(1)}")
+
+        tokens = [t for t in re.split(r"[\s_#]+", s) if self.SERIAL_TOKEN_RE.match(t)]
+        if not tokens:
+            return None
+        cache_key = ('exact',) + tuple(t.upper() for t in tokens)
+        if cache_key in self._fill_serial_cache:
+            return self._fill_serial_cache[cache_key]
+
+        in_list = ", ".join("'" + t.replace("'", "''") + "'" for t in tokens)
+        rows = self.db.doquery(
+            f"SELECT DISTINCT serial_number FROM reftank.fill WHERE serial_number IN ({in_list});"
+        ) or []
+        serials = [r['serial_number'] for r in rows if r.get('serial_number')]
+        result = serials[0] if len(serials) == 1 else None
+        if len(serials) > 1:
+            print(f"Warning: test label {port_info!r} names several tank serials: {serials}")
+        self._fill_serial_cache[cache_key] = result
+        return result
     
     def insert_fill_serial(self, row):
         serial = row.get('fill_serial_match')
@@ -963,7 +1012,13 @@ class M4_Serial_Numbers(M4_Instrument):
             df['port_key'] = df['port_info'].apply(self.port_key)
         flask_pair_mask = df['port_info'].apply(is_flask_pair_label)
         df.loc[flask_pair_mask, 'port_key'] = None
+        if 'run_type_num' in df.columns:
+            test_mask = pd.to_numeric(df['run_type_num'], errors='coerce').eq(self.TEST_RUN_TYPE)
+        else:
+            test_mask = pd.Series(False, index=df.index)
+        df.loc[test_mask, 'port_key'] = None
         df['fill_serial_match'] = df['port_key'].apply(self.lookup_fill_serial)
+        df.loc[test_mask, 'fill_serial_match'] = df.loc[test_mask, 'port_info'].apply(self.test_label_serial)
         return df
 
 
