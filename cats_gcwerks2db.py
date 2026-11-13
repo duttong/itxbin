@@ -26,6 +26,11 @@ import typer
 app = typer.Typer(add_completion=False)
 
 
+# logosint's peak detail columns in its export (<gas>_<suffix>), in ng_insitu_peak_details order:
+# width, skew, start_time, end_time, start_level, end_level, codes.
+DETAIL_COLS = ("w", "skew", "st", "et", "sl", "el", "codes")
+
+
 class CATS_GCwerks2DB:
     """Load per-molecule GCwerks CSV files for a CATS site into ng_insitu tables.
 
@@ -231,7 +236,7 @@ class CATS_GCwerks2DB:
             df = self._limit_channels(df, channels)
             df["port"] = pd.to_numeric(df["port"], errors="coerce")
             for col in df.columns:
-                if col not in ("time", "port"):
+                if col not in ("time", "port") and not col.endswith("_codes"):
                     df[col] = pd.to_numeric(df[col], errors="coerce").replace(-999, pd.NA)
             frames.append(df)
 
@@ -313,7 +318,7 @@ class CATS_GCwerks2DB:
           HCFC22_cc_ht → (mol='HCFC22', chan='cc')
           CFC12_a_ht  → (mol='CFC12',   chan='a')
         """
-        metrics = {"ht", "area", "rt"}
+        metrics = {"ht", "area", "rt"} | set(DETAIL_COLS)   # logosint exports add the peak details
         cats_channels = {"a", "b", "c", "f", "q", "cc"}
         mapping: dict = {}
         for col in columns:
@@ -385,6 +390,12 @@ class CATS_GCwerks2DB:
                 * len(chunk)
             )
             query_params = [value for key in chunk for value in key]
+            if self._details_table():
+                self.db.doquery(f"""
+                DELETE d FROM hats.ng_insitu_peak_details d
+                JOIN hats.ng_insitu_mole_fractions m ON d.ng_insitu_mole_fraction_num = m.num
+                WHERE {where_terms}
+            """, query_params)
             self.db.doquery(f"""
                 DELETE t FROM hats.ng_insitu_mole_fraction_tags t
                 JOIN hats.ng_insitu_mole_fractions m
@@ -476,6 +487,7 @@ class CATS_GCwerks2DB:
         flagged_keys: set = set()
         invalid_keys: set = set()
         excluded_keys: set = set()   # logosint XB exclusions (rt -1 in the export)
+        details: dict = {}   # key -> logosint's peak details, for hats.ng_insitu_peak_details
 
         for r in df.itertuples(index=False):
             analysis_num = analysis_map.get(r.analysis_time_str)
@@ -517,6 +529,10 @@ class CATS_GCwerks2DB:
                 method = self._method_for(methods, param, channel, r.analysis_time_str)
                 params.append((analysis_num, param, channel, ht, area, rt, method))
                 all_keys.add(key)
+                if self.source == "logosint":
+                    d = self._details_of(r, cols)
+                    if d is not None:
+                        details[key] = d
                 if flagged:
                     flagged_keys.add(key)
 
@@ -534,10 +550,14 @@ class CATS_GCwerks2DB:
 
         if self.dry_run:
             self._dry_run_report(params, invalid_keys, analysis_map, excluded_keys)
+            if details:
+                print(f"  would write peak details for {len(details)} rows (hats.ng_insitu_peak_details)")
             return
 
         if params:
             self.db.doMultiInsert(mole_sql, params, all=True)
+        if details and self._details_table():
+            self._upsert_details(details, batch_size=batch_size)
 
         # Invalid exports mean that analyte/channel was not measured at this
         # analysis time. Remove any previously imported value so reprocessing
@@ -588,6 +608,51 @@ class CATS_GCwerks2DB:
                     tag_params = []
             if tag_params:
                 self.db.doMultiInsert(tag_sql, tag_params, all=True)
+
+    def _details_table(self) -> bool:
+        """Whether hats.ng_insitu_peak_details exists (the loader runs without it, as before)."""
+        if not hasattr(self, "_has_details"):
+            self._has_details = bool(self.db.doquery("SHOW TABLES FROM hats LIKE 'ng_insitu_peak_details'"))
+        return self._has_details
+
+    @staticmethod
+    def _details_of(r, cols: dict):
+        """logosint's peak details for one gas in one row, as DETAIL_COLS order, or None when the
+        export has none (a file written before they were added)."""
+        vals = []
+        for c in DETAIL_COLS:
+            col = cols.get(c)
+            v = getattr(r, col, None) if col else None
+            vals.append(None if v is None or (not isinstance(v, str) and pd.isna(v)) or v == "" else v)
+        if all(v is None for v in vals):
+            return None
+        return tuple(str(v).strip() if c == "codes" and v is not None else (None if v is None else float(v))
+                     for c, v in zip(DETAIL_COLS, vals))
+
+    def _upsert_details(self, details: dict, batch_size: int = 1000) -> None:
+        """Write logosint's peak details to hats.ng_insitu_peak_details for the rows just upserted."""
+        keys = sorted(details)
+        sql = """
+            INSERT INTO hats.ng_insitu_peak_details (
+                ng_insitu_mole_fraction_num, width, skew, start_time, end_time, start_level, end_level, codes, source
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'logosint')
+            ON DUPLICATE KEY UPDATE width = VALUES(width), skew = VALUES(skew), start_time = VALUES(start_time),
+                end_time = VALUES(end_time), start_level = VALUES(start_level), end_level = VALUES(end_level),
+                codes = VALUES(codes), source = VALUES(source)
+        """
+        n = 0
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i:i + batch_size]
+            where = " OR ".join(["(analysis_num = %s AND parameter_num = %s AND channel = %s)"] * len(chunk))
+            rows = self.db.doquery(
+                f"SELECT num, analysis_num, parameter_num, channel FROM hats.ng_insitu_mole_fractions WHERE {where}",
+                [v for k in chunk for v in k]) or []
+            vals = [(r["num"],) + details[(int(r["analysis_num"]), int(r["parameter_num"]), r["channel"])]
+                    for r in rows if (int(r["analysis_num"]), int(r["parameter_num"]), r["channel"]) in details]
+            if vals:
+                self.db.doMultiInsert(sql, vals, all=True)
+                n += len(vals)
+        print(f"  Wrote peak details for {n} rows.")
 
     def _tagged_keys(self, keys: set, batch_size: int = 1000) -> set:
         """The (analysis_num, parameter_num, channel) keys among these whose row has any tag."""

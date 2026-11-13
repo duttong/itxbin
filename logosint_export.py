@@ -14,6 +14,9 @@ cats_gcwerks2db.py --source logosint loads them.
   peak isn't there.
 - A run logosint refused (its parameter file uses a command logosint doesn't have):
   no row for that gas at all, so the loader leaves the DB's value alone.
+- Peak details, logosint's own: <gas>_w (width), _skew, _st and _et (start and end time, s),
+  _sl and _el (start and end level) and _codes (baseline codes, e.g. T-F), empty where there
+  is no peak. The loader writes them to hats.ng_insitu_peak_details.
 - No flag marks: GCwerks' flags (tag 324) are not carried into logosint results.
 
 By default the months integrated replace the same months in the existing files and
@@ -93,17 +96,32 @@ def to_frames(df):
             f"{gas}_ht": g["height"].where(ok, 0.0),
             f"{gas}_area": g["area"].where(ok, 0.0),
         })
+        for col, src in DETAILS.items():
+            f[f"{gas}_{col}"] = g[src].where(ok) if src in g else pd.NA
         out[gas] = f.sort_values(["time", "port"])
     return out
 
 
+# Peak detail columns: CSV suffix -> logosint integrate column.
+DETAILS = {"w": "width", "skew": "skew", "st": "start", "et": "end", "sl": "start_level", "el": "end_level", "codes": "codes"}
+DETAIL_FMT = {"w": "{:.3f}", "skew": "{:.3f}", "st": "{:.2f}", "et": "{:.2f}", "sl": "{:.2f}", "el": "{:.2f}", "codes": "{}"}
+
+
 def write_csv(path, frame, gas):
-    """gcexport's text layout: 'time, port, X_rt, X_ht, X_area', values '2026-10-01 00:18, 4, 413.00, 37336.14, 889337.3'."""
+    """gcexport's text layout: 'time, port, X_rt, X_ht, X_area', values '2026-10-01 00:18, 4, 413.00, 37336.14, 889337.3',
+    then the peak detail columns (empty where there is none)."""
     tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
+    det = [f"{gas}_{c}" for c in DETAILS]
+    for c in det:
+        if c not in frame:
+            frame = frame.assign(**{c: pd.NA})
+    fmts = list(DETAIL_FMT.values())
     with open(tmp, "w") as f:
-        f.write(f"time, port, {gas}_rt, {gas}_ht, {gas}_area\n")
-        for t, p, rt, ht, area in frame[["time", "port", f"{gas}_rt", f"{gas}_ht", f"{gas}_area"]].itertuples(index=False):
-            f.write(f"{t:%Y-%m-%d %H:%M}, {int(p)}, {rt:.2f}, {ht:.2f}, {area:.1f}\n")
+        f.write(f"time, port, {gas}_rt, {gas}_ht, {gas}_area, " + ", ".join(det) + "\n")
+        for row in frame[["time", "port", f"{gas}_rt", f"{gas}_ht", f"{gas}_area"] + det].itertuples(index=False):
+            t, p, rt, ht, area = row[:5]
+            extra = ["" if pd.isna(v) or v == "" else fmt.format(v) for v, fmt in zip(row[5:], fmts)]
+            f.write(f"{t:%Y-%m-%d %H:%M}, {int(p)}, {rt:.2f}, {ht:.2f}, {area:.1f}, " + ", ".join(extra) + "\n")
     os.chmod(tmp, 0o664)
     os.replace(tmp, path)
 
