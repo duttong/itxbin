@@ -13,7 +13,13 @@ A job (channel N, start_time .. end_time, UTC, end exclusive / NULL = to now) is
 The whole job holds the site's logosint lock (logosint_lock.py), shared with the daily
 `cats_ingest.py SITE --source logosint`.
 
-Instruments are listed in JOB_INSTS; a job for any other inst_num fails with a message.
+The CATS instruments can run jobs; which source each uses, and from when, is hats.ng_integ_source
+(integ_source.py). action (ng_integ_jobs.action):
+  reintegrate  as above, for an instrument on logosint, clipped to its logosint_from
+  switch_on    the same for a channel's whole logosint range, queued by the page's Admin menu when it
+               turns logosint on (the source row is set first)
+  switch_off   back to GCwerks' values from start_time on (the source row already says gcwerks):
+               cats_gcwerks2db.py SITE --flagged --start .., cats_batch.py -p all, monthly means
 
   logosint_jobs.py                          # claim and run queued jobs (cron)
   logosint_jobs.py --dry-run                # show the commands for the next claimable job; write nothing
@@ -37,6 +43,7 @@ sys.path[:0] = ["/ccg/src/db", "/ccg/src/db/db_utils"]
 
 BIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BIN_DIR))
+import integ_source  # noqa: E402
 import logosint_lock  # noqa: E402
 
 LOGOSINT_RESULTS = Path("/hats/gc/cats_results/logosint")
@@ -44,14 +51,14 @@ TABLE = "hats.ng_integ_jobs"
 LOG_CAP = 60_000          # bytes of log kept in the row (the tail)
 LOG_FLUSH_S = 3.0         # how often streaming output is written to the row
 
-# inst_num -> what a job needs. channels: GCwerks/logosint channel number -> CATS channel letter
-# (the letter in the export's column names; confirmed against BRW's peakid files:
-# channel0 N2O_q/SF6_q, channel1 N2O_a/CFC12_a/H1211_a/CFC11_a, channel2 *_f). Channel 3 (cc) is not
-# integrated by logosint. logosint_from: the first date logosint results are used for the site;
-# job starts are clipped to it.
-JOB_INSTS = {
-    239: dict(site="brw", logosint_from="2021-06-01", channels={0: "q", 1: "a", 2: "f"}),
-}
+# Channels: integ_source.CATS_CHANNELS, logosint channel number -> CATS channel letter (the letter in
+# the export's column names; BRW and SPO peak ID files: channel0 q, channel1 a, channel2 f). Channel 3
+# (cc) is not integrated by logosint. Job starts are clipped to the site's logosint_from.
+def job_inst(inst_num):
+    """site and channels of a CATS instrument, or None."""
+    from cats_gcwerks2db import CATS_GCwerks2DB as L   # class attributes only: no DB connection
+    site = {v: k for k, v in L.INST_NUM_BY_SITE.items()}.get(int(inst_num))
+    return dict(site=site, channels=integ_source.CATS_CHANNELS) if site else None
 
 _t0 = time.time()
 
@@ -124,11 +131,16 @@ def listed_channels(inst_num):
 def plan(job):
     """Resolve a job to (commands, notes) or raise ValueError with a message for the page.
     commands: list of (label, argv)."""
-    cfg = JOB_INSTS.get(int(job["inst_num"]))
+    cfg = job_inst(job["inst_num"])
     if cfg is None:
-        raise ValueError(f"inst_num {job['inst_num']} is not set up for reintegration "
-                         f"(known: {sorted(JOB_INSTS)}); edit JOB_INSTS in logosint_jobs.py")
+        raise ValueError(f"inst_num {job['inst_num']} is not a CATS instrument; jobs are CATS only so far")
     site = cfg["site"]
+    action = job.get("action") or "reintegrate"
+    src = integ_source.current(job["inst_num"], db=connect())
+    if action == "switch_off":
+        return plan_switch_off(job, site, src)
+    if not src.logosint:
+        raise ValueError(f"{site} is on {src.source}, not logosint (hats.ng_integ_source)")
     if job.get("site") and str(job["site"]).lower() != site:
         raise ValueError(f"job says site {job['site']!r} but inst_num {job['inst_num']} is {site!r}")
     channel = int(job["channel"])
@@ -141,7 +153,7 @@ def plan(job):
     start = utc_naive(job["start_time"])
     end = utc_naive(job.get("end_time"))
     notes = []
-    floor = pd.Timestamp(cfg["logosint_from"])
+    floor = src.logosint_from if src.logosint_from is not None else pd.Timestamp("1998-01-01")
     if start < floor:
         notes.append(f"start {start} clipped to {floor} (first logosint date for {site})")
         start = floor
@@ -196,6 +208,21 @@ def plan(job):
             cmds.append((f"batch {gas}", c))
         cmds.append(("monthly means", [py, str(BIN_DIR / "insitu_monthly_means_batch.py"), "cats", site, "-i"]))
     return site, cmds, notes
+
+
+def plan_switch_off(job, site, src):
+    """Back to GCwerks' values from start_time on: load GCwerks' export (all channels, with its flags),
+    then fits and mole fractions for every gas, then monthly means."""
+    if src.logosint:
+        raise ValueError(f"{site} is still on logosint (hats.ng_integ_source): set it to gcwerks first")
+    start = utc_naive(job["start_time"])
+    py = sys.executable
+    cmds = [
+        ("load GCwerks", [py, str(BIN_DIR / "cats_gcwerks2db.py"), site, "--flagged", "--start", f"{start:%Y-%m-%d %H:%M}"]),
+        ("batch all", [py, str(BIN_DIR / "cats_batch.py"), "--site", site, "-p", "all", "-i", "--fits", "-s", f"{start:%Y-%m-%d}"]),
+        ("monthly means", [py, str(BIN_DIR / "insitu_monthly_means_batch.py"), "cats", site, "-i"]),
+    ]
+    return site, cmds, [f"switch back to GCwerks from {start:%Y-%m-%d}"]
 
 
 # ---------------------------------------------------------------- running

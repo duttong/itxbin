@@ -758,6 +758,18 @@ class CATS_GCwerks2DB:
             start_date = pd.Timestamp.now() - DateOffset(months=duration_months)
         else:
             start_date = None
+        if self.source == "logosint":
+            # Never logosint values before the site's logosint_from (hats.ng_integ_source).
+            import integ_source
+            frm = integ_source.current(self.inst_num, db=self.db).logosint_from
+            if frm is not None and (start_date is None or start_date < frm):
+                print(f"  logosint results start {frm:%Y-%m-%d} for {self.site}: window start moved there")
+                start_date = frm
+                if w_start is not None or w_end is not None:
+                    w_start = frm
+                if end_date is not None and end_date <= start_date:
+                    print("  nothing to load after logosint_from")
+                    return
 
         if w_start is not None or w_end is not None:
             label = f"{w_start if w_start is not None else 'beginning'} to {w_end if w_end is not None else 'end'}"

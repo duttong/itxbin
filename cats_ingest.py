@@ -2,10 +2,12 @@
 """Ingest CATS GC data: export from GCwerks (or logosint), load into DB, recompute mole
 fractions, optionally import legacy published mole fractions.
 
---source logosint exports with logosint_export.py (the site's logosint parameter set, to
-/hats/gc/cats_results/logosint/) and loads with cats_gcwerks2db.py --source logosint (no GCwerks
-flags; tag 324 left as it is). With --all, export the range first (logosint_export.py SITE --all
---start YYMM) and pass --skip-export."""
+Which integration is used comes from hats.ng_integ_source (integ_source.py), set from the
+logos_integ page's Admin menu: no row = GCwerks. For a logosint site it exports with
+logosint_export.py (the site's logosint parameter set, to /hats/gc/cats_results/logosint/) and
+loads with cats_gcwerks2db.py --source logosint (no GCwerks flags; tag 324 left as it is), never
+before the site's logosint_from date; channels logosint doesn't integrate (cc) are still loaded
+from GCwerks' export. --all on a logosint site means from logosint_from."""
 
 import subprocess
 import sys
@@ -14,7 +16,9 @@ from pathlib import Path
 import pandas as pd
 import typer
 
+import integ_source
 import logosint_lock
+from cats_gcwerks2db import CATS_GCwerks2DB
 
 app = typer.Typer(add_completion=False, help="Ingest CATS GC data into the HATS database.")
 
@@ -59,7 +63,8 @@ def ingest(
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
     flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Parse and sync GCwerks flag characters"),
     skip_export: bool = typer.Option(False, "--skip-export", help="Skip the CSV export step"),
-    source: str = typer.Option("gcwerks", "--source", help="gcwerks (default) or logosint: whose integrations to export and load"),
+    source: str | None = typer.Option(None, "--source", hidden=True,
+                                      help="no longer used: the source comes from hats.ng_integ_source; if given, it must agree"),
     run_aftp: bool = typer.Option(
         False, "--run-aftp", help="Also import legacy published mole fractions from /aftp (one-time backfill; off by default)"
     ),
@@ -86,25 +91,49 @@ def ingest(
          (cats_batch.py); with --set-methods, first reset the window's cal
          methods to the defaults (cats_set_mf_method.py)
     """
-    if source not in ("gcwerks", "logosint"):
-        typer.secho("--source must be gcwerks or logosint", fg=typer.colors.RED, err=True)
+    inst_num = CATS_GCwerks2DB.INST_NUM_BY_SITE.get(site)
+    if inst_num is None:
+        typer.secho(f"unknown CATS site {site!r}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
-    logosint = source == "logosint"
+    try:
+        src = integ_source.current(inst_num, strict=True)
+    except RuntimeError as e:
+        typer.secho(str(e), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if source is not None and source != src.source:
+        typer.secho(f"--source {source} disagrees with hats.ng_integ_source ({site}: {src.source}); "
+                    "change it on the logos_integ page's Admin menu, and drop --source", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    logosint = src.logosint
+    frm = src.logosint_from
+    typer.secho(f"{site.upper()}: {src.source}" + (f" from {frm:%Y-%m-%d}" if logosint and frm is not None else ""),
+                fg=typer.colors.BLUE)
     if logosint:
         # One logosint run per site at a time: the reintegration worker (logosint_jobs.py) holds the
         # same lock for a whole job. Held until this process exits.
         _site_lock = logosint_lock.acquire(site, log=lambda m: typer.secho(m, fg=typer.colors.YELLOW))
 
     # 1. Export (GCwerks, or logosint for the same window)
+    # A logosint site's load window, never before logosint_from (None = the loader's default).
+    l_start = l_end = None
+    if logosint:
+        if all_data:
+            l_start = frm
+        elif year is not None:
+            l_start, l_end = pd.Timestamp(f"{year}-01-01"), pd.Timestamp(f"{year + 1}-01-01")
+            if frm is not None and l_end <= frm:
+                typer.secho(f"{year} is before {site}'s logosint_from ({frm:%Y-%m-%d}): nothing to do",
+                            fg=typer.colors.YELLOW)
+                raise typer.Exit(code=0)
+        if frm is not None and l_start is not None and l_start < frm:
+            l_start = frm
     if not skip_export:
         if logosint:
-            if all_data:
-                typer.secho("--source logosint --all: export the range first (logosint_export.py SITE --all --start YYMM) "
-                            "and pass --skip-export", fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=2)
             cmd = [sys.executable, str(LOGOSINT_EXPORT), site]
-            if year is not None:
-                cmd += ["--start", f"{year % 100:02d}01", "--end", f"{(year + 1) % 100:02d}01"]
+            if l_start is not None:
+                cmd += ["--start", f"{l_start:%y%m}"]
+            if l_end is not None:
+                cmd += ["--end", f"{l_end:%y%m}"]
         else:
             cmd = [sys.executable, str(CATS_EXPORT), site]
             if flagged:
@@ -115,13 +144,29 @@ def ingest(
     gcwerks_cmd = [sys.executable, str(BIN_DIR / "cats_gcwerks2db.py"), site]
     if logosint:
         gcwerks_cmd += ["--source", "logosint", "--no-flagged"]
-    elif flagged:
-        gcwerks_cmd.append("--flagged")
-    if all_data:
-        gcwerks_cmd.append("--all")
-    elif year is not None:
-        gcwerks_cmd.extend(["--year", str(year)])
+        if l_start is not None:
+            gcwerks_cmd += ["--start", f"{l_start:%Y-%m-%d %H:%M}"]
+        if l_end is not None:
+            gcwerks_cmd += ["--end", f"{l_end:%Y-%m-%d %H:%M}"]
+    else:
+        if flagged:
+            gcwerks_cmd.append("--flagged")
+        if all_data:
+            gcwerks_cmd.append("--all")
+        elif year is not None:
+            gcwerks_cmd.extend(["--year", str(year)])
     _run(gcwerks_cmd)
+    if logosint:
+        # Channels logosint doesn't integrate still come from GCwerks' export (cats_export.py, run
+        # separately), with its flags, over the same window.
+        cc_cmd = [sys.executable, str(BIN_DIR / "cats_gcwerks2db.py"), site, "--channel", ",".join(integ_source.GCWERKS_ONLY_CHANNELS)]
+        if flagged:
+            cc_cmd.append("--flagged")
+        if all_data:
+            cc_cmd.append("--all")
+        elif year is not None:
+            cc_cmd.extend(["--year", str(year)])
+        _run(cc_cmd)
 
     # 3. Import legacy published mole fractions from /aftp/hats (one-time backfill, opt-in)
     if run_aftp:
@@ -139,6 +184,8 @@ def ingest(
     # the same run that recomputes it.
     if mf:
         start_date, end_date = _resolve_mf_window(all_data, year)
+        if logosint and all_data and frm is not None:
+            start_date = f"{frm:%Y-%m-%d}"   # earlier data weren't touched
 
         if set_methods:
             method_cmd = [
