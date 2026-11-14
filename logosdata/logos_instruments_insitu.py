@@ -105,7 +105,15 @@ class IE3_Instrument(HATS_DB_Functions):
     # fills, and SUM's tank-change height ratios and M* both put the two
     # fills ~3% high: SUM H1211 read +0.147 ppt vs M* with them, +0.027
     # with x0.97 (2026-10-25).
+    # ALM-052780 A (SPO cal2 1998-04-08..1999-07-02) has one N2O value,
+    # stdgc 311.6 (sd 1.02, 2002-09-12, three years after SPO). Against
+    # OTTO/CCGG flasks at SPO the tank would need 312.6-312.9 in every
+    # month the instrument was healthy (Apr-Aug 1998, May-Jun 1999); its
+    # neighbours ALM-038416 and ALM-064981 agree with the flasks to
+    # +-0.5 ppb. x1.0037 -> 312.75 (2026-11-14). Sep 1998 - 1999-05-07 is
+    # a detector-response drift no tank value fixes (tag 328 there).
     SCALE_ASSIGNMENT_FACTORS = {
+        ('ALM-052780', 'A', 5): (1.0037, 'single noisy stdgc N2O cal; SPO flasks put it ~1.2 ppb higher'),
         ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
         ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
     }
