@@ -112,8 +112,15 @@ class IE3_Instrument(HATS_DB_Functions):
     # neighbours ALM-038416 and ALM-064981 agree with the flasks to
     # +-0.5 ppb. x1.0037 -> 312.75 (2026-11-14). Sep 1998 - 1999-05-07 is
     # a detector-response drift no tank value fixes (tag 328 there).
+    # The same fill's CH3CCl3 is the 2002 stdgc 81.58 (sd 1.62); m3 read 89.117
+    # on 1996-11-06, and the tank lost CH3CCl3 in between. SPO CATS with 81.58
+    # read 11-13% below the M1/OTTO flasks for 1998-04..1999-07; the neighbouring
+    # cal2 tanks read 1.3-2.9% low. x1.0924 (= 89.117/81.58, the m3 value) leaves
+    # it 2.6-5% low; matching the flasks would need x1.133, above the tank's own
+    # 1996 calibration (2026-11-14).
     SCALE_ASSIGNMENT_FACTORS = {
         ('ALM-052780', 'A', 5): (1.0037, 'single noisy stdgc N2O cal; SPO flasks put it ~1.2 ppb higher'),
+        ('ALM-052780', 'A', 131): (1.0924, 'CH3CCl3 lost in the tank: 2002 stdgc 81.58 -> 1996 m3 89.117'),
         ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
         ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
     }
