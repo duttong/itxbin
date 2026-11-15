@@ -118,9 +118,14 @@ class IE3_Instrument(HATS_DB_Functions):
     # cal2 tanks read 1.3-2.9% low. x1.0924 (= 89.117/81.58, the m3 value) leaves
     # it 2.6-5% low; matching the flasks would need x1.133, above the tank's own
     # 1996 calibration (2026-11-14).
+    # ALM-052750 B CHCl3 (SPO cal1 1999-01-25..2000-02-16): m3 read 8.64 on 1998-08-15
+    # and 11.85 on 2000-06-05, after it left SPO; the assignment is the fit mean, 10.95.
+    # On SPO cal1 with 10.95, CATS read 25% below the M1 flasks; with 8.64 it is within
+    # ~5%. x0.789 -> 8.64 (2026-11-14; cats_qc/spo_processing/spo_chcl3_review.md).
     SCALE_ASSIGNMENT_FACTORS = {
         ('ALM-052780', 'A', 5): (1.0037, 'single noisy stdgc N2O cal; SPO flasks put it ~1.2 ppb higher'),
         ('ALM-052780', 'A', 131): (1.0924, 'CH3CCl3 lost in the tank: 2002 stdgc 81.58 -> 1996 m3 89.117'),
+        ('ALM-052750', 'B', 34): (0.789, 'CHCl3 grew in the tank: fit mean 10.95 -> 1998-08 m3 8.64 (SPO cal1 1999)'),
         ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
         ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
     }
