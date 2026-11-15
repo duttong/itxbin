@@ -122,10 +122,15 @@ class IE3_Instrument(HATS_DB_Functions):
     # and 11.85 on 2000-06-05, after it left SPO; the assignment is the fit mean, 10.95.
     # On SPO cal1 with 10.95, CATS read 25% below the M1 flasks; with 8.64 it is within
     # ~5%. x0.789 -> 8.64 (2026-11-14; cats_qc/spo_processing/spo_chcl3_review.md).
+    # CC456911 D CFC113 (SPO cal2 2019-09-11..2021-02-03): stdgc 72.18 on 2018-10-05, m3 70.14 on
+    # 2018-10-11 (FE3 68.3-68.7 in 2023). With 72.18, SPO CATS reads ~M3 x1.048 in that period and
+    # steps -2.1% when the tank leaves; with the m3 value it reads ~M3 x1.018 (CATS target x1.021).
+    # x0.9717 -> 70.14 (2026-11-14). Replaces part of the 2026-09-27 offsets #121/#122.
     SCALE_ASSIGNMENT_FACTORS = {
         ('ALM-052780', 'A', 5): (1.0037, 'single noisy stdgc N2O cal; SPO flasks put it ~1.2 ppb higher'),
         ('ALM-052780', 'A', 131): (1.0924, 'CH3CCl3 lost in the tank: 2002 stdgc 81.58 -> 1996 m3 89.117'),
         ('ALM-052750', 'B', 34): (0.789, 'CHCl3 grew in the tank: fit mean 10.95 -> 1998-08 m3 8.64 (SPO cal1 1999)'),
+        ('CC456911', 'D', 32): (0.9717, 'CFC113 stdgc 72.18 vs m3 70.14 a week later; SPO cal2 2019-09..2021-02 steps 2.1% at its removal'),
         ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
         ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
     }
