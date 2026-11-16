@@ -30,11 +30,16 @@ import subprocess
 import sys
 from datetime import date
 from email.message import EmailMessage
+from urllib.parse import quote
 
 sys.path += ['/ccg/src/db', '/ccg/src/db/db_utils']
 import db_conn  # noqa: E402
 
-UNIT_URL = 'https://omi.cmdl.noaa.gov/om2/equip_inventory.php?unit={}'
+# ?project= makes om2 open the unit's project for this visit; without it a browser
+# whose last-picked project is PFPs is sent to the PFP dashboard.
+UNIT_URL = 'https://omi.cmdl.noaa.gov/om2/equip_inventory.php?unit={}&project={}'
+# gmd.project abbr -> om2 project key, where they differ
+OM2_PROJECT = {'ccg_aircraft': 'ccg_aircraft_flask'}
 MAX_DAYS = 56   # no reminders more than 8 weeks after start_date, whatever the schedule says
 
 
@@ -94,7 +99,7 @@ def message(db, row, days, last_step, to):
         f"{days} days ago, and has no In Use date yet.",
         '',
         "If the site has put it in service, set the In Use date on its card:",
-        UNIT_URL.format(row['gen_inv_id']),
+        UNIT_URL.format(quote(row['gen_inv_id']), OM2_PROJECT.get(row['project'], row['project'] or 'hats_flask')),
         '',
     ]
     if hint:
