@@ -133,6 +133,9 @@ class IE3_Instrument(HATS_DB_Functions):
         ('CC456911', 'D', 32): (0.9717, 'CFC113 stdgc 72.18 vs m3 70.14 a week later; SPO cal2 2019-09..2021-02 steps 2.1% at its removal'),
         ('AAL072101', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14, STDGC/M3 on earlier fills)'),
         ('AAL072269', 'A', 26): (0.97, 'STDGC H1211 ~3% high (SUM 2012-14 tank-change ratios, M*)'),
+        # SUM CHCl3 cal2 STDGC -> m3 ties (ALM067726 C 1.019, AAL072111 A 1.021, AAL072269 A 1.058,
+        # AAL072099 B 1.058) are in hats.scale_assignments itself (coef0, unc_c0, comment;
+        # sql/sum_chcl3_scale_assignment_m3_ties_261116.sql), not here: do not add them again.
     }
 
     # Tank drift. caldrift stores value(t) = coef0 + coef1*x + coef2*x**2,
