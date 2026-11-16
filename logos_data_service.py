@@ -23,9 +23,16 @@ writes must require a role here too.
     {"op": "smooth", ...as load..., "detrend": 5}   the run with another smoothing (preview)
     {"op": "chrom", "inst": "m4", "channel": null, "t": "2026-10-22 10:01:00"}
 
-This version reads only: nothing here writes to the database.
+    {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null}
+    {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
+    {"op": "save", ...as load..., "detrend": null}
+    {"op": "copyall", ...as load..., "adds": {"<analysis_num>": [tags]}, "removes": {...}}
 
-Run on omi:  logos_data_service.py [--socket PATH] [--web-user apache]
+The last four change the database and need "role" rw or admin. They call the
+same instrument and tagging code as logos_data. The account running the
+service decides what it can write: its ~/.db_rw.cnf login.
+
+Run on omi:  logos_data_service.py [--socket PATH] [--web-user apache] [--dry-run FILE]
 """
 
 import argparse
@@ -55,7 +62,8 @@ import matplotlib.colors as mcolors
 
 import logos_instruments as li
 from gcwerks_chromatogram import find_gcwerks_chromatogram, gcwerks_channel_number
-from logos_tagging import _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS
+from logos_tagging import (TagCRUDMixin, _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS, _TAG_LAYOUT,
+                           _USER_REMOVABLE_AUTO_TAGS)
 
 DEFAULT_SOCKET = '/dev/shm/logos_data.sock'
 MAX_LINE = 1 << 20
@@ -65,6 +73,37 @@ _instruments = {}
 _started = time.time()
 
 
+DRY_RUN = None      # with --dry-run: the file that statements which would change the database go to
+
+
+class DryRunDB:
+    """Stands in for an instrument's database connection: reads pass through,
+    anything else is written to the --dry-run file and not run."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    @staticmethod
+    def _note(sql, params):
+        with open(DRY_RUN, 'a') as f:
+            f.write(json.dumps({'sql': ' '.join(str(sql).split()), 'params': params}, default=str) + '\n')
+
+    def doquery(self, sql, params=None, *args, **kwargs):
+        if str(sql).lstrip().split(None, 1)[0].upper() in ('SELECT', 'SHOW', 'WITH'):
+            return self._db.doquery(sql, params, *args, **kwargs)
+        self._note(sql, params)
+        return []
+
+    def doMultiInsert(self, sql, params, all=False, *args, **kwargs):
+        if all:
+            self._note(sql, params)
+            return True
+        return False        # keep batching; the caller's final all=True call is the one noted
+
+
 def instrument_for(inst, site=None):
     key = (inst, site or '')
     if key not in _instruments:
@@ -72,7 +111,11 @@ def instrument_for(inst, site=None):
             cls = getattr(li, f'{inst.upper()}_Instrument')
         except AttributeError:
             raise ValueError(f'unknown instrument {inst!r}')
-        _instruments[key] = cls(site=site) if inst in ('ie3', 'cats') and site else cls()
+        obj = cls(site=site) if inst in ('ie3', 'cats') and site else cls()
+        if DRY_RUN:
+            obj.db = DryRunDB(obj.db)
+            obj.doquery = obj.db.doquery
+        _instruments[key] = obj
     return _instruments[key]
 
 
@@ -191,6 +234,9 @@ def op_init(req):
         'tags': tag_dictionary(inst),
         'auto_tags': AUTO_TAG_NUMS,
         'info_tags': sorted(_INFO_TAG_NUMS),
+        'tag_layout': [[section, [list(e) for e in entries]] for section, entries in _TAG_LAYOUT],
+        'removable_auto_tags': sorted(_USER_REMOVABLE_AUTO_TAGS),
+        'dry_run': bool(DRY_RUN),
     }
 
 
@@ -237,16 +283,161 @@ def op_load(req):
 
 def op_smooth(req):
     """The run recalculated with another smoothing method.  A preview: nothing is saved."""
+    t0 = time.time()
+    inst, df = _recalculated(req)
+    return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1))
+
+
+class _TagHost(TagCRUDMixin):
+    """The tag table reads and writes of logos_data, for one instrument."""
+
+    def __init__(self, instrument):
+        self.instrument = instrument
+
+
+# Tags a person may set by hand (the Sampling and Measurement sections), and the automatic
+# ones they may only take off.
+_HAND_TAGS = frozenset(t for section, entries in _TAG_LAYOUT if section != 'Automated Tags'
+                       for e in entries for t in e[2:] if t)
+
+
+def _may_write(req):
+    if req.get('role') not in ('rw', 'admin'):
+        raise PermissionError(f"{req.get('user') or 'you'} cannot change {req.get('inst')} data")
+
+
+def _audit(req, what):
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {req.get('user')} {req['op']} {req.get('inst')} "
+          f"pnum={req.get('pnum')} ch={req.get('channel') or ''} run={req.get('run')} {what}", flush=True)
+
+
+def _check_tag(tag, apply):
+    tag = int(tag)
+    if tag in _HAND_TAGS or (not apply and tag in _USER_REMOVABLE_AUTO_TAGS):
+        return tag
+    raise ValueError(f'tag {tag} cannot be {"set" if apply else "removed"} by hand')
+
+
+def _own_mf_nums(df, wanted):
+    """The requested mole fraction rows, which must all be in this run and analyte."""
+    have = {int(n) for n in pd.to_numeric(df['ng_mole_fraction_num'], errors='coerce').dropna()}
+    nums = sorted({int(n) for n in wanted or []})
+    if not nums or not set(nums) <= have:
+        raise ValueError('those points are not in this run; reload and try again')
+    return nums
+
+
+def _recalculated(req):
+    """The run as it stands in the database, smoothed and with mole fractions recalculated
+    in memory (with another smoothing method if asked): what Save would write."""
     inst, df = _load(req)
     if df is None:
-        return {'points': None}
-    df['detrend_method_num'] = int(req['detrend'])
-    t0 = time.time()
+        return inst, None
+    if req.get('detrend') is not None:
+        df['detrend_method_num'] = int(req['detrend'])
     df = inst.norm.merge_smoothed_data(df)
     df = inst.calc_mole_fraction(df)
-    df = df.reset_index(drop=True)
-    return {'points': points_json(inst, df), 'tags': tags_for(inst, df),
-            'calc_ms': round((time.time() - t0) * 1000, 1)}
+    return inst, df.reset_index(drop=True)
+
+
+def _view(inst, df, **more):
+    if df is None:
+        return {'points': None, **more}
+    return {'points': points_json(inst, df), 'tags': tags_for(inst, df), **more}
+
+
+def op_tag(req):
+    """Put a tag on, or take it off, some of the run's points for this analyte.  Written at
+    once, as in logos_data; the reply is the run recalculated but not saved."""
+    _may_write(req)
+    apply = bool(req['apply'])
+    tag = _check_tag(req['tag'], apply)
+    inst, df = _load(req)
+    if df is None:
+        raise ValueError('no data in that run')
+    nums = _own_mf_nums(df, req.get('mf_nums'))
+    host = _TagHost(inst)
+    if apply:
+        host._insert_tag_for_mf_nums(nums, tag)
+    else:
+        host._delete_tag_for_mf_nums(nums, tag)
+    _audit(req, f"tag={tag} {'on' if apply else 'off'} mf_nums={nums}")
+    inst, df = _recalculated(req)
+    return _view(inst, df, unsaved=True)
+
+
+def op_comment(req):
+    """Set the comment on every tag of the selected points (empty clears it)."""
+    _may_write(req)
+    inst, df = _load(req)
+    if df is None:
+        raise ValueError('no data in that run')
+    nums = _own_mf_nums(df, req.get('mf_nums'))
+    comment = str(req.get('comment') or '').strip()[:255] or None
+    _TagHost(inst)._save_comment_for_mf_nums(nums, comment)
+    _audit(req, f'comment={comment!r} mf_nums={nums}')
+    return {'tags': tags_for(inst, df)}
+
+
+def _save(inst, df, pnum, response_id='own'):
+    """Write a recalculated run's mole fractions and its calibration rows, as logos_data's Save."""
+    if response_id == 'own':
+        response_id = None
+        if 'ng_response_id' in df.columns:
+            val = df['ng_response_id'].iat[0]
+            if pd.notna(val) and val != 0:
+                response_id = int(val)
+    inst.upsert_mole_fractions(df, response_id=response_id)
+    inst.upsert_calibrations(df, int(pnum))
+
+
+def op_save(req):
+    """Save this analyte's run: recalculated mole fractions, smoothing method, calibrations."""
+    _may_write(req)
+    inst, df = _recalculated(req)
+    if df is None:
+        raise ValueError('no data in that run')
+    _save(inst, df, req['pnum'])
+    _audit(req, f"saved {len(df)} rows detrend={req.get('detrend')}")
+    return op_load(req)
+
+
+def op_copyall(req):
+    """Copy this session's tag changes to every analyte of the same injections, then
+    recalculate and save every analyte of the run (logos_data's Copy Tags to all Analytes)."""
+    _may_write(req)
+    inst, df = _load(req)
+    if df is None:
+        raise ValueError('no data in that run')
+    in_run = {int(a) for a in pd.to_numeric(df['analysis_num'], errors='coerce').dropna()}
+
+    def pending(d, apply):
+        out = {}
+        for anum, tags in (d or {}).items():
+            if int(anum) in in_run and tags:
+                out[int(anum)] = {_check_tag(t, apply) for t in tags}
+        return out
+
+    adds, removes = pending(req.get('adds'), True), pending(req.get('removes'), False)
+    inst.update_flags_all_analytes(adds, removes)
+    run = _date(req['run'])
+    failed = []
+    analytes = analyte_list(inst)
+    for a in analytes:
+        try:
+            one = inst.load_data(pnum=a['pnum'], channel=a['channel'], start_date=run, end_date=run, verbose=False)
+            if one is None or one.empty:
+                continue
+            one = inst.calc_mole_fraction(one)
+            _save(inst, one, a['pnum'], response_id=None)       # as the desktop's copy-to-all saves
+        except Exception as e:
+            traceback.print_exc()
+            failed.append(f"{a['name']}: {e}")
+    _audit(req, f'copied adds={ {k: sorted(v) for k, v in adds.items()} } removes={ {k: sorted(v) for k, v in removes.items()} } '
+                f'analytes={len(analytes)} failed={len(failed)}')
+    out = op_load(req)
+    out.update(analytes=len(analytes), failed=failed)
+    return out
 
 
 def op_chrom(req):
@@ -261,7 +452,7 @@ def op_chrom(req):
 
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
-       'chrom': op_chrom}
+       'chrom': op_chrom, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
 class Handler(socketserver.StreamRequestHandler):
@@ -298,7 +489,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--socket', default=DEFAULT_SOCKET)
     ap.add_argument('--web-user', default='apache', help='user the web server connects as')
+    ap.add_argument('--dry-run', metavar='FILE',
+                    help='write statements that would change the database to FILE instead of running them')
     args = ap.parse_args()
+    global DRY_RUN
+    DRY_RUN = args.dry_run
 
     allowed = {os.getuid()}
     try:
