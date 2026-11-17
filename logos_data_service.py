@@ -65,6 +65,7 @@ import matplotlib.colors as mcolors
 
 import logos_instruments as li
 import integ_source
+import cal_week
 from gcwerks_chromatogram import (GCWerksPeakIntegration, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
                                   gcwerks_channel_number, gcwerks_focus_limits,
                                   gcwerks_ms_quantitation_mass, gcwerks_ms_quantitation_masses, gcwerks_peak_window, gcwerks_run_integrations,
@@ -280,6 +281,8 @@ def op_init(req):
     return {
         'insitu': is_insitu(inst),
         'poly_cal': inst.inst_id in POLY_CAL_INSTS,
+        'week_cal': inst.inst_id in WEEK_CAL_INSTS,
+        'week_methods': {str(k): v for k, v in inst.MF_METHOD_LABELS.items()} if inst.inst_id in WEEK_CAL_INSTS else None,
         'additional': [c for c in getattr(inst, 'ADDITIONAL_DATA_COLUMNS', ())],
         'autoscale': {
             'by': 'rt' if by_type else 'port',
@@ -289,7 +292,7 @@ def op_init(req):
         },
         'analytes': analyte_list(inst),
         'default_analyte': cfg.get(section, 'default_analyte', fallback=None),
-        'run_types': [['Air Samples', None]] if is_insitu(inst) else [[k, v] for k, v in inst.RUN_TYPE_MAP.items()],
+        'run_types': [['All', None], ['Air Samples', None], ['Calibrations', None]] if is_insitu(inst) else [[k, v] for k, v in inst.RUN_TYPE_MAP.items()],
         'response': inst.response_type,
         'start': str(inst.start_date)[:8],
         'legend_chronological': bool(getattr(inst, 'LEGEND_CHRONOLOGICAL', False)),
@@ -985,11 +988,192 @@ def op_calsave(req):
     return {'saved': True, 'recalculated': recalculated}
 
 
+# ── Weekly calibration fits (IE3, CATS): one fit per week, a method per week (ref, cal12, cal1, cal2) ──
+
+WEEK_CAL_INSTS = ('ie3', 'cats')
+
+
+def _week_inst(req):
+    inst = instrument_for(req['inst'])
+    if inst.inst_id not in WEEK_CAL_INSTS:
+        raise ValueError(f'{inst.inst_id} has no weekly calibration fits')
+    return inst
+
+
+def op_calweeks(req):
+    """The dates of the stored weekly fits of one analyte in a date range, for the run list's (Cal) entries."""
+    inst = _week_inst(req)
+    dates = inst.query_cal_run_dates(int(req['pnum']), req.get('channel') or None, _date(req['start']), _date(req['end']))
+    return {'weeks': [d.split(' ')[0] for d in dates]}
+
+
+def _week_start(run):
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(run)):
+        raise ValueError(f'bad cal week {run!r}')
+    return str(run)
+
+
+def op_calweek(req):
+    """The weekly Calibration view of one analyte: the cal and reference tanks' normalized responses against their
+    assigned values, the fit for a method (the week's recorded one if none is asked for), the reference's predicted
+    value and the nearby stored fits.  As logos_data's IE3 calibration plot.  Read only."""
+    inst = _week_inst(req)
+    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+    if not cal_week.IE3_CAL_AVAILABLE:
+        raise ValueError('the cal-fit code (ie3_cal_test) is not available')
+    data = inst.load_cal_week_data(pnum, channel, week)
+    if data is None or data.empty:
+        raise ValueError('no calibration data in that week')
+    recorded = int(inst.get_week_mf_method(pnum, channel, week))
+    method = int(req['method']) if req.get('method') else recorded
+    if method not in inst.MF_METHOD_LABELS:
+        raise ValueError('unknown calibration method')
+    label = inst.MF_METHOD_LABELS[method]
+    unflagged = data[data['rejected'].fillna(0).astype(int) == 0]
+
+    coefs, weekly = {}, None
+    if not unflagged.empty:
+        cal_ports = tuple(sorted({inst.CAL1_PORT, inst.CAL2_PORT, inst.STANDARD_PORT_NUM}))
+        periods = cal_week._ie3_weekly_tank_data(inst, unflagged, cal_ports)
+        if not periods.empty:
+            period_start = periods['week_start'].max()
+            weekly = periods.loc[periods['week_start'] == period_start]
+            coefs = cal_week.tank_coefs_for_run(inst, weekly, pnum)
+            unflagged = unflagged[unflagged['analysis_datetime'] >= pd.Timestamp(period_start).tz_localize('UTC')]
+
+    ports = list(dict.fromkeys([inst.CAL2_PORT, inst.STANDARD_PORT_NUM, inst.CAL1_PORT]))
+    role = {}
+    for port in ports:
+        r = [n for n, hit in (('cal2', port == inst.CAL2_PORT), ('ref', port == inst.STANDARD_PORT_NUM), ('cal1', port == inst.CAL1_PORT)) if hit]
+        role[port] = '/'.join(r)
+    raw, tanks, xvals = [], [], []
+    resp = pd.to_numeric(unflagged['normalized_resp'], errors='coerce')
+    for port in ports:
+        grp = unflagged[unflagged['port'] == port]
+        assigned = cal_week.tank_assigned(inst, port, pnum, coefs, week)
+        if grp.empty:
+            continue
+        vals = resp.loc[grp.index].dropna()
+        if assigned is not None:
+            raw.append({'port': int(port), 'x': [round(float(v), 8) for v in vals], 'y': float(assigned)})
+        mean, std = grp['normalized_resp'].mean(), grp['normalized_resp'].std()
+        raw_label = str(grp['port_label'].iat[0]) if 'port_label' in grp.columns else f'Port {port}'
+        serial = raw_label.split(' (')[0]
+        tanks.append({'port': int(port), 'role': role[port], 'label': f'{serial} ({role[port]}, {int(port)})' if role[port] else raw_label,
+                      'mean': _finite(mean), 'sd': _finite(std), 'n': int(len(grp)), 'assigned': _finite(assigned) if assigned is not None else None,
+                      'unc': _finite(cal_week.tank_unc(inst, port, pnum, coefs, week))})
+        if assigned is not None and pd.notna(mean):
+            xvals.append(float(mean))
+
+    slope = intercept = None
+    fit_row = None
+    note = None
+    if not inst.uses_ng_response_fit(method):
+        c0 = inst.ref_tank_coef0(pnum, when=week)
+        if c0 is not None:
+            slope, intercept = float(c0), 0.0
+        else:
+            note = 'no ref-tank coef0 available'
+    else:
+        fit_row, _c = cal_week.week_fit(inst, unflagged, pnum, method, weekly=weekly, coefs=coefs)
+        if fit_row is not None:
+            slope, intercept = float(fit_row['slope']), float(fit_row['intercept'])
+        else:
+            note = 'no fit: insufficient cal data'
+
+    ref = None
+    ref_grp = unflagged[unflagged['port'] == inst.STANDARD_PORT_NUM]
+    if slope is not None and inst.uses_ng_response_fit(method) and not ref_grp.empty:
+        ref_x = float(ref_grp['normalized_resp'].mean())
+        ref_y = slope * ref_x + intercept
+        force_zero, _single = inst.fit_params_for_method(method)
+        pred_unc = cal_week.ref_pred_unc(fit_row, ref_x, force_zero)
+        ref_assigned = cal_week.tank_assigned(inst, inst.STANDARD_PORT_NUM, pnum, coefs, week)
+        diff_unc = None
+        if ref_assigned is not None:
+            ru = cal_week.tank_unc(inst, inst.STANDARD_PORT_NUM, pnum, coefs, week)
+            if pred_unc is not None or ru is not None:
+                diff_unc = float(np.hypot(pred_unc or 0.0, ru or 0.0))
+        ref = {'x': ref_x, 'y': ref_y, 'pred_unc': _finite(pred_unc) if pred_unc is not None else None,
+               'diff': _finite(ref_y - ref_assigned) if ref_assigned is not None else None, 'diff_unc': _finite(diff_unc) if diff_unc is not None else None}
+
+    others = []
+    if slope is not None and inst.uses_ng_response_fit(method):
+        nb = inst.nearby_response_fits(pnum, channel, week, n=5)
+        others = [{'slope': float(r['coef1']), 'intercept': float(r['coef0']), 'date': pd.Timestamp(r['run_date']).strftime('%Y-%m-%d')} for _, r in nb.iterrows()]
+
+    # The fit stored for this week, to show next to the one recomputed here.
+    stored = None
+    sc = inst.db.doquery('SELECT idx FROM reftank.scales WHERE parameter_num = %s AND current = 1', [pnum])
+    if sc:
+        st = inst.db.doquery('SELECT run_date, coef0, coef1 FROM hats.ng_response WHERE inst_num = %s AND site = %s AND channel = %s AND scale_num = %s '
+                             'AND DATE(run_date) = %s ORDER BY run_date DESC LIMIT 1', [int(inst.inst_num), inst.site, channel or '', int(sc[0]['idx']), week])
+        if st:
+            stored = {'date': pd.Timestamp(st[0]['run_date']).strftime('%Y-%m-%d %H:%M:%S'), 'slope': _finite(st[0]['coef1']), 'intercept': _finite(st[0]['coef0'])}
+    return {'week': week, 'method': method, 'method_label': label, 'recorded_method': recorded, 'methods': {str(k): v for k, v in inst.MF_METHOD_LABELS.items()},
+            'raw': raw, 'tanks': tanks, 'slope': slope, 'intercept': intercept, 'note': note, 'ref': ref, 'others': others, 'stored': stored,
+            'xmin': min(xvals) if xvals else None, 'xmax': max(xvals) if xvals else None,
+            'site': inst.site, 'inst_id': inst.inst_id, 'n': int(len(unflagged))}
+
+
+def op_calweeksave(req):
+    """Update Method: record the chosen method for the week and, for a fit method, recompute the week's fit and write it to
+    hats.ng_response (logos_data's _ie3_cal_save, without its flag saves).  The air-port mole fractions follow with calweekmf."""
+    _may_write(req)
+    inst = _week_inst(req)
+    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+    method = int(req['method'])
+    if method not in inst.MF_METHOD_LABELS:
+        raise ValueError('unknown calibration method')
+    _audit(req, f'cal week {week} method={inst.MF_METHOD_LABELS[method]}')
+    inst.set_week_mf_method(pnum, channel, week, method)
+    if not inst.uses_ng_response_fit(method):
+        return {'saved': True, 'fit': None, 'note': 'method recorded; ref-tank scaling stores no fit'}
+    data = inst.load_cal_week_data(pnum, channel, week)
+    unflagged = data[data['rejected'].fillna(0).astype(int) == 0].copy() if data is not None and not data.empty else pd.DataFrame()
+    if unflagged.empty:
+        return {'saved': True, 'fit': None, 'note': 'no unflagged cal data; the fit was not recomputed'}
+    row, coefs = cal_week.week_fit(inst, unflagged, pnum, method)
+    if row is None:
+        return {'saved': True, 'fit': None, 'note': 'no scale assignments for the cal tanks' if not coefs else 'could not compute the fit: check the cal tank coverage'}
+    start = row['week_start']
+    ref_raw = unflagged[(unflagged['port'] == inst.STANDARD_PORT_NUM) & (unflagged['analysis_datetime'] >= pd.Timestamp(start).tz_localize('UTC'))]
+    sigma_ref = float(ref_raw['normalized_resp'].std()) if len(ref_raw) > 1 else 0.0
+    sc = inst.db.doquery('SELECT idx FROM reftank.scales WHERE parameter_num = %s AND current = 1', [pnum])
+    if not sc:
+        raise ValueError(f'no current scale for parameter {pnum}')
+    serial = inst.tank_serial_for_port(inst.STANDARD_PORT_NUM, when=start) or ''
+    row_id = inst.upsert_ng_response(inst_num=inst.inst_num, site=inst.site, run_date=start, channel=channel or '', scale_num=int(sc[0]['idx']),
+                                     coef0=float(row['intercept']), coef1=float(row['slope']),
+                                     unc_fit=float(row['unc_ref_pred']) if pd.notna(row.get('unc_ref_pred')) else 0.0, sigma_ref=sigma_ref, serial_number=serial)
+    return {'saved': True, 'fit': {'id': row_id, 'period': pd.Timestamp(start).strftime('%Y-%m-%d %H:%M:%S'), 'slope': float(row['slope']), 'intercept': float(row['intercept'])}}
+
+
+def op_calweekmf(req):
+    """Update MF: recompute and write the week's air-port mole fractions with the method and fit saved (the in-process
+    ie3_batch.py -p N -c CH --site S -s week -e week+7d -i)."""
+    _may_write(req)
+    inst = _week_inst(req)
+    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+    end = (pd.Timestamp(week) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+    _audit(req, f'cal week {week} mole fractions')
+    df = inst.load_data(pnum=pnum, channel=channel, start_date=week, end_date=end)
+    if df is None or df.empty:
+        return {'saved': False, 'note': 'no data in that week'}
+    df = df.loc[df['port'].isin(inst.AIR_PORTS)].copy()
+    if df.empty:
+        return {'saved': False, 'note': 'no air-port rows in that week'}
+    df = inst.calc_mole_fraction(df)
+    df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
+    inst.upsert_mole_fractions(df)
+    return {'saved': True, 'updated': int(df['mole_fraction'].notna().sum()), 'of': int(len(df))}
+
+
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
-       'chrom': op_chrom, 'cal': op_cal, 'calsave': op_calsave, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
+       'chrom': op_chrom, 'cal': op_cal, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calweeks', 'calweek'}
 
 
 def _lost_connection(e):
