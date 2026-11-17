@@ -756,6 +756,16 @@ OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smoo
        'chrom': op_chrom, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom'}
+
+
+def _lost_connection(e):
+    """True for a MySQL error meaning the connection itself is gone."""
+    inner = e.args[0] if e.args and isinstance(e.args[0], BaseException) else e   # the wrapper nests it
+    code = inner.args[0] if inner.args and isinstance(inner.args[0], int) else None
+    return code in (2006, 2013, 2055)
+
+
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
         creds = self.request.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
@@ -771,7 +781,17 @@ class Handler(socketserver.StreamRequestHandler):
             try:
                 req = json.loads(line)
                 with _lock:
-                    out = OPS[req['op']](req)
+                    try:
+                        out = OPS[req['op']](req)
+                    except Exception as e:
+                        # A cached instrument's MySQL connection goes stale while the page sits idle
+                        # (2006 gone away / 2013 lost connection). Reads reconnect and run once more;
+                        # writes do not, as a commit may have gone through before the drop.
+                        if not (_lost_connection(e) and req['op'] in READ_OPS):
+                            raise
+                        print(f"{req['op']}: {e}; reconnecting and retrying", flush=True)
+                        _instruments.clear()
+                        out = OPS[req['op']](req)
             except KeyError as e:
                 out = {'error': f'missing or unknown {e}'}
             except Exception as e:      # the page shows it; the log has the trace
