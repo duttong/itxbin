@@ -184,8 +184,9 @@ def _column(s, kind):
             else str(v) for v in s]
 
 
-def points_json(instrument, df):
-    """The run's rows as columns, for the page."""
+def points_json(instrument, df, detrend=False):
+    """The run's rows as columns, for the page.  detrend adds the reference smoothing summary, which
+    only a load or a change of rejected points alters (not smoothing, saving or recalculating)."""
     out = {}
     resp = instrument.response_type
     if resp in df.columns:
@@ -196,7 +197,8 @@ def points_json(instrument, df):
     idc = id_column(instrument)
     out['mfnum'] = _column(df[idc], 'num') if idc in df.columns else [None] * len(df)
     out['extra'] = {c: _column(df[c], 'num') for c in getattr(instrument, 'ADDITIONAL_DATA_COLUMNS', ()) if c in df.columns}
-    out['detrend'] = detrend_summary(instrument, df)
+    if detrend:
+        out['detrend'] = detrend_summary(instrument, df)
     return out
 
 
@@ -352,7 +354,7 @@ def op_load(req):
     t1 = time.time()
     if df is None:
         return {'points': None, 'load_ms': round((t1 - t0) * 1000)}
-    out = {'points': points_json(inst, df), 'tags': tags_for(inst, df)}
+    out = {'points': points_json(inst, df, detrend=True), 'tags': tags_for(inst, df)}
     out['load_ms'] = round((t1 - t0) * 1000)
     out['tags_ms'] = round((time.time() - t1) * 1000)
     return out
@@ -417,10 +419,10 @@ def _recalculated(req):
     return inst, df.reset_index(drop=True)
 
 
-def _view(inst, df, **more):
+def _view(inst, df, detrend=False, **more):
     if df is None:
         return {'points': None, **more}
-    return {'points': points_json(inst, df), 'tags': tags_for(inst, df), **more}
+    return {'points': points_json(inst, df, detrend), 'tags': tags_for(inst, df), **more}
 
 
 def op_tag(req):
@@ -440,7 +442,7 @@ def op_tag(req):
         host._delete_tag_for_mf_nums(nums, tag)
     _audit(req, f"tag={tag} {'on' if apply else 'off'} mf_nums={nums}")
     inst, df = _recalculated(req)
-    return _view(inst, df, unsaved=True)
+    return _view(inst, df, detrend=True, unsaved=True)
 
 
 def op_comment(req):
