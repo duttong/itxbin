@@ -104,19 +104,36 @@ class DryRunDB:
         return False        # keep batching; the caller's final all=True call is the one noted
 
 
-def instrument_for(inst, site=None):
-    key = (inst, site or '')
-    if key not in _instruments:
-        try:
-            cls = getattr(li, f'{inst.upper()}_Instrument')
-        except AttributeError:
-            raise ValueError(f'unknown instrument {inst!r}')
-        obj = cls(site=site) if inst in ('ie3', 'cats') and site else cls()
+# The page's instrument ids (logos_integ's, where it has the instrument) -> (class id, site).
+PAGE_INSTS = {
+    'm4': ('m4', None), 'fe3': ('fe3', None), 'bld1': ('bld1', None),
+    'ie3-smo': ('ie3', 'smo'),
+    'brw': ('cats', 'brw'), 'sum': ('cats', 'sum'), 'nwr': ('cats', 'nwr'), 'mlo': ('cats', 'mlo'),
+    'spo': ('cats', 'spo'), 'smo_cats': ('cats', 'smo'),
+}
+
+
+def instrument_for(page_id, site=None):
+    if page_id not in PAGE_INSTS:
+        raise ValueError(f'unknown instrument {page_id!r}')
+    if page_id not in _instruments:
+        cls_id, site = PAGE_INSTS[page_id]
+        cls = getattr(li, f'{cls_id.upper()}_Instrument')
+        obj = cls(site=site) if site else cls()
         if DRY_RUN:
             obj.db = DryRunDB(obj.db)
             obj.doquery = obj.db.doquery
-        _instruments[key] = obj
-    return _instruments[key]
+        _instruments[page_id] = obj
+    return _instruments[page_id]
+
+
+def is_insitu(inst):
+    return inst.inst_id in ('ie3', 'cats')
+
+
+def id_column(inst):
+    """The DataFrame column holding each row's mole fraction primary key."""
+    return _TagHost(inst)._tag_table_info()[3]
 
 
 # Tags applied by loaders and QC scripts, not by hand; a point rejected only by these is drawn
@@ -133,7 +150,7 @@ POINT_COLUMNS = {
     'sample_id': ('sample_id', 'str'), 'pair_id': ('pair_id_num', 'num'), 'port_info': ('port_info', 'str'),
     'tank': ('tank_serial_num', 'str'), 'netp': ('net_pressure', 'num'), 'sample_t': ('sample_datetime', 'time'),
     'comments': ('status_comments', 'str'), 'flask_port': ('flask_port', 'num'), 'cal_date': ('cal_date', 'str'),
-    'anum': ('analysis_num', 'num'), 'mfnum': ('ng_mole_fraction_num', 'num'), 'channel': ('channel', 'str'),
+    'anum': ('analysis_num', 'num'), 'channel': ('channel', 'str'),
 }
 
 
@@ -169,23 +186,26 @@ def points_json(instrument, df):
     for name, (col, kind) in POINT_COLUMNS.items():
         if col in df.columns:
             out[name] = _column(df[col], kind)
+    idc = id_column(instrument)
+    out['mfnum'] = _column(df[idc], 'num') if idc in df.columns else [None] * len(df)
+    out['extra'] = {c: _column(df[c], 'num') for c in getattr(instrument, 'ADDITIONAL_DATA_COLUMNS', ()) if c in df.columns}
     return out
 
 
 def tags_for(instrument, df):
-    """{row position: [tag_num, ...]} from the instrument's tag table (M4, FE3, BLD1)."""
-    if 'ng_mole_fraction_num' not in df.columns:
+    """{row position: [[tag_num, comment], ...]} from the instrument's tag table."""
+    tag_table, tag_key, _mf_table, idc = _TagHost(instrument)._tag_table_info()
+    if idc not in df.columns:
         return {}
-    nums = pd.to_numeric(df['ng_mole_fraction_num'], errors='coerce')
+    nums = pd.to_numeric(df[idc], errors='coerce')
     ids = sorted({int(n) for n in nums.dropna()})
-    if not ids:
-        return {}
-    rows = instrument.doquery(
-        'SELECT ng_mole_fraction_num n, tag_num t, comment c FROM hats.ng_mole_fraction_tags '
-        f"WHERE ng_mole_fraction_num IN ({','.join(map(str, ids))}) ORDER BY tag_num") or []
     by_mf = {}
-    for r in rows:
-        by_mf.setdefault(int(r['n']), []).append([int(r['t']), r['c'] or ''])
+    for i in range(0, len(ids), 5000):
+        rows = instrument.doquery(
+            f'SELECT {tag_key} n, tag_num t, comment c FROM {tag_table} '
+            f"WHERE {tag_key} IN ({','.join(map(str, ids[i:i + 5000]))}) ORDER BY tag_num") or []
+        for r in rows:
+            by_mf.setdefault(int(r['n']), []).append([int(r['t']), r['c'] or ''])
     return {str(i): by_mf[int(n)] for i, n in enumerate(nums) if pd.notna(n) and int(n) in by_mf}
 
 
@@ -213,19 +233,28 @@ def analyte_list(instrument):
 
 def op_ping(req):
     return {'ok': True, 'pid': os.getpid(), 'up_s': round(time.time() - _started, 1),
-            'instruments': [f'{i}{":" + s if s else ""}' for i, s in _instruments]}
+            'instruments': sorted(_instruments)}
 
 
 def op_init(req):
     """What the page needs once per instrument."""
-    inst = instrument_for(req['inst'], req.get('site'))
+    inst = instrument_for(req['inst'])
     cfg = configparser.ConfigParser()
     cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logosdata', 'logos_data.conf'))
-    section = f'instrument.{req["inst"]}'
+    section = f'instrument.{inst.inst_id}'
+    by_type = inst.inst_id in ('m4', 'prs')      # what Samples/Standard autoscaling keys on, as logos_data
     return {
+        'insitu': is_insitu(inst),
+        'additional': [c for c in getattr(inst, 'ADDITIONAL_DATA_COLUMNS', ())],
+        'autoscale': {
+            'by': 'rt' if by_type else 'port',
+            'exclude': list(getattr(inst, 'EXCLUDE', []) or []),
+            'standard': getattr(inst, 'STANDARD_RUN_TYPE', None) if by_type else getattr(inst, 'STANDARD_PORT_NUM', None),
+            'standard_ports': list(getattr(inst, 'AUTOSCALE_STANDARD_PORTS', None) or []),
+        },
         'analytes': analyte_list(inst),
         'default_analyte': cfg.get(section, 'default_analyte', fallback=None),
-        'run_types': [[k, v] for k, v in inst.RUN_TYPE_MAP.items()],
+        'run_types': [['Air Samples', None]] if is_insitu(inst) else [[k, v] for k, v in inst.RUN_TYPE_MAP.items()],
         'response': inst.response_type,
         'start': str(inst.start_date)[:8],
         'legend_chronological': bool(getattr(inst, 'LEGEND_CHRONOLOGICAL', False)),
@@ -241,9 +270,14 @@ def op_init(req):
 
 
 def op_runs(req):
-    """Every run_time in a date range with its run types: [[run_time, [types]], ...]."""
-    inst = instrument_for(req['inst'], req.get('site'))
+    """Every run in a date range with its run types: [[run_time, [types]], ...].  The in situ
+    instruments have no runs: theirs are calendar months, ["YYYY-MM", []]."""
+    inst = instrument_for(req['inst'])
     start, end = _date(req['start']), _date(req['end'])
+    if is_insitu(inst):
+        first = max(pd.Timestamp(start), pd.Timestamp(str(inst.start_date)[:8])).to_period('M')
+        last = min(pd.Timestamp(end), pd.Timestamp.utcnow().tz_localize(None)).to_period('M')
+        return {'chunks': True, 'runs': [[str(m), []] for m in pd.period_range(first, last, freq='M')] if first <= last else []}
     rows = inst.doquery(
         'SELECT run_time, GROUP_CONCAT(DISTINCT run_type_num) types FROM hats.ng_analysis '
         f"WHERE inst_num = {int(inst.inst_num)} AND run_time BETWEEN '{start}' AND '{end}' "
@@ -258,11 +292,22 @@ def _date(text):
     return pd.Timestamp(str(text)).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def run_range(inst, run):
+    """(start, end) for load_data: a run_time for both ends, or an in situ month's first and last second."""
+    if is_insitu(inst):
+        if not re.fullmatch(r'\d{4}-\d{2}', str(run)):
+            raise ValueError(f'bad month {run!r}')
+        month = pd.Period(run, freq='M')
+        return (month.start_time.strftime('%Y-%m-%d %H:%M:%S'), month.end_time.strftime('%Y-%m-%d %H:%M:%S'))
+    run = _date(run)
+    return run, run
+
+
 def _load(req):
-    inst = instrument_for(req['inst'], req.get('site'))
-    run = _date(req['run'])
+    inst = instrument_for(req['inst'])
+    start, end = run_range(inst, req['run'])
     df = inst.load_data(pnum=int(req['pnum']), channel=req.get('channel') or None,
-                        start_date=run, end_date=run, verbose=False)
+                        start_date=start, end_date=end, verbose=False)
     if df is None or df.empty:
         return inst, None
     return inst, df.reset_index(drop=True)
@@ -318,9 +363,9 @@ def _check_tag(tag, apply):
     raise ValueError(f'tag {tag} cannot be {"set" if apply else "removed"} by hand')
 
 
-def _own_mf_nums(df, wanted):
+def _own_mf_nums(df, wanted, idc):
     """The requested mole fraction rows, which must all be in this run and analyte."""
-    have = {int(n) for n in pd.to_numeric(df['ng_mole_fraction_num'], errors='coerce').dropna()}
+    have = {int(n) for n in pd.to_numeric(df[idc], errors='coerce').dropna()} if idc in df.columns else set()
     nums = sorted({int(n) for n in wanted or []})
     if not nums or not set(nums) <= have:
         raise ValueError('those points are not in this run; reload and try again')
@@ -355,7 +400,7 @@ def op_tag(req):
     inst, df = _load(req)
     if df is None:
         raise ValueError('no data in that run')
-    nums = _own_mf_nums(df, req.get('mf_nums'))
+    nums = _own_mf_nums(df, req.get('mf_nums'), id_column(inst))
     host = _TagHost(inst)
     if apply:
         host._insert_tag_for_mf_nums(nums, tag)
@@ -372,7 +417,7 @@ def op_comment(req):
     inst, df = _load(req)
     if df is None:
         raise ValueError('no data in that run')
-    nums = _own_mf_nums(df, req.get('mf_nums'))
+    nums = _own_mf_nums(df, req.get('mf_nums'), id_column(inst))
     comment = str(req.get('comment') or '').strip()[:255] or None
     _TagHost(inst)._save_comment_for_mf_nums(nums, comment)
     _audit(req, f'comment={comment!r} mf_nums={nums}')
@@ -420,12 +465,12 @@ def op_copyall(req):
 
     adds, removes = pending(req.get('adds'), True), pending(req.get('removes'), False)
     inst.update_flags_all_analytes(adds, removes)
-    run = _date(req['run'])
+    start, end = run_range(inst, req['run'])
     failed = []
     analytes = analyte_list(inst)
     for a in analytes:
         try:
-            one = inst.load_data(pnum=a['pnum'], channel=a['channel'], start_date=run, end_date=run, verbose=False)
+            one = inst.load_data(pnum=a['pnum'], channel=a['channel'], start_date=start, end_date=end, verbose=False)
             if one is None or one.empty:
                 continue
             one = inst.calc_mole_fraction(one)
@@ -442,7 +487,7 @@ def op_copyall(req):
 
 def op_chrom(req):
     """The GCwerks chromatogram behind an injection: its channel number and file name."""
-    inst = instrument_for(req['inst'], req.get('site'))
+    inst = instrument_for(req['inst'])
     channel = gcwerks_channel_number(inst.inst_id, req.get('channel'), getattr(inst, 'site', ''))
     gc_dir = str(inst.gc_dir)
     if not os.path.isdir(gc_dir) and os.path.isdir('/nfs' + gc_dir):      # omi mounts /hats under /nfs
