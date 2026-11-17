@@ -341,8 +341,19 @@ def run_range(inst, run):
     return run, run
 
 
+def is_week(inst, run):
+    """True for an in situ cal week (run id YYYY-MM-DD), as opposed to a month (YYYY-MM)."""
+    return is_insitu(inst) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(run)) is not None
+
+
 def _load(req):
     inst = instrument_for(req['inst'])
+    if is_week(inst, req['run']):
+        # A cal week: the cal and reference ports of the 7 days from the fit's date, as the desktop loads it.
+        df = inst.load_cal_week_data(int(req['pnum']), req.get('channel') or None, str(req['run']))
+        if df is None or df.empty:
+            return inst, None
+        return inst, df.reset_index(drop=True)
     start, end = run_range(inst, req['run'])
     df = inst.load_data(pnum=int(req['pnum']), channel=req.get('channel') or None,
                         start_date=start, end_date=end, verbose=False)
@@ -367,6 +378,8 @@ def op_load(req):
 def op_smooth(req):
     """The run recalculated with another smoothing method.  A preview: nothing is saved."""
     t0 = time.time()
+    if is_week(instrument_for(req['inst']), req['run']):
+        raise ValueError('smoothing is not changed for a calibration week')
     inst, df = _recalculated(req)
     return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1))
 
@@ -416,6 +429,8 @@ def _recalculated(req):
     inst, df = _load(req)
     if df is None:
         return inst, None
+    if is_week(inst, req['run']):
+        return inst, df         # a cal week's rows carry no mole fractions to recalculate: the fit is Update Method's
     if req.get('detrend') is not None:
         df['detrend_method_num'] = int(req['detrend'])
     df = inst.norm.merge_smoothed_data(df)
@@ -477,6 +492,8 @@ def _save(inst, df, pnum, response_id='own'):
 def op_save(req):
     """Save this analyte's run: recalculated mole fractions, smoothing method, calibrations."""
     _may_write(req)
+    if is_week(instrument_for(req['inst']), req['run']):
+        raise ValueError("a calibration week has no mole fractions to save: tags are written at once and Update Method saves the fit")
     inst, df = _recalculated(req)
     if df is None:
         raise ValueError('no data in that run')
@@ -503,6 +520,12 @@ def op_copyall(req):
 
     adds, removes = pending(req.get('adds'), True), pending(req.get('removes'), False)
     inst.update_flags_all_analytes(adds, removes)
+    if is_week(inst, req['run']):
+        # The cal injections' tags reach the other analytes; their fits follow with Update Method on each.
+        _audit(req, f'copied adds={ {k: sorted(v) for k, v in adds.items()} } removes={ {k: sorted(v) for k, v in removes.items()} } (cal week)')
+        out = op_load(req)
+        out.update(analytes=len(analyte_list(inst)), failed=[], week=True)
+        return out
     start, end = run_range(inst, req['run'])
     failed = []
     analytes = analyte_list(inst)
