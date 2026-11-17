@@ -73,6 +73,9 @@ class GCWerksPeakIntegration:
     end_time: float
     end_level: float
     path: Path
+    retention_time: float | None = None
+    width: float | None = None
+    height: float | None = None
 
 
 @dataclass(frozen=True)
@@ -596,16 +599,10 @@ def _gcwerks_peak_result_layout(path: Path):
     return fields, offset
 
 
-def gcwerks_peak_integration(
-    gc_dir: str | Path,
-    chromatogram_path: str | Path,
-    analysis_time: object,
-    analyte: str,
-) -> GCWerksPeakIntegration | None:
-    """Read one analyte's stored GCWerks integration start and end points.
+def _gcwerks_peak_result_row(gc_dir, chromatogram_path, analysis_time):
+    """Find a chromatogram's row in GCWerks' monthly peak-result table.
 
-    Peak-result times are seconds from the start of the chromatogram.  Missing
-    tables, analytes, rows, and null integration results return ``None``.
+    Returns ``(fields, data, row_offset, table_path)`` or ``None``.
     """
     chromatogram_path = Path(chromatogram_path)
     name_parts = chromatogram_path.name.split(".", 2)
@@ -621,20 +618,8 @@ def gcwerks_peak_integration(
         return None
 
     fields, row_length = _gcwerks_peak_result_layout(schema_path)
-    prefix = _peak_result_analyte_prefix(set(fields), analyte)
-    if prefix is None:
+    if "time" not in fields or "extension" not in fields:
         return None
-    required_names = (
-        "time",
-        "extension",
-        f"{prefix}_start_time",
-        f"{prefix}_start_level",
-        f"{prefix}_end_time",
-        f"{prefix}_end_level",
-    )
-    if any(name not in fields for name in required_names):
-        return None
-
     data = table_path.read_bytes()
     if len(data) % row_length:
         raise ValueError(
@@ -665,22 +650,70 @@ def gcwerks_peak_integration(
             and extension.startswith(stored_extension)
         ):
             extension_matches = True
-        if not extension_matches:
-            continue
-
-        values = []
-        for name in required_names[2:]:
-            field_offset, field_type, _field_width = fields[name]
-            if field_type != "float":
-                raise ValueError(
-                    f"Unexpected GCWerks integration field type {field_type!r}: "
-                    f"{schema_path}"
-                )
-            values.append(struct.unpack_from("<f", data, row_offset + field_offset)[0])
-        if not all(np.isfinite(value) for value in values):
-            return None
-        return GCWerksPeakIntegration(prefix, *values, table_path)
+        if extension_matches:
+            return fields, data, row_offset, table_path
     return None
+
+
+def _gcwerks_row_peak(fields, data, row_offset, prefix, table_path):
+    """One analyte's integration from a peak-result row, or ``None`` without finite bounds."""
+    def value(suffix):
+        field = fields.get(f"{prefix}_{suffix}")
+        if field is None or field[1] != "float":
+            return None
+        number = struct.unpack_from("<f", data, row_offset + field[0])[0]
+        return float(number) if np.isfinite(number) else None
+
+    bounds = [value(name) for name in ("start_time", "start_level", "end_time", "end_level")]
+    if any(number is None for number in bounds):
+        return None
+    return GCWerksPeakIntegration(
+        prefix, *bounds, table_path,
+        retention_time=value("rt"), width=value("w"), height=value("ht"),
+    )
+
+
+def gcwerks_peak_integration(
+    gc_dir: str | Path,
+    chromatogram_path: str | Path,
+    analysis_time: object,
+    analyte: str,
+) -> GCWerksPeakIntegration | None:
+    """Read one analyte's stored GCWerks integration: start and end points, and the
+    retention time, width and height where the table has them.
+
+    Peak-result times are seconds from the start of the chromatogram.  Missing
+    tables, analytes, rows, and null integration results return ``None``.
+    """
+    found = _gcwerks_peak_result_row(gc_dir, chromatogram_path, analysis_time)
+    if found is None:
+        return None
+    fields, data, row_offset, table_path = found
+    prefix = _peak_result_analyte_prefix(set(fields), analyte)
+    if prefix is None:
+        return None
+    return _gcwerks_row_peak(fields, data, row_offset, prefix, table_path)
+
+
+def gcwerks_run_integrations(
+    gc_dir: str | Path,
+    chromatogram_path: str | Path,
+    analysis_time: object,
+) -> list[GCWerksPeakIntegration]:
+    """Every analyte's stored integration for one chromatogram (all channels, since the
+    table has one row per run), for finding the peaks fused with a given one."""
+    found = _gcwerks_peak_result_row(gc_dir, chromatogram_path, analysis_time)
+    if found is None:
+        return []
+    fields, data, row_offset, table_path = found
+    suffix = "_start_time"
+    peaks = []
+    for name in fields:
+        if name.endswith(suffix):
+            peak = _gcwerks_row_peak(fields, data, row_offset, name[:-len(suffix)], table_path)
+            if peak is not None:
+                peaks.append(peak)
+    return peaks
 
 
 def gcwerks_peak_window(

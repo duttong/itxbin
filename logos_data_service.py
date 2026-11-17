@@ -22,7 +22,8 @@ writes must require a role here too.
     {"op": "load", "inst": "m4", "pnum": 29, "channel": null, "run": "2026-10-22 09:28:00"}
     {"op": "smooth", ...as load..., "detrend": 5}   the run with another smoothing (preview)
     {"op": "chrom", "inst": "m4", "channel": null, "t": "2026-10-22 10:01:00",
-     "data": true, "analyte": "HFC-134a"}        the chromatogram trace, peak window, baseline
+     "data": true, "analyte": "HFC-134a", "mf_num": 123}   the chromatogram trace, peak window and
+                                                 the stored integration (GCwerks' or logosint's)
 
     {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null}
     {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
@@ -45,6 +46,7 @@ import re
 import socket
 import socketserver
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -62,8 +64,10 @@ matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 
 import logos_instruments as li
-from gcwerks_chromatogram import (find_gcwerks_chromatogram, gcwerks_channel_number, gcwerks_focus_limits,
-                                  gcwerks_ms_quantitation_mass, gcwerks_peak_integration, gcwerks_peak_window,
+import integ_source
+from gcwerks_chromatogram import (GCWerksPeakIntegration, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
+                                  gcwerks_channel_number, gcwerks_focus_limits,
+                                  gcwerks_ms_quantitation_mass, gcwerks_peak_window, gcwerks_run_integrations,
                                   read_gcwerks_chromatogram, read_gcwerks_ms_chromatogram)
 from logos_tagging import (TagCRUDMixin, _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS, _TAG_LAYOUT,
                            _USER_REMOVABLE_AUTO_TAGS)
@@ -488,6 +492,206 @@ def op_copyall(req):
     return out
 
 
+def _finite(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) else None
+
+
+def logosint_peaks(inst, req):
+    """The stored logosint integrations of the channel this injection's analyte is on, as
+    (this analyte's peak, every peak of the channel), or None where the stored results are
+    GCwerks'.  logosint feeds a CATS instrument from hats.ng_integ_source's logosint_from on;
+    the peak bounds are in hats.ng_insitu_peak_details and the retention time and height in
+    ng_insitu_mole_fractions (what logos_integ.php draws for those runs)."""
+    mf_num = req.get('mf_num')
+    if inst.inst_id != 'cats' or mf_num is None:
+        return None
+    src = integ_source.current(int(inst.inst_num), inst.db)
+    if not src.logosint:
+        return None
+    rows = inst.doquery(
+        "SELECT m.num, a.analysis_time, m.retention_time AS rt, m.height AS ht, d.width AS w, "
+        "d.start_time AS st, d.start_level AS sl, d.end_time AS et, d.end_level AS el, d.codes, d.source "
+        "FROM hats.ng_insitu_mole_fractions m0 "
+        "JOIN hats.ng_insitu_analysis a ON a.num = m0.analysis_num "
+        "JOIN hats.ng_insitu_mole_fractions m ON m.analysis_num = m0.analysis_num AND m.channel = m0.channel "
+        "LEFT JOIN hats.ng_insitu_peak_details d ON d.ng_insitu_mole_fraction_num = m.num "
+        "WHERE m0.num = %s", [int(mf_num)]) or []
+    if not rows or (src.logosint_from is not None and pd.Timestamp(rows[0]['analysis_time']) < src.logosint_from):
+        return None
+    peaks, mine = [], None
+    for r in rows:
+        pk = {k: _finite(r[k]) for k in ('rt', 'ht', 'w', 'st', 'sl', 'et', 'el')}
+        if r.get('source') not in (None, 'logosint') or any(pk[k] is None for k in ('st', 'sl', 'et', 'el')):
+            pk = None
+        else:
+            pk.update(codes=r.get('codes'), src='logosint')
+            peaks.append(pk)
+        if int(r['num']) == int(mf_num):
+            mine = pk
+    # A run logosint has no peak for is drawn without one: GCwerks' would describe a different integration.
+    return mine, peaks
+
+
+def stored_peak(inst, req, gc_dir, channel, path, start_time, analyte, elapsed, signal):
+    """The stored integration of the analyte in this chromatogram, from the program whose
+    results the instrument uses (logosint or GCwerks), in seconds: rt, ht, st, et, the signal's
+    level at each end (sl, el), the baseline there (bs, be) and the half-height crossings (wl, wr)."""
+    got = logosint_peaks(inst, req)
+    if got is not None:
+        peak, others = got
+    else:
+        runs = gcwerks_run_integrations(gc_dir, path, start_time)
+        prefix = _peak_result_analyte_prefix({f'{p.analyte}_start_time' for p in runs}, analyte)
+        as_peak = lambda p: {'rt': p.retention_time, 'ht': p.height, 'w': p.width, 'st': p.start_time, 'sl': p.start_level,
+                             'et': p.end_time, 'el': p.end_level, 'src': 'gcwerks', 'name': p.analyte}
+        others = [as_peak(p) for p in runs]
+        peak = next((p for p in others if p['name'] == prefix), None)
+        # The GC/MS row holds every ion's peaks; only this trace's own can be fused with it.
+        if inst.inst_id == 'm4':
+            others = [peak] if peak else []
+    if peak is None:
+        return None
+    peak['bs'], peak['be'] = (logosint_baseline(inst, peak, gc_dir, channel, os.path.basename(str(path)))
+                              or peak_baseline(peak, others, elapsed, signal))
+    peak['wl'], peak['wr'] = half_height_crossings(peak, elapsed, signal)
+    return peak
+
+
+def peak_baseline(peak, others, t, y):
+    """The baseline level at a peak's start and end.
+
+    The stored start and end levels are the signal's at those times.  That is the baseline at a
+    resolved end, but not at a valley shared with a fused neighbour or a shoulder (the baseline
+    runs on under it, and the area is cut by a vertical drop to it) nor under a horizontal
+    baseline (FH, BH, MH).  Under each crest the baseline is the signal less the stored height, so
+    the line is checked against those points: the peaks joined by shared boundaries keep the line
+    between the group's outer ends when it passes through them; otherwise an end above the line
+    from the other end through the crests is a valley, and that line is the baseline.  As
+    fusedBaselines() in omi logos_integ.js, with the group's own valleys given their drop too.
+    The stored height is only good to a few percent of the crest, so smaller drops are missed:
+    logosint_baseline() is tried first and this is the fallback (and the GC/MS's only source)."""
+    usable = lambda p: (p.get('rt') is not None and p.get('ht') is not None and p['ht'] > 0 and p['st'] < p['rt'] < p['et'])
+    bs, be = peak['sl'], peak['el']
+    if not usable(peak) or len(t) < 2:
+        return bs, be
+    pool = sorted((p for p in others if usable(p) and p is not peak), key=lambda p: p['st'])
+    group = [peak]
+    grew = True
+    while grew:
+        grew = False
+        for p in pool:
+            if p in group:
+                continue
+            if abs(p['et'] - group[0]['st']) < 0.05:
+                group.insert(0, p); grew = True
+            elif abs(p['st'] - group[-1]['et']) < 0.05:
+                group.append(p); grew = True
+    level = lambda x: float(np.interp(x, t, y))
+    pts = [(p['rt'], level(p['rt']) - p['ht'], 0.03 * p['ht']) for p in group]
+    A = (group[0]['st'], group[0]['sl'], 0.03 * group[0]['ht'])
+    B = (group[-1]['et'], group[-1]['el'], 0.03 * group[-1]['ht'])
+
+    def through(P, Q):
+        return lambda x: P[1] + (Q[1] - P[1]) * (x - P[0]) / ((Q[0] - P[0]) or 1.0)
+
+    def anchored(P):
+        num = sum((q[0] - P[0]) * (q[1] - P[1]) for q in pts)
+        den = sum((q[0] - P[0]) ** 2 for q in pts)
+        m = num / den if den else 0.0
+        return lambda x: P[1] + m * (x - P[0])
+
+    ab = through(A, B)
+    if all(abs(q[1] - ab(q[0])) <= q[2] for q in pts):
+        line = ab
+    else:
+        from_a, from_b = anchored(A), anchored(B)
+        b_valley = B[1] - from_a(B[0]) > B[2]
+        a_valley = A[1] - from_b(A[0]) > A[2]
+        if b_valley and not a_valley:
+            line = from_a
+        elif a_valley and not b_valley:
+            line = from_b
+        elif a_valley and b_valley and len(pts) >= 2:
+            line = through(pts[0], pts[-1])
+        else:
+            return bs, be
+    return float(line(peak['st'])), float(line(peak['et']))
+
+
+LOGOSINT = next((p for p in ('/hats/gc/logosint/logosint', '/nfs/hats/gc/logosint/logosint') if os.path.isfile(p)), None)
+
+
+def logosint_baseline(inst, peak, gc_dir, channel, run):
+    """The baseline at a stored peak's start and end as logosint integrates the run, or None.
+
+    The result tables keep only the signal's level at each end; logosint also reports the
+    baseline there, for named and unnamed peaks alike.  It is run on the chromatogram with the
+    parameter set behind the stored results (logosint's own, or its copy of GCwerks' for
+    GCwerks results, as logos_integ.php does for unnamed peaks), and its peak is used when it
+    is the stored one (the crest within a quarter width and each end within 2 s: GCwerks and
+    logosint can put an end a few points apart).  As gwBaselines() in omi logos_integ.js.
+    None for the GC/MS, which logosint does not integrate, and on any failure."""
+    if LOGOSINT is None or inst.inst_id == 'm4':
+        return None
+    pset = 'logosint' if peak.get('src') == 'logosint' else 'gcwerks'
+    try:
+        done = subprocess.run([LOGOSINT, 'peaks', '--dir', gc_dir, '--channel', str(int(channel)), '--run', run,
+                               '--inst', str(int(inst.inst_num)), '--set', pset],
+                              capture_output=True, text=True, timeout=20, cwd='/tmp')
+        res = json.loads(done.stdout) if done.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not isinstance(res, dict):
+        return None
+    rows = list((res.get('peaks') or {}).values()) + list(res.get('unnamed') or [])
+    rt, w = peak.get('rt'), peak.get('w') or 0.0
+    for r in rows:
+        if len(r) <= 10 or abs(r[5] - peak['st']) > 2 or abs(r[7] - peak['et']) > 2:
+            continue
+        if rt is not None and abs(r[0] - rt) > max(1.0, 0.25 * w):
+            continue
+        bs = r[9] if r[9] is not None else r[6]
+        be = r[10] if r[10] is not None else r[8]
+        # An end logosint has off the baseline takes the level of its baseline line at the stored time.
+        line = lambda x: bs + (be - bs) * (x - r[5]) / ((r[7] - r[5]) or 1.0)
+        eps = 1e-4 * max(1.0, peak.get('ht') or 0.0)
+        return (float(line(peak['st'])) if abs(bs - r[6]) > eps else peak['sl'],
+                float(line(peak['et'])) if abs(be - r[8]) > eps else peak['el'])
+    return None
+
+
+def half_height_crossings(peak, t, y):
+    """Where the signal crosses half height on each side of the crest, above the baseline, as
+    GCwerks draws the width; (None, None) when they can't be found or don't match the stored width."""
+    none = (None, None)
+    if peak.get('rt') is None or not peak.get('ht') or peak['ht'] <= 0 or not peak['et'] > peak['st']:
+        return none
+    st, et, bs, be, ht = peak['st'], peak['et'], peak['bs'], peak['be'], peak['ht']
+    above = y - (bs + (be - bs) * (t - st) / (et - st)) - ht / 2.0
+    k = int(np.clip(np.searchsorted(t, peak['rt']), 0, len(t) - 1))
+    if k > 0 and above[k] <= 0 < above[k - 1]:
+        k -= 1
+    if above[k] <= 0:
+        return none
+    i = j = k
+    while i > 0 and t[i] > st and above[i] > 0:
+        i -= 1
+    while j < len(t) - 1 and t[j] < et and above[j] > 0:
+        j += 1
+    if above[i] > 0 or above[j] > 0:
+        return none
+    cross = lambda a, b: float(t[a] + (t[b] - t[a]) * above[a] / ((above[a] - above[b]) or 1.0))
+    wl, wr = cross(i, i + 1), cross(j, j - 1)
+    w = peak.get('w')
+    if w and w > 0 and abs(wr - wl - w) > 0.25 * w:
+        return none
+    return wl, wr
+
+
 def op_chrom(req):
     """The chromatogram behind an injection, as logos_data's Chrom View shows it: the trace
     (the analyte's quantitation ion on the GC/MS), the peak window, GCwerks' integration
@@ -522,18 +726,26 @@ def op_chrom(req):
         elapsed = chrom.elapsed_seconds if chrom.elapsed_seconds is not None else (
             np.arange(signal.size) / chrom.sample_rate + chrom.inject_time_offset)
         out['ylabel'] = 'Signal'
-    try:
-        integ = gcwerks_peak_integration(gc_dir, path, chrom.start_time, analyte)
-    except (OSError, ValueError):        # an absent or older result table: the trace is still worth showing
-        integ = None
     elapsed = np.asarray(elapsed, dtype=float)
     signal = np.asarray(signal, dtype=float)
+    try:
+        peak = stored_peak(inst, req, gc_dir, channel, path, chrom.start_time, analyte, elapsed, signal)
+    except (OSError, ValueError):        # an absent or older result table: the trace is still worth showing
+        peak = None
+    integ = peak and GCWerksPeakIntegration(analyte, peak['st'], peak['sl'], peak['et'], peak['el'], path)
     out.update(start=f'{chrom.start_time:%Y-%m-%d %H:%M} UTC', mass=mass,
                x=[round(float(v) / 60.0, 5) for v in elapsed], y=[float(v) for v in signal])
     if window is not None:
         out['window'] = [window.center_seconds / 60.0, window.width_seconds / 60.0]
     if integ is not None:
-        out['integ'] = {'x': [integ.start_time / 60.0, integ.end_time / 60.0], 'y': [integ.start_level, integ.end_level]}
+        # x, y: the baseline as integrated.  sl, el: the signal's level at each end, which is off the
+        # baseline at a fused (shoulder) or horizontal-baseline end: the page joins the two with a drop line.
+        out['integ'] = {'x': [peak['st'] / 60.0, peak['et'] / 60.0], 'y': [peak['bs'], peak['be']],
+                        'sl': peak['sl'], 'el': peak['el'], 'src': peak['src'], 'codes': peak.get('codes')}
+        if peak.get('rt') and peak.get('ht') and peak['ht'] > 0:
+            out['integ'].update(rt=peak['rt'] / 60.0, ht=peak['ht'])
+            if peak.get('wl') is not None:
+                out['integ'].update(wl=peak['wl'] / 60.0, wr=peak['wr'] / 60.0)
     focus = gcwerks_focus_limits(elapsed, signal, window, integ)
     if focus is not None:
         out['focus'] = {'x': [focus[0][0] / 60.0, focus[0][1] / 60.0], 'y': [float(focus[1][0]), float(focus[1][1])]}
