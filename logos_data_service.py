@@ -415,9 +415,8 @@ def op_detrend(req):
 def op_smooth(req):
     """The run recalculated with another smoothing method.  A preview: nothing is saved."""
     t0 = time.time()
-    inst0 = instrument_for(req['inst'])
-    if is_insitu(inst0) and not is_week(inst0, req['run']):
-        req = dict(req, refit=True)             # another smoothing moves the cal points too: preview with the weekly fits refit
+    # refit: the page asks for the weekly fits refit when the smoothing differs from the stored one (it moves the cal points
+    # too); the stored smoothing is shown with the stored fits.
     inst, df = _recalculated(req)
     return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1), refit=bool(req.get('refit')))
 

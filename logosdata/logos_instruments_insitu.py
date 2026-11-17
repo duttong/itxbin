@@ -1734,11 +1734,12 @@ class CATS_Instrument(IE3_Instrument):
                 df.loc[invalid, 'unc'] = np.nan
         return df
 
-    def calc_mole_fraction(self, df):
+    def calc_mole_fraction(self, df, fits=None):
         """CATS override of the base per-method dispatch: apply the
         zero-height guard (see _null_mole_fraction_for_zero_height) after
-        the base class routes each row through scale_simple/cal_fit."""
-        return self._null_mole_fraction_for_zero_height(super().calc_mole_fraction(df))
+        the base class routes each row through scale_simple/cal_fit.
+        fits: see IE3_Instrument.calc_mole_fraction."""
+        return self._null_mole_fraction_for_zero_height(super().calc_mole_fraction(df, fits=fits))
 
     def calc_mole_fraction_scale_simple(self, df):
         """Scale CATS rows with the reference tank installed at each analysis."""
