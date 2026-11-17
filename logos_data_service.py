@@ -66,6 +66,8 @@ import matplotlib.colors as mcolors
 import logos_instruments as li
 import integ_source
 import cal_week
+import ie3_batch
+import cats_batch
 from gcwerks_chromatogram import (GCWerksPeakIntegration, _analyte_name_aliases, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
                                   find_gcwerks_peakid_file, read_gcwerks_peak_windows,
                                   gcwerks_channel_number, gcwerks_focus_limits,
@@ -413,8 +415,11 @@ def op_detrend(req):
 def op_smooth(req):
     """The run recalculated with another smoothing method.  A preview: nothing is saved."""
     t0 = time.time()
+    inst0 = instrument_for(req['inst'])
+    if is_insitu(inst0) and not is_week(inst0, req['run']):
+        req = dict(req, refit=True)             # another smoothing moves the cal points too: preview with the weekly fits refit
     inst, df = _recalculated(req)
-    return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1))
+    return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1), refit=bool(req.get('refit')))
 
 
 class _TagHost(TagCRUDMixin):
@@ -456,6 +461,70 @@ def _own_mf_nums(df, wanted, idc):
     return nums
 
 
+_batches = {}
+
+
+def batch_for(page_id, inst):
+    """The batch object (ie3_batch.IE3_batch / cats_batch.CATS_batch) of an in situ instrument: its update_fits() and
+    _upsert_fits() are the weekly refit the batch scripts run, so the page refits exactly as they do."""
+    if page_id not in _batches:
+        cls, site = (ie3_batch.IE3_batch, inst.site) if inst.inst_id == 'ie3' else (cats_batch.CATS_batch, inst.site)
+        obj = cls(site=site)
+        if DRY_RUN:
+            obj.db = DryRunDB(obj.db)
+            obj.doquery = obj.db.doquery
+        _batches[page_id] = obj
+    return _batches[page_id]
+
+
+def _month_refit(inst, req):
+    """The weekly fits of an in situ month recomputed from the data as it stands (tags and smoothing included), each week by
+    its own recorded method, as ie3_batch --fits.  The data are read from a week before the month to a week after so the
+    weeks at its ends are whole; the fits kept are those of the weeks that overlap the month.  None when there are none."""
+    start, end = run_range(inst, req['run'])
+    lo, hi = pd.Timestamp(start) - pd.Timedelta(days=6), pd.Timestamp(end)
+    b = batch_for(req['inst'], inst)
+    fits, scale, ref, ch = b.update_fits(int(req['pnum']), channel=req.get('channel') or None, start_date=lo.strftime('%Y-%m-%d %H:%M:%S'),
+                                         end_date=(hi + pd.Timedelta(days=6)).strftime('%Y-%m-%d %H:%M:%S'))
+    if fits is None or fits.empty or scale is None:
+        return None
+    fits = fits[(pd.to_datetime(fits['week_start']) >= lo) & (pd.to_datetime(fits['week_start']) <= hi)]
+    return {'fits': fits, 'scale': scale, 'ref': ref, 'ch': ch, 'batch': b} if len(fits) else None
+
+
+def _refit_table(inst, req, refit):
+    """The stored fits with the refit weeks' replaced, in the shape calc_mole_fraction takes (a preview: nothing is written)."""
+    base = inst.stored_fits(int(req['pnum']), req.get('channel') or '')
+    new = pd.DataFrame({'id': np.nan, 'run_date': pd.to_datetime(refit['fits']['week_start'], utc=True).to_numpy(),
+                        'coef0': refit['fits']['intercept'].to_numpy(float), 'coef1': refit['fits']['slope'].to_numpy(float),
+                        'unc_fit': refit['fits']['unc_ref_pred'].fillna(0.0).to_numpy(float),
+                        'sigma_ref': refit['fits']['sigma_ref_weekly'].fillna(0.0).to_numpy(float)})
+    new['run_date'] = pd.to_datetime(new['run_date'], utc=True)
+    if not base.empty:
+        known = dict(zip(base['run_date'], base['id']))
+        new['id'] = new['run_date'].map(known).astype(float)        # a week already stored keeps its row id
+        base = base[~base['run_date'].isin(new['run_date'])]
+    return pd.concat([base, new], ignore_index=True).sort_values('run_date')
+
+
+def _store_refit(inst, req):
+    """Recompute this in situ month's weekly fits and write them to hats.ng_response (as ie3_batch --fits -i).  How many."""
+    refit = _month_refit(inst, req)
+    if refit is None:
+        return 0
+    refit['batch']._upsert_fits(refit['fits'], refit['scale'], refit['ref'], refit['ch'])
+    return len(refit['fits'])
+
+
+def _cal_ports(inst):
+    return {inst.CAL1_PORT, inst.CAL2_PORT, inst.STANDARD_PORT_NUM}
+
+
+def _refit_wanted(inst, req):
+    """An in situ month (not a cal week) asked to be recalculated with its weekly fits refit."""
+    return bool(req.get('refit')) and is_insitu(inst) and not is_week(inst, req['run'])
+
+
 def _recalculated(req):
     """The run as it stands in the database, smoothed and with mole fractions recalculated
     in memory (with another smoothing method if asked): what Save would write."""
@@ -469,6 +538,11 @@ def _recalculated(req):
     df = inst.norm.merge_smoothed_data(df)
     if req.get('curve'):
         df = _with_curve(inst, df, req)
+    if _refit_wanted(inst, req):
+        refit = _month_refit(inst, req)
+        if refit is not None:
+            df = inst.calc_mole_fraction(df, fits=_refit_table(inst, req, refit))
+            return inst, df.reset_index(drop=True)
     df = inst.calc_mole_fraction(df)
     return inst, df.reset_index(drop=True)
 
@@ -541,8 +615,12 @@ def op_tag(req):
     else:
         host._delete_tag_for_mf_nums(nums, tag)
     _audit(req, f"tag={tag} {'on' if apply else 'off'} mf_nums={nums}")
+    if is_insitu(inst) and not is_week(inst, req['run']):
+        # a tag on a cal or reference point changes the weekly fits: the recalculation uses them refit
+        hit = df.loc[df[id_column(inst)].isin(nums), 'port'].isin(_cal_ports(inst)).any()
+        req = dict(req, refit=bool(hit))
     inst, df = _recalculated(req)       # read again: the tag changed which rows are rejected
-    return _view(inst, df, detrend=True, unsaved=True)
+    return _view(inst, df, detrend=True, unsaved=True, refit=bool(req.get('refit')))
 
 
 def op_comment(req):
@@ -575,12 +653,27 @@ def op_save(req):
     _may_write(req)
     if is_week(instrument_for(req['inst']), req['run']):
         raise ValueError("a calibration week has no mole fractions to save: tags are written at once and Update Method saves the fit")
+    inst0 = instrument_for(req['inst'])
+    refit_n = None
+    if is_insitu(inst0):
+        # In situ: the month's weekly fits are recomputed and stored first, from the data as tagged (and with the smoothing
+        # chosen, written to the rows first so the refit reads it), then the mole fractions follow from them, as ie3_batch --fits -i.
+        if req.get('detrend') is not None:
+            inst0, d0 = _load(req)
+            if d0 is not None:
+                d0['detrend_method_num'] = int(req['detrend'])
+                inst0.upsert_mole_fractions(d0)
+            req = {k: v for k, v in req.items() if k != 'detrend'}
+        refit_n = _store_refit(inst0, req)
     inst, df = _recalculated(req)
     if df is None:
         raise ValueError('no data in that run')
     _save(inst, df, req['pnum'], response_id=int(req['curve']) if req.get('curve') else 'own')
-    _audit(req, f"saved {len(df)} rows detrend={req.get('detrend')}")
-    return op_load(req)
+    _audit(req, f"saved {len(df)} rows detrend={req.get('detrend')}" + (f' refit {refit_n} weekly fits' if refit_n is not None else ''))
+    out = op_load(req)
+    if refit_n is not None:
+        out['refit_weeks'] = refit_n
+    return out
 
 
 def op_copyall(req):
@@ -610,8 +703,13 @@ def op_copyall(req):
     start, end = run_range(inst, req['run'])
     failed = []
     analytes = analyte_list(inst)
+    # tags on cal or reference injections change every analyte's weekly fits: refit them before the mole fractions
+    refit = is_insitu(inst) and 'analysis_num' in df.columns and 'port' in df.columns and \
+        df.loc[pd.to_numeric(df['analysis_num'], errors='coerce').isin(set(adds) | set(removes)), 'port'].isin(_cal_ports(inst)).any()
     for a in analytes:
         try:
+            if refit:
+                _store_refit(inst, dict(req, pnum=a['pnum'], channel=a['channel']))
             one = inst.load_data(pnum=a['pnum'], channel=a['channel'], start_date=start, end_date=end, verbose=False)
             if one is None or one.empty:
                 continue

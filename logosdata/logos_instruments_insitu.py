@@ -1073,8 +1073,9 @@ class IE3_Instrument(HATS_DB_Functions):
             )
         return out
 
-    def calc_mole_fraction(self, df):
+    def calc_mole_fraction(self, df, fits=None):
         """Route by mf_method_num: method 1 → scale_simple; 2/3/4 → cal_fit.
+        fits: a stored_fits()-shaped table to use in place of the stored ones (the web page's preview of a refit).
 
         Rows with a NULL mf_method_num (never recorded) default per-row to
         default_mf_method(parameter_num) -- cal12 for most analytes, not a
@@ -1102,14 +1103,39 @@ class IE3_Instrument(HATS_DB_Functions):
             if method == 1:
                 parts.append(self.calc_mole_fraction_scale_simple(grp))
             else:
-                parts.append(self.calc_mole_fraction_cal_fit(grp))
+                parts.append(self.calc_mole_fraction_cal_fit(grp, fits=fits))
         return self._apply_mf_offsets(pd.concat(parts).sort_values('analysis_datetime'))
 
-    def calc_mole_fraction_cal_fit(self, df):
+    def stored_fits(self, pnum, channel):
+        """The weekly fits in hats.ng_response for this analyte and channel, by run_date: id, run_date (UTC), coef0,
+        coef1, unc_fit, sigma_ref.  Empty when there is no current scale or no fit."""
+        cols = ['id', 'run_date', 'coef0', 'coef1', 'unc_fit', 'sigma_ref']
+        scale_rows = self.db.doquery(
+            f"SELECT idx FROM reftank.scales WHERE parameter_num={int(pnum)} AND current=1"
+        )
+        if not scale_rows:
+            return pd.DataFrame(columns=cols)
+        rows = self.db.doquery(f"""
+            SELECT id, run_date, coef0, coef1, unc_fit, sigma_ref
+            FROM hats.ng_response
+            WHERE inst_num = {self.inst_num}
+              AND site = '{self.site}'
+              AND channel = '{channel}'
+              AND scale_num = {int(scale_rows[0]['idx'])}
+            ORDER BY run_date
+        """)
+        if not rows:
+            return pd.DataFrame(columns=cols)
+        out = pd.DataFrame(rows)
+        out['run_date'] = pd.to_datetime(out['run_date'], utc=True)
+        return out
+
+    def calc_mole_fraction_cal_fit(self, df, fits=None):
         """Compute mole_fraction from a stored ng_response weekly cal fit.
 
         For each row, finds the most recent ng_response row with
         run_date <= analysis_date for (inst_num, site, channel, scale_num).
+        fits replaces the stored table (see stored_fits) when given.
 
         method 2 (cal12): mf = coef1 * normalized_resp + coef0
         method 3 (cal1):  mf = coef1 * normalized_resp
@@ -1125,36 +1151,16 @@ class IE3_Instrument(HATS_DB_Functions):
         pnum = int(df['parameter_num'].iat[0])
         channel = str(df['channel'].iat[0])
 
-        # Fetch the current scale_num for this parameter
-        scale_rows = self.db.doquery(
-            f"SELECT idx FROM reftank.scales WHERE parameter_num={pnum} AND current=1"
-        )
-        if not scale_rows:
-            out = df.copy()
-            out['mole_fraction'] = np.nan
-            out['unc'] = np.nan
-            out['ng_response_id'] = None
-            return out
-        scale_num = int(scale_rows[0]['idx'])
-
-        # Load all ng_response fits for this inst/site/channel/scale
-        fits_rows = self.db.doquery(f"""
-            SELECT id, run_date, coef0, coef1, unc_fit, sigma_ref
-            FROM hats.ng_response
-            WHERE inst_num = {self.inst_num}
-              AND site = '{self.site}'
-              AND channel = '{channel}'
-              AND scale_num = {scale_num}
-            ORDER BY run_date
-        """)
-        if not fits_rows:
+        if fits is None:
+            fits = self.stored_fits(pnum, channel)
+        if fits is None or fits.empty:
             out = df.copy()
             out['mole_fraction'] = np.nan
             out['unc'] = np.nan
             out['ng_response_id'] = None
             return out
 
-        fits = pd.DataFrame(fits_rows)
+        fits = fits.copy()
         fits['run_date'] = pd.to_datetime(fits['run_date'], utc=True)
         fits = fits.sort_values('run_date', kind='stable').reset_index(drop=True)
 
