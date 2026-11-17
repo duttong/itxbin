@@ -279,6 +279,7 @@ def op_init(req):
     by_type = inst.inst_id in ('m4', 'prs')      # what Samples/Standard autoscaling keys on, as logos_data
     return {
         'insitu': is_insitu(inst),
+        'poly_cal': inst.inst_id in POLY_CAL_INSTS,
         'additional': [c for c in getattr(inst, 'ADDITIONAL_DATA_COLUMNS', ())],
         'autoscale': {
             'by': 'rt' if by_type else 'port',
@@ -845,11 +846,150 @@ def op_chrom(req):
     return out
 
 
+# ── Calibration curves (FE3, BLD1): a polynomial per calibration run, in hats.ng_response ──
+
+POLY_CAL_INSTS = ('fe3', 'bld1')
+
+
+def _fill_cal_mf(inst, run, pnum):
+    """run['cal_mf'] = each row's tank's assigned value, as logos_data's populate_cal_mf (no drift)."""
+    tank = run['port_info'].astype('string').str.strip()
+    when = pd.to_datetime(run['analysis_datetime']).max() if run['analysis_datetime'].notna().any() else None
+    cache = {}
+    for t in tank.dropna().unique():
+        rec = inst.scale_assignments(t, pnum, run_date=when)
+        if isinstance(rec, pd.Series):
+            rec = rec.to_dict()
+        cache[t] = float(rec['coef0']) if rec and rec.get('coef0') is not None else np.nan
+    run['cal_mf'] = tank.map(cache).astype('float64')
+    return run
+
+
+def _poly_degree(c3, c2, c1):
+    nz = lambda v: abs(float(np.nan_to_num(pd.to_numeric(v, errors='coerce')))) > 1e-12
+    return 3 if nz(c3) else 2 if nz(c2) else 1 if nz(c1) else None
+
+
+def _cal_state(req):
+    """Everything the Calibration view and its save share: the run with its tanks' assigned values, the
+    stored curves around it, the fit at the chosen degree and the stored curve for this run if there is one."""
+    inst = instrument_for(req['inst'])
+    if inst.inst_id not in POLY_CAL_INSTS:
+        raise ValueError(f'{inst.inst_id} has no calibration curves here')
+    inst, df = _load(req)
+    if df is None:
+        raise ValueError('no data in that run')
+    pnum, channel = int(req['pnum']), req.get('channel') or None
+    run = _fill_cal_mf(inst, df, pnum)
+    if not run['port'].eq(inst.STANDARD_PORT_NUM).any():
+        raise ValueError(f'no reference tank (port {inst.STANDARD_PORT_NUM}) in this run')
+    sel_rt = run['run_time'].iat[0]
+    curves = inst.load_calcurves(pnum, channel, sel_rt)
+    if curves is None or curves.empty:
+        curves = pd.DataFrame(columns=['id', 'run_date', 'serial_number', 'coef3', 'coef2', 'coef1', 'coef0', 'function', 'flag'])
+    curves = curves.copy()
+    curves['run_time'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+    mine = curves.loc[curves['run_time'] == sel_rt]
+    stored = mine.iloc[0] if not mine.empty else None
+    stored_deg = _poly_degree(stored['coef3'], stored['coef2'], stored['coef1']) if stored is not None else None
+    degree = int(req['degree']) if req.get('degree') else (stored_deg or 2)
+    if degree not in (1, 2, 3):
+        raise ValueError('the fit degree is 1, 2 or 3')
+    new = inst._fit_row_for_current_run(run, order=degree)
+    if new is None:
+        raise ValueError('could not generate a calibration fit: not enough valid calibration points')
+    return inst, run, curves, stored, stored_deg, degree, new, sel_rt
+
+
+def op_cal(req):
+    """The Calibration view of one run: its points against the tanks' assigned values, the stored curve,
+    the fit at the chosen degree (the stored curve's on first display), other curves nearby and the reference's
+    estimate.  Read only."""
+    inst, run, curves, stored, stored_deg, degree, new, sel_rt = _cal_state(req)
+    ref_rows = run.loc[run['port'].eq(inst.STANDARD_PORT_NUM) & (run['rejected'].fillna(0).astype(int) != 1)]
+    c = [new['coef0'], new['coef1'], new['coef2'], new['coef3']]
+    ref_mf = pd.Series([inst.invert_poly_to_mf(y, *c, mf_min=-20.0, mf_max=3000) for y in ref_rows['normalized_resp']], dtype=float)
+    ref_mean, ref_sd = ref_mf.mean(), ref_mf.std()
+    run = run.copy()
+    ref_ports = run['port'].eq(inst.STANDARD_PORT_NUM)
+    run.loc[ref_ports, 'cal_mf'] = run.loc[ref_ports, 'cal_mf'].fillna(ref_mean)
+    ok = run[['cal_mf', 'normalized_resp']].notna().all(axis=1)
+    pts = run.loc[ok].reset_index(drop=True)
+    resid = pts['normalized_resp'].astype(float).to_numpy() - np.polyval([new['coef3'], new['coef2'], new['coef1'], new['coef0']], pts['cal_mf'].astype(float).to_numpy())
+    try:
+        scale = int(np.nanmin(run['cal_scale_num']))
+    except (TypeError, ValueError):
+        scale = None
+    curve = lambda r: {'id': None if pd.isna(r.get('id')) else int(r['id']), 'run_date': pd.Timestamp(r['run_date']).strftime('%Y-%m-%d %H:%M:%S'),
+                       'coefs': [_finite(r['coef0']) or 0.0, _finite(r['coef1']) or 0.0, _finite(r['coef2']) or 0.0, _finite(r['coef3']) or 0.0],
+                       'flag': int(r['flag']) if pd.notna(r.get('flag')) else 0, 'serial': None if pd.isna(r.get('serial_number')) else str(r['serial_number'])}
+    others = [curve(r) for _, r in curves.sort_values('run_date', ascending=False).head(7).iterrows() if r['run_time'] != sel_rt][:6]
+    P = {'x': _column(pts['cal_mf'], 'num'), 'y': _column(pts['normalized_resp'], 'num'), 'resid': [_finite(v) for v in resid],
+         'rej': _column(pts['rejected'], 'num'), 'port': _column(pts['port'], 'num'), 't': _column(pts['analysis_datetime'], 'time'),
+         'pidx': _column(pts['port_idx'], 'num'), 'plabel': _column(pts['port_label'], 'str'), 'pcolor': _column(pts['port_color'], 'color'),
+         'pmarker': _column(pts['port_marker'], 'str'), 'port_info': _column(pts['port_info'], 'str')}
+    return {'points': P, 'degree': degree, 'stored_degree': stored_deg, 'exists': stored is not None, 'scale': scale,
+            'stored': curve(stored) if stored is not None else None,
+            'new': {'coefs': [float(new['coef0']), float(new['coef1']), float(new['coef2']), float(new['coef3'])], 'serial': str(new['serial_number'])},
+            'others': others, 'run': sel_rt.strftime('%Y-%m-%d %H:%M:%S'),
+            'ref': {'mf': _finite(ref_mean), 'mf_sd': _finite(ref_sd), 'resp': _finite(ref_rows['normalized_resp'].mean()), 'resp_sd': _finite(ref_rows['normalized_resp'].std()),
+                    'port': int(inst.STANDARD_PORT_NUM)}}
+
+
+def _recalc_dependents(inst, response_id, pnum, channel):
+    """Recalculate every run whose mole fractions use this curve and write them back, as logos_data does after a save."""
+    rows = inst.db.doquery('SELECT DISTINCT a.run_time FROM hats.ng_mole_fractions mf JOIN hats.ng_analysis a ON mf.analysis_num = a.num '
+                           f'WHERE mf.ng_response_id = {int(response_id)}') or []
+    n = 0
+    for r in rows:
+        rt = pd.Timestamp(r['run_time'])
+        t0, t1 = (rt - pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S'), (rt + pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')
+        df = inst.load_data(pnum=pnum, channel=channel, start_date=t0, end_date=t1, verbose=False)
+        if df is None or df.empty:
+            continue
+        df = inst.calc_mole_fraction(df)
+        if 'ng_response_id' in df.columns:
+            sub = df[df['ng_response_id'].fillna(-1).astype(int) == int(response_id)]
+            if not sub.empty:
+                inst.upsert_mole_fractions(sub, response_id=response_id)
+                inst.upsert_calibrations(sub, pnum)
+                n += 1
+    return n
+
+
+def op_calsave(req):
+    """Save this run's curve to hats.ng_response (the fit at the chosen degree, as the view shows it), or set
+    its flag, then recalculate the runs that use it.  Needs rw or admin."""
+    _may_write(req)
+    inst, run, curves, stored, stored_deg, degree, new, sel_rt = _cal_state(req)
+    pnum, channel = int(req['pnum']), req.get('channel') or None
+    payload = dict(new)
+    flag = int(req['flag']) if req.get('flag') is not None else (int(stored['flag']) if stored is not None and pd.notna(stored['flag']) else 0)
+    if flag not in (0, 1):
+        raise ValueError('flag is 0 or 1')
+    payload['flag'] = flag
+    if req.get('flag') is not None and stored is not None and not req.get('degree'):
+        # A flag change keeps the stored curve as it is.
+        for k in ('coef0', 'coef1', 'coef2', 'coef3'):
+            payload[k] = float(stored[k])
+    fields = ['scale_num', 'inst_num', 'site', 'run_date', 'channel', 'coef0', 'coef1', 'coef2', 'coef3', 'flag', 'function', 'serial_number']
+    sql = ('INSERT INTO ng_response (scale_num, inst_num, site, run_date, channel, coef0, coef1, coef2, coef3, flag, function, serial_number) '
+           'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE channel = VALUES(channel), site = VALUES(site), '
+           'scale_num = VALUES(scale_num), coef0 = VALUES(coef0), coef1 = VALUES(coef1), coef2 = VALUES(coef2), coef3 = VALUES(coef3), '
+           'flag = VALUES(flag), function = VALUES(function), serial_number = VALUES(serial_number)')
+    _audit(req, f"cal save degree={degree} flag={flag} coefs={[payload[k] for k in ('coef0', 'coef1', 'coef2', 'coef3')]}")
+    inst.db.doquery(sql, [payload.get(c) for c in fields])
+    recalculated = None
+    if stored is not None and pd.notna(stored['id']):
+        recalculated = _recalc_dependents(inst, int(stored['id']), pnum, channel)
+    return {'saved': True, 'recalculated': recalculated}
+
+
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
-       'chrom': op_chrom, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
+       'chrom': op_chrom, 'cal': op_cal, 'calsave': op_calsave, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal'}
 
 
 def _lost_connection(e):
