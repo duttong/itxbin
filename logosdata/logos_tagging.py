@@ -72,6 +72,10 @@ _INFO_TAG_DESCRIPTIONS = {
 # 316: first-reference-run flag set by m4_gcwerks2db.
 _USER_REMOVABLE_AUTO_TAGS = frozenset({316})
 
+# Tags applied by loaders and QC scripts, not by hand: a point rejected only by these is drawn with an x.
+# Shared by logos_data (MainWindow.AUTO_TAG_NUMS) and logos_data_service.
+AUTO_TAG_NUMS = frozenset({316, 26, 25, 2, 32, 324, 328, 329, 286})
+
 # Automatic tags whose manual removal is remembered in hats.ng_mole_fraction_tag_override, which the
 # tagger checks before (re)applying the tag. Removing one of these writes an override row; applying
 # the tag again deletes it. Only the M4/FE3/BLD1 tag table has an override table (not IE3/CATS yet).

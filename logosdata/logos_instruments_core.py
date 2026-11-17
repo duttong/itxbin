@@ -3,6 +3,7 @@ and the Normalizing helper. Instrument-specific subclasses live in
 logos_instruments_flask.py and logos_instruments_insitu.py; import public
 names through the logos_instruments facade."""
 import sys
+import warnings
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -342,6 +343,38 @@ class HATS_DB_Functions(LOGOS_Instruments):
             raise ValueError(f"No scale number found for parameter number {parameter_num}.")
         return r[0]['idx']
         
+    def cal_mf_for(self, run, pnum):
+        """The assigned mole fraction (scale_assignments coef0) of each row's tank, as a float Series on run's index.
+
+        Tanks are resolved to the fill in use at the run's last analysis, so a refilled tank gets the value of its
+        fill then.  Drift (coef1) is not applied: a tank with a non-zero one is warned about.  Shared by
+        logos_data's calibration plot and the web page's service.
+        """
+        if 'port_info' not in run:
+            raise KeyError("the run must contain a 'port_info' column")
+        tank = run['port_info'].astype('string').str.strip()
+        tanks = tank.dropna().unique().tolist()
+        if not tanks:
+            return pd.Series(np.nan, index=run.index, dtype='float64')
+        when = None
+        if 'analysis_datetime' in run and run['analysis_datetime'].notna().any():
+            when = pd.to_datetime(run['analysis_datetime']).max()
+        coef0, drift = {}, []
+        for t in tanks:
+            rec = self.scale_assignments(t, pnum, run_date=when)
+            if isinstance(rec, pd.Series):
+                rec = rec.to_dict()
+            if not rec:
+                continue                    # no assignment for this tank
+            if float(rec.get('coef1') or 0.0) != 0.0:
+                drift.append((t, float(rec['coef1'])))
+            c0 = rec.get('coef0')
+            coef0[t] = float(c0) if c0 is not None else np.nan
+        if drift:
+            warnings.warn("scale_assignments has non-zero coef1 (drift) for: "
+                          + ", ".join(f"{t} (coef1={c:g})" for t, c in drift), RuntimeWarning)
+        return tank.map(coef0).astype('float64')
+
     def scale_assignments(self, tank, pnum, run_date=None):
         """
         Returns a dictionary of scale-assignment values for a given tank and

@@ -71,7 +71,7 @@ from gcwerks_chromatogram import (GCWerksPeakIntegration, _analyte_name_aliases,
                                   gcwerks_channel_number, gcwerks_focus_limits,
                                   gcwerks_ms_quantitation_mass, gcwerks_ms_quantitation_masses, gcwerks_peak_window, gcwerks_run_integrations,
                                   read_gcwerks_chromatogram, read_gcwerks_ms_chromatogram)
-from logos_tagging import (TagCRUDMixin, _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS, _TAG_LAYOUT,
+from logos_tagging import (AUTO_TAG_NUMS, TagCRUDMixin, _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS, _TAG_LAYOUT,
                            _USER_REMOVABLE_AUTO_TAGS)
 
 DEFAULT_SOCKET = '/dev/shm/logos_data.sock'
@@ -144,10 +144,6 @@ def id_column(inst):
     """The DataFrame column holding each row's mole fraction primary key."""
     return _TagHost(inst)._tag_table_info()[3]
 
-
-# Tags applied by loaders and QC scripts, not by hand; a point rejected only by these is drawn
-# with an x.  A copy of MainWindow.AUTO_TAG_NUMS in logosdata/logos_data.py: keep in step.
-AUTO_TAG_NUMS = [316, 26, 25, 2, 32, 324, 328, 329, 286]
 
 # name on the page: (DataFrame column, kind)
 POINT_COLUMNS = {
@@ -269,12 +265,14 @@ def tag_dictionary(instrument):
     return _tagdict
 
 
+def channel_of(name):
+    """The channel in an analyte's display name ("CFC12 (b)" -> 'b'), or None."""
+    m = re.search(r'\((\w+)\)\s*$', name)
+    return m.group(1) if m else None
+
+
 def analyte_list(instrument):
-    out = []
-    for name, pnum in instrument.analytes.items():
-        m = re.search(r'\((\w+)\)\s*$', name)
-        out.append({'name': name, 'pnum': int(pnum), 'channel': m.group(1) if m else None})
-    return out
+    return [{'name': name, 'pnum': int(pnum), 'channel': channel_of(name)} for name, pnum in instrument.analytes.items()]
 
 
 def op_ping(req):
@@ -310,7 +308,7 @@ def op_init(req):
         'standard_run_type': getattr(inst, 'STANDARD_RUN_TYPE', None),
         'marker_size': inst.BASE_MARKER_SIZE,
         'tags': tag_dictionary(inst),
-        'auto_tags': AUTO_TAG_NUMS,
+        'auto_tags': sorted(AUTO_TAG_NUMS),
         'info_tags': sorted(_INFO_TAG_NUMS),
         'tag_layout': [[section, [list(e) for e in entries]] for section, entries in _TAG_LAYOUT],
         'removable_auto_tags': sorted(_USER_REMOVABLE_AUTO_TAGS),
@@ -341,10 +339,14 @@ def _date(text):
     return pd.Timestamp(str(text)).strftime('%Y-%m-%d %H:%M:%S')
 
 
+MONTH_ID = re.compile(r'\d{4}-\d{2}')
+WEEK_ID = re.compile(r'\d{4}-\d{2}-\d{2}')
+
+
 def run_range(inst, run):
     """(start, end) for load_data: a run_time for both ends, or an in situ month's first and last second."""
     if is_insitu(inst):
-        if not re.fullmatch(r'\d{4}-\d{2}', str(run)):
+        if not MONTH_ID.fullmatch(str(run)):
             raise ValueError(f'bad month {run!r}')
         month = pd.Period(run, freq='M')
         return (month.start_time.strftime('%Y-%m-%d %H:%M:%S'), month.end_time.strftime('%Y-%m-%d %H:%M:%S'))
@@ -354,7 +356,7 @@ def run_range(inst, run):
 
 def is_week(inst, run):
     """True for an in situ cal week (run id YYYY-MM-DD), as opposed to a month (YYYY-MM)."""
-    return is_insitu(inst) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(run)) is not None
+    return is_insitu(inst) and WEEK_ID.fullmatch(str(run)) is not None
 
 
 def _load(req):
@@ -377,13 +379,8 @@ def op_load(req):
     """One run of one analyte, as logos_data loads it."""
     t0 = time.time()
     inst, df = _load(req)
-    t1 = time.time()
-    if df is None:
-        return {'points': None, 'load_ms': round((t1 - t0) * 1000)}
-    out = {'points': points_json(inst, df), 'tags': tags_for(inst, df)}       # the reference smoothing summary follows (op_detrend): it is the slowest part
-    out['load_ms'] = round((t1 - t0) * 1000)
-    out['tags_ms'] = round((time.time() - t1) * 1000)
-    return out
+    # the reference smoothing summary follows (op_detrend): it is the slowest part
+    return _view(inst, df, load_ms=round((time.time() - t0) * 1000))
 
 
 def op_detrend(req):
@@ -622,8 +619,8 @@ def _finite(v):
 def _analyte_name(inst, pnum, channel):
     """The display name of an analyte on a channel ("CFC12 (b)"), or None."""
     for name, n in inst.analytes.items():
-        m = re.search(r'\((\w+)\)\s*$', name)
-        if pnum is not None and int(n) == int(pnum) and (not channel or not m or m.group(1) == channel):
+        ch = channel_of(name)
+        if pnum is not None and int(n) == int(pnum) and (not channel or ch is None or ch == channel):
             return name
     return None
 
@@ -708,15 +705,11 @@ def stored_peak(inst, req, gc_dir, channel, path, start_time, analyte, elapsed, 
         d = float(np.interp(p['rt'], t, y)) - min(p['sl'], p['el'])
         return 0.3 * p['ht'] <= d <= 1.5 * p['ht'] and t[0] <= p['st'] and p['et'] <= t[-1]
     others = [p for p in others if on_trace(p)]
-    for p in others:
-        if p is not peak:
-            p['bs'], p['be'] = (logosint_baseline(inst, p, gc_dir, channel, os.path.basename(str(path))) or peak_baseline(p, others, elapsed, signal))
-            p['wl'], p['wr'] = half_height_crossings(p, elapsed, signal)
-    if peak is None:
-        return None, others
-    peak['bs'], peak['be'] = (logosint_baseline(inst, peak, gc_dir, channel, os.path.basename(str(path)))
-                              or peak_baseline(peak, others, elapsed, signal))
-    peak['wl'], peak['wr'] = half_height_crossings(peak, elapsed, signal)
+    run = os.path.basename(str(path))
+    for p in others + ([peak] if peak is not None and peak not in others else []):
+        # the baseline logosint reports under the peak, else worked out from the neighbours; then its half-height width
+        p['bs'], p['be'] = logosint_baseline(inst, p, gc_dir, channel, run) or peak_baseline(p, others, elapsed, signal)
+        p['wl'], p['wr'] = half_height_crossings(p, elapsed, signal)
     return peak, others
 
 
@@ -955,16 +948,8 @@ POLY_CAL_INSTS = ('fe3', 'bld1')
 
 
 def _fill_cal_mf(inst, run, pnum):
-    """run['cal_mf'] = each row's tank's assigned value, as logos_data's populate_cal_mf (no drift)."""
-    tank = run['port_info'].astype('string').str.strip()
-    when = pd.to_datetime(run['analysis_datetime']).max() if run['analysis_datetime'].notna().any() else None
-    cache = {}
-    for t in tank.dropna().unique():
-        rec = inst.scale_assignments(t, pnum, run_date=when)
-        if isinstance(rec, pd.Series):
-            rec = rec.to_dict()
-        cache[t] = float(rec['coef0']) if rec and rec.get('coef0') is not None else np.nan
-    run['cal_mf'] = tank.map(cache).astype('float64')
+    """run['cal_mf'] = each row's tank's assigned value (instrument.cal_mf_for, shared with logos_data)."""
+    run['cal_mf'] = inst.cal_mf_for(run, pnum)
     return run
 
 
@@ -1108,7 +1093,7 @@ def op_calweeks(req):
 
 
 def _week_start(run):
-    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(run)):
+    if not WEEK_ID.fullmatch(str(run)):
         raise ValueError(f'bad cal week {run!r}')
     return str(run)
 

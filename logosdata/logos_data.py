@@ -53,6 +53,7 @@ from logos_timeseries import TimeseriesWidget
 from logos_tanks import TanksWidget
 from logos_figures import FiguresWidget
 from logos_tagging import (
+    AUTO_TAG_NUMS as _AUTO_TAG_NUMS,
     _TAG_LAYOUT,
     _INFO_TAG_NUMS,
     _INFO_TAG_DESCRIPTIONS,
@@ -791,7 +792,7 @@ class _TagComboDelegate(QStyledItemDelegate):
 
 class MainWindow(QMainWindow, TagCRUDMixin):
 
-    AUTO_TAG_NUMS = {316, 26, 25, 2, 32, 324, 328, 329, 286}
+    AUTO_TAG_NUMS = set(_AUTO_TAG_NUMS)       # logos_tagging.AUTO_TAG_NUMS, shared with the web service
 
     def __init__(self, instrument, initial_start=None):
         # Notice: we call super().__init__(instrument=instrument_id) inside HATS_DB_Functions
@@ -5164,71 +5165,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         self.canvas.draw()
 
     def populate_cal_mf(self) -> None:
-        """
-        Fill self.run['cal_mf'] from instrument.scale_assignments(tank, pnum).
-        Expects scale_assignments to return a dict/Series with keys 'coef0' and 'coef1'
-        (or None if not found).
-        coef1 is not completely coded yet. No drift allowed.
-        """
-        if 'port_info' not in self.run:
-            raise KeyError("self.run must contain a 'port_info' column")
-
-        # Normalize tank IDs to strings for consistent lookup
-        tank_series = (
-            self.run['port_info']
-            .astype('string')        # keeps NaN semantics
-            .str.strip()
-        )
-
-        unique_tanks = tank_series.dropna().unique().tolist()
-        if not unique_tanks:
-            self.run['cal_mf'] = np.nan
-            return
-
-        # Date of this run, so refilled tanks resolve to the fill that was in
-        # use rather than an arbitrary record.
-        run_date = None
-        if 'analysis_datetime' in self.run and self.run['analysis_datetime'].notna().any():
-            run_date = pd.to_datetime(self.run['analysis_datetime']).max()
-
-        @lru_cache(maxsize=None)
-        def get_scale(tank_id: str):
-            rec = self.instrument.scale_assignments(tank_id, self.current_pnum, run_date=run_date)
-            if rec is None:
-                return None
-            if isinstance(rec, pd.Series):
-                rec = rec.to_dict()
-            return rec
-
-        tank_to_coef0 = {}
-        drift_tanks = []
-        for t in unique_tanks:
-            rec = get_scale(t)
-            if not rec:
-                # no scale assignment for this tank
-                continue
-            coef1 = float(rec.get('coef1') or 0.0)
-            if coef1 != 0.0:
-                drift_tanks.append((t, coef1))
-            coef0 = rec.get('coef0')
-            tank_to_coef0[t] = float(coef0) if coef0 is not None else np.nan
-
-        # Map back to the dataframe (vectorized) and ensure numeric dtype
-        self.run['cal_mf'] = tank_series.map(tank_to_coef0).astype('float64')
-
-        # Warn (or error) about drift, depending on your preference
-        if drift_tanks:
-            msg = "scale_assignments has non-zero coef1 (drift) for: " + \
-                ", ".join(f"{t} (coef1={c:g})" for t, c in drift_tanks)
-            # Option A (recommended): warn but continue
-            warnings.warn(msg, RuntimeWarning)
-            # Option B (strict): stop execution
-            # raise RuntimeError(msg)
-
-        # Optional: warn if some tanks had no assignment at all
-        #missing = sorted(set(tank_series.dropna()) - set(tank_to_coef0))
-        #if missing:
-        #    warnings.warn("No scale assignment found for: " + ", ".join(missing), UserWarning)
+        """Fill self.run['cal_mf'] with each row's tank's assigned value (instrument.cal_mf_for)."""
+        self.run['cal_mf'] = self.instrument.cal_mf_for(self.run, self.current_pnum)
 
     def _style_flag_button(self):
         """Refresh the legend 'flag' button look based on _save_payload['flag']"""
