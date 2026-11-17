@@ -1156,31 +1156,32 @@ class IE3_Instrument(HATS_DB_Functions):
 
         fits = pd.DataFrame(fits_rows)
         fits['run_date'] = pd.to_datetime(fits['run_date'], utc=True)
+        fits = fits.sort_values('run_date', kind='stable').reset_index(drop=True)
 
         out = df.copy()
-        mf = pd.Series(index=df.index, dtype=float)
-        unc = pd.Series(index=df.index, dtype=float)
-        rid = pd.Series(index=df.index, dtype=object)
-
-        for idx, row in df.iterrows():
-            analysis_dt = pd.to_datetime(row['analysis_datetime'], utc=True)
-            mask = fits['run_date'] <= analysis_dt
-            if not mask.any():
-                continue
-            fit = fits.loc[mask].iloc[-1]
-            method = int(row['mf_method_num']) if pd.notna(row.get('mf_method_num')) else 2
-            resp = row['normalized_resp']
-            if pd.isna(resp):
-                continue
-            if method == 2:
-                mf.at[idx] = float(fit['coef1']) * resp + float(fit['coef0'])
-            else:
-                mf.at[idx] = float(fit['coef1']) * resp
-            unc.at[idx] = np.sqrt(
-                float(fit['unc_fit']) ** 2
-                + (float(fit['coef1']) * float(fit['sigma_ref'])) ** 2
-            )
-            rid.at[idx] = int(fit['id'])
+        # Each row takes the latest fit at or before its analysis time (searchsorted on the sorted fit dates; of fits
+        # with the same date, the last one), as the per-row loop this replaces did.
+        fit_ns = fits['run_date'].dt.tz_convert('UTC').dt.tz_localize(None).to_numpy('datetime64[ns]')
+        when = pd.to_datetime(df['analysis_datetime'], utc=True).dt.tz_convert('UTC').dt.tz_localize(None).to_numpy('datetime64[ns]')
+        pos = np.searchsorted(fit_ns, when, side='right') - 1
+        resp = pd.to_numeric(df['normalized_resp'], errors='coerce').to_numpy(dtype=float)
+        ok = (pos >= 0) & np.isfinite(resp)
+        at = np.clip(pos, 0, None)
+        coef0 = pd.to_numeric(fits['coef0'], errors='coerce').to_numpy(dtype=float)[at]
+        coef1 = pd.to_numeric(fits['coef1'], errors='coerce').to_numpy(dtype=float)[at]
+        unc_fit = pd.to_numeric(fits['unc_fit'], errors='coerce').to_numpy(dtype=float)[at]
+        sigma_ref = pd.to_numeric(fits['sigma_ref'], errors='coerce').to_numpy(dtype=float)[at]
+        if 'mf_method_num' in df.columns:
+            method = pd.to_numeric(df['mf_method_num'], errors='coerce').fillna(2).to_numpy(dtype=float)
+        else:
+            method = np.full(len(df), 2.0)
+        value = np.where(method == 2, coef1 * resp + coef0, coef1 * resp)
+        err = np.sqrt(unc_fit ** 2 + (coef1 * sigma_ref) ** 2)
+        ids = fits['id'].to_numpy()[at]
+        mf = pd.Series(np.where(ok, value, np.nan), index=df.index, dtype=float)
+        unc = pd.Series(np.where(ok, err, np.nan), index=df.index, dtype=float)
+        rid = pd.Series(np.where(ok, ids.astype(float), np.nan), index=df.index, dtype=object)
+        rid = rid.map(lambda v: int(v) if v == v else v)
 
         out['mole_fraction'] = mf
         out['unc'] = unc
