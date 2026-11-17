@@ -280,6 +280,26 @@ def op_ping(req):
             'instruments': sorted(_instruments)}
 
 
+_last_data = {}        # page instrument id -> (when read, 'YYYY-MM-DD HH:MM:SS' or None)
+
+
+def last_data_time(page_id, inst):
+    """The latest run (or in situ analysis) of an instrument, so the page can open on its last data when it has been
+    discontinued.  Read at most every ten minutes."""
+    hit = _last_data.get(page_id)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    if is_insitu(inst):
+        rows = inst.doquery('SELECT MAX(run_time) t FROM hats.ng_insitu_analysis WHERE inst_num = %s AND site_num = %s',
+                            [int(inst.inst_num), int(inst.site_num)])
+    else:
+        rows = inst.doquery('SELECT MAX(run_time) t FROM hats.ng_analysis WHERE inst_num = %s', [int(inst.inst_num)])
+    t = rows[0]['t'] if rows and rows[0]['t'] is not None else None
+    t = pd.Timestamp(t).strftime('%Y-%m-%d %H:%M:%S') if t is not None else None
+    _last_data[page_id] = (time.time(), t)
+    return t
+
+
 def op_init(req):
     """What the page needs once per instrument."""
     inst = instrument_for(req['inst'])
@@ -289,6 +309,7 @@ def op_init(req):
     by_type = inst.inst_id in ('m4', 'prs')      # what Samples/Standard autoscaling keys on, as logos_data
     return {
         'insitu': is_insitu(inst),
+        'last_data': last_data_time(req['inst'], inst),
         'poly_cal': inst.inst_id in POLY_CAL_INSTS,
         'week_cal': inst.inst_id in WEEK_CAL_INSTS,
         'week_methods': {str(k): v for k, v in inst.MF_METHOD_LABELS.items()} if inst.inst_id in WEEK_CAL_INSTS else None,
