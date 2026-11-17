@@ -166,10 +166,17 @@ POINT_COLUMNS = {
 def _column(s, kind):
     if kind == 'time':
         t = pd.to_datetime(s, errors='coerce', utc=True)
-        return [None if pd.isna(v) else v.strftime('%Y-%m-%d %H:%M:%S') for v in t]
+        return t.dt.strftime('%Y-%m-%d %H:%M:%S').where(t.notna(), None).tolist()
     if kind == 'num':
+        # None for a missing value, an int for a whole one, a float otherwise; vectorized (a Python loop was most of points_json)
         a = pd.to_numeric(s, errors='coerce').to_numpy(dtype=float)
-        return [None if not np.isfinite(v) else (int(v) if v == int(v) else float(v)) for v in a]
+        ok = np.isfinite(a)
+        whole = ok & (a == np.floor(a)) & (np.abs(a) < 1e15)
+        out = np.full(len(a), None, dtype=object)
+        out[whole] = a[whole].astype(np.int64).astype(object)
+        part = ok & ~whole
+        out[part] = a[part].astype(object)
+        return out.tolist()
     if kind == 'color':
         cache = {}
         out = []
@@ -246,12 +253,15 @@ def tags_for(instrument, df):
 
 
 _tagdict = None
+_tagdict_at = 0.0
+TAGDICT_TTL = 600       # seconds: a tag added to ccgg.tag_view shows up without restarting the service
 
 
 def tag_dictionary(instrument):
-    """tag_num -> [flag, name, reject]; read once."""
-    global _tagdict
-    if _tagdict is None:
+    """tag_num -> [flag, name, reject]; re-read every TAGDICT_TTL seconds."""
+    global _tagdict, _tagdict_at
+    if _tagdict is None or time.time() - _tagdict_at > TAGDICT_TTL:
+        _tagdict_at = time.time()
         rows = instrument.doquery('SELECT tag_num, flag, name, reject FROM ccgg.tag_view') or []
         _tagdict = {str(int(r['tag_num'])): [r['flag'] or '', r['name'] or '', int(r['reject'] or 0)] for r in rows}
         for num, desc in _INFO_TAG_DESCRIPTIONS.items():        # the panel's own wording for info tags
@@ -370,10 +380,16 @@ def op_load(req):
     t1 = time.time()
     if df is None:
         return {'points': None, 'load_ms': round((t1 - t0) * 1000)}
-    out = {'points': points_json(inst, df, detrend=True), 'tags': tags_for(inst, df)}
+    out = {'points': points_json(inst, df), 'tags': tags_for(inst, df)}       # the reference smoothing summary follows (op_detrend): it is the slowest part
     out['load_ms'] = round((t1 - t0) * 1000)
     out['tags_ms'] = round((time.time() - t1) * 1000)
     return out
+
+
+def op_detrend(req):
+    """The reference smoothing summary of a run (None for in situ).  Separate from op_load so the plot need not wait for it."""
+    inst, df = _load(req)
+    return {'detrend': detrend_summary(inst, df) if df is not None else None}
 
 
 def op_smooth(req):
@@ -509,7 +525,7 @@ def op_tag(req):
     else:
         host._delete_tag_for_mf_nums(nums, tag)
     _audit(req, f"tag={tag} {'on' if apply else 'off'} mf_nums={nums}")
-    inst, df = _recalculated(req)
+    inst, df = _recalculated(req)       # read again: the tag changed which rows are rejected
     return _view(inst, df, detrend=True, unsaved=True)
 
 
@@ -1253,11 +1269,11 @@ def op_calweekmf(req):
     return {'saved': True, 'updated': int(df['mole_fraction'].notna().sum()), 'of': int(len(df))}
 
 
-OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
+OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
        'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend'}
 
 
 def _lost_connection(e):
