@@ -363,7 +363,7 @@ def _load(req):
     inst = instrument_for(req['inst'])
     if is_week(inst, req['run']):
         # A cal week: the cal and reference ports of the 7 days from the fit's date, as the desktop loads it.
-        df = inst.load_cal_week_data(int(req['pnum']), req.get('channel') or None, str(req['run']))
+        df = inst.load_cal_week_data(int(req['pnum']), req.get('channel') or None, str(req['run']), detrend=req.get('detrend'))
         if df is None or df.empty:
             return inst, None
         return inst, df.reset_index(drop=True)
@@ -392,8 +392,6 @@ def op_detrend(req):
 def op_smooth(req):
     """The run recalculated with another smoothing method.  A preview: nothing is saved."""
     t0 = time.time()
-    if is_week(instrument_for(req['inst']), req['run']):
-        raise ValueError('smoothing is not changed for a calibration week')
     inst, df = _recalculated(req)
     return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1))
 
@@ -1106,7 +1104,7 @@ def op_calweek(req):
     pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
     if not cal_week.IE3_CAL_AVAILABLE:
         raise ValueError('the cal-fit code (ie3_cal_test) is not available')
-    data = inst.load_cal_week_data(pnum, channel, week)
+    data = inst.load_cal_week_data(pnum, channel, week, detrend=req.get('detrend'))
     if data is None or data.empty:
         raise ValueError('no calibration data in that week')
     recorded = int(inst.get_week_mf_method(pnum, channel, week))
@@ -1212,9 +1210,12 @@ def op_calweeksave(req):
         raise ValueError('unknown calibration method')
     _audit(req, f'cal week {week} method={inst.MF_METHOD_LABELS[method]}')
     inst.set_week_mf_method(pnum, channel, week, method)
+    detrend = req.get('detrend')
+    data = inst.load_cal_week_data(pnum, channel, week, detrend=detrend)
+    if detrend is not None and data is not None and not data.empty:
+        inst.upsert_mole_fractions(data)        # the smoothing tried is the one stored with the week's cal rows, as logos_data's Update Method
     if not inst.uses_ng_response_fit(method):
         return {'saved': True, 'fit': None, 'note': 'method recorded; ref-tank scaling stores no fit'}
-    data = inst.load_cal_week_data(pnum, channel, week)
     unflagged = data[data['rejected'].fillna(0).astype(int) == 0].copy() if data is not None and not data.empty else pd.DataFrame()
     if unflagged.empty:
         return {'saved': True, 'fit': None, 'note': 'no unflagged cal data; the fit was not recomputed'}

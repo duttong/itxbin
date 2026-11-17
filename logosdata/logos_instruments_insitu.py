@@ -1432,11 +1432,12 @@ class IE3_Instrument(HATS_DB_Functions):
             WHERE {where}
         """)
 
-    def load_cal_week_data(self, pnum, channel, week_start):
+    def load_cal_week_data(self, pnum, channel, week_start, detrend=None):
         """Load cal+ref port data for the week starting on week_start.
 
         Returns same DataFrame structure as load_data() but limited to
         cal ports (1, 9) and ref port (5), covering [week_start, week_start+7d).
+        detrend: a smoothing method (detrend_method_num) to use instead of the stored ones.
         """
         from datetime import timedelta as _td
         t0 = pd.Timestamp(week_start).strftime('%Y-%m-%d')
@@ -1494,6 +1495,8 @@ class IE3_Instrument(HATS_DB_Functions):
         df['retention_time'] = df['retention_time'].astype(float)
         df['rejected'] = df['rejected'].fillna(0).astype(int)
         df['detrend_method_num'] = df['detrend_method_num'].fillna(5).astype(int)
+        if detrend is not None:                  # a smoothing method to try instead of the stored one
+            df['detrend_method_num'] = int(detrend)
         df['mf_method_num'] = df['mf_method_num'].fillna(self.default_mf_method(pnum)).astype(int)
         df = self._apply_resp_corrections(df)
         df = self.norm.merge_smoothed_data(df)
