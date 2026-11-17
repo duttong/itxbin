@@ -66,7 +66,8 @@ import matplotlib.colors as mcolors
 import logos_instruments as li
 import integ_source
 import cal_week
-from gcwerks_chromatogram import (GCWerksPeakIntegration, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
+from gcwerks_chromatogram import (GCWerksPeakIntegration, _analyte_name_aliases, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
+                                  find_gcwerks_peakid_file, read_gcwerks_peak_windows,
                                   gcwerks_channel_number, gcwerks_focus_limits,
                                   gcwerks_ms_quantitation_mass, gcwerks_ms_quantitation_masses, gcwerks_peak_window, gcwerks_run_integrations,
                                   read_gcwerks_chromatogram, read_gcwerks_ms_chromatogram)
@@ -669,6 +670,18 @@ def stored_peak(inst, req, gc_dir, channel, path, start_time, analyte, elapsed, 
             by_name = {norm(k): v for k, v in masses.items()}
             others = [p for p in others if p is peak or (mass is not None and by_name.get(norm(p['name'])) is not None
                                                           and abs(by_name[norm(p['name'])] - mass) < 0.5)]
+    # The stored row holds every channel's peaks: keep the ones this channel's peak ids name, within their windows.
+    if got is None and inst.inst_id != 'm4':
+        try:
+            pid_path = find_gcwerks_peakid_file(gc_dir, channel, start_time)
+            windows = read_gcwerks_peak_windows(pid_path) if pid_path else ()
+        except (OSError, ValueError):
+            windows = ()
+        if windows:
+            wins = [(_analyte_name_aliases(w.analyte), w.center_seconds, w.width_seconds) for w in windows]
+            in_channel = lambda p: p is peak or any(
+                _analyte_name_aliases(p['name']) & names and p.get('rt') is not None and abs(p['rt'] - c) <= w / 2 + 10 for names, c, w in wins)
+            others = [p for p in others if in_channel(p)]
     # What is on this trace: a peak of another channel or ion has no signal under its crest.
     t, y = np.asarray(elapsed), np.asarray(signal)
     def on_trace(p):
