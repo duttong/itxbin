@@ -418,7 +418,7 @@ def op_smooth(req):
     # refit: the page asks for the weekly fits refit when the smoothing differs from the stored one (it moves the cal points
     # too); the stored smoothing is shown with the stored fits.
     inst, df = _recalculated(req)
-    return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1), refit=bool(req.get('refit')))
+    return _view(inst, df, calc_ms=round((time.time() - t0) * 1000, 1), refit=_refit_wanted(inst, req))       # only an in situ month is refit
 
 
 class _TagHost(TagCRUDMixin):
