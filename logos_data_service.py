@@ -21,7 +21,8 @@ writes must require a role here too.
     {"op": "runs", "inst": "m4", "start": "2026-10-01", "end": "2026-11-30"}
     {"op": "load", "inst": "m4", "pnum": 29, "channel": null, "run": "2026-10-22 09:28:00"}
     {"op": "smooth", ...as load..., "detrend": 5}   the run with another smoothing (preview)
-    {"op": "chrom", "inst": "m4", "channel": null, "t": "2026-10-22 10:01:00"}
+    {"op": "chrom", "inst": "m4", "channel": null, "t": "2026-10-22 10:01:00",
+     "data": true, "analyte": "HFC-134a"}        the chromatogram trace, peak window, baseline
 
     {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null}
     {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
@@ -61,7 +62,9 @@ matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 
 import logos_instruments as li
-from gcwerks_chromatogram import find_gcwerks_chromatogram, gcwerks_channel_number
+from gcwerks_chromatogram import (find_gcwerks_chromatogram, gcwerks_channel_number, gcwerks_focus_limits,
+                                  gcwerks_ms_quantitation_mass, gcwerks_peak_integration, gcwerks_peak_window,
+                                  read_gcwerks_chromatogram, read_gcwerks_ms_chromatogram)
 from logos_tagging import (TagCRUDMixin, _INFO_TAG_DESCRIPTIONS, _INFO_TAG_NUMS, _TAG_LAYOUT,
                            _USER_REMOVABLE_AUTO_TAGS)
 
@@ -486,14 +489,55 @@ def op_copyall(req):
 
 
 def op_chrom(req):
-    """The GCwerks chromatogram behind an injection: its channel number and file name."""
+    """The chromatogram behind an injection, as logos_data's Chrom View shows it: the trace
+    (the analyte's quantitation ion on the GC/MS), the peak window, GCwerks' integration
+    baseline and the limits that frame the peak.  c and f name it for logos_integ."""
     inst = instrument_for(req['inst'])
     channel = gcwerks_channel_number(inst.inst_id, req.get('channel'), getattr(inst, 'site', ''))
     gc_dir = str(inst.gc_dir)
     if not os.path.isdir(gc_dir) and os.path.isdir('/nfs' + gc_dir):      # omi mounts /hats under /nfs
         gc_dir = '/nfs' + gc_dir
     path = find_gcwerks_chromatogram(gc_dir, _date(req['t']), channel)
-    return {'c': channel, 'f': os.path.basename(str(path))}
+    out = {'c': channel, 'f': os.path.basename(str(path))}
+    if not req.get('data'):
+        return out
+    analyte = str(req.get('analyte') or '')
+    mass = None
+    if inst.inst_id == 'm4':
+        chrom = read_gcwerks_ms_chromatogram(path)
+        window = gcwerks_peak_window(gc_dir, channel, chrom.start_time, analyte)
+        mass = window.mass if window is not None else None
+        if mass is None:
+            mass = gcwerks_ms_quantitation_mass(gc_dir, analyte)
+        if req.get('mass') is not None:
+            mass = float(req['mass'])
+        trace = chrom.trace_for_mass(float(mass) if mass is not None else 0.0)
+        elapsed, signal, mass = trace.elapsed_seconds, trace.signal, float(trace.mass)
+        out['masses'] = [float(m) for m in chrom.masses]
+        out['ylabel'] = 'Ion signal (counts)'
+    else:
+        chrom = read_gcwerks_chromatogram(path)
+        window = gcwerks_peak_window(gc_dir, channel, chrom.start_time, analyte)
+        signal = chrom.signal
+        elapsed = chrom.elapsed_seconds if chrom.elapsed_seconds is not None else (
+            np.arange(signal.size) / chrom.sample_rate + chrom.inject_time_offset)
+        out['ylabel'] = 'Signal'
+    try:
+        integ = gcwerks_peak_integration(gc_dir, path, chrom.start_time, analyte)
+    except (OSError, ValueError):        # an absent or older result table: the trace is still worth showing
+        integ = None
+    elapsed = np.asarray(elapsed, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+    out.update(start=f'{chrom.start_time:%Y-%m-%d %H:%M} UTC', mass=mass,
+               x=[round(float(v) / 60.0, 5) for v in elapsed], y=[float(v) for v in signal])
+    if window is not None:
+        out['window'] = [window.center_seconds / 60.0, window.width_seconds / 60.0]
+    if integ is not None:
+        out['integ'] = {'x': [integ.start_time / 60.0, integ.end_time / 60.0], 'y': [integ.start_level, integ.end_level]}
+    focus = gcwerks_focus_limits(elapsed, signal, window, integ)
+    if focus is not None:
+        out['focus'] = {'x': [focus[0][0] / 60.0, focus[0][1] / 60.0], 'y': [float(focus[1][0]), float(focus[1][1])]}
+    return out
 
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
