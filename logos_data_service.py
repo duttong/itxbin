@@ -196,7 +196,32 @@ def points_json(instrument, df):
     idc = id_column(instrument)
     out['mfnum'] = _column(df[idc], 'num') if idc in df.columns else [None] * len(df)
     out['extra'] = {c: _column(df[c], 'num') for c in getattr(instrument, 'ADDITIONAL_DATA_COLUMNS', ()) if c in df.columns}
+    out['detrend'] = detrend_summary(instrument, df)
     return out
+
+
+DETREND_LABELS = {1: 'Pt-to-pt', 3: '2-pt avg', 2: 'Lowess 5', 4: '3-pt box', 6: '5-pt box', 5: 'Lowess 10'}
+
+
+def detrend_summary(instrument, df):
+    """The Response/Ratio plots' reference smoothing box, as logos_data's legend shows it: each
+    smoothing method's RMS of the sample pairs (of the reference tank on BLD1), least to most
+    smoothing, and the method the margin rule picks.  None for in situ instruments and on any failure."""
+    if is_insitu(instrument) or instrument.inst_id == 'prs' or 'rejected' not in df.columns:
+        return None
+    try:
+        order = [1, 3, 2, 4, 6, 5]
+        stats, best, _ = instrument.norm.detrend_stats_for_run(df, methods=order, margin_frac=0.2, drop_outlier=True, verbose=False)
+        if stats.empty:
+            return None
+        rms = dict(zip(stats['detrend_method_num'], stats['rep_resp_rms']))
+        rows = [[m, DETREND_LABELS[m], round(float(rms[m]), 4)] for m in order if m in rms and np.isfinite(rms[m])]
+        inst_num = int(df['inst_num'].iloc[0]) if 'inst_num' in df.columns and len(df) else int(instrument.inst_num)
+        return {'title': 'SD of reference' if inst_num == 220 else 'Sample Pair RMS', 'rows': rows,
+                'best': int(best) if best is not None else None} if rows else None
+    except Exception as e:
+        print(f'detrend summary: {e}', flush=True)
+        return None
 
 
 def tags_for(instrument, df):
