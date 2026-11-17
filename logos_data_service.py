@@ -434,8 +434,56 @@ def _recalculated(req):
     if req.get('detrend') is not None:
         df['detrend_method_num'] = int(req['detrend'])
     df = inst.norm.merge_smoothed_data(df)
+    if req.get('curve'):
+        df = _with_curve(inst, df, req)
     df = inst.calc_mole_fraction(df)
     return inst, df.reset_index(drop=True)
+
+
+def _with_curve(inst, df, req):
+    """The run's rows carrying another stored curve's coefficients (the desktop's Cal Date picker), for the
+    mole fraction calculation.  The curve must be one of this instrument's for this analyte."""
+    if inst.inst_id not in POLY_CAL_INSTS:
+        raise ValueError(f'{inst.inst_id} has no calibration curves to pick')
+    pnum, channel = int(req['pnum']), req.get('channel') or None
+    rows = inst.db.doquery('SELECT id, run_date, channel, scale_num, coef0, coef1, coef2, coef3 FROM hats.ng_response WHERE id = %s AND inst_num = %s',
+                           [int(req['curve']), int(inst.inst_num)]) or []
+    if not rows or int(rows[0]['scale_num']) != int(inst.qurey_return_scale_num(pnum)) or (channel and rows[0]['channel'] != channel):
+        raise ValueError('that is not a calibration curve of this analyte')
+    r = rows[0]
+    df = df.copy()
+    df['cal_date'] = pd.Timestamp(r['run_date'])
+    for k in ('coef0', 'coef1', 'coef2', 'coef3'):
+        df[k] = float(r[k] or 0.0)
+    df['ng_response_id'] = int(r['id'])
+    return df
+
+
+def op_calcurves(req):
+    """The stored curves around a run (60 days before to 7 after) for the Cal Date picker, and the one the run's
+    mole fractions currently use."""
+    inst = instrument_for(req['inst'])
+    if inst.inst_id not in POLY_CAL_INSTS:
+        return {'curves': [], 'current': None}
+    inst, df = _load(req)
+    if df is None:
+        return {'curves': [], 'current': None}
+    sel_rt = pd.Timestamp(df['run_time'].iat[0])
+    curves = inst.load_calcurves(int(req['pnum']), req.get('channel') or None, sel_rt)
+    if curves is None or curves.empty:
+        return {'curves': [], 'current': None}
+    curves = curves.copy()
+    curves['rd'] = pd.to_datetime(curves['run_date'], utc=True, errors='coerce')
+    lo, hi = sel_rt - pd.Timedelta(days=60), sel_rt + pd.Timedelta(days=7)
+    win = curves[(curves['rd'] >= lo) & (curves['rd'] <= hi)].sort_values('rd')
+    cur = None
+    if 'ng_response_id' in df.columns:
+        v = pd.to_numeric(df['ng_response_id'], errors='coerce').dropna()
+        v = v[v != 0]
+        cur = int(v.iloc[0]) if len(v) else None
+    return {'curves': [{'id': int(r['id']), 'run_date': r['rd'].strftime('%Y-%m-%d %H:%M:%S'), 'flag': int(r['flag']) if pd.notna(r['flag']) else 0}
+                       for _, r in win.iterrows()], 'current': cur}
+
 
 
 def _view(inst, df, detrend=False, **more):
@@ -497,7 +545,7 @@ def op_save(req):
     inst, df = _recalculated(req)
     if df is None:
         raise ValueError('no data in that run')
-    _save(inst, df, req['pnum'])
+    _save(inst, df, req['pnum'], response_id=int(req['curve']) if req.get('curve') else 'own')
     _audit(req, f"saved {len(df)} rows detrend={req.get('detrend')}")
     return op_load(req)
 
@@ -1193,10 +1241,10 @@ def op_calweekmf(req):
 
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'smooth': op_smooth,
-       'chrom': op_chrom, 'cal': op_cal, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
+       'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calweeks', 'calweek'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek'}
 
 
 def _lost_connection(e):
