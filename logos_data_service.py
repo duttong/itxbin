@@ -27,7 +27,8 @@ writes must require a role here too.
     {"op": "thermo", "inst": "m4", "run": "2026-11-13 11:13:00"}   the M4 GSPC thermocouples against the
                                                  run log's cryogen and valve timing (the Figures tab's figure)
 
-    {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null}
+    {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null, "save": true}
+                                                 (with "save" the run is saved as by op save, in the same request)
     {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
     {"op": "save", ...as load..., "detrend": null}
     {"op": "copyall", ...as load..., "adds": {"<analysis_num>": [tags]}, "removes": {...}}
@@ -700,6 +701,12 @@ def op_tag(req):
     else:
         host._delete_tag_for_mf_nums(nums, tag)
     _audit(req, f"tag={tag} {'on' if apply else 'off'} mf_nums={nums}")
+    if req.get('save') and not is_week(inst, req['run']):
+        # The page saves on every tag change: the run is recalculated and stored as Save does (in situ refits its weekly
+        # fits first), once, with the smoothing and cal curve shown.
+        out = op_save(dict(req, op='save'))
+        out['saved'] = True
+        return out
     if is_insitu(inst) and not is_week(inst, req['run']):
         # a tag on a cal or reference point changes the weekly fits: the recalculation uses them refit
         hit = df.loc[df[id_column(inst)].isin(nums), 'port'].isin(_cal_ports(inst)).any()
