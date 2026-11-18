@@ -3,11 +3,11 @@
 import json
 import argparse
 import pandas as pd
-from pandas.tseries.offsets import DateOffset
 from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+import logos_dates
 from logos_instruments import FE3_Instrument as fe3_inst
 
 # A non-HATS (CCGG event) flask ID as the FE3 app accepts it (CCGG_FLASK_ID_RE
@@ -309,23 +309,27 @@ class FE3_Prepare(fe3_inst):
                 pass
         return None, None, id_str
     
-    def fe3_merged_data(self, duration=2):
+    def fe3_merged_data(self, start=None, end=None):
         """ Method to merge GCwerks results with data contained in the run meta_* files.
             The meta files have the run sequence and port number definitions.
-        
-        Set duration = 'all' for all of the fe3 data.
-            Otherwise duration represents months since the most recent GCwerks data. """
-            
+
+        Takes the runs that start between start and end (Timestamps, both inclusive; None = no
+        limit) with all of their injections, so a run is never cut at the edge of the range. """
+
         gcw = FE3_GCwerks(flagged=self.flagged)
         w_df = gcw.gcwerks_df()
         r_df = self.runs_df()
-        
-        if duration != 'all':
-            last_date = w_df.index.max()
-            w_start_date = last_date - DateOffset(months=duration) - DateOffset(days=1)
-            start_date = last_date - DateOffset(months=duration)
-            w_df = w_df[w_start_date:]
-            r_df = r_df[start_date:]
+
+        if start is not None:
+            r_df = r_df[r_df.index >= start]
+            # a day earlier, so injections before the first run in range match no run and drop out
+            w_df = w_df[w_df.index >= start - pd.Timedelta(days=1)]
+        if end is not None:
+            later = r_df.index[r_df.index > end]
+            r_df = r_df[r_df.index <= end]
+            if len(later):
+                # the last run in range keeps its injections after end, up to the next run
+                w_df = w_df[w_df.index < later.min()]
 
         df = pd.merge_asof(w_df, r_df,
             on='time', direction='backward', tolerance=pd.Timedelta('24h'))
@@ -678,31 +682,30 @@ if __name__ == '__main__':
     import time
 
     opt = argparse.ArgumentParser(
-        description = """Load GCwerks results for FE3 into the HATS DB.
-            The default behaviour is to work on the last two months of the exported data stored in
-            /hats/gc/fe3/results/fe3_gcwerks_all.csv file which is created and updated by fe3_export.py """
+        description = """Load GCwerks results for FE3 into the HATS DB, for the runs that start in a date
+            range (default: from the start of last month to now), from the
+            /hats/gc/fe3/results/fe3_gcwerks_all[_flagged].csv file written by fe3_export.py """
     )
-    opt.add_argument("-a", "--all", action="store_true",
-                     dest="allyears", help="process all of the data (all years)")
-    opt.add_argument("-y", "--year", action="store", 
-                     dest="yyyy", help=f"operate on a years worth of GCwerks results.")
-    opt.add_argument("--flagged", action="store_true",
-                     help="Load the flagged FE3 GCwerks export file.")
-    
+    logos_dates.add_range_args(opt, year=False)
+    opt.add_argument("-a", action="store_true", dest="all", help="the same as --all")
+    opt.add_argument("-y", "--year", type=int, dest="year", metavar="YYYY", help="one calendar year")
+    opt.add_argument("--flagged", action=argparse.BooleanOptionalAction, default=True,
+                     help="Load the flagged FE3 GCwerks export file and sync tag 324 (default: on).")
+
     options = opt.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
     t0 = time.time()
     fe3 = FE3_Prepare(flagged=options.flagged)
-    
-    if options.yyyy:
-        df = fe3.fe3_merged_data(duration='all')
-        df = df.loc[df['time'].dt.year == int(options.yyyy)]
-    elif options.allyears:
-        df = fe3.fe3_merged_data(duration='all')
+    try:
+        start, end = logos_dates.resolve(options, inst_start=fe3.start_date)
+    except ValueError as e:
+        opt.error(str(e))
+    logging.info('Runs starting %s to %s', start, end)
+
+    df = fe3.fe3_merged_data(start=start, end=end)
+    if df.empty:
+        logging.info('No FE3 runs in that range.')
     else:
-        df = fe3.fe3_merged_data(duration=2)
-    
-    fe3.gcwerks_2_hatsdb(df)
+        fe3.gcwerks_2_hatsdb(df)
     logging.info('Execution time %.3f seconds on %d records.', time.time()-t0, df.shape[0])
-    

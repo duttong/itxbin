@@ -13,6 +13,7 @@ from pathlib import Path
 # deployed copy runs the deployed code)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from logos_instruments import FE3_Instrument, M4_Instrument, BLD1_Instrument
+import logos_dates
 
 # use coredata in /hats/gc/itxbin/coredata
 cdpath = Path('/hats/gc/itxbin/coredata')
@@ -425,34 +426,50 @@ def stratcore_to_hats_molefractions(
     print(f"✅ Upserted {len(mole_params)} rows into hats.ng_mole_fractions.")
 
 
-def main(year=None, flagged=False):
+def main(year=None, flagged=True, start=None, end=None):
+    """Load the analyses between start and end (Timestamps, both inclusive; None = no limit), or of
+    one year (bld1_export.py calls it that way)."""
+    if year is not None:
+        start, end = logos_dates.resolve(year=year)
     df = merge_gcwerks_and_metadata(flagged=flagged)
-    df.reset_index(inplace=True)    
+    df.reset_index(inplace=True)
     df_tidy = piviot_gcwerks_df(df)
 
-    if year is not None:
-        df_tidy = df_tidy[df_tidy['analysis_time'].dt.year == year]
-    
+    t = df_tidy['analysis_time']
+    if t.dt.tz is not None:         # the merged frame is UTC-aware; the range is naive UTC
+        t = t.dt.tz_localize(None)
+    keep = pd.Series(True, index=df_tidy.index)
+    if start is not None:
+        keep &= t >= start
+    if end is not None:
+        keep &= t <= end
+    df_tidy = df_tidy[keep]
+    print(f"BLD1: {len(df_tidy)} rows from {start or 'the beginning'} to {end}")
+    if df_tidy.empty:
+        return
+
     df_analysis = create_analysis_df(df_tidy)
-    
+
     analysis_nums = stratcore_to_hats_analysis(df_analysis)
     stratcore_to_hats_molefractions(
         df_tidy=df_tidy,
         analysis_map=analysis_nums,
         flagged=flagged,
     )
-    
+
 
 if __name__ == '__main__':
     opt = argparse.ArgumentParser(
-        description='Load BLD1 GCwerks results into the HATS DB.'
+        description='Load BLD1 GCwerks results into the HATS DB (default: from the start of last month to now).'
     )
-    opt.add_argument('-y', '--year', action='store', type=int,
+    logos_dates.add_range_args(opt, year=False)
+    opt.add_argument('-y', '--year', type=int, dest='year', metavar='YYYY',
         help='Operate on a single year of GCwerks results.')
-    opt.add_argument('--flagged', action='store_true',
-        help='Load the flagged BLD1 GCwerks export file.')
+    opt.add_argument('--flagged', action=argparse.BooleanOptionalAction, default=True,
+        help='Load the flagged BLD1 GCwerks export file and sync tag 324 (default: on).')
     options = opt.parse_args()
-
-    current_year = pd.Timestamp.now().year if options.year is None else options.year
-    main(current_year, flagged=options.flagged)
-    
+    try:
+        start, end = logos_dates.resolve(options)
+    except ValueError as e:
+        opt.error(str(e))
+    main(start=start, end=end, flagged=options.flagged)

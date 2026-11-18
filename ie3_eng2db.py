@@ -12,7 +12,7 @@ Engineering files from 2026-04-01 onward have an embedded CSV header row.
 Earlier files use the legacy fallback header (eng_header_smo_early.txt).
 
 Usage:
-    python3 ie3_eng2db.py [--site smo|mlo|spo|brw] [--days 3] [--year 2026] [--all]
+    python3 ie3_eng2db.py [--site smo|mlo|spo|brw] [-s DATE] [-e DATE] [--year 2026] [--all] [--days N]
 """
 
 import gzip
@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pandas as pd
 import typer
+
+import logos_dates
 
 SITE_ROOT = Path('/hats/gc')
 GSV_COLS = ('GSV1', 'GSV2', 'GSV3')
@@ -322,7 +324,9 @@ class IE3_Eng2DB:
 @app.command()
 def main(
     site: str = typer.Option('smo', '--site', help='Station code (smo|mlo|spo|brw)'),
-    days: int = typer.Option(3, '--days', help='Process the past N days (default: 3)'),
+    start_opt: str | None = typer.Option(None, '-s', '--start', help=f'first day: {logos_dates.DATE_HELP} (default: start of last month)'),
+    end_opt: str | None = typer.Option(None, '-e', '--end', help=f'last day, inclusive: {logos_dates.DATE_HELP} (default: today)'),
+    days: int | None = typer.Option(None, '--days', help='legacy: process the past N days instead'),
     year: int | None = typer.Option(None, '--year', help='Process a full year (YYYY)'),
     all_data: bool = typer.Option(False, '--all', help='Process all years'),
 ):
@@ -344,14 +348,19 @@ def main(
         start = min_t.date() if hasattr(min_t, 'date') else min_t
         end = today
         print(f'Processing all data: {start} – {end}')
-    elif year is not None:
-        start = date(year, 1, 1)
-        end = date(year, 12, 31)
-        print(f'Processing year {year}: {start} – {end}')
-    else:
+    elif days is not None:
+        if start_opt or end_opt or year is not None:
+            raise typer.BadParameter('--days cannot be combined with -s/-e/--year')
         end = today
         start = today - timedelta(days=days - 1)
         print(f'Processing past {days} days: {start} – {end}')
+    else:
+        try:
+            t0, t1 = logos_dates.resolve(start=start_opt, end=end_opt, year=year)
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
+        start, end = t0.date(), min(t1.date(), today)
+        print(f'Processing {start} – {end}')
 
     eng2db.run(start, end)
 

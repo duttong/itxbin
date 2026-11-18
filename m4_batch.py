@@ -11,6 +11,7 @@ from statsmodels.nonparametric.smoothers_lowess import lowess
 from datetime import datetime, timedelta
 import time
 
+import logos_dates
 from logos_instruments import M4_Instrument
 
 
@@ -24,16 +25,7 @@ def main():
         required=True,
         help="Parameter number or 'all' to process all analytes"
     )
-    parser.add_argument(
-        '-s', '--start-date',
-        type=str,
-        help="Start date in YYMM format (e.g. '2503'), or 'start' to use the instrument start date"
-    )
-    parser.add_argument(
-        '-e', '--end-date',
-        type=str,
-        help="End date in YYMM format (e.g. '2505'), or 'end' for today"
-    )
+    logos_dates.add_range_args(parser, ('--start-date',), ('--end-date',))
     parser.add_argument(
         '-f', '--figures',
         action='store_true',
@@ -48,14 +40,12 @@ def main():
 
     m4 = M4_Instrument()
 
-    # Resolve special date keywords
-    if args.start_date and args.start_date.lower() == 'start':
-        sd = datetime.strptime(m4.start_date, '%Y%m%d')
-        args.start_date = sd.strftime('%Y-%m-%d')
-        print(f"Using instrument start date: {args.start_date}")
-    if args.end_date and args.end_date.lower() == 'end':
-        args.end_date = None   # load_data defaults to today when None
-        print(f"Using end date: today")
+    try:
+        start, end = logos_dates.resolve(args, inst_start=m4.start_date)
+    except ValueError as e:
+        parser.error(str(e))
+    args.start_date, args.end_date = logos_dates.sql(start), logos_dates.sql(end)
+    print(f"Range: {args.start_date} to {args.end_date}")
 
     t0 = time.time()
 

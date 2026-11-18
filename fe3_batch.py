@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 
 
+import logos_dates
 from logos_instruments import FE3_Instrument
 
 class FE3_batch(FE3_Instrument):
@@ -67,16 +68,7 @@ class FE3_batch(FE3_Instrument):
             required=False,
             help="GC Channel (a, b, c)"
         )
-        parser.add_argument(
-            '-s', '--start-date',
-            type=str,
-            help="Start date in YYMM format (e.g. '2503'), or 'start' to use the instrument start date. Default: last 30 days."
-        )
-        parser.add_argument(
-            '-e', '--end-date',
-            type=str,
-            help="End date in YYMM format (e.g. '2505'), or 'end' for today"
-        )
+        logos_dates.add_range_args(parser, ('--start-date',), ('--end-date',))
         parser.add_argument(
             '-i', '--insert',
             action='store_true',
@@ -84,14 +76,12 @@ class FE3_batch(FE3_Instrument):
         )
         args = parser.parse_args()
 
-        # Resolve special date keywords
-        if args.start_date and args.start_date.lower() == 'start':
-            sd = datetime.strptime(self.start_date, '%Y%m%d')
-            args.start_date = sd.strftime('%Y-%m-%d')
-            print(f"Using instrument start date: {args.start_date}")
-        if args.end_date and args.end_date.lower() == 'end':
-            args.end_date = None   # load_data defaults to today when None
-            print(f"Using end date: today")
+        try:
+            start, end = logos_dates.resolve(args, inst_start=self.start_date)
+        except ValueError as e:
+            parser.error(str(e))
+        args.start_date, args.end_date = logos_dates.sql(start), logos_dates.sql(end)
+        print(f"Range: {args.start_date} to {args.end_date}")
 
         if args.parameter_num.lower() == "all":
             # Process all analytes

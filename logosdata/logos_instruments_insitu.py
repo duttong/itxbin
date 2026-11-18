@@ -765,7 +765,7 @@ class IE3_Instrument(HATS_DB_Functions):
             end_date = datetime.today()
         elif len(end_date) == 4:
             end_date = datetime.strptime(end_date, "%y%m")
-            end_date = end_date.strftime("%Y-%m-31")
+            end_date = (end_date + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d 23:59:59")
 
         if start_date is None:
             start_date = end_date - timedelta(days=30)
@@ -1845,7 +1845,7 @@ class BLD1_Instrument(HATS_DB_Functions):
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
-            end_date = end_date.strftime("%Y-%m-31")    # end of the month
+            end_date = (end_date + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d 23:59:59")    # end of the month
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass

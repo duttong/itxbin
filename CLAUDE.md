@@ -11,6 +11,17 @@
   `decimal(10,0)` (scale=0), silently truncating decimal values. Use
   `DOUBLE PRECISION` or `FLOAT8` instead.
 
+## Date range options (logos_dates.py)
+
+The M4, FE3, IE3 and BLD1 loaders (`<inst>_gcwerks2db.py`), batches (`<inst>_batch.py`), ingests
+(`<inst>_ingest.py`) and `ie3_eng2db.py` share `-s/--start`, `-e/--end`, `--all` and `--year`,
+parsed by `logos_dates.py`. DATE is YYMM, YYYY-MM-DD or 'YYYY-MM-DD HH:MM' (UTC). `--end` is
+inclusive at the precision given (`2605` = through May 31 23:59:59). The default everywhere is from
+the start of last month to now. An ingest resolves the range once and passes it to its loader and
+batch as explicit timestamps, so they cover the same rows. Older options still work (M4's positional
+YYMM, FE3's `-a`/`-y`, `--start-date`/`--end-date`, eng2db's `--days`). The CATS scripts are not
+converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosint jobs).
+
 ## Key instrument/parameter numbers
 
 | Instrument | inst_num | inst_id |

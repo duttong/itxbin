@@ -2,8 +2,8 @@
 
 import pandas as pd
 import argparse
-from datetime import datetime, timedelta
 
+import logos_dates
 from logos_instruments import M4_Instrument
 
 class M4_GCwerks(M4_Instrument):
@@ -14,16 +14,14 @@ class M4_GCwerks(M4_Instrument):
         self.gcwerks_results = self.export_dir  # Path type
         self.sites = self.gml_sites()           # site codes and numbers
 
-    def load_gcwerks(self, gas, t_start, t_stop='end'): 
+    def load_gcwerks(self, gas, t_start, t_stop='end'):
         """ Loads GCwerks data for a given gas and returns it as a DataFrame.
             The data files should be stored at self.gcwerks_results path.
-            Times should be in YYMM format.
+            t_start / t_stop are any logos_dates DATE (YYMM, YYYY-MM-DD, a Timestamp, ...);
+            t_stop is inclusive, 'end' for now.
         """
-        start_dt = pd.to_datetime(t_start, format='%y%m')
-        if t_stop == 'end':
-            stop_dt = pd.to_datetime(datetime.today())
-        else:
-            stop_dt = pd.to_datetime(t_stop, format='%y%m') + pd.offsets.MonthEnd(0)
+        start_dt = logos_dates.parse_start(t_start, self.start_date)
+        stop_dt = logos_dates.parse_end(t_stop)
 
         if start_dt < pd.to_datetime(self.start_date):
             #print(f'Start date "{t_start}" selected was too early, using "{self.start_date}"')
@@ -60,11 +58,8 @@ class M4_GCwerks(M4_Instrument):
         df = df.assign(dt_run=pd.to_datetime(df.time))
         df.set_index('dt_run', inplace=True, drop=False)
 
-        # trim the dataframe to use start_date (start_dt is the datetime value)
-        if t_stop == 'end':
-            df = df.loc[start_dt:]
-        else:
-            df = df.loc[start_dt:stop_dt]
+        # trim the dataframe to the range (both ends inclusive)
+        df = df.sort_index().loc[start_dt:stop_dt]
 
         # trim the last two rows if area and height are nan (this happens when the chrom is not finished)
         def _empty(i):
@@ -257,10 +252,6 @@ class M4_GCwerks(M4_Instrument):
         self.db.doquery(qc_sql)
 
 
-def get_default_date():
-    return (datetime.now() - timedelta(days=30)).strftime('%y%m')
-
-
 def parse_molecules(molecules):
     if molecules:
         try:
@@ -274,13 +265,16 @@ def parse_molecules(molecules):
 def main():
     m4 = M4_Instrument()
 
-    parser = argparse.ArgumentParser(description='Insert M4 GCwerks data into HATS db for selected date range. If no start_date \
-                                    is specified then work on the last 30 days of data.')
-    parser.add_argument('date', nargs='?', default=get_default_date(), help='Date in the format YYMM')
+    parser = argparse.ArgumentParser(description='Insert M4 GCwerks data into the HATS db for a date range '
+                                     '(default: from the start of last month to now).')
+    parser.add_argument('date', nargs='?', default=None,
+                        help='legacy start date (YYMM); the same as -s')
+    logos_dates.add_range_args(parser)
     parser.add_argument('-m', '--molecules', type=str, default=m4.molecules,
                         help='Comma-separated list of molecules. Add quotes around the list if spaces are used. Default all molecules.')
     parser.add_argument('-x', '--extract', action='store_true', help='Re-extract data from GCwerks first.')
-    parser.add_argument('--flagged', action='store_true', help='Use flagged GCwerks exports and add tag_num=324 when indicated.')
+    parser.add_argument('--flagged', action=argparse.BooleanOptionalAction, default=True,
+                        help='Use the flagged GCwerks exports and sync tag_num=324 (default: on).')
     parser.add_argument('--list', action='store_true', help='List all available molecule names.')
 
     args = parser.parse_args()
@@ -289,22 +283,29 @@ def main():
         molecules_c = [m.replace(',', '') for m in m4.molecules]       # remove commas from mol names
         print(f"Valid molecule names: {', '.join(molecules_c)}")
         quit()
-    
-    start_date = args.date
+
+    if args.date is not None:
+        if args.start is not None:
+            parser.error('give the start date once: positional or -s')
+        args.start = args.date
+    try:
+        start, end = logos_dates.resolve(args, inst_start=m4.start_date)
+    except ValueError as e:
+        parser.error(str(e))
     molecules = parse_molecules(args.molecules)     # returns a list of molecules
 
-    print(f"Start date: {start_date}")
+    print(f"Range: {start} to {end}")
     print("Processing the following molecules: ", molecules)
 
     if args.extract:
         from m4_export import M4_GCwerks_Export
         exp = M4_GCwerks_Export()
-        exp.export_gc_data(start_date, molecules, flagged=args.flagged)
-    
+        exp.export_gc_data(logos_dates.yymm(start), molecules, flagged=args.flagged)
+
     m4 = M4_GCwerks(flagged=args.flagged)
     loaded_ranges = []
     for n, gas in enumerate(molecules):
-        df = m4.load_gcwerks(gas, start_date)
+        df = m4.load_gcwerks(gas, start, end)
         if df is None or df.empty:
             print(f'No rows to load for parameter {gas}')
             continue

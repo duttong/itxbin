@@ -87,7 +87,7 @@ class M4_Instrument(HATS_DB_Functions):
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
-            end_date = end_date.strftime("%Y-%m-31")    # end of the month
+            end_date = (end_date + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d 23:59:59")    # end of the month
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format
             pass
@@ -666,7 +666,7 @@ class FE3_Instrument(HATS_DB_Functions):
         elif len(end_date) == 4:
             # check for YYMM format
             end_date = datetime.strptime(end_date, "%y%m")
-            end_date = end_date.strftime("%Y-%m-31")    # end of the month
+            end_date = (end_date + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d 23:59:59")    # end of the month
             end_date = end_date[:19]  # ensure consistent formatting for SQL query
         else:
             # expecting '%Y-%m-%d %H:%M:%s' format

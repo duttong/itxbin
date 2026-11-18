@@ -28,6 +28,7 @@ import time
 import numpy as np
 import pandas as pd
 
+import logos_dates
 from logos_instruments import IE3_Instrument
 from ie3_cal_test import (
     filter_tanks,
@@ -326,14 +327,7 @@ class IE3_batch(IE3_Instrument):
             '-c', '--channel', type=str, default=None,
             help="GC channel (a, b, c).",
         )
-        parser.add_argument(
-            '-s', '--start-date', type=str, default=None,
-            help="Start date: YYMM, YYYY-MM-DD, or 'start' for instrument start.",
-        )
-        parser.add_argument(
-            '-e', '--end-date', type=str, default=None,
-            help="End date: YYMM, YYYY-MM-DD, or 'end' for today.",
-        )
+        logos_dates.add_range_args(parser, ('--start-date',), ('--end-date',))
         parser.add_argument(
             '-i', '--insert', action='store_true',
             help="Write results to DB (ng_response and ng_insitu_mole_fractions).",
@@ -356,14 +350,12 @@ class IE3_batch(IE3_Instrument):
         if args.site != self.site:
             self.__init__(site=args.site)
 
-        # Resolve date keywords
-        if args.start_date and args.start_date.lower() == 'start':
-            s = self.start_date
-            args.start_date = f"{s[:4]}-{s[4:6]}-{s[6:]}" if len(s) == 8 else s
-            print(f"Using instrument start date: {args.start_date}")
-        if args.end_date and args.end_date.lower() == 'end':
-            args.end_date = None
-            print("Using end date: today")
+        try:
+            start, end = logos_dates.resolve(args, inst_start=self.start_date)
+        except ValueError as e:
+            parser.error(str(e))
+        args.start_date, args.end_date = logos_dates.sql(start), logos_dates.sql(end)
+        print(f"Range: {args.start_date} to {args.end_date}")
 
         if args.parameter_num.lower() == 'all':
             sql = (f"SELECT param_num, channel, display_name "

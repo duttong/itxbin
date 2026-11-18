@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import pandas as pd
+import logos_dates
 from ie3_export import IE3_Process
-from pandas.tseries.offsets import DateOffset
 import typer
 
 app = typer.Typer(add_completion=False)
@@ -298,7 +298,9 @@ class IE3_GCwerks2DB:
             if tag_params:
                 self.db.doMultiInsert(tag_sql, tag_params, all=True)
 
-    def load(self, duration_months=2, year=None):
+    def load(self, start=None, end=None):
+        """Export, read and upsert the analyses between start and end (Timestamps, both inclusive;
+        None = no limit). Runs are grouped over the whole export before the range is cut."""
         IE3_Process(site=self.site, flagged=self.flagged).export_onefile()
         if self.flagged:
             df = self.read_gcwerks_flagged()
@@ -308,12 +310,13 @@ class IE3_GCwerks2DB:
         df = self._assign_run_time(df)
         df["analysis_time_str"] = df["time"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        if year is not None:
-            df = df.loc[df["time"].dt.year == int(year)]
-        elif duration_months is not None:
-            last_date = df["time"].max()
-            start_date = last_date - DateOffset(months=duration_months)
-            df = df.loc[df["time"] >= start_date]
+        if start is not None:
+            df = df.loc[df["time"] >= start]
+        if end is not None:
+            df = df.loc[df["time"] <= end]
+        print(f"IE3 {self.site.upper()}: {len(df)} analyses from {start or 'the beginning'} to {end}")
+        if df.empty:
+            return
 
         analysis_map = self.upsert_analysis(df)
         self.upsert_mole_fractions(df, analysis_map)
@@ -322,16 +325,19 @@ class IE3_GCwerks2DB:
 @app.command()
 def load(
     site: str = typer.Argument("smo", help="Site code (default: smo)"),
+    start: str | None = typer.Option(None, "-s", "--start", help=f"first time: {logos_dates.DATE_HELP} (default: start of last month)"),
+    end: str | None = typer.Option(None, "-e", "--end", help=f"last time, inclusive: {logos_dates.DATE_HELP} (default: now)"),
     all_data: bool = typer.Option(False, "--all", help="Process all data"),
     year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)"),
-    flagged: bool = typer.Option(False, "--flagged", help="Load the flagged GCwerks export file"),
+    flagged: bool = typer.Option(True, "--flagged/--no-flagged", help="Load the flagged GCwerks export file and sync tag 324"),
 ):
     """Load IE3 GCwerks export data into HATS ng_insitu tables."""
+    try:
+        t0, t1 = logos_dates.resolve(start=start, end=end, all_data=all_data, year=year)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
     ie3 = IE3_GCwerks2DB(site, flagged=flagged)
-    if all_data:
-        ie3.load(duration_months=None)
-    else:
-        ie3.load(year=year)
+    ie3.load(start=t0, end=t1)
 
 
 if __name__ == "__main__":

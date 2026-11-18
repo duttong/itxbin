@@ -2,10 +2,11 @@
 
 import shutil
 import subprocess
-from datetime import date
 from pathlib import Path
 
 import typer
+
+import logos_dates
 
 app = typer.Typer(add_completion=False, help="Ingest and process IE3 GC data.")
 
@@ -13,12 +14,23 @@ app = typer.Typer(add_completion=False, help="Ingest and process IE3 GC data.")
 @app.command()
 def ingest(
     site: str = typer.Option("smo", "--site", help="Station code for the IE3 instrument."),
-    all_data: bool = typer.Option(False, "--all", help="Process all data (overrides --year)."),
-    year: int = typer.Option(date.today().year, "--year", help="Process a single year (YYYY)."),
+    start: str | None = typer.Option(None, "-s", "--start", help=f"first time to load: {logos_dates.DATE_HELP} (default: start of last month)"),
+    end: str | None = typer.Option(None, "-e", "--end", help=f"last time to load, inclusive: {logos_dates.DATE_HELP} (default: now)"),
+    all_data: bool = typer.Option(False, "--all", help="Process all data."),
+    year: int | None = typer.Option(None, "--year", help="Process a single year (YYYY)."),
     past_days: int = typer.Option(2, "--past-days", help="Number of recent days to import (default: 2)."),
 ):
-    """Import IE3 chromatograms then load results into the database."""
+    """Import IE3 chromatograms then load results into the database.
+
+    The range (-s/-e, --year or --all; default from the start of last month to now) goes to the
+    loader, ie3_eng2db.py and ie3_batch.py, so they cover the same analyses. --past-days is only the
+    chromatogram import."""
     bin_dir = Path(__file__).resolve().parent
+    try:
+        t0, t1 = logos_dates.resolve(start=start, end=end, all_data=all_data, year=year)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    range_args = ["--all"] if all_data else logos_dates.range_cli_args(t0, t1)
 
     # 1. Import chromatograms from incoming tarballs into GCwerks
     import_cmd = [str(bin_dir / "ie3_import.py"), "--past-days", str(past_days), site]
@@ -51,11 +63,7 @@ def ingest(
 
     # 3. Export from GCwerks and load into database. The --flagged path writes
     # GCwerks flags to hats.ng_insitu_mole_fraction_tags.
-    load_cmd = [str(bin_dir / "ie3_gcwerks2db.py"), site, "--flagged"]
-    if all_data:
-        load_cmd.append("--all")
-    else:
-        load_cmd.extend(["--year", str(year)])
+    load_cmd = [str(bin_dir / "ie3_gcwerks2db.py"), site, "--flagged", *range_args]
 
     typer.secho(f"Running: {' '.join(load_cmd)}", fg=typer.colors.BLUE)
     try:
@@ -65,11 +73,7 @@ def ingest(
         raise typer.Exit(code=1)
 
     # 4. Upsert sample loop temp/pressure/flow from engineering data
-    eng_cmd = [str(bin_dir / "ie3_eng2db.py"), "--site", site]
-    if all_data:
-        eng_cmd.append("--all")
-    else:
-        eng_cmd.extend(["--year", str(year)])
+    eng_cmd = [str(bin_dir / "ie3_eng2db.py"), "--site", site, *range_args]
     typer.secho(f"Running: {' '.join(eng_cmd)}", fg=typer.colors.BLUE)
     try:
         subprocess.run(eng_cmd, check=True)
@@ -99,7 +103,7 @@ def ingest(
         typer.secho(f"Warning: ie3_resp_correction.py failed: {e}", fg=typer.colors.YELLOW, err=True)
 
     # 6. Recalculate and write mole fractions for all analytes
-    batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i", "--fits"]
+    batch_cmd = [str(bin_dir / "ie3_batch.py"), "--site", site, "-p", "all", "-i", "--fits", *range_args]
     typer.secho(f"Running: {' '.join(batch_cmd)}", fg=typer.colors.BLUE)
     try:
         subprocess.run(batch_cmd, check=True)
