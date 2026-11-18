@@ -693,6 +693,16 @@ def op_copyall(req):
 
     adds, removes = pending(req.get('adds'), True), pending(req.get('removes'), False)
     inst.update_flags_all_analytes(adds, removes)
+    comment = str(req.get('comment') or '').strip()[:255]
+    if comment and adds:
+        # The comment the copied tags' source carried goes with them, on the rows that have none yet.
+        tag_table, _tag_key, mf_table, _idc = _TagHost(inst)._tag_table_info()
+        for tag in sorted({t for ts in adds.values() for t in ts}):
+            anums = sorted(a for a, ts in adds.items() if tag in ts)
+            inst.db.doquery(
+                f'UPDATE {tag_table} t JOIN {mf_table} m ON t.{_tag_key} = m.num SET t.comment = %s '
+                f"WHERE t.tag_num = %s AND m.analysis_num IN ({','.join(['%s'] * len(anums))}) AND (t.comment IS NULL OR t.comment = '')",
+                [comment, tag] + anums)
     if is_week(inst, req['run']):
         # The cal injections' tags reach the other analytes; their fits follow with Update Method on each.
         _audit(req, f'copied adds={ {k: sorted(v) for k, v in adds.items()} } removes={ {k: sorted(v) for k, v in removes.items()} } (cal week)')
