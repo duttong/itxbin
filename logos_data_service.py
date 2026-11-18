@@ -37,7 +37,12 @@ writes must require a role here too.
     {"op": "jobqueue", "inst": "fe3", "action": "reload", "start": "2026-10-01", "end": "2026-10-31", "update_gcwerks": false}
     {"op": "jobcancel", "inst": "fe3", "num": 12}
 
-tag, comment, save, copyall, runnotesave, jobqueue and jobcancel change the database and need "role" rw or admin. They call the
+    The Timeseries view (logosdata/logos_timeseries_web.py has the details):
+    {"op": "tsinit", "inst": "m4"}  {"op": "ts", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026}
+    {"op": "tstags", "inst": "m4", "mf_nums": [..]}   {"op": "tstag", ..., "tag": 141, "apply": true}
+    {"op": "tscomment", ..., "comment": "text"}       {"op": "tsexport", "inst": "m4", "kind": "mstar_sel", ...}
+
+tag, comment, save, copyall, runnotesave, jobqueue, jobcancel, tstag and tscomment change the database and need "role" rw or admin. They call the
 same instrument and tagging code as logos_data. The account running the
 service decides what it can write: its ~/.db_rw.cnf login.
 
@@ -78,6 +83,7 @@ import ie3_batch
 import cats_batch
 import logos_dates
 import logos_jobs
+import logos_timeseries_web as tsweb
 from gcwerks_chromatogram import (GCWerksPeakIntegration, _analyte_name_aliases, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
                                   find_gcwerks_peakid_file, read_gcwerks_peak_windows,
                                   gcwerks_channel_number, gcwerks_focus_limits,
@@ -1639,13 +1645,132 @@ def op_jobcancel(req):
     return {'cancelled': True}
 
 
+# ── Timeseries view ──
+
+def op_tsinit(req):
+    """The Timeseries view's controls for an instrument: its analytes, sites by latitude with the desktop's colours,
+    the default sites, the exports it has, and the tag names and layout for Multi-Tag."""
+    inst = instrument_for(req['inst'])
+    ts = tsweb.HeadlessTimeseries(inst)
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(_HERE, 'logosdata', 'logos_data.conf'))
+    site = getattr(inst, 'site', None)
+    defaults = [site.upper()] if site else ['BRW', 'MLO', 'SMO', 'SPO']
+    return {
+        'insitu': is_insitu(inst),
+        'analytes': list(ts.analytes),
+        'default_analyte': cfg.get(f'instrument.{inst.inst_id}', 'default_analyte', fallback=None),
+        'sites': [[s, ts.site_lat_map.get(s)] for s in ts.sites_by_lat],
+        'default_sites': [s for s in defaults if s in ts.sites_by_lat],
+        'colours': tsweb.site_colours(ts.sites_by_lat),
+        'exports': tsweb.export_kinds(inst),
+        'start': str(inst.start_date)[:4],
+        'last_data': last_data_time(req['inst'], inst),
+        'tags': tag_dictionary(inst),
+        'info_tags': sorted(_INFO_TAG_NUMS),
+        'tag_layout': [[section, [list(e) for e in entries]] for section, entries in _TAG_LAYOUT],
+        'removable_auto_tags': sorted(_USER_REMOVABLE_AUTO_TAGS),
+        'dry_run': bool(DRY_RUN),
+    }
+
+
+def op_ts(req):
+    """Every dataset of the desktop's Timeseries figure, for one analyte and year range (all sites)."""
+    inst = instrument_for(req['inst'])
+    start, end = int(req['start']), int(req['end'])
+    if not 1970 <= start <= end <= 2100:
+        raise ValueError('bad year range')
+    return tsweb.timeseries(inst, str(req['analyte']), start, end)
+
+
+# The M-system's older instruments, whose mole fractions the M4 time series shows (and tags) as M1/M3 pair means.
+_TS_EXTRA_INSTS = {192: (46, 54)}
+
+
+def _ts_mf_nums(inst, wanted):
+    """The requested mole fraction numbers, all of which must be this instrument's (M4: the M-system's)."""
+    nums = sorted({int(n) for n in wanted or []})
+    if not nums or len(nums) > 20000:
+        raise ValueError('no points selected' if not nums else 'too many points at once')
+    if is_insitu(inst):
+        sql = ('SELECT mf.num FROM hats.ng_insitu_mole_fractions mf JOIN hats.ng_insitu_analysis a ON a.num = mf.analysis_num '
+               f'WHERE a.inst_num = %s AND a.site_num = %s AND mf.num IN ({",".join(map(str, nums))})')
+        params = [int(inst.inst_num), int(inst.site_num)]
+    else:
+        insts = (int(inst.inst_num),) + _TS_EXTRA_INSTS.get(int(inst.inst_num), ())
+        sql = ('SELECT mf.num FROM hats.ng_mole_fractions mf JOIN hats.ng_analysis a ON a.num = mf.analysis_num '
+               f'WHERE a.inst_num IN ({",".join(map(str, insts))}) AND mf.num IN ({",".join(map(str, nums))})')
+        params = []
+    found = {int(r['num']) for r in inst.doquery(sql, params) or []}
+    if found != set(nums):
+        raise ValueError('some of those points are not this instrument\'s; reload and try again')
+    return nums
+
+
+def _ts_tags(inst, nums):
+    tag_table, tag_key, _mf, _idc = _TagHost(inst)._tag_table_info()
+    out = {}
+    for i in range(0, len(nums), 5000):
+        for r in inst.doquery(f'SELECT {tag_key} n, tag_num t, comment c FROM {tag_table} '
+                              f"WHERE {tag_key} IN ({','.join(map(str, nums[i:i + 5000]))}) ORDER BY tag_num") or []:
+            out.setdefault(str(int(r['n'])), []).append([int(r['t']), r['c'] or ''])
+    return out
+
+
+def op_tstags(req):
+    """The tags on some mole fractions (the Multi-Tag selection): {mf_num: [[tag, comment], ...]}."""
+    inst = instrument_for(req['inst'])
+    nums = sorted({int(n) for n in req.get('mf_nums') or []})[:20000]
+    return {'tags': _ts_tags(inst, nums) if nums else {}}
+
+
+def op_tstag(req):
+    """Put a tag on, or take it off, mole fractions picked on the time series.  Only the tag is written, as on the
+    desktop: their mole fractions and the means follow at the next batch run."""
+    _may_write(req)
+    inst = instrument_for(req['inst'])
+    apply = bool(req['apply'])
+    tag = _check_tag(req['tag'], apply)
+    nums = _ts_mf_nums(inst, req.get('mf_nums'))
+    host = _TagHost(inst)
+    if apply:
+        host._insert_tag_for_mf_nums(nums, tag)
+    else:
+        host._delete_tag_for_mf_nums(nums, tag)
+    _audit(req, f"timeseries tag={tag} {'on' if apply else 'off'} n={len(nums)} mf_nums={nums[:50]}")
+    return {'tags': _ts_tags(inst, nums), 'reject': int(tag_dictionary(inst).get(str(tag), ['', '', 0])[2])}
+
+
+def op_tscomment(req):
+    """Set the comment on every tag of the selected mole fractions (empty clears it)."""
+    _may_write(req)
+    inst = instrument_for(req['inst'])
+    nums = _ts_mf_nums(inst, req.get('mf_nums'))
+    comment = str(req.get('comment') or '').strip()[:255] or None
+    _TagHost(inst)._save_comment_for_mf_nums(nums, comment)
+    _audit(req, f'timeseries comment={comment!r} n={len(nums)}')
+    return {'tags': _ts_tags(inst, nums)}
+
+
+def op_tsexport(req):
+    """One of the Timeseries tab's Save exports, as a file (base64) the page hands to the browser."""
+    inst = instrument_for(req['inst'])
+    out = tsweb.export(inst, req['kind'], str(req['analyte']), int(req['start']), int(req['end']),
+                       [str(s) for s in req.get('sites') or []], bool(req.get('all_analytes')))
+    print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {req.get('user')} tsexport {req.get('inst')} {req['kind']} "
+          f"{req.get('analyte')} all={bool(req.get('all_analytes'))} -> {out['name']} ({out['files']} files)", flush=True)
+    return out
+
+
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
        'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo,
        'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype,
-       'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel}
+       'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel,
+       'tsinit': op_tsinit, 'ts': op_ts, 'tstags': op_tstags, 'tstag': op_tstag, 'tscomment': op_tscomment, 'tsexport': op_tsexport}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs',
+            'tsinit', 'ts', 'tstags', 'tsexport'}
 
 
 def _lost_connection(e):

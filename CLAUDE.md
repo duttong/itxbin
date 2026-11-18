@@ -36,6 +36,18 @@ converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosin
   for the whole run (`logos_lock.py`, `/var/tmp/logos-ingest-<m4|fe3|ie3-smo>.lock`), so a job and
   the cron run never overlap.
 
+## LOGOS web Timeseries view
+
+- omi `hats/logos_data.php?view=ts` (+ `logos_ts.js`) is the desktop Timeseries tab. It shares the page with
+  the Data view; the header's Data/Timeseries links switch views without a reload, so a right-click on a point
+  calls `window.LD_openRun()` (logos_data.js) and opens that run in the same tab.
+- Service ops `tsinit`, `ts`, `tstags`, `tstag`, `tscomment`, `tsexport` in `logos_data_service.py` call
+  `logosdata/logos_timeseries_web.py`, whose `HeadlessTimeseries` borrows `TimeseriesWidget`'s own query and
+  dataset methods with plain values for its Qt controls. Change a timeseries query in `logos_timeseries.py`
+  and both the desktop and the web follow.
+- Tagging from the time series writes tags only (as the desktop); `tstag` accepts only the instrument's own
+  mole fractions (M4: also M1/M3, inst 46/54).
+
 ## Key instrument/parameter numbers
 
 | Instrument | inst_num | inst_id |
