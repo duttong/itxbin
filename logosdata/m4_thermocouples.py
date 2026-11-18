@@ -59,10 +59,29 @@ def temps_dirs(directory, year):
     return [d for d in (directory, directory / str(year), directory / "Temp") if d.is_dir()]
 
 
+TEMPS_NAME_RE = re.compile(r"temps_(\d{4}-\d\d-\d\d-\d{6})")
+
+
+def temps_files(directories, t0, t1):
+    """The temps_*.csv files that can hold [t0, t1]: a name gives the time its file starts, so these are the
+    files starting inside the window and the latest one starting before it.  A file whose name has no time
+    is always read."""
+    paths = sorted(p for d in directories for p in d.glob("temps_*.csv"))
+    starts = {}
+    for path in paths:
+        m = TEMPS_NAME_RE.match(path.name)
+        starts[path] = pd.to_datetime(m[1], format="%Y-%m-%d-%H%M%S", errors="coerce") if m else pd.NaT
+    before = [s for s in starts.values() if pd.notna(s) and s <= t0]
+    first = max(before) if before else None
+    return [p for p in paths
+            if pd.isna(starts[p]) or ((first is None or starts[p] >= first) and starts[p] <= t1)]
+
+
 def read_temps(directories, t0, t1):
     """All temps_*.csv rows overlapping [t0, t1] in the directories, de-duplicated."""
     dfs = []
-    for path in sorted(p for d in directories for p in d.glob("temps_*.csv")):
+    pad = pd.Timedelta(minutes=5)
+    for path in temps_files(directories, t0 - pad, t1 + pad):
         frame = pd.read_csv(path)
         # Edited copies can contain times alone. Never invent a date for them.
         frame["datetime"] = pd.to_datetime(
@@ -70,7 +89,7 @@ def read_temps(directories, t0, t1):
         )
         dfs.append(frame.dropna(subset=["datetime"]))
     if not dfs:
-        raise SystemExit(f"No temps_*.csv files found in {[str(d) for d in directories]}")
+        raise SystemExit(f"No temps_*.csv file covers {t0:%Y-%m-%d %H:%M} - {t1:%Y-%m-%d %H:%M} in {[str(d) for d in directories]}")
     t = pd.concat(dfs).drop_duplicates("datetime").sort_values("datetime")
     return t[(t.datetime >= t0 - pd.Timedelta(minutes=5)) & (t.datetime <= t1 + pd.Timedelta(minutes=5))].reset_index(drop=True)
 
@@ -101,12 +120,17 @@ def fmt_stats(v):
     return f"{v.mean():.2f} ± {sd:.2f} (25/75%: {q1:.2f}, {q3:.2f}) °C"
 
 
-def build_figure(bd, directory=GSPC_DIR):
-    """Build the plot without selecting a backend or writing a file.
+MARKERS = (("Sample valve open", "Sample valve open"), ("Precolumn IN", "Precolumn IN line"),
+           ("Sample valve closed", "Sample valve closed"), ("GC cryogen off", "Deactivated GC cryogen"))
+
+
+def thermocouple_data(bd, directory=GSPC_DIR):
+    """Everything the figure shows, worked out once (the matplotlib figure and the web page both draw it).
 
     The log may come from the chemstation copy, which has no temps_*.csv, so the
     temperature files are always searched for under the GSPC directory.
     """
+    bd = Path(bd)
     ev = read_log(bd)
     if not ev:
         raise SystemExit(f"No timestamped events in {bd}")
@@ -114,12 +138,49 @@ def build_figure(bd, directory=GSPC_DIR):
     if t.empty:
         raise SystemExit(f"No temps_*.csv data overlaps {bd.name} ({ev[0][0]} - {ev[-1][0]})")
 
-    cryo = spans(ev, "Activated cryogen", "Deactivated cryogen")
-    gcc = spans(ev, "Activated GC cryogen", "Deactivated GC cryogen")
     opens = [ts for ts, e in ev if e == "Sample valve open"]
     ref = t.datetime.iloc[0].normalize()
     tt = (t.datetime - ref).dt.total_seconds().values
     grid = np.arange(-240, 1080, 5.0)  # seconds relative to sample valve open
+
+    stack = {0: [], 1: []}
+    for o in opens:
+        o0 = (o - ref).total_seconds()
+        if o0 + grid[0] < tt[0] or o0 + grid[-1] > tt[-1]:
+            continue
+        for k, c in ((0, "therm0"), (1, "therm1")):
+            stack[k].append(np.interp(o0 + grid, tt, t[c].values))
+    n = len(stack[0])
+    if n == 0:
+        raise SystemExit("No complete injections with temperature coverage")
+
+    markers = []
+    for name, e in MARKERS:
+        d = []
+        for o in opens:
+            c = [(ts - o).total_seconds() for ts, e2 in ev if e2 == e and -1 <= (ts - o).total_seconds() < 1000]
+            if c:
+                d.append(min(c))
+        if d:
+            markers.append((name, np.median(d) / 60))
+    closes = [min((ts - o).total_seconds() for ts, e in ev if e == "Sample valve closed" and ts > o)
+              for o in opens if any(e == "Sample valve closed" and ts > o for ts, e in ev)]
+    cold, hot = trap_values(ev, t, opens)
+    return {
+        "bd": bd, "t": t, "n": n, "grid_min": grid / 60,
+        "cryo": spans(ev, "Activated cryogen", "Deactivated cryogen"),
+        "gc_cryo": spans(ev, "Activated GC cryogen", "Deactivated GC cryogen"),
+        "inj": {k: np.array(v) for k, v in stack.items()},
+        "markers": markers,
+        "cold_end": (np.median(closes) - 10) / 60 if closes else 4.0,
+        "cold": cold, "hot": hot,
+    }
+
+
+def build_figure(bd, directory=GSPC_DIR):
+    """Build the plot without selecting a backend or writing a file."""
+    d = thermocouple_data(bd, directory)
+    bd, t, n, gm = d["bd"], d["t"], d["n"], d["grid_min"]
 
     fig = Figure(figsize=(14, 10))
     ax = fig.subplots(2, 1, gridspec_kw={"height_ratios": [1, 2]})
@@ -127,9 +188,9 @@ def build_figure(bd, directory=GSPC_DIR):
     a = ax[0]
     a.plot(t.datetime, t.therm0, lw=.9, color="tab:red", label="therm0")
     a.plot(t.datetime, t.therm1, lw=.9, color="tab:blue", label="therm1")
-    for i, (s, e) in enumerate(cryo):
+    for i, (s, e) in enumerate(d["cryo"]):
         a.axvspan(s, e, color="tab:cyan", alpha=.25, lw=0, label="cryogen on" if i == 0 else None)
-    for i, (s, e) in enumerate(gcc):
+    for i, (s, e) in enumerate(d["gc_cryo"]):
         a.axvspan(s, e, color="tab:orange", alpha=.25, lw=0, label="GC cryogen on" if i == 0 else None)
     a.set_xlim(t.datetime.min(), t.datetime.max())
     a.set_ylabel("Temperature (°C)")
@@ -139,44 +200,22 @@ def build_figure(bd, directory=GSPC_DIR):
     a.legend(loc="upper right", ncol=4)
 
     a = ax[1]
-    stack = {0: [], 1: []}
-    for o in opens:
-        o0 = (o - ref).total_seconds()
-        if o0 + grid[0] < tt[0] or o0 + grid[-1] > tt[-1]:
-            continue
-        for k, c in ((0, "therm0"), (1, "therm1")):
-            y = np.interp(o0 + grid, tt, t[c].values)
-            stack[k].append(y)
-            a.plot(grid / 60, y, lw=.4, alpha=.35, color=("tab:red", "tab:blue")[k])
-    n = len(stack[0])
-    if n == 0:
-        raise SystemExit("No complete injections with temperature coverage")
+    for y0, y1 in zip(d["inj"][0], d["inj"][1]):
+        a.plot(gm, y0, lw=.4, alpha=.35, color="tab:red")
+        a.plot(gm, y1, lw=.4, alpha=.35, color="tab:blue")
     for k, c, name in ((0, "tab:red", "therm0"), (1, "tab:blue", "therm1")):
-        a.plot(grid / 60, np.array(stack[k]).mean(0), lw=3, color=c, label=f"{name} mean (n={n})")
-
-    for name, e in (("Sample valve open", "Sample valve open"), ("Precolumn IN", "Precolumn IN line"),
-                    ("Sample valve closed", "Sample valve closed"), ("GC cryogen off", "Deactivated GC cryogen")):
-        d = []
-        for o in opens:
-            c = [(ts - o).total_seconds() for ts, e2 in ev if e2 == e and -1 <= (ts - o).total_seconds() < 1000]
-            if c:
-                d.append(min(c))
-        if d:
-            x = np.median(d) / 60
-            a.axvline(x, color="k", lw=.7, ls=":")
-            a.text(x, 212, name, rotation=90, va="top", ha="right", fontsize=8)
-    closes = [min((ts - o).total_seconds() for ts, e in ev if e == "Sample valve closed" and ts > o)
-              for o in opens if any(e == "Sample valve closed" and ts > o for ts, e in ev)]
-    cold_end = (np.median(closes) - 10) / 60 if closes else 4.0
-    cold, hot = trap_values(ev, t, opens)
-    a.axvspan(0, cold_end, color="tab:cyan", alpha=.12, lw=0, label=f"trap_cold {fmt_stats(cold)}")
-    a.axvspan(8, 13, color="tab:orange", alpha=.15, lw=0, label=f"trap_hot {fmt_stats(hot)}")
+        a.plot(gm, d["inj"][k].mean(0), lw=3, color=c, label=f"{name} mean (n={n})")
+    for name, x in d["markers"]:
+        a.axvline(x, color="k", lw=.7, ls=":")
+        a.text(x, 212, name, rotation=90, va="top", ha="right", fontsize=8)
+    a.axvspan(0, d["cold_end"], color="tab:cyan", alpha=.12, lw=0, label=f"trap_cold {fmt_stats(d['cold'])}")
+    a.axvspan(8, 13, color="tab:orange", alpha=.15, lw=0, label=f"trap_hot {fmt_stats(d['hot'])}")
     a.set_xlabel("Minutes since sample valve open")
     a.set_ylabel("Temperature (°C)")
     a.grid(alpha=.3)
     a.set_title(f"All injections overlaid, aligned on sample valve open (n={n})")
     a.legend(loc="lower right")
-    a.set_xlim(grid[0] / 60, grid[-1] / 60)
+    a.set_xlim(gm[0], gm[-1])
     a.set_ylim(-190, 215)
 
     fig.tight_layout()
@@ -189,14 +228,15 @@ def make_figure(bd, out):
     print(f"Wrote {out}  ({n} injections)")
 
 
-def bd_file_for_run(directory, run_time):
+def bd_file_for_run(directory, run_time, chemstation_dir=CHEMSTATION_DIR):
     """Locate a selected run's log: GSPC dir, year archive, chemstation, then Temp.
 
     Temp is last because it holds working copies the operator may still be editing.
     """
+    directory = Path(directory)
     date = pd.Timestamp(str(run_time).split(" (")[0])
     name = f"bd{date.strftime('%m%d%y')}.txt"
-    parents = (directory, directory / str(date.year), CHEMSTATION_DIR, directory / "Temp")
+    parents = (directory, directory / str(date.year), Path(chemstation_dir), directory / "Temp")
     for parent in parents:
         path = parent / name
         if path.is_file():

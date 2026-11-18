@@ -24,6 +24,8 @@ writes must require a role here too.
     {"op": "chrom", "inst": "m4", "channel": null, "t": "2026-10-22 10:01:00",
      "data": true, "analyte": "HFC-134a", "mf_num": 123}   the chromatogram trace, peak window and
                                                  the stored integration (GCwerks' or logosint's)
+    {"op": "thermo", "inst": "m4", "run": "2026-11-13 11:13:00"}   the M4 GSPC thermocouples against the
+                                                 run log's cryogen and valve timing (the Figures tab's figure)
 
     {"op": "tag", ...as load..., "mf_nums": [..], "tag": 141, "apply": true, "detrend": null}
     {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
@@ -64,6 +66,7 @@ matplotlib.use('Agg')
 import matplotlib.colors as mcolors
 
 import logos_instruments as li
+import m4_thermocouples
 import integ_source
 import cal_week
 import ie3_batch
@@ -1405,11 +1408,56 @@ def op_calweekmf(req):
     return _update_week_mf(inst, pnum, channel, week)
 
 
+def _floats(a, digits=2):
+    """A numeric array as a JSON list, NaN as null."""
+    return [None if not np.isfinite(v) else round(float(v), digits) for v in np.asarray(a, dtype=float)]
+
+
+def _stats(v):
+    v = np.asarray(v, dtype=float)
+    if not len(v):
+        return None
+    q1, q3 = np.percentile(v, [25, 75])
+    return {'n': int(len(v)), 'mean': round(float(v.mean()), 2), 'sd': round(float(v.std(ddof=1)) if len(v) > 1 else 0.0, 2),
+            'q1': round(float(q1), 2), 'q3': round(float(q3), 2)}
+
+
+def op_thermo(req):
+    """The M4 GSPC trap thermocouples of a run against its bd log, as logos_data's Figures tab draws
+    them (m4_thermocouples): the whole run, then every injection aligned on sample valve open."""
+    inst = instrument_for(req['inst'])
+    if inst.inst_id != 'm4':
+        return {'error': 'The thermocouple figure is for M4 only.'}
+    gc_dir = str(inst.gc_dir)
+    if not os.path.isdir(gc_dir) and os.path.isdir('/nfs' + gc_dir):      # omi mounts /hats under /nfs
+        gc_dir = '/nfs' + gc_dir
+    directory = os.path.join(gc_dir, 'MassHunter/GCMS/M4 GSPC Files')
+    try:
+        bd = m4_thermocouples.bd_file_for_run(directory, _date(req['run']), os.path.join(gc_dir, 'chemstation'))
+        d = m4_thermocouples.thermocouple_data(bd, directory)
+    except (FileNotFoundError, SystemExit) as e:
+        return {'error': str(e)}
+    t = d['t']
+    span = lambda pairs: [[a.strftime('%Y-%m-%d %H:%M:%S'), b.strftime('%Y-%m-%d %H:%M:%S')] for a, b in pairs]
+    return {
+        'bd': bd.name, 'dir': str(bd.parent), 'n': d['n'],
+        't': t.datetime.dt.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+        'therm0': _floats(t.therm0), 'therm1': _floats(t.therm1),
+        'cryo': span(d['cryo']), 'gc_cryo': span(d['gc_cryo']),
+        'grid': _floats(d['grid_min'], 4),
+        'inj0': [_floats(y, 1) for y in d['inj'][0]], 'inj1': [_floats(y, 1) for y in d['inj'][1]],
+        'mean0': _floats(d['inj'][0].mean(0)), 'mean1': _floats(d['inj'][1].mean(0)),
+        'markers': [[name, round(float(x), 4)] for name, x in d['markers']],
+        'cold_end': round(float(d['cold_end']), 4),
+        'cold': _stats(d['cold']), 'hot': _stats(d['hot']),
+    }
+
+
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
-       'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall}
+       'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo'}
 
 
 def _lost_connection(e):
