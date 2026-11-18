@@ -1682,7 +1682,16 @@ def op_ts(req):
     start, end = int(req['start']), int(req['end'])
     if not 1970 <= start <= end <= 2100:
         raise ValueError('bad year range')
-    return tsweb.timeseries(inst, str(req['analyte']), start, end)
+    return tsweb.timeseries(inst, str(req['analyte']), start, end, with_means=bool(req.get('means', True)))
+
+
+def op_tsmeans(req):
+    """The flask (and OTTO) 10-day and monthly means, off by default: read when one is ticked."""
+    inst = instrument_for(req['inst'])
+    start, end = int(req['start']), int(req['end'])
+    if not 1970 <= start <= end <= 2100:
+        raise ValueError('bad year range')
+    return {'sets': tsweb.means(inst, str(req['analyte']), start, end)}
 
 
 # The M-system's older instruments, whose mole fractions the M4 time series shows (and tags) as M1/M3 pair means.
@@ -1787,11 +1796,11 @@ OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detr
        'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype,
        'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel,
        'tsinit': op_tsinit, 'ts': op_ts, 'tstags': op_tstags, 'tstag': op_tstag, 'tscomment': op_tscomment, 'tsexport': op_tsexport,
-       'tsrelstd': op_tsrelstd, 'tspreview': op_tspreview}
+       'tsrelstd': op_tsrelstd, 'tspreview': op_tspreview, 'tsmeans': op_tsmeans}
 
 
 READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs',
-            'tsinit', 'ts', 'tstags', 'tsexport', 'tsrelstd', 'tspreview'}
+            'tsinit', 'ts', 'tstags', 'tsexport', 'tsrelstd', 'tspreview', 'tsmeans'}
 
 
 def _lost_connection(e):

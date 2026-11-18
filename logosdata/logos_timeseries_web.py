@@ -9,8 +9,10 @@ page plots exactly what the desktop figure does, from the same SQL.
 logos_data_service.py calls the op_* functions here:
 
     {"op": "tsinit", "inst": "m4"}       analytes, sites (by latitude, with colours), datasets, exports
-    {"op": "ts", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026}
-                                         every dataset for every site, flagged rows included (marked)
+    {"op": "ts", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026, "means": false}
+                                         every dataset for every site, flagged rows included (marked); the flask
+                                         10-day and monthly means only with "means" (they are off by default)
+    {"op": "tsmeans", ...as ts...}       just those means (and FE3's OTTO ones), when one is ticked
     {"op": "tstags", "inst": "m4", "mf_nums": [..]}            the tags on those mole fractions
     {"op": "tstag", "inst": "m4", "mf_nums": [..], "tag": 141, "apply": true}    (rw/admin)
     {"op": "tscomment", "inst": "m4", "mf_nums": [..], "comment": "text"}        (rw/admin)
@@ -30,6 +32,7 @@ import io
 import os
 import re
 import tempfile
+import time
 import types
 import zipfile
 
@@ -192,7 +195,95 @@ def _merge(a, b):
     return {k: a.get(k, [None] * len(a['t'])) + b.get(k, [None] * len(b['t'])) for k in set(a) | set(b)}
 
 
-def timeseries(inst, analyte, start, end):
+def _bins(df, x, value):
+    """10-day (days 1-10, 11-20, 21 on) and monthly mean and spread of a column, per site, as the desktop's SQL
+    computes them (AVG and STDDEV, which is the population s.d.)."""
+    d = df.dropna(subset=[value]).copy()
+    if d.empty:
+        return None, None
+    t = pd.to_datetime(d[x])
+    month = t.dt.to_period('M').dt.to_timestamp()
+    day = t.dt.day
+    d['_month'] = month
+    d['_tenday'] = month + pd.to_timedelta(np.where(day <= 10, 0, np.where(day <= 20, 10, 20)), unit='D')
+    out = []
+    for col in ('_tenday', '_month'):
+        g = d.groupby(['site', col])[value].agg(mean='mean', std=lambda v: float(np.std(v.to_numpy(dtype=float)))).reset_index()
+        out.append(_means(g.sort_values(['site', col]), col, 'mean', 'std'))
+    return out[0], out[1]
+
+
+def flask_means(ts, analyte):
+    """The flask 10-day and monthly means of query_10day_mean_data() and query_monthly_mean_data() from one read of
+    the pair means instead of two (same source, filters and site labels: M4 pools the M-system and splits out the PFP
+    pseudo-sites).  None, None for in situ instruments, whose means come from their own air data."""
+    inst = ts.instrument
+    if inst.inst_id in ('ie3', 'cats'):
+        return None, None
+    pnum = ts._resolve_pnum(analyte)
+    if pnum is None:
+        return None, None
+    channel, use_pref = ts._channel_selection(analyte)
+    ch_filter = (ts._preferred_channel_filter_sql('v.channel', 'v.parameter_num', 'v.sample_datetime') if use_pref
+                 else (f"AND v.channel = '{channel}'" if channel else ''))
+    active = ts.get_active_sites()
+    site_label, sites = ts._pair_avg_site_sql(active)
+    if not sites:
+        return None, None
+    inst_sql, inst_params = ts._binned_inst_filter()
+    sql = f"""
+        SELECT {site_label} AS site, v.sample_datetime, v.pair_avg
+        FROM {ts._pair_avg_source()} v
+        WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(v.sample_datetime) BETWEEN %s AND %s
+    """
+    df = pd.DataFrame(inst.doquery(sql, inst_params + [pnum] + sites + [ts.start_year.value(), ts.end_year.value()]))
+    if df.empty:
+        return None, None
+    df = df[df['site'].isin(active)]
+    df['pair_avg'] = pd.to_numeric(df['pair_avg'], errors='coerce')
+    return _bins(df, 'sample_datetime', 'pair_avg')
+
+
+def otto_means(ts, analyte):
+    """FE3's OTTO 10-day and monthly means (query_otto_10day/monthly_mean_data) from one read."""
+    if ts.instrument.inst_num != 193:
+        return None, None
+    pnum = ts._resolve_pnum(analyte)
+    sites = [s for s in ts.get_active_sites() if s not in lts.PFP_SITES]
+    if pnum is None or not sites:
+        return None, None
+    df = pd.DataFrame(ts.instrument.doquery(f"""
+        SELECT UPPER(site) AS site, sample_datetime, pair_avg FROM hats.ng_pair_avg_view
+        WHERE inst_id = 'OTTO' AND parameter_num = %s AND UPPER(site) IN ({",".join(["%s"] * len(sites))})
+          AND YEAR(sample_datetime) BETWEEN %s AND %s""", [pnum] + sites + [ts.start_year.value(), ts.end_year.value()]))
+    if df.empty:
+        return None, None
+    df['pair_avg'] = pd.to_numeric(df['pair_avg'], errors='coerce')
+    return _bins(df, 'sample_datetime', 'pair_avg')
+
+
+def means(inst, analyte, start, end, ts=None):
+    """The datasets that are off by default and cost a read of every pair mean: flask (and OTTO) 10-day and monthly."""
+    ts = ts or HeadlessTimeseries(inst, analyte, start, end)
+    tenday, monthly = flask_means(ts, analyte)
+    otto10, ottomon = otto_means(ts, analyte)
+    return {k: v for k, v in {'tenday': tenday, 'monthly': monthly, 'otto10': otto10, 'ottomon': ottomon}.items() if v}
+
+
+_MSTAR_LAST = [0.0, None]       # (when read, last year with an M1/M3 analysis)
+
+
+def mstar_last_year(inst):
+    """The last year M1 or M3 analysed a flask (their samples are all before it); read at most once a day."""
+    if time.time() - _MSTAR_LAST[0] > 86400 or _MSTAR_LAST[1] is None:
+        rows = inst.doquery('SELECT YEAR(MAX(analysis_time)) y FROM hats.ng_analysis WHERE inst_num IN (46, 54)') or []
+        _MSTAR_LAST[:] = [time.time(), int(rows[0]['y']) if rows and rows[0]['y'] is not None else 9999]
+    return _MSTAR_LAST[1]
+
+
+def timeseries(inst, analyte, start, end, with_means=True):
     """Every dataset of the desktop Timeseries figure for one analyte and year range, for all of the instrument's sites.
     The page filters by site and by flag, so those toggles need no new request."""
     ts = HeadlessTimeseries(inst, analyte, start, end)
@@ -212,14 +303,15 @@ def timeseries(inst, analyte, start, end):
         }
     ds = ts.build_datasets(df, show_flagged=True)
     fm = ds.get('Flask mean', pd.DataFrame())
-    if is_m4:
+    mstar = is_m4 and int(start) <= mstar_last_year(inst)       # M1/M3 ended in 2023: no read for later years
+    if mstar:
         mfm = ts.query_mstar_flask_data(analyte)       # M1/M3 store flask means: they join "Flask mean"
         if not mfm.empty:
             fm = pd.concat([d for d in (fm, mfm) if not d.empty], ignore_index=True)
     sets['flask'] = _means(fm, 'sample_datetime', 'mean', 'std', {'sid': 'sample_id'})
     sets['pair'] = _means(ds.get('Pair mean', pd.DataFrame()), 'sample_datetime', 'mean', 'std', {'pair': 'pair_id_num'})
 
-    if is_m4:      # M1/M3 pair means: the pre-2022 half of "All samples", with the mole fractions behind each
+    if mstar:      # M1/M3 pair means: the pre-2022 half of "All samples", with the mole fractions behind each
         mp = ts.query_mstar_pair_data(analyte, include_tagged=True)
         if not mp.empty:
             sets['mstar'] = {
@@ -243,16 +335,19 @@ def timeseries(inst, analyte, start, end):
         sets['tenday'] = _insitu_binned(ts, insitu, tenday)
         sets['monthly'] = _insitu_binned(ts, insitu, month)
 
-    sets['tenday'] = _merge(_means(ts.query_10day_mean_data(analyte), 'period_start', 'period_avg', 'period_std'), sets.get('tenday'))
-    sets['monthly'] = _merge(_means(ts.query_monthly_mean_data(analyte), 'month_start', 'monthly_avg', 'monthly_std'), sets.get('monthly'))
+    if with_means:
+        m = means(inst, analyte, start, end, ts)
+        for k in ('tenday', 'monthly'):
+            sets[k] = _merge(m.get(k), sets.get(k))
+        for k in ('otto10', 'ottomon'):
+            sets[k] = m.get(k)
+    out['means'] = bool(with_means)
 
     if is_fe3:
         op = ts.query_otto_pair_data(analyte)
         if not op.empty:
             sets['otto'] = {'t': _ts(op['sample_datetime']), 'y': _num(op['pair_avg']), 'site': _strs(op['site']),
                             'sd': _num(op['pair_stdv'])}
-        sets['otto10'] = _means(ts.query_otto_10day_mean_data(analyte), 'period_start', 'period_avg', 'period_std')
-        sets['ottomon'] = _means(ts.query_otto_monthly_mean_data(analyte), 'month_start', 'monthly_avg', 'monthly_std')
 
     out['sets'] = {k: v for k, v in sets.items() if v}
     return out
