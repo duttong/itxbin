@@ -81,7 +81,8 @@ def read_temps(directories, t0, t1):
     """All temps_*.csv rows overlapping [t0, t1] in the directories, de-duplicated."""
     dfs = []
     pad = pd.Timedelta(minutes=5)
-    for path in temps_files(directories, t0 - pad, t1 + pad):
+    # A file that starts after the log ends is the next run's, even inside the padding.
+    for path in temps_files(directories, t0 - pad, t1):
         frame = pd.read_csv(path)
         # Edited copies can contain times alone. Never invent a date for them.
         frame["datetime"] = pd.to_datetime(
