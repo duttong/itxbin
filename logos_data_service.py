@@ -340,6 +340,7 @@ def op_init(req):
         'info_tags': sorted(_INFO_TAG_NUMS),
         'tag_layout': [[section, [list(e) for e in entries]] for section, entries in _TAG_LAYOUT],
         'removable_auto_tags': sorted(_USER_REMOVABLE_AUTO_TAGS),
+        'change_run_type': not is_insitu(inst) and _conf_bool(inst, 'change_run_type'),
         'dry_run': bool(DRY_RUN),
     }
 
@@ -397,6 +398,36 @@ def op_runnotesave(req):
         inst.db.doquery('DELETE FROM hats.ng_run_notes WHERE inst_num = %s AND run_time = %s', [int(inst.inst_num), run])
     _audit(req, f'notes={len(notes)} chars')
     return {'notes': notes}
+
+
+def _conf_bool(inst, key, fallback=False):
+    """An [instrument.<id>] setting from logosdata/logos_data.conf, as the desktop reads it."""
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logosdata', 'logos_data.conf'))
+    return cfg.getboolean(f'instrument.{inst.inst_id}', key, fallback=fallback)
+
+
+def op_runtype(req):
+    """Change a run's run type (the desktop's Change Run Type): every ng_analysis row of the run gets the new
+    run_type_num.  Only for instruments with change_run_type in logos_data.conf (FE3, BLD1)."""
+    _may_write(req)
+    inst = instrument_for(req['inst'])
+    if is_insitu(inst) or not _conf_bool(inst, 'change_run_type'):
+        raise ValueError(f"{req['inst']} runs cannot change run type")
+    new = int(req['run_type'])
+    if new not in {v for v in inst.RUN_TYPE_MAP.values() if v is not None}:
+        raise ValueError(f'unknown run type {new}')
+    run = _date(req['run'])
+    rows = inst.doquery('SELECT GROUP_CONCAT(DISTINCT run_type_num) types, COUNT(*) n FROM hats.ng_analysis '
+                        'WHERE inst_num = %s AND run_time = %s', [int(inst.inst_num), run]) or []
+    if not rows or not rows[0]['n']:
+        raise ValueError(f'no run at {run}')
+    old = str(rows[0]['types'])
+    inst.db.doquery('UPDATE hats.ng_analysis SET run_type_num = %s WHERE inst_num = %s AND run_time = %s',
+                    [new, int(inst.inst_num), run])
+    _audit(req, f'run_type {old} -> {new} ({rows[0]["n"]} rows)')
+    return {'run': run, 'run_type': new, 'old': [int(t) for t in old.split(',') if t.strip().lstrip('-').isdigit()],
+            'rows': int(rows[0]['n'])}
 
 
 def _date(text):
@@ -1494,7 +1525,7 @@ def op_thermo(req):
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
        'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo,
-       'runnote': op_runnote, 'runnotesave': op_runnotesave}
+       'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype}
 
 
 READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote'}
