@@ -1661,6 +1661,7 @@ def op_tsinit(req):
     return {
         'insitu': is_insitu(inst),
         'analytes': list(ts.analytes),
+        'pnums': {name: int(p) for name, p in ts.analytes.items()},
         'default_analyte': cfg.get(f'instrument.{inst.inst_id}', 'default_analyte', fallback=None),
         'sites': [[s, ts.site_lat_map.get(s)] for s in ts.sites_by_lat],
         'default_sites': [s for s in defaults if s in ts.sites_by_lat],
