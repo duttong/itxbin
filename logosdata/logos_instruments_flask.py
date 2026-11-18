@@ -2,6 +2,7 @@
 Import public names through the logos_instruments facade."""
 import pandas as pd
 import numpy as np
+import colorsys
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgba
 from functools import cached_property
@@ -202,10 +203,21 @@ class M4_Instrument(HATS_DB_Functions):
 
     @staticmethod
     def _darken_color(color, step):
-        """Return a progressively darker variant while preserving opacity."""
-        rgba = np.asarray(to_rgba(color), dtype=float)
-        factor = max(0.55, 1.0 - (0.18 * step))
-        return tuple(np.append(rgba[:3] * factor, rgba[3]))
+        """Return a clearly different shade of the same hue for the step-th
+        later PFP package of a site in one run, preserving opacity.
+
+        Site colors sit at HLS lightness 0.25-0.5, so a few-percent darkening
+        (the old rule) left two packages looking alike. Steps alternate a
+        light tint (1, 3, ...) and a dark shade (2, 4, ...), each further
+        from the base color than the last pair."""
+        r, g, b, a = to_rgba(color)
+        h, l, s = colorsys.rgb_to_hls(r, g, b)
+        k = (step + 1) // 2
+        if step % 2:
+            l = min(0.8, l + 0.3 * k + 0.05 * (k - 1))
+        else:
+            l = l * 0.5 ** k
+        return (*colorsys.hls_to_rgb(h, l, s), a)
 
     def _apply_pfp_package_colors(self, df, mask, site_colors):
         """Shade later PFP packages within the same M4 run and site."""
