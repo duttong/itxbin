@@ -42,6 +42,7 @@ writes must require a role here too.
     {"op": "tstags", "inst": "m4", "mf_nums": [..]}   {"op": "tstag", ..., "tag": 141, "apply": true}
     {"op": "tscomment", ..., "comment": "text"}       {"op": "tsexport", "inst": "m4", "kind": "mstar_sel", ...}
     {"op": "tsrelstd", "inst": "m4", "analyte": "CFC-11", "start": 2025, "end": 2026}   the Relative Stddev figure
+    {"op": "tspreview", "inst": "m4", "kind": "mstar_global", ...}  what an export would write (the Plot button)
 
 tag, comment, save, copyall, runnotesave, jobqueue, jobcancel, tstag and tscomment change the database and need "role" rw or admin. They call the
 same instrument and tagging code as logos_data. The account running the
@@ -1764,6 +1765,13 @@ def op_tsrelstd(req):
     return tsweb.relstd(inst, str(req['analyte']), start, end)
 
 
+def op_tspreview(req):
+    """The Save section's Plot button: what one export would write (its exporter's own query and preview series)."""
+    inst = instrument_for(req['inst'])
+    return tsweb.preview(inst, req['kind'], str(req['analyte']), int(req['start']), int(req['end']),
+                         [str(s) for s in req.get('sites') or []])
+
+
 def op_tsexport(req):
     """One of the Timeseries tab's Save exports, as a file (base64) the page hands to the browser."""
     inst = instrument_for(req['inst'])
@@ -1779,11 +1787,11 @@ OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detr
        'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype,
        'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel,
        'tsinit': op_tsinit, 'ts': op_ts, 'tstags': op_tstags, 'tstag': op_tstag, 'tscomment': op_tscomment, 'tsexport': op_tsexport,
-       'tsrelstd': op_tsrelstd}
+       'tsrelstd': op_tsrelstd, 'tspreview': op_tspreview}
 
 
 READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs',
-            'tsinit', 'ts', 'tstags', 'tsexport', 'tsrelstd'}
+            'tsinit', 'ts', 'tstags', 'tsexport', 'tsrelstd', 'tspreview'}
 
 
 def _lost_connection(e):

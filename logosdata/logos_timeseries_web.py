@@ -16,6 +16,8 @@ logos_data_service.py calls the op_* functions here:
     {"op": "tscomment", "inst": "m4", "mf_nums": [..], "comment": "text"}        (rw/admin)
     {"op": "tsrelstd", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026}
                                          the Relative Stddev figure's flask means (flask runs, unrejected)
+    {"op": "tspreview", "inst": "m4", "kind": "mstar_sel", ...as tsexport, no all_analytes}
+                                         what that export would write, as the desktop's Plot button shows it
     {"op": "tsexport", "inst": "m4", "kind": "mstar_sel", "analyte": "CFC-11", "start": 2022, "end": 2026,
      "sites": [..], "all_analytes": false}    -> {"name": file name, "b64": contents (a .zip for several files)}
 
@@ -285,9 +287,9 @@ def export_kinds(inst):
     return [[k, v[4], v[3]] for k, v in EXPORTS.items() if v[0] == inst.inst_num]
 
 
-def export(inst, kind, analyte, start, end, sites, all_analytes=False):
-    """Write one export (or one per analyte) as the desktop's Save buttons do, into a scratch directory, and return
-    the file, or a zip of the files."""
+def _export_setup(inst, kind, analyte, start, end, sites):
+    """The exporter class, the sites and the headless widget for one export kind, as the desktop's Save buttons pick
+    them: the 'all' kinds take every site (minus the excluded ones), the others the sites ticked."""
     if kind not in EXPORTS or EXPORTS[kind][0] != inst.inst_num:
         raise ValueError(f'no {kind} export for this instrument')
     _, cls, all_time, which, label = EXPORTS[kind]
@@ -301,6 +303,51 @@ def export(inst, kind, analyte, start, end, sites, all_analytes=False):
             use_sites = [s for s in use_sites if s not in lts.PFP_SITES]
         if not use_sites:
             raise ValueError('no sites selected')
+    return cls, all_time, label, ts, use_sites
+
+
+_SYMBOLS = {'o': 'circle', 'D': 'diamond', '.': 'circle', 's': 'square', '^': 'triangle-up', 'v': 'triangle-down', '': None}
+
+
+def preview(inst, kind, analyte, start, end, sites):
+    """What one export would write, for the page's Plot button: the exporter built exactly as for the file, its own
+    query_data() and preview_series() (as the desktop's ExportPreviewFigure), so the preview cannot drift from the file."""
+    cls, all_time, label, ts, use_sites = _export_setup(inst, kind, analyte, start, end, sites)
+    exp = cls.from_timeseries_widget(ts, sites=use_sites, all_time=all_time, analyte=analyte)
+    out = {'title': exp.preview_title(), 'label': label, 'rows': 0, 'series': []}
+    try:
+        out['file'] = exp.default_filename()
+    except TypeError:       # FecdDataExporter names a file per site
+        out['file'] = 'one file per site'
+    df = exp.query_data()
+    if df is None or df.empty:
+        return out
+    out['rows'] = int(len(df))
+    for spec in exp.preview_series(df):
+        x = pd.Series(spec['x']).reset_index(drop=True)
+        y = pd.Series(spec['y']).reset_index(drop=True)
+        yerr = spec.get('yerr')
+        item = {
+            'label': str(spec['label']), 'site': spec.get('site'),
+            'colour': _hex(spec['colour']) if spec.get('colour') else None,
+            'x': _ts(x), 'y': _num(y),
+            'marker': _SYMBOLS.get(spec.get('marker', 'o'), 'circle'), 'line': bool(spec.get('linestyle')),
+            'width': float(spec.get('linewidth', 1.0)), 'size': float(spec.get('markersize', 4)),
+            'background': bool(spec.get('background', False)), 'z': int(spec.get('zorder', 3)),
+        }
+        if yerr is not None:
+            e = _num(pd.Series(yerr).reset_index(drop=True))
+            if any(v is not None for v in e):
+                item['yerr'] = e
+        out['series'].append(item)
+    out['series'].sort(key=lambda d: d['z'])        # matplotlib's zorder: higher drawn later
+    return out
+
+
+def export(inst, kind, analyte, start, end, sites, all_analytes=False):
+    """Write one export (or one per analyte) as the desktop's Save buttons do, into a scratch directory, and return
+    the file, or a zip of the files."""
+    cls, all_time, label, ts, use_sites = _export_setup(inst, kind, analyte, start, end, sites)
     names = list(ts.analytes) if all_analytes and cls is not FecdDataExporter else [analyte]
     with tempfile.TemporaryDirectory(prefix='logos_ts_') as tmp:
         written, empty, failed = [], [], []
