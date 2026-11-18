@@ -31,8 +31,10 @@ writes must require a role here too.
     {"op": "comment", ...as load..., "mf_nums": [..], "comment": "text"}
     {"op": "save", ...as load..., "detrend": null}
     {"op": "copyall", ...as load..., "adds": {"<analysis_num>": [tags]}, "removes": {...}}
+    {"op": "runnote", "inst": "m4", "run": "2026-11-12 12:46:00"}           -> {notes, updated}
+    {"op": "runnotesave", "inst": "m4", "run": "...", "notes": "text"}   (empty removes them)
 
-The last four change the database and need "role" rw or admin. They call the
+tag, comment, save, copyall and runnotesave change the database and need "role" rw or admin. They call the
 same instrument and tagging code as logos_data. The account running the
 service decides what it can write: its ~/.db_rw.cnf login.
 
@@ -355,9 +357,46 @@ def op_runs(req):
         'SELECT run_time, GROUP_CONCAT(DISTINCT run_type_num) types FROM hats.ng_analysis '
         f"WHERE inst_num = {int(inst.inst_num)} AND run_time BETWEEN '{start}' AND '{end}' "
         'GROUP BY run_time ORDER BY run_time') or []
+    noted = inst.doquery(
+        'SELECT run_time FROM hats.ng_run_notes WHERE inst_num = %s AND run_time BETWEEN %s AND %s '
+        "AND notes IS NOT NULL AND TRIM(notes) <> ''", [int(inst.inst_num), start, end]) or []
     return {'runs': [[pd.Timestamp(r['run_time']).strftime('%Y-%m-%d %H:%M:%S'),
                       [int(t) for t in str(r['types']).split(',') if t.strip().lstrip('-').isdigit()]]
-                     for r in rows if r['run_time'] is not None]}
+                     for r in rows if r['run_time'] is not None],
+            'notes': [pd.Timestamp(r['run_time']).strftime('%Y-%m-%d %H:%M:%S') for r in noted]}
+
+
+def _note_run(req):
+    """The instrument and run time of a run-notes request.  In situ entries are months and
+    weeks, not GC runs, so they have no notes here (the desktop asks for a GC run first)."""
+    inst = instrument_for(req['inst'])
+    if is_insitu(inst):
+        raise ValueError('run notes are for flask and tank instruments')
+    return inst, _date(req['run'])
+
+
+def op_runnote(req):
+    """The notes stored for one run: {'notes': text, 'updated': time or None}."""
+    inst, run = _note_run(req)
+    rows = inst.doquery('SELECT notes, updated_at FROM hats.ng_run_notes WHERE inst_num = %s AND run_time = %s',
+                        [int(inst.inst_num), run]) or []
+    r = rows[0] if rows else {}
+    return {'notes': r.get('notes') or '',
+            'updated': pd.Timestamp(r['updated_at']).strftime('%Y-%m-%d %H:%M') if r.get('updated_at') else None}
+
+
+def op_runnotesave(req):
+    """Store a run's notes (the desktop's Edit Run Notes); empty notes remove the row."""
+    _may_write(req)
+    inst, run = _note_run(req)
+    notes = str(req.get('notes') or '').strip()
+    if notes:
+        inst.db.doquery('INSERT INTO hats.ng_run_notes (inst_num, run_time, notes) VALUES (%s, %s, %s) '
+                        'ON DUPLICATE KEY UPDATE notes = VALUES(notes)', [int(inst.inst_num), run, notes])
+    else:
+        inst.db.doquery('DELETE FROM hats.ng_run_notes WHERE inst_num = %s AND run_time = %s', [int(inst.inst_num), run])
+    _audit(req, f'notes={len(notes)} chars')
+    return {'notes': notes}
 
 
 def _date(text):
@@ -1454,10 +1493,11 @@ def op_thermo(req):
 
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
-       'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo}
+       'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo,
+       'runnote': op_runnote, 'runnotesave': op_runnotesave}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote'}
 
 
 def _lost_connection(e):
