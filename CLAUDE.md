@@ -22,6 +22,20 @@ batch as explicit timestamps, so they cover the same rows. Older options still w
 YYMM, FE3's `-a`/`-y`, `--start-date`/`--end-date`, eng2db's `--days`). The CATS scripts are not
 converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosint jobs).
 
+## LOGOS Load page and ingest jobs
+
+- omi `hats/logos_data.php?view=load` (+ `logos_load.js`) queues jobs in `hats.ng_ingest_jobs`
+  (DDL `sql/ng_ingest_jobs.sql`) through the service ops `jobs` / `jobqueue` / `jobcancel` in
+  `logos_data_service.py`. `logos_jobs.py` (cron on catsdata, every minute) runs them, one per
+  instrument at a time, streaming the output into the row's `log`.
+- A job is the instrument's own ingest script: `fetch` = the daily run; `reload` = `--steps
+  [update,]load,batch -s .. -e ..` (FE3 adds `export`, IE3 `eng,methods`); `recalc` = `--steps batch`.
+  `logos_jobs.INSTS` lists the instruments (M4, FE3, IE3-SMO) and is read by the service too.
+- The ingest scripts take `--steps` (`ingest_common.py`; default = the daily set; `update` =
+  gcupdate from the range's month + gccalc, in the daily set only for M4) and hold an instrument lock
+  for the whole run (`logos_lock.py`, `/var/tmp/logos-ingest-<m4|fe3|ie3-smo>.lock`), so a job and
+  the cron run never overlap.
+
 ## Key instrument/parameter numbers
 
 | Instrument | inst_num | inst_id |

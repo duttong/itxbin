@@ -33,8 +33,11 @@ writes must require a role here too.
     {"op": "copyall", ...as load..., "adds": {"<analysis_num>": [tags]}, "removes": {...}}
     {"op": "runnote", "inst": "m4", "run": "2026-11-12 12:46:00"}           -> {notes, updated}
     {"op": "runnotesave", "inst": "m4", "run": "...", "notes": "text"}   (empty removes them)
+    {"op": "jobs", "inst": "m4"} | {"op": "jobs", "num": 12}            Load page jobs (hats.ng_ingest_jobs)
+    {"op": "jobqueue", "inst": "fe3", "action": "reload", "start": "2026-10-01", "end": "2026-10-31", "update_gcwerks": false}
+    {"op": "jobcancel", "inst": "fe3", "num": 12}
 
-tag, comment, save, copyall and runnotesave change the database and need "role" rw or admin. They call the
+tag, comment, save, copyall, runnotesave, jobqueue and jobcancel change the database and need "role" rw or admin. They call the
 same instrument and tagging code as logos_data. The account running the
 service decides what it can write: its ~/.db_rw.cnf login.
 
@@ -73,6 +76,8 @@ import integ_source
 import cal_week
 import ie3_batch
 import cats_batch
+import logos_dates
+import logos_jobs
 from gcwerks_chromatogram import (GCWerksPeakIntegration, _analyte_name_aliases, _peak_result_analyte_prefix, find_gcwerks_chromatogram,
                                   find_gcwerks_peakid_file, read_gcwerks_peak_windows,
                                   gcwerks_channel_number, gcwerks_focus_limits,
@@ -1523,12 +1528,124 @@ def op_thermo(req):
     }
 
 
+# ---------------------------------------------------------------- Load page: jobs (hats.ng_ingest_jobs)
+# The LOGOS Load page queues ingest jobs here; logos_jobs.py on catsdata runs them (its INSTS says which
+# instruments and what each action runs).
+JOB_TABLE = logos_jobs.TABLE
+JOB_COLUMNS = ('num', 'inst', 'action', 'start_time', 'end_time', 'update_gcwerks', 'status', 'requested_by',
+               'requested_at', 'started_at', 'finished_at', 'worker', 'command')
+JOB_LOG_TAIL = 6000        # characters of log in a list reply; one job's full log comes with 'num'
+
+
+def _jobs_db():
+    return instrument_for('m4').db
+
+
+def _job_json(r, full_log=False):
+    out = {}
+    for k in JOB_COLUMNS:
+        v = r.get(k)
+        out[k] = pd.Timestamp(v).strftime('%Y-%m-%d %H:%M:%S') if hasattr(v, 'year') else v
+    log = r.get('log') or ''
+    out['log'] = log if full_log or len(log) <= JOB_LOG_TAIL else '...\n' + log[-JOB_LOG_TAIL:]
+    if r.get('started_at') is not None:
+        stop = pd.Timestamp(r['finished_at']) if r.get('finished_at') is not None else pd.Timestamp.utcnow().tz_localize(None)
+        out['seconds'] = int((stop - pd.Timestamp(r['started_at'])).total_seconds())
+    return out
+
+
+def op_jobs(req):
+    """Recent Load jobs, newest first (an instrument's, with 'inst'), or one job with its whole log ('num')."""
+    db = _jobs_db()
+    cols = ', '.join(JOB_COLUMNS) + ', log'
+    try:
+        if req.get('num') is not None:
+            rows = db.doquery(f'SELECT {cols} FROM {JOB_TABLE} WHERE num = %s', [int(req['num'])]) or []
+            return {'job': _job_json(rows[0], full_log=True) if rows else None}
+        where, params = '', []
+        if req.get('inst'):
+            where, params = 'WHERE inst = %s', [req['inst']]
+        n = max(1, min(int(req.get('limit') or 25), 200))
+        rows = db.doquery(f'SELECT {cols} FROM {JOB_TABLE} {where} ORDER BY num DESC LIMIT {n}', params) or []
+    except Exception as e:
+        if "doesn't exist" in str(e):
+            return {'jobs': [], 'missing_table': True}
+        raise
+    now = logos_dates.now_utc()
+    return {'jobs': [_job_json(r) for r in rows], 'now': logos_dates.sql(now),
+            'insts': {k: {'inst_num': v['inst_num'], 'reload_steps': v['reload']} for k, v in logos_jobs.INSTS.items()},
+            'default_start': logos_dates.sql(logos_dates.default_start(now))}
+
+
+def op_jobqueue(req):
+    """Queue a Load job: action fetch (the daily ingest now), reload (load + recalculate a range, optionally
+    re-integrating in GCwerks first) or recalc (mole fractions only).  start/end are logos_dates DATEs (UTC,
+    end inclusive; no end = now)."""
+    _may_write(req)
+    inst = req.get('inst')
+    if inst not in logos_jobs.INSTS:
+        raise ValueError(f"the Load page can't run {inst} yet")
+    action = req.get('action')
+    if action not in logos_jobs.ACTIONS:
+        raise ValueError('unknown action')
+    start = end = None
+    if action != 'fetch':
+        start = logos_dates.parse_start(req.get('start') or None)
+        if start is None:
+            raise ValueError('give a start date')
+        end = logos_dates.parse_end(req.get('end')) if req.get('end') else None
+        now = logos_dates.now_utc()
+        if start > now:
+            raise ValueError('the start date is in the future')
+        if end is not None and end < start:
+            raise ValueError('the end is before the start')
+        if end is not None and end >= now:
+            end = None
+    upd = 1 if action == 'reload' and req.get('update_gcwerks') else 0
+    job = {'inst': inst, 'action': action, 'start_time': start, 'end_time': end, 'update_gcwerks': upd}
+    logos_jobs.plan(job)       # the same check the worker makes, so a bad job never reaches the queue
+    db = _jobs_db()
+    busy = db.doquery(f"SELECT num FROM {JOB_TABLE} WHERE inst = %s AND status = 'queued' AND action = %s "
+                      'AND start_time <=> %s AND end_time <=> %s AND update_gcwerks = %s',
+                      [inst, action, logos_dates.sql(start), logos_dates.sql(end), upd]) or []
+    if busy:
+        return {'queued': int(busy[0]['num']), 'duplicate': True}
+    db.doquery(f'INSERT INTO {JOB_TABLE} (inst, inst_num, action, start_time, end_time, update_gcwerks, requested_by, requested_at) '
+               'VALUES (%s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP())',
+               [inst, logos_jobs.INSTS[inst]['inst_num'], action, logos_dates.sql(start), logos_dates.sql(end), upd,
+                str(req.get('user') or '')[:64]])
+    rows = db.doquery(f'SELECT MAX(num) num FROM {JOB_TABLE} WHERE inst = %s AND requested_by = %s',
+                      [inst, str(req.get('user') or '')[:64]]) or []
+    _audit(req, f"job {action} {logos_dates.sql(start)}..{logos_dates.sql(end)} update={upd}")
+    return {'queued': int(rows[0]['num']) if rows and rows[0]['num'] is not None else None}
+
+
+def op_jobcancel(req):
+    """Cancel a job that hasn't started."""
+    _may_write(req)
+    db = _jobs_db()
+    num = int(req['num'])
+    rows = db.doquery(f'SELECT inst, status FROM {JOB_TABLE} WHERE num = %s', [num]) or []
+    if not rows:
+        raise ValueError(f'no job {num}')
+    if rows[0]['inst'] != req.get('inst'):
+        raise ValueError(f"job {num} is for {rows[0]['inst']}, not {req.get('inst')}")
+    if rows[0]['status'] != 'queued':
+        return {'cancelled': False, 'status': rows[0]['status']}
+    db.doquery(f"UPDATE {JOB_TABLE} SET status = 'cancelled', finished_at = UTC_TIMESTAMP(), "
+               "log = CONCAT(COALESCE(log, ''), %s) WHERE num = %s AND status = 'queued'",
+               [f"cancelled by {req.get('user')}\n", num])
+    _audit(req, f'job {num} cancelled')
+    return {'cancelled': True}
+
+
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
        'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo,
-       'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype}
+       'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype,
+       'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel}
 
 
-READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote'}
+READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs'}
 
 
 def _lost_connection(e):

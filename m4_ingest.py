@@ -15,7 +15,9 @@ import subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
+import ingest_common
 import logos_dates
+import logos_lock
 
 
 def parse_bd_date(name: str) -> datetime.date | None:
@@ -110,7 +112,10 @@ def sync_gspc(gspc_dir: Path, incoming: Path, threshold: datetime.date):
                 shutil.copy2(entry, dest)
 
 
-def run_commands(gcd: Path, yymm: str, range_args: list[str]):
+STEPS = ("sync", "import", "update", "load", "batch")
+
+
+def run_commands(gcd: Path, yymm: str, range_args: list[str], steps: set):
     """
     Run the series of gcwerks and itxbin commands against the INCOMING directory.
 
@@ -122,17 +127,20 @@ def run_commands(gcd: Path, yymm: str, range_args: list[str]):
     of the month was silently skipped), so it's passed explicitly here.
 
     range_args (-s/-e or --all) go to the loader and the batch, so both cover the same range.
+    steps: which of import, update, load, batch to run (sync is done by main).
     """
     cmds = [
-        ["/hats/gc/gcwerks-3/bin/gcimport",    "-gcdir", str(gcd)],
-        ["/hats/gc/gcwerks-3/bin/run-index",   "-gcdir", str(gcd)],
-        ["/hats/gc/itxbin/m4_samplogs.py",     "-i"],
-        ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd), yymm],
-        ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
-        ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x", "--flagged", *range_args],
-        ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i", *range_args],
+        ("import", ["/hats/gc/gcwerks-3/bin/gcimport",    "-gcdir", str(gcd)]),
+        ("import", ["/hats/gc/gcwerks-3/bin/run-index",   "-gcdir", str(gcd)]),
+        ("import", ["/hats/gc/itxbin/m4_samplogs.py",     "-i"]),
+        ("update", ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd), yymm]),
+        ("update", ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)]),
+        ("load",   ["/hats/gc/itxbin/m4_gcwerks2db.py",   "-x", "--flagged", *range_args]),
+        ("batch",  ["/hats/gc/itxbin/m4_batch.py",        "-p", "all", "-i", *range_args]),
     ]
-    for cmd in cmds:
+    for step, cmd in cmds:
+        if step not in steps:
+            continue
         logging.info(f"Running: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
 
@@ -151,14 +159,19 @@ def main():
                         default=Path("/hats/gc/m4/MassHunter/GCMS/M4 GSPC Files"),
                         help="Source GSPC dir (default: /hats/gc/m4/MassHunter/GCMS/M4 GSPC Files)")
     logos_dates.add_range_args(parser)
+    ingest_common.add_steps_arg(parser, STEPS, STEPS)
     args = parser.parse_args()
     try:
         start, end = logos_dates.resolve(args)
+        steps = ingest_common.parse_steps(args.steps, STEPS)
     except ValueError as e:
         parser.error(str(e))
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s: %(message)s")
+    logging.info(f"M4 ingest: steps {','.join(s for s in STEPS if s in steps)}; "
+                 f"range {'all' if args.all else f'{start} to {end}'}")
+    lock = logos_lock.acquire("m4", log=logging.info)      # held until exit
 
     today = datetime.date.today()
     threshold = today - datetime.timedelta(days=args.days)
@@ -166,26 +179,18 @@ def main():
     # GCwerks YYMM for gcupdate: last calendar month (e.g. "2606"), so it always
     # re-covers all of last month plus this month to date, regardless of --days;
     # earlier when the range starts earlier (--all: the first year folder).
-    first_of_this_month = today.replace(day=1)
-    last_month_date = first_of_this_month - datetime.timedelta(days=1)
-    yymm = last_month_date.strftime('%y%m')
-    if args.all:
-        years = sorted(int(p.name) for p in Path('/hats/gc/m4').glob('[0-9][0-9]') if p.is_dir())
-        if years:
-            yymm = f"{years[0]:02d}01"
-        range_args = ["--all"]
-    else:
-        yymm = min(yymm, logos_dates.yymm(start), key=lambda m: (int(m[:2]) < 70, m))
-        range_args = logos_dates.range_cli_args(start, end)
+    yymm = ingest_common.gcupdate_yymm('/hats/gc/m4', start, args.all)
+    range_args = ingest_common.range_args(args, start, end)
 
-    # ensure incoming exists
-    args.incoming.mkdir(parents=True, exist_ok=True)
-
-    sync_raw(args.raw, args.incoming, threshold)
-    sync_gspc(args.gspc, args.incoming, threshold)
-    run_commands('/hats/gc/m4', yymm, range_args)
-    # remove older directories/files
-    clean_incoming(args.incoming, threshold)
+    if "sync" in steps:
+        # ensure incoming exists
+        args.incoming.mkdir(parents=True, exist_ok=True)
+        sync_raw(args.raw, args.incoming, threshold)
+        sync_gspc(args.gspc, args.incoming, threshold)
+    run_commands('/hats/gc/m4', yymm, range_args, steps)
+    if "sync" in steps:
+        # remove older directories/files
+        clean_incoming(args.incoming, threshold)
 
 
 if __name__ == "__main__":
