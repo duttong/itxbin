@@ -41,6 +41,7 @@ writes must require a role here too.
     {"op": "tsinit", "inst": "m4"}  {"op": "ts", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026}
     {"op": "tstags", "inst": "m4", "mf_nums": [..]}   {"op": "tstag", ..., "tag": 141, "apply": true}
     {"op": "tscomment", ..., "comment": "text"}       {"op": "tsexport", "inst": "m4", "kind": "mstar_sel", ...}
+    {"op": "tsrelstd", "inst": "m4", "analyte": "CFC-11", "start": 2025, "end": 2026}   the Relative Stddev figure
 
 tag, comment, save, copyall, runnotesave, jobqueue, jobcancel, tstag and tscomment change the database and need "role" rw or admin. They call the
 same instrument and tagging code as logos_data. The account running the
@@ -1752,6 +1753,17 @@ def op_tscomment(req):
     return {'tags': _ts_tags(inst, nums)}
 
 
+def op_tsrelstd(req):
+    """The Relative Stddev figure: flask means of flask runs, with their spread (flask instruments)."""
+    inst = instrument_for(req['inst'])
+    if is_insitu(inst):
+        raise ValueError('the Relative Stddev figure is for flask instruments')
+    start, end = int(req['start']), int(req['end'])
+    if not 1970 <= start <= end <= 2100:
+        raise ValueError('bad year range')
+    return tsweb.relstd(inst, str(req['analyte']), start, end)
+
+
 def op_tsexport(req):
     """One of the Timeseries tab's Save exports, as a file (base64) the page hands to the browser."""
     inst = instrument_for(req['inst'])
@@ -1766,11 +1778,12 @@ OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detr
        'chrom': op_chrom, 'cal': op_cal, 'calcurves': op_calcurves, 'calsave': op_calsave, 'calweeks': op_calweeks, 'calweek': op_calweek, 'calweeksave': op_calweeksave, 'calweekmf': op_calweekmf, 'tag': op_tag, 'comment': op_comment, 'save': op_save, 'copyall': op_copyall, 'thermo': op_thermo,
        'runnote': op_runnote, 'runnotesave': op_runnotesave, 'runtype': op_runtype,
        'jobs': op_jobs, 'jobqueue': op_jobqueue, 'jobcancel': op_jobcancel,
-       'tsinit': op_tsinit, 'ts': op_ts, 'tstags': op_tstags, 'tstag': op_tstag, 'tscomment': op_tscomment, 'tsexport': op_tsexport}
+       'tsinit': op_tsinit, 'ts': op_ts, 'tstags': op_tstags, 'tstag': op_tstag, 'tscomment': op_tscomment, 'tsexport': op_tsexport,
+       'tsrelstd': op_tsrelstd}
 
 
 READ_OPS = {'ping', 'init', 'runs', 'load', 'smooth', 'chrom', 'cal', 'calcurves', 'calweeks', 'calweek', 'detrend', 'thermo', 'runnote', 'jobs',
-            'tsinit', 'ts', 'tstags', 'tsexport'}
+            'tsinit', 'ts', 'tstags', 'tsexport', 'tsrelstd'}
 
 
 def _lost_connection(e):

@@ -14,6 +14,8 @@ logos_data_service.py calls the op_* functions here:
     {"op": "tstags", "inst": "m4", "mf_nums": [..]}            the tags on those mole fractions
     {"op": "tstag", "inst": "m4", "mf_nums": [..], "tag": 141, "apply": true}    (rw/admin)
     {"op": "tscomment", "inst": "m4", "mf_nums": [..], "comment": "text"}        (rw/admin)
+    {"op": "tsrelstd", "inst": "m4", "analyte": "CFC-11", "start": 2022, "end": 2026}
+                                         the Relative Stddev figure's flask means (flask runs, unrejected)
     {"op": "tsexport", "inst": "m4", "kind": "mstar_sel", "analyte": "CFC-11", "start": 2022, "end": 2026,
      "sites": [..], "all_analytes": false}    -> {"name": file name, "b64": contents (a .zip for several files)}
 
@@ -252,6 +254,20 @@ def timeseries(inst, analyte, start, end):
 
     out['sets'] = {k: v for k, v in sets.items() if v}
     return out
+
+
+def relstd(inst, analyte, start, end):
+    """The desktop's Relative Stddev figure data (query_rel_stddev_data): per run and flask, the mean, s.d., relative
+    s.d. (%) and count of the unrejected injections of flask runs, for all of the instrument's sites."""
+    ts = HeadlessTimeseries(inst, analyte, start, end)
+    df = ts.query_rel_stddev_data(analyte)
+    if df is None or df.empty:
+        return {'rows': None}
+    return {'rows': {
+        'run': _ts(df['run_time']), 't': _ts(df['sample_datetime']), 'site': _strs(df['site']), 'sid': _strs(df['sample_id']),
+        'pair': _ints(df['pair_id_num']), 'y': _num(df['mixratio']), 'sd': _num(df['stddev']), 'rel': _num(df['relstd'], 4),
+        'n': _ints(df['n']),
+    }}
 
 
 EXPORTS = {
