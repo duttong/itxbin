@@ -67,10 +67,14 @@ class M4_GCwerks(M4_Instrument):
             df = df.loc[start_dt:stop_dt]
 
         # trim the last two rows if area and height are nan (this happens when the chrom is not finished)
-        if pd.isna(df.iloc[-2]['area']) & pd.isna(df.iloc[-2]['ht']):
+        def _empty(i):
+            return len(df) >= -i and pd.isna(df.iloc[i]['area']) and pd.isna(df.iloc[i]['ht'])
+        if _empty(-2):
             df = df[:-2]
-        elif pd.isna(df.iloc[-1]['area']) & pd.isna(df.iloc[-1]['ht']):
+        elif _empty(-1):
             df = df[:-1]
+        if df.empty:
+            return df
 
         # insure there are no duplicate index rows
         df = df.reset_index(drop=True)
@@ -301,9 +305,11 @@ def main():
     loaded_ranges = []
     for n, gas in enumerate(molecules):
         df = m4.load_gcwerks(gas, start_date)
+        if df is None or df.empty:
+            print(f'No rows to load for parameter {gas}')
+            continue
         m4.insert_mole_fractions(df)
-        if df is not None and not df.empty:
-            loaded_ranges.append((df['dt_run'].min(), df['dt_run'].max()))
+        loaded_ranges.append((df['dt_run'].min(), df['dt_run'].max()))
         print(f'{df.shape[0]} rows inserted/updated for parameter {gas} into hats.ng_mole_fractions')
 
     if loaded_ranges:

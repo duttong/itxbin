@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 import argparse
+import functools
 import sys
 import math
 import pandas as pd
@@ -8,9 +9,9 @@ import numpy as np
 from pathlib import Path
 
 
-# use itxbin in home directory
-repo = Path.home() / 'itxbin'
-sys.path.insert(0, str(repo))
+# logos_instruments from this script's own checkout (not ~/itxbin, so the
+# deployed copy runs the deployed code)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from logos_instruments import FE3_Instrument, M4_Instrument, BLD1_Instrument
 
 # use coredata in /hats/gc/itxbin/coredata
@@ -18,11 +19,16 @@ cdpath = Path('/hats/gc/itxbin/coredata')
 sys.path.insert(0, str(cdpath))
 from core_merge import Stratcore_GCwerks, Stratcore_runs
 
-gw = Stratcore_GCwerks()
 runs = Stratcore_runs()
-bld1 = BLD1_Instrument()
 
-mols = bld1.analytes
+
+@functools.lru_cache(maxsize=None)
+def _bld1():
+    """The BLD1_Instrument (and its DB connection), made on first use rather than at
+    import, so importing this module (bld1_export.py does) doesn't connect."""
+    return BLD1_Instrument()
+
+
 attribs = {'flag': False,
             'methdet': 'lowess',
             'methcal': 'quadratic',
@@ -97,7 +103,7 @@ def merge_gcwerks_and_metadata(flagged=False):
     df['port_id'] = df.apply(_port_id, axis=1)
     
     # create extra attribute columns
-    for mol in bld1.analytes.keys():
+    for mol in _bld1().analytes.keys():
         for k in attribs:
             col = f'{mol}_{k}'
             df[col] = attribs[k]
@@ -111,7 +117,7 @@ def cleanup_db_df(df, dropcols=True):
     df = df.reset_index()
     if dropcols:
         # drop area columns to save space.
-        droplist = [f'{mol}_area' for mol in bld1.analytes.keys()]
+        droplist = [f'{mol}_area' for mol in _bld1().analytes.keys()]
         #droplist += ['ports', 'seq']
         cols = df.columns.difference(droplist)
         df = df[cols]
@@ -159,7 +165,7 @@ def piviot_gcwerks_df(df):
     )
 
     # add pnum, inst_num, and run_time columns
-    df_tidy['pnum'] = df_tidy['gas'].map(bld1.analytes)
+    df_tidy['pnum'] = df_tidy['gas'].map(_bld1().analytes)
     df_tidy['run_time'] = pd.to_datetime(df_tidy['dir'], errors='coerce')
     df_tidy['inst_num'] = 220
 
@@ -179,10 +185,10 @@ def piviot_gcwerks_df(df):
     df_tidy = df_tidy.drop('dir', axis=1)
     df_tidy.rename(columns={'time':'analysis_time', 'port_id':'port_info'}, inplace=True)
 
-    df_tidy['channel'] = df_tidy['gas'].map(bld1.chan_map)
+    df_tidy['channel'] = df_tidy['gas'].map(_bld1().chan_map)
     
     # Build a mapping dict from runtype.name → runtype.num
-    runtype = pd.DataFrame(bld1.doquery('SELECT * FROM hats.ng_run_types;'))
+    runtype = pd.DataFrame(_bld1().doquery('SELECT * FROM hats.ng_run_types;'))
     runtype_map = dict(zip(runtype['name'].str.lower(), runtype['num']))
 
     # Add special handling for 'test' → 'Other'
@@ -284,7 +290,7 @@ def stratcore_to_hats_analysis(df_analysis: pd.DataFrame, batch_size: int = 500)
     # --- 4) Execute in batches
     for i in range(0, len(analysis_params), batch_size):
         batch = analysis_params[i : i + batch_size]
-        bld1.db.doMultiInsert(analysis_sql, batch, all=True)
+        _bld1().db.doMultiInsert(analysis_sql, batch, all=True)
 
     # --- 5) Verify insert / fetch record IDs
     unique_times = df['analysis_time_str'].unique().tolist()
@@ -295,7 +301,7 @@ def stratcore_to_hats_analysis(df_analysis: pd.DataFrame, batch_size: int = 500)
          WHERE inst_num = %s
            AND analysis_time IN ({placeholders})
     """
-    rows = bld1.db.doquery(select_sql, [inst_num] + unique_times)
+    rows = _bld1().db.doquery(select_sql, [inst_num] + unique_times)
     mapping = {
         r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'): r['num']
         for r in rows
@@ -374,7 +380,7 @@ def stratcore_to_hats_molefractions(
 
     for i in range(0, len(mole_params), batch_size):
         batch = mole_params[i:i + batch_size]
-        bld1.db.doMultiInsert(mole_sql, batch, all=True)
+        _bld1().db.doMultiInsert(mole_sql, batch, all=True)
 
     if flagged and all_keys:
         keys = sorted(all_keys)
@@ -393,7 +399,7 @@ def stratcore_to_hats_molefractions(
                 WHERE t.tag_num = 324
                   AND ({' OR '.join(terms)})
             """
-            bld1.db.doquery(delete_sql, params)
+            _bld1().db.doquery(delete_sql, params)
 
     if flagged_keys:
         tag_params = []
@@ -405,16 +411,16 @@ def stratcore_to_hats_molefractions(
             for analysis_num, pnum, channel in chunk:
                 terms.append("(analysis_num = %s AND parameter_num = %s AND channel = %s)")
                 params.extend([analysis_num, pnum, channel])
-            rows = bld1.db.doquery(
+            rows = _bld1().db.doquery(
                 f"SELECT num FROM hats.ng_mole_fractions WHERE {' OR '.join(terms)}",
                 params,
             )
             tag_params.extend((r["num"], 324) for r in rows)
             if len(tag_params) >= batch_size:
-                bld1.db.doMultiInsert(tag_sql, tag_params, all=True)
+                _bld1().db.doMultiInsert(tag_sql, tag_params, all=True)
                 tag_params = []
         if tag_params:
-            bld1.db.doMultiInsert(tag_sql, tag_params, all=True)
+            _bld1().db.doMultiInsert(tag_sql, tag_params, all=True)
 
     print(f"✅ Upserted {len(mole_params)} rows into hats.ng_mole_fractions.")
 

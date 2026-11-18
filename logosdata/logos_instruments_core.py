@@ -471,7 +471,10 @@ class HATS_DB_Functions(LOGOS_Instruments):
             f"  AND analysis_time <= '{max_time}';"
         )
 
-        db_df = pd.DataFrame(self.db.doquery(sql))
+        db_df = pd.DataFrame(self.db.doquery(sql) or [])
+        if db_df.empty:     # no ng_analysis rows yet for these times
+            df['analysis_num'] = None
+            return df
         db_df['analysis_time'] = pd.to_datetime(db_df['analysis_time'], utc=True)
 
         # Now merge back onto the original df:

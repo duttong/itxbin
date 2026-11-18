@@ -454,8 +454,11 @@ class FE3_Prepare(fe3_inst):
         df['ccgg_event_num'] = pd.to_numeric(df.get('ccgg_event_num', 0), errors='coerce').fillna(0).astype(int)
         
         # 2) Pre-fetch existing ng_analysis rows by (analysis_time, port).
-        # ng_analysis has no UNIQUE key other than the PK, so ON DUPLICATE KEY
-        # UPDATE would never fire — we must route inserts vs updates in Python.
+        # ng_analysis's unique key u is (analysis_time, inst_num, pair_id_num,
+        # flask_id, ccgg_event_num), so ON DUPLICATE KEY UPDATE on it would add
+        # a second row whenever a relabel changes the pair, flask or event of
+        # an injection. Inserts vs updates are routed in Python on
+        # (analysis_time, port) instead, which a relabel doesn't change.
         min_time = df['analysis_time_str'].min()
         max_time = df['analysis_time_str'].max()
         existing_rows = self.db.doquery("""
@@ -463,12 +466,22 @@ class FE3_Prepare(fe3_inst):
               FROM hats.ng_analysis
              WHERE inst_num = %s
                AND analysis_time BETWEEN %s AND %s
+             ORDER BY num
         """, [self.inst_num, min_time, max_time])
-        # keyed by (analysis_time_str, port)
-        existing = {
-            (r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'), int(r['port'])): r['num']
-            for r in existing_rows
-        }
+        # keyed by (analysis_time_str, port). Some injections have two rows (left
+        # by relabels before this routing): the newest one (highest num) is the
+        # one updated, the same one every load.
+        existing = {}
+        dup_nums = []
+        for r in existing_rows:
+            k = (r['analysis_time'].strftime('%Y-%m-%d %H:%M:%S'), int(r['port']))
+            if k in existing:
+                dup_nums.append(existing[k])
+            existing[k] = r['num']
+        if dup_nums:
+            logging.warning("%d older duplicate ng_analysis rows (same analysis_time and port) "
+                            "not updated: num %s", len(dup_nums),
+                            ', '.join(str(n) for n in dup_nums[:20]) + (' ...' if len(dup_nums) > 20 else ''))
 
         update_params = []
         insert_params = []
@@ -621,53 +634,7 @@ class FE3_Prepare(fe3_inst):
                     tag_params = []
             if tag_params:
                 self.db.doMultiInsert(tag_sql, tag_params, all=True)
-               
-    def upsert_ng_analysis(df_slice):
-        """ Use this method manually if there is a problem with ng_analysis """
-        
-        sql = """
-        INSERT INTO hats.ng_analysis (
-            analysis_time,
-            inst_num,
-            run_time,
-            run_type_num,
-            port,
-            port_info,
-            flask_port,
-            pair_id_num,
-            flask_id
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s
-        )
-        ON DUPLICATE KEY UPDATE
-            run_time      = VALUES(run_time),
-            run_type_num  = VALUES(run_type_num),
-            port          = VALUES(port),
-            port_info     = VALUES(port_info),
-            flask_port    = VALUES(flask_port),
-            pair_id_num   = VALUES(pair_id_num),
-            flask_id      = VALUES(flask_id)
-        ;
-        """
 
-        args = []
-        for row in df_slice.itertuples(index=False):
-            args.append((
-                # these nine must line up with your INSERT columns:
-                row.time,              # analysis_time
-                fe3.inst_num,          # inst_num
-                row.run_time    or None,
-                int(row.run_type_num) if pd.notnull(row.run_type_num) else None,
-                row.port        or None,
-                row.port_id     or None,
-                row.flask_port  or None,
-                row.pair_id_num or 0,
-                row.flask_id    or 0,
-            ))
-            if fe3.db.doMultiInsert(sql, args):
-                args = []
-                
-        r = fe3.db.doMultiInsert(sql, args, all=True)
 
 class FE3_GCwerks(fe3_inst):
     """ Class and methods for reading GCwerks result file.
