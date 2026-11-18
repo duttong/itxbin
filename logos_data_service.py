@@ -704,10 +704,23 @@ def op_copyall(req):
                 f"WHERE t.tag_num = %s AND m.analysis_num IN ({','.join(['%s'] * len(anums))}) AND (t.comment IS NULL OR t.comment = '')",
                 [comment, tag] + anums)
     if is_week(inst, req['run']):
-        # The cal injections' tags reach the other analytes; their fits follow with Update Method on each.
-        _audit(req, f'copied adds={ {k: sorted(v) for k, v in adds.items()} } removes={ {k: sorted(v) for k, v in removes.items()} } (cal week)')
+        # The cal injections' tags reach the other analytes; each analyte's weekly fit is then recomputed (by the method
+        # recorded for the week) and the week's air-port mole fractions recalculated from it.
+        week, failed, refit_n = str(req['run']), [], 0
+        analytes = analyte_list(inst)
+        for a in analytes:
+            try:
+                method = int(inst.get_week_mf_method(a['pnum'], a['channel'], week))
+                res = _store_week_fit(inst, a['pnum'], a['channel'], week, method)
+                refit_n += 1 if res.get('fit') else 0
+                _update_week_mf(inst, a['pnum'], a['channel'], week)
+            except Exception as e:
+                traceback.print_exc()
+                failed.append(f"{a['name']}: {e}")
+        _audit(req, f'copied adds={ {k: sorted(v) for k, v in adds.items()} } removes={ {k: sorted(v) for k, v in removes.items()} } '
+                    f'(cal week; refit {refit_n} of {len(analytes)} analytes, failed={len(failed)})')
         out = op_load(req)
-        out.update(analytes=len(analyte_list(inst)), failed=[], week=True)
+        out.update(analytes=len(analytes), failed=failed, week=True, refit=refit_n)
         return out
     start, end = run_range(inst, req['run'])
     failed = []
@@ -1327,18 +1340,10 @@ def op_calweek(req):
             'site': inst.site, 'inst_id': inst.inst_id, 'n': int(len(unflagged))}
 
 
-def op_calweeksave(req):
-    """Update Method: record the chosen method for the week and, for a fit method, recompute the week's fit and write it to
-    hats.ng_response (logos_data's _ie3_cal_save, without its flag saves).  The air-port mole fractions follow with calweekmf."""
-    _may_write(req)
-    inst = _week_inst(req)
-    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
-    method = int(req['method'])
-    if method not in inst.MF_METHOD_LABELS:
-        raise ValueError('unknown calibration method')
-    _audit(req, f'cal week {week} method={inst.MF_METHOD_LABELS[method]}')
+def _store_week_fit(inst, pnum, channel, week, method, detrend=None):
+    """Record a week's calibration method, store the smoothing tried (if any) with its cal rows, and for a fit method recompute
+    the week's fit from the unrejected cal and reference points and write it to hats.ng_response (logos_data's _ie3_cal_save)."""
     inst.set_week_mf_method(pnum, channel, week, method)
-    detrend = req.get('detrend')
     data = inst.load_cal_week_data(pnum, channel, week, detrend=detrend)
     if detrend is not None and data is not None and not data.empty:
         inst.upsert_mole_fractions(data)        # the smoothing tried is the one stored with the week's cal rows, as logos_data's Update Method
@@ -1363,14 +1368,9 @@ def op_calweeksave(req):
     return {'saved': True, 'fit': {'id': row_id, 'period': pd.Timestamp(start).strftime('%Y-%m-%d %H:%M:%S'), 'slope': float(row['slope']), 'intercept': float(row['intercept'])}}
 
 
-def op_calweekmf(req):
-    """Update MF: recompute and write the week's air-port mole fractions with the method and fit saved (the in-process
-    ie3_batch.py -p N -c CH --site S -s week -e week+7d -i)."""
-    _may_write(req)
-    inst = _week_inst(req)
-    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+def _update_week_mf(inst, pnum, channel, week):
+    """Recompute and write a week's air-port mole fractions with the method and fit stored for it (ie3_batch for the week)."""
     end = (pd.Timestamp(week) + pd.Timedelta(days=7)).strftime('%Y-%m-%d')
-    _audit(req, f'cal week {week} mole fractions')
     df = inst.load_data(pnum=pnum, channel=channel, start_date=week, end_date=end)
     if df is None or df.empty:
         return {'saved': False, 'note': 'no data in that week'}
@@ -1381,6 +1381,28 @@ def op_calweekmf(req):
     df.loc[df['height'] == 0, 'mole_fraction'] = 0.0
     inst.upsert_mole_fractions(df)
     return {'saved': True, 'updated': int(df['mole_fraction'].notna().sum()), 'of': int(len(df))}
+
+
+def op_calweeksave(req):
+    """Update Method: record the chosen method for the week and, for a fit method, recompute the week's fit and write it to
+    hats.ng_response.  The air-port mole fractions follow with calweekmf."""
+    _may_write(req)
+    inst = _week_inst(req)
+    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+    method = int(req['method'])
+    if method not in inst.MF_METHOD_LABELS:
+        raise ValueError('unknown calibration method')
+    _audit(req, f'cal week {week} method={inst.MF_METHOD_LABELS[method]}')
+    return _store_week_fit(inst, pnum, channel, week, method, req.get('detrend'))
+
+
+def op_calweekmf(req):
+    """Update MF: recompute and write the week's air-port mole fractions with the method and fit saved."""
+    _may_write(req)
+    inst = _week_inst(req)
+    pnum, channel, week = int(req['pnum']), req.get('channel') or None, _week_start(req['run'])
+    _audit(req, f'cal week {week} mole fractions')
+    return _update_week_mf(inst, pnum, channel, week)
 
 
 OPS = {'ping': op_ping, 'init': op_init, 'runs': op_runs, 'load': op_load, 'detrend': op_detrend, 'smooth': op_smooth,
