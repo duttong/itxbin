@@ -1945,9 +1945,9 @@ class BLD1_Instrument(HATS_DB_Functions):
 
     def load_calcurves(self, pnum, channel, earliest_run):
         """
-        Returns the calibration curves from ng_response for a given parameter number and channel.
-        
-        NOTE: I updated load_calcurves for FE3 and may need to update it for BLD1 as well!!!
+        Returns the calibration curves from ng_response for a given parameter number and channel,
+        from 60 days before to 7 days after the selected run (as FE3). BLD1 cal runs are usually
+        the day before the AirCore runs, so the window must reach back.
         """
         scale_num = self.qurey_return_scale_num(pnum)
         
@@ -1960,7 +1960,7 @@ class BLD1_Instrument(HATS_DB_Functions):
                 where inst_num = {self.inst_num}
                 and scale_num = {scale_num}
                 {ch}
-                and run_date >= '{earliest_run}'
+                and run_date BETWEEN DATE_SUB('{earliest_run}', INTERVAL 60 DAY) AND DATE_ADD('{earliest_run}', INTERVAL 7 DAY)
             order by run_date desc;
         """
         df = pd.DataFrame(self.db.doquery(sql))
