@@ -235,6 +235,7 @@ def flask_means(ts, analyte):
         SELECT {site_label} AS site, v.sample_datetime, v.pair_avg
         FROM {ts._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND {lts.not_test_pair('v.pair_id_num')}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
     """

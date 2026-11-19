@@ -93,6 +93,17 @@ converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosin
   it is placed in the full SSV sequence by a unique substring match (or a
   `main_offset` key if the FE3 app ever writes one). DDL in
   `sql/ng_analysis_test_num.sql`.
+- **Test flasks in regular flask runs.** FE3 and M4 also run equipment test
+  flasks inside ordinary flask runs (run type 1, `test_num` 0). Only the event
+  marks them: `ng_analysis.hatsflask_event_num` in
+  `ccgg_equip.equip_tests_view.hatsflask_event_num` (as omi equip_test_results).
+  2026-11-19: 168 FE3 + 42 M4 analyses, 22 pairs, all site BLD. They are left out
+  of time series and exports by `mstar_pairs.TEST_EVENTS_SQL` (inside
+  `MSTAR_PAIR_AVG_SQL`) and `not_test_pair()` (pair id filter, for
+  `ng_data_processing_view` / `ng_pair_avg_view`, which carry no event); test
+  results read the DB directly and are unaffected. Use `IN (subquery)`: a join
+  to `equip_tests_view` takes ~3.5 s. Older BLD cylinder/zero-air fills
+  (2022-09..2024-08, 48 analyses) predate the test system and are not caught.
 - `hats.ng_analysis.hatsflask_event_num` — the analysis's `hatsflask_event.num`
   (added 2026-10-29, as PRS's `hats.analysis.hatsflask_event_num`).
   `ng_data_view` joins `hatsflask_event_view` on it for sample date, site and

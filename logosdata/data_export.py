@@ -26,7 +26,9 @@ from typing import Optional
 import pandas as pd
 
 from global_means import GlobalMeansCalculator, GlobalMeansConfig
-from mstar_pairs import MSTAR_PAIR_AVG_SQL
+from mstar_pairs import MSTAR_PAIR_AVG_SQL, not_test_pair
+
+NOT_TEST_PAIR = not_test_pair()       # FE3 exports: equipment test flasks run in flask runs are left out
 
 
 def _concat_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -1135,11 +1137,12 @@ class FecdDataExporter:
             pref_start = pref['start_date']  # date object from DB
 
             # Before preferred channel start_date: no channel filter
-            sql_before = """
+            sql_before = f"""
             SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
+              AND {NOT_TEST_PAIR}
               AND parameter_num = %s
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s
@@ -1153,11 +1156,12 @@ class FecdDataExporter:
             frames.append(pd.DataFrame(rows) if rows else pd.DataFrame())
 
             # From preferred channel start_date onward: filter to preferred channel
-            sql_after = """
+            sql_after = f"""
             SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
+              AND {NOT_TEST_PAIR}
               AND parameter_num = %s
               AND channel = %s
               AND UPPER(site) = %s
@@ -1173,11 +1177,12 @@ class FecdDataExporter:
 
         else:
             # No preferred channel: query FE3 without channel filter
-            sql = """
+            sql = f"""
             SELECT sample_datetime, pair_avg, pair_stdv, pair_id_num, '' AS sample_type,
                    'FE3' AS instrument
             FROM hats.ng_pair_avg_view
             WHERE inst_num = %s
+              AND {NOT_TEST_PAIR}
               AND parameter_num = %s
               AND UPPER(site) = %s
               AND YEAR(sample_datetime) BETWEEN %s AND %s

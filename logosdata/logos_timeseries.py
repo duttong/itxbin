@@ -22,7 +22,7 @@ from pathlib import Path
 from data_export import (MstarDataExporter, MstarMonthlyExporter,
                          MstarGlobalMeansExporter, FecdDataExporter)
 from logos_tagging import TagCRUDMixin, MultiTagPanel
-from mstar_pairs import MSTAR_PAIR_AVG_SQL
+from mstar_pairs import MSTAR_PAIR_AVG_SQL, not_test_pair
 
 import configparser
 
@@ -3323,6 +3323,7 @@ class TimeseriesWidget(QWidget):
         WHERE inst_num = %s
           AND parameter_num = %s
           AND run_type_num = 1  # only flask runs for the stddev plot
+          AND {not_test_pair()}
           AND rejected = 0
           AND sample_datetime BETWEEN %s AND %s
           AND site IN ({",".join(["%s"]*len(sites))})
@@ -3444,8 +3445,9 @@ class TimeseriesWidget(QWidget):
         query_params = (start, end, analyte, channel, use_preferred_channel)
 
         if force or query_params != self._last_query_params:
-            # Test runs are never time series data, on any instrument (FE3 has a 2021 THD pair run as a Test).
-            test_filter = 'AND test_num = 0 AND run_type_num <> 10'
+            # Test runs and test flasks are never time series data, on any instrument: FE3 has a 2021 THD pair
+            # run as a Test, and FE3/M4 run equipment test flasks inside regular flask runs (mstar_pairs.not_test_pair).
+            test_filter = f'AND test_num = 0 AND run_type_num <> 10 AND {not_test_pair()}'
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
                    rejected, site, sample_id, pair_id_num, run_type_num, ng_mole_fraction_num
@@ -3726,6 +3728,7 @@ class TimeseriesWidget(QWidget):
             AVG(v.pair_avg) AS period_avg, STDDEV(v.pair_avg) AS period_std
         FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND {not_test_pair('v.pair_id_num')}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
         GROUP BY site_label, period_start ORDER BY site_label, period_start;
@@ -3771,6 +3774,7 @@ class TimeseriesWidget(QWidget):
             AVG(v.pair_avg) AS monthly_avg, STDDEV(v.pair_avg) AS monthly_std
         FROM {self._pair_avg_source()} v
         WHERE {inst_sql} AND v.parameter_num = %s {ch_filter}
+          AND {not_test_pair('v.pair_id_num')}
           AND UPPER(v.site) IN ({",".join(["%s"] * len(sites))})
           AND YEAR(v.sample_datetime) BETWEEN %s AND %s
         GROUP BY site_label, month_start ORDER BY site_label, month_start;
