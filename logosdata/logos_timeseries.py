@@ -3444,7 +3444,8 @@ class TimeseriesWidget(QWidget):
         query_params = (start, end, analyte, channel, use_preferred_channel)
 
         if force or query_params != self._last_query_params:
-            test_filter = 'AND test_num = 0 AND run_type_num <> 10' if self.instrument.inst_num == 192 else ''
+            # Test runs are never time series data, on any instrument (FE3 has a 2021 THD pair run as a Test).
+            test_filter = 'AND test_num = 0 AND run_type_num <> 10'
             sql = f"""
             SELECT sample_datetime, run_time, analysis_datetime, mole_fraction, channel,
                    rejected, site, sample_id, pair_id_num, run_type_num, ng_mole_fraction_num
