@@ -47,6 +47,11 @@ converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosin
   and both the desktop and the web follow.
 - Tagging from the time series writes tags only (as the desktop); `tstag` accepts only the instrument's own
   mole fractions (M4: also M1/M3, inst 46/54).
+- BLD1 (AirCore): `bld1_timeseries()` in `logos_timeseries_web.py`. Core injections are run type 9, port 1; flights
+  come from `ttea.ac_gc_vertical_profile` (launch time, all BLD), joined on the run's date, and every injection is
+  drawn at the launch time (no altitudes stored). The site buttons are FE3's and choose fECD surface data for the same
+  compound (`surface_for()`: FE3's preferred channel where it has two), NWR by default; only AirCore points are
+  tagged from BLD1. Web only so far; runs with no launch record (2021-22 lab runs, Apr 2025, ...) are left out.
 
 ## Key instrument/parameter numbers
 
