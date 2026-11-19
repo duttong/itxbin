@@ -356,8 +356,8 @@ def last_data_time(page_id, inst):
     hit = _last_data.get(page_id)
     if hit and time.time() - hit[0] < 600:
         return hit[1]
-    if is_insitu(inst):
-        rows = inst.doquery('SELECT MAX(run_time) t FROM hats.ng_insitu_analysis WHERE inst_num = %s AND site_num = %s',
+    if is_insitu(inst):      # an in situ run_time is when a continuous GC run began (weeks ago): the latest analysis counts
+        rows = inst.doquery('SELECT MAX(analysis_time) t FROM hats.ng_insitu_analysis WHERE inst_num = %s AND site_num = %s',
                             [int(inst.inst_num), int(inst.site_num)])
     else:
         rows = inst.doquery('SELECT MAX(run_time) t FROM hats.ng_analysis WHERE inst_num = %s', [int(inst.inst_num)])
