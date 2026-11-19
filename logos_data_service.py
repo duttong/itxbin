@@ -224,9 +224,27 @@ def points_json(instrument, df, detrend=False):
     idc = id_column(instrument)
     out['mfnum'] = _column(df[idc], 'num') if idc in df.columns else [None] * len(df)
     out['extra'] = {c: _column(df[c], 'num') for c in getattr(instrument, 'ADDITIONAL_DATA_COLUMNS', ()) if c in df.columns}
+    out.update(_event_columns(instrument, df))
     if detrend:
         out['detrend'] = detrend_summary(instrument, df)
     return out
+
+
+def _event_columns(instrument, df):
+    """Each point's sample event, for the Point box's Sample ID link to om2 Event Edit: 'hev' = the HATS flask event
+    (ng_analysis.hatsflask_event_num), 'cev' = the CCGG event (ccgg_event_num), None where there is none.  Flask
+    instruments only (in situ rows have no events); the processing view carries neither, so one indexed read."""
+    if is_insitu(instrument) or 'analysis_num' not in df.columns or df.empty:
+        return {}
+    nums = sorted({int(x) for x in pd.to_numeric(df['analysis_num'], errors='coerce').dropna()})
+    if not nums:
+        return {}
+    rows = instrument.doquery(f"SELECT num, hatsflask_event_num AS h, ccgg_event_num AS c FROM hats.ng_analysis "
+                              f"WHERE num IN ({','.join(map(str, nums))})") or []
+    ev = {int(r['num']): (int(r['h'] or 0) or None, int(r['c'] or 0) or None) for r in rows}
+    keys = [ev.get(int(a), (None, None)) if pd.notna(a) else (None, None)
+            for a in pd.to_numeric(df['analysis_num'], errors='coerce')]
+    return {'hev': [h for h, _ in keys], 'cev': [c for _, c in keys]}
 
 
 DETREND_LABELS = {1: 'Pt-to-pt', 3: '2-pt avg', 2: 'Lowess 5', 4: '3-pt box', 6: '5-pt box', 5: 'Lowess 10'}
