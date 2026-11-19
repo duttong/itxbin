@@ -267,6 +267,9 @@ def otto_means(ts, analyte):
 
 def means(inst, analyte, start, end, ts=None):
     """The datasets that are off by default and cost a read of every pair mean: flask (and OTTO) 10-day and monthly."""
+    if inst.inst_num == BLD1_INST_NUM:       # BLD1: the surface means are fECD's (FE3 + OTTO) for the same compound
+        fe3, name = surface_for(analyte)
+        return means(fe3, name, start, end)
     ts = ts or HeadlessTimeseries(inst, analyte, start, end)
     tenday, monthly = flask_means(ts, analyte)
     otto10, ottomon = otto_means(ts, analyte)
@@ -287,6 +290,8 @@ def mstar_last_year(inst):
 def timeseries(inst, analyte, start, end, with_means=True):
     """Every dataset of the desktop Timeseries figure for one analyte and year range, for all of the instrument's sites.
     The page filters by site and by flag, so those toggles need no new request."""
+    if inst.inst_num == BLD1_INST_NUM:
+        return bld1_timeseries(inst, analyte, start, end, with_means)
     ts = HeadlessTimeseries(inst, analyte, start, end)
     if analyte not in ts.analytes and ts._resolve_pnum(analyte) is None:
         raise ValueError(f'unknown analyte {analyte!r}')
@@ -352,6 +357,84 @@ def timeseries(inst, analyte, start, end, with_means=True):
 
     out['sets'] = {k: v for k, v in sets.items() if v}
     return out
+
+
+# ── BLD1: AirCore profiles from Boulder, with fECD surface data ──
+# BLD1 analyses AirCore samples: a flight's core is run as one run (run type 9) with the core on port 1, a few dozen to
+# a few hundred injections down the core (stratosphere to surface).  The ng tables give those rows no site or sample
+# time; the launches are in ttea.ac_gc_vertical_profile (all from BLD), joined on the run's date.  No altitudes are
+# stored (ttea.ac_gc_profile_analysis is empty), so every core injection is drawn at its flight's launch time.  The
+# site buttons choose fECD (FE3 + OTTO) surface data for the same compound; the AirCore points are always shown.
+BLD1_INST_NUM = 220
+_FE3 = [None]
+
+
+def _fe3_instrument():
+    if _FE3[0] is None:
+        import logos_instruments as li
+        _FE3[0] = li.FE3_Instrument()
+    return _FE3[0]
+
+
+def surface_for(analyte):
+    """FE3 and its analyte for a BLD1 analyte: the compound's own name where FE3 has one channel, else '<compound> (P)'
+    (FE3's preferred channel, date by date)."""
+    fe3 = _fe3_instrument()
+    base = re.sub(r'\s*\([^()]*\)\s*$', '', str(analyte))
+    names = [n for n in (fe3.analytes or {}) if re.sub(r'\s*\([^()]*\)\s*$', '', n).lower() == base.lower()]
+    if not names:
+        raise ValueError(f'FE3 does not measure {base}')
+    return fe3, (names[0] if len(names) == 1 else f'{base} ({lts.PREFERRED_CHANNEL})')
+
+
+def aircore_points(inst, analyte, start, end):
+    """Every core injection (run type 9, port 1) of the BLD1 AirCore flights launched in [start, end], at the launch
+    time, in core order within each flight."""
+    pnum = int((inst.analytes or {})[analyte])
+    ch = lts._explicit_channel(analyte)
+    rows = inst.doquery(f"""
+        SELECT v.analysis_datetime, v.run_time, v.mole_fraction, v.rejected, v.ng_mole_fraction_num, v.channel,
+               l.launch_datetime, l.num AS flight
+        FROM hats.ng_data_processing_view v
+        JOIN ttea.ac_gc_vertical_profile l ON l.date = DATE(v.run_time)
+        WHERE v.inst_num = %s AND v.run_type_num = 9 AND v.port = 1 AND v.parameter_num = %s
+          {'AND v.channel = %s' if ch else ''}
+          AND YEAR(l.launch_datetime) BETWEEN %s AND %s
+        ORDER BY l.launch_datetime, v.analysis_datetime""",
+        [BLD1_INST_NUM, pnum] + ([ch] if ch else []) + [int(start), int(end)]) or []
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return None
+    df['analysis_datetime'] = pd.to_datetime(df['analysis_datetime'], utc=True)
+    df['launch_datetime'] = pd.to_datetime(df['launch_datetime'], utc=True)
+    df['seg'] = df.groupby('flight').cumcount() + 1
+    df['nseg'] = df.groupby('flight')['seg'].transform('max')
+    return {
+        't': _ts(df['launch_datetime']), 'y': _num(df['mole_fraction']), 'site': ['BLD'] * len(df),
+        'rej': _ints(df['rejected'].fillna(0)), 'mf': _ints(df['ng_mole_fraction_num']),
+        'run': _ts(df['run_time']), 'at': _ts(df['analysis_datetime']), 'ch': _strs(df['channel']),
+        'seg': _ints(df['seg']), 'nseg': _ints(df['nseg']),
+    }
+
+
+def bld1_timeseries(inst, analyte, start, end, with_means=True):
+    """The BLD1 Timeseries: fECD's datasets for the compound (the site buttons choose among them) plus 'aircore'."""
+    if analyte not in (inst.analytes or {}):
+        raise ValueError(f'unknown analyte {analyte!r}')
+    fe3, name = surface_for(analyte)
+    out = timeseries(fe3, name, start, end, with_means)
+    out['analyte'] = analyte
+    out['surface'] = {'inst': 'fe3', 'analyte': name}
+    core = aircore_points(inst, analyte, start, end)
+    if core:
+        out['sets']['aircore'] = core
+    return out
+
+
+def bld1_sites():
+    """The site buttons for BLD1: FE3's (fECD surface) sites, with their latitudes."""
+    ts = HeadlessTimeseries(_fe3_instrument())
+    return ts.sites_by_lat, ts.site_lat_map
 
 
 def relstd(inst, analyte, start, end):

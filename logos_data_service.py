@@ -1711,7 +1711,12 @@ def op_tsinit(req):
     cfg.read(os.path.join(_HERE, 'logosdata', 'logos_data.conf'))
     site = getattr(inst, 'site', None)
     defaults = [site.upper()] if site else ['BRW', 'MLO', 'SMO', 'SPO']
+    aircore = inst.inst_num == tsweb.BLD1_INST_NUM
+    if aircore:      # BLD1: the site buttons choose fECD surface data; NWR is the nearest background site to the launches
+        ts.sites_by_lat, ts.site_lat_map = tsweb.bld1_sites()
+        defaults = ['NWR']
     return {
+        'aircore': aircore,
         'insitu': is_insitu(inst),
         'analytes': list(ts.analytes),
         'pnums': {name: int(p) for name, p in ts.analytes.items()},
