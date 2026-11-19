@@ -177,6 +177,7 @@ POINT_COLUMNS = {
     'tank': ('tank_serial_num', 'str'), 'netp': ('net_pressure', 'num'), 'sample_t': ('sample_datetime', 'time'),
     'comments': ('status_comments', 'str'), 'flask_port': ('flask_port', 'num'), 'cal_date': ('cal_date', 'str'),
     'anum': ('analysis_num', 'num'), 'channel': ('channel', 'str'),
+    'test': ('test_num', 'num'),        # equipment test number of a Test run (ng_analysis.test_num; 0 = none)
 }
 
 
