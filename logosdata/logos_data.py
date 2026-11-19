@@ -3734,7 +3734,8 @@ class MainWindow(QMainWindow, TagCRUDMixin):
         )
         if (run_type_num is not None
                 and (flask_port_numeric or has_real_sample_id)
-                and self.instrument.inst_num not in range(236, 245)):
+                and self.instrument.inst_num not in range(236, 245)
+                and self.instrument.inst_num != 193):      # FE3 runs no PFPs: it would always say Flask
             flask_type = "PFP" if int(run_type_num) == 5 else "Flask"
             parts.append(f"<b>Flask Type:</b> {flask_type}")
 
