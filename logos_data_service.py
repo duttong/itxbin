@@ -225,9 +225,36 @@ def points_json(instrument, df, detrend=False):
     out['mfnum'] = _column(df[idc], 'num') if idc in df.columns else [None] * len(df)
     out['extra'] = {c: _column(df[c], 'num') for c in getattr(instrument, 'ADDITIONAL_DATA_COLUMNS', ()) if c in df.columns}
     out.update(_event_columns(instrument, df))
+    out.update(_tank_fill_column(instrument, df))
     if detrend:
         out['detrend'] = detrend_summary(instrument, df)
     return out
+
+
+def _tank_fill_column(instrument, df):
+    """'tfill': the fill code (reftank.fill) of each point's tank at its analysis time, the tank's latest fill on or
+    before that date, for the header's Tanks link (LogosTanks takes SERIAL:FILLCODE).  None for points without a tank."""
+    if is_insitu(instrument) or 'tank_serial_num' not in df.columns or df.empty:
+        return {}
+    serials = sorted({str(x).strip() for x in df['tank_serial_num'].dropna() if str(x).strip() not in ('', '0', 'None', 'nan')})
+    if not serials:
+        return {}
+    rows = instrument.doquery(f"SELECT serial_number, code, `date` FROM reftank.fill WHERE serial_number IN "
+                              f"({','.join(['%s'] * len(serials))}) ORDER BY serial_number, `date`", serials) or []
+    fills = {}
+    for r in rows:
+        if r['date'] is not None and r['code']:
+            fills.setdefault(str(r['serial_number']).upper(), []).append((pd.Timestamp(r['date']), str(r['code'])))
+    when = pd.to_datetime(df['analysis_datetime'], errors='coerce', utc=True).dt.tz_localize(None) \
+        if 'analysis_datetime' in df.columns else pd.Series([pd.NaT] * len(df), index=df.index)
+    out = []
+    for serial, t in zip(df['tank_serial_num'], when):
+        code = None
+        for d, c in fills.get(str(serial).strip().upper(), []):
+            if pd.notna(t) and d <= t:
+                code = c
+        out.append(code)
+    return {'tfill': out}
 
 
 def _event_columns(instrument, df):
