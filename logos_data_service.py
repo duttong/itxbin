@@ -1705,10 +1705,15 @@ def _queue_means(req):
     db.doquery(f'INSERT INTO {JOB_TABLE} (inst, inst_num, action, parameter_num, update_gcwerks, requested_by, requested_at) '
                "VALUES (%s, %s, 'means', %s, 0, %s, UTC_TIMESTAMP())",
                [inst, logos_jobs.MEANS_INSTS[inst]['inst_num'], pnum, user])
-    rows = db.doquery(f"SELECT MAX(num) num FROM {JOB_TABLE} WHERE inst = %s AND action = 'means' AND requested_by = %s",
-                      [inst, user]) or []
-    _audit(req, f"job means pnum={pnum if pnum is not None else 'all'}")
-    return {'queued': int(rows[0]['num']) if rows and rows[0]['num'] is not None else None}
+    # Read the row back as stored: a column that cannot hold a value (an ENUM without 'means' or this inst id, with the
+    # server not in strict mode) keeps '' instead, with no error, and the worker would only fail the job later.
+    rows = db.doquery(f'SELECT num, inst, action FROM {JOB_TABLE} WHERE requested_by = %s ORDER BY num DESC LIMIT 1', [user]) or []
+    if not rows or rows[0]['action'] != 'means' or rows[0]['inst'] != inst:
+        got = f"inst={rows[0]['inst']!r} action={rows[0]['action']!r}" if rows else 'no row'
+        raise ValueError(f"{JOB_TABLE} did not store the job as asked ({got}): add 'means' to its action column "
+                         f"(and {inst!r} to inst) if they are ENUMs")
+    _audit(req, f"job {rows[0]['num']} means pnum={pnum if pnum is not None else 'all'}")
+    return {'queued': int(rows[0]['num'])}
 
 
 def op_jobcancel(req):
