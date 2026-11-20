@@ -22,8 +22,10 @@ A row is deleted only if its (site_num, parameter_num, month) no longer
 appears in the freshly computed set -- e.g. every injection in a month has
 since been rejected.
 
-Meant to run on a periodic cron/cli cadence (e.g. weekly), not after every
-ingest.
+Meant to run nightly from cron (--all -i), not after every tag: a full
+history takes ~20 s per gas per instrument.  To bring one analyte's means up
+to date after tagging, the LOGOS Data page (omi logos_data.php) queues a
+'means' job (logos_jobs.py), which runs this script with -p PNUM.
 
 RITS (inst_num 246-250, 1987-2001) holds only published values imported by
 rits_aftp2db.py and never changes, so it only needs one refresh after an
@@ -36,6 +38,7 @@ Usage:
   python3 insitu_monthly_means_batch.py cats brw -i
   python3 insitu_monthly_means_batch.py cats brw nwr mlo -i
   python3 insitu_monthly_means_batch.py cats smo --gas cfc12,cfc113 -i
+  python3 insitu_monthly_means_batch.py cats smo -p 22 -i
   python3 insitu_monthly_means_batch.py rits -i
   python3 insitu_monthly_means_batch.py --all -i
 
@@ -125,6 +128,17 @@ def _resolve_gases(db, gas_list: str) -> tuple[int, ...]:
     if ambiguous:
         raise ValueError("Ambiguous gas formula(s): " + ', '.join(ambiguous))
     return tuple(sorted(set.union(*matches.values())))
+
+
+def _parse_pnums(text: str) -> tuple[int, ...]:
+    """'22, 32' -> (22, 32); ValueError for anything that is not a positive integer."""
+    try:
+        nums = {int(part) for part in text.split(',')}
+    except ValueError:
+        nums = set()
+    if not nums or min(nums) <= 0:
+        raise ValueError(f"--pnum takes parameter numbers separated by commas, e.g. 22,32 (got {text!r}).")
+    return tuple(sorted(nums))
 
 
 def _gas_filter(column: str, parameter_nums: tuple[int, ...]) -> str:
@@ -244,8 +258,11 @@ def main():
                               "site codes (brw, nwr, mlo, smo, spo); omit for all.")
     parser.add_argument('--all', action='store_true',
                          help="Refresh IE3 and every CATS site (not RITS).")
-    parser.add_argument('--gas', metavar='GAS[,GAS...]',
-                         help="Refresh only these gas formulas, e.g. cfc12,cfc113 (default: all gases).")
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument('--gas', metavar='GAS[,GAS...]',
+                       help="Refresh only these gas formulas, e.g. cfc12,cfc113 (default: all gases).")
+    which.add_argument('-p', '--pnum', metavar='PNUM[,PNUM...]',
+                       help="Refresh only these parameter_nums, e.g. 22 or 22,32 (default: all gases).")
     parser.add_argument('-i', '--insert', action='store_true',
                          help="Write results to DB (default: dry run).")
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -258,7 +275,12 @@ def main():
     t0 = time.time()
     instruments = _build_instruments(args)
     try:
-        parameter_nums = _resolve_gases(instruments[0].db, args.gas) if args.gas is not None else ()
+        if args.gas is not None:
+            parameter_nums = _resolve_gases(instruments[0].db, args.gas)
+        elif args.pnum is not None:
+            parameter_nums = _parse_pnums(args.pnum)
+        else:
+            parameter_nums = ()
     except ValueError as error:
         parser.error(str(error))
     for inst in instruments:

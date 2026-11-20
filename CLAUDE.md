@@ -31,6 +31,12 @@ converted (being retired; `cats_gcwerks2db.py --end` stays exclusive for logosin
 - A job is the instrument's own ingest script: `fetch` = the daily run; `reload` = `--steps
   [update,]load,batch -s .. -e ..` (FE3 adds `export`, IE3 `eng,methods`); `recalc` = `--steps batch`.
   `logos_jobs.INSTS` lists the instruments (M4, FE3, IE3-SMO) and is read by the service too.
+- `means` jobs (IE3 and the CATS sites, `logos_jobs.MEANS_INSTS`) run `insitu_monthly_means_batch.py
+  <ie3 | cats SITE> [-p PNUM] -i`, queued by the Data view's Multi-Tag panel ("Monthly means": this
+  analyte or all). They need `ng_ingest_jobs.parameter_num` (NULL = every analyte); only means jobs
+  write it. `hats.ng_insitu_monthly_means` is otherwise rebuilt nightly by cron (`--all -i`): a full
+  history takes ~20 s per gas per instrument, too slow to run on every tag. It is the only stored
+  monthly-means table; flask monthly means are computed live.
 - The ingest scripts take `--steps` (`ingest_common.py`; default = the daily set; `update` =
   gcupdate from the range's month + gccalc, in the daily set only for M4) and hold an instrument lock
   for the whole run (`logos_lock.py`, `/var/tmp/logos-ingest-<m4|fe3|ie3-smo>.lock`), so a job and

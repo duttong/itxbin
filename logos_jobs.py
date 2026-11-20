@@ -12,13 +12,17 @@ A job runs the instrument's own ingest script, the one cron runs daily, with a r
   reload   <inst>_ingest.py --steps [update,]load,batch -s START [-e END]   (FE3 adds export, IE3 eng
            and methods; update = gcupdate + gccalc first, when the job asks for it)
   recalc   <inst>_ingest.py --steps batch -s START [-e END]
+  means    insitu_monthly_means_batch.py <ie3 | cats SITE> [-p PNUM] -i   (IE3 and CATS: the whole
+           history of one analyte, or of all of them, from the Data page's Update monthly means)
 
 The ingest script takes the instrument's lock (logos_lock.py), so a job waits for a cron run of the
-same instrument and the other way round.
+same instrument and the other way round.  A means job takes no lock: it only reads mole fractions
+and tags, and one running per instrument (the queue's rule) is enough.
 
   logos_jobs.py                     # claim and run queued jobs (cron)
   logos_jobs.py --dry-run           # show the command for the next claimable job; write nothing
   logos_jobs.py --dry-run --job-json '{"inst":"fe3","action":"reload","start_time":"2026-10-01","end_time":"2026-10-31 23:59:59"}'
+  logos_jobs.py --dry-run --job-json '{"inst":"brw","action":"means","parameter_num":22}'
 """
 
 import argparse
@@ -44,7 +48,18 @@ INSTS = {
     "fe3":     dict(inst_num=193, script="fe3_ingest.py", args=[],                reload=["export", "load", "batch"]),
     "ie3-smo": dict(inst_num=236, script="ie3_ingest.py", args=["--site", "smo"], reload=["load", "eng", "methods", "batch"]),
 }
-ACTIONS = ("fetch", "reload", "recalc")
+# The in situ instruments whose monthly means (hats.ng_insitu_monthly_means) a 'means' job refreshes, by the page's
+# instrument id (logos_data_service PAGE_INSTS): inst_num and the insitu_monthly_means_batch.py arguments.
+MEANS_INSTS = {
+    "ie3-smo":  dict(inst_num=236, args=["ie3"]),
+    "brw":      dict(inst_num=239, args=["cats", "brw"]),
+    "sum":      dict(inst_num=240, args=["cats", "sum"]),
+    "nwr":      dict(inst_num=241, args=["cats", "nwr"]),
+    "mlo":      dict(inst_num=242, args=["cats", "mlo"]),
+    "smo_cats": dict(inst_num=243, args=["cats", "smo"]),
+    "spo":      dict(inst_num=244, args=["cats", "spo"]),
+}
+ACTIONS = ("fetch", "reload", "recalc", "means")
 
 
 def say(msg):
@@ -92,12 +107,14 @@ def utc_naive(v):
 
 def plan(job):
     """A job as the command to run: (argv, description). ValueError with a message for the page."""
-    cfg = INSTS.get(job.get("inst"))
-    if cfg is None:
-        raise ValueError(f"unknown instrument {job.get('inst')!r}; jobs run for {', '.join(INSTS)}")
     action = job.get("action")
     if action not in ACTIONS:
         raise ValueError(f"unknown action {action!r}")
+    if action == "means":
+        return plan_means(job)
+    cfg = INSTS.get(job.get("inst"))
+    if cfg is None:
+        raise ValueError(f"unknown instrument {job.get('inst')!r}; jobs run for {', '.join(INSTS)}")
     argv = [sys.executable, str(BIN_DIR / cfg["script"]), *cfg["args"]]
     if action == "fetch":
         return argv, "the daily ingest"
@@ -117,6 +134,28 @@ def plan(job):
     if end is not None and end < now:
         argv += ["-e", f"{end:%Y-%m-%d %H:%M:%S}"]
     return argv, f"{action} {start:%Y-%m-%d %H:%M} to {f'{end:%Y-%m-%d %H:%M}' if end is not None and end < now else 'now'}"
+
+
+def plan_means(job):
+    """A 'means' job: the monthly means of one analyte (parameter_num) or, with none, of every analyte."""
+    cfg = MEANS_INSTS.get(job.get("inst"))
+    if cfg is None:
+        raise ValueError(f"monthly means are for the in situ instruments ({', '.join(MEANS_INSTS)}), "
+                         f"not {job.get('inst')!r}")
+    argv = [sys.executable, str(BIN_DIR / "insitu_monthly_means_batch.py"), *cfg["args"]]
+    pnum = job.get("parameter_num")
+    if pnum not in (None, "", 0):
+        try:
+            pnum = int(pnum)
+        except (TypeError, ValueError):
+            raise ValueError(f"bad parameter_num {pnum!r}") from None
+        if pnum <= 0:
+            raise ValueError(f"bad parameter_num {pnum}")
+        argv += ["-p", str(pnum)]
+        what = f"monthly means of parameter {pnum}"
+    else:
+        what = "monthly means of every analyte"
+    return argv + ["-i"], what
 
 
 def run_cmd(argv, log):
@@ -194,7 +233,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true",
                     help="claim and write nothing; print the command the next job would run")
-    ap.add_argument("--job-json", help="a job as JSON (inst, action, start_time, end_time, update_gcwerks): "
+    ap.add_argument("--job-json", help="a job as JSON (inst, action, start_time, end_time, update_gcwerks, parameter_num): "
                                        "run it now without the jobs table, or print it with --dry-run")
     a = ap.parse_args()
 
