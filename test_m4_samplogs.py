@@ -1,5 +1,8 @@
 import contextlib
 import io
+import datetime
+import re
+import sqlite3
 import unittest
 from unittest.mock import Mock
 
@@ -101,11 +104,94 @@ class TestAnalysisIngest(unittest.TestCase):
         self.assertEqual([row[-1] for row in self.inserted_rows()], [0, 0, 0])
         self.assertEqual([row[3] for row in self.inserted_rows()], [8, 5, 7])
 
+    def test_serial_invalidated_only_when_sample_identity_changes(self):
+        self.ingest.insert_ng_analysis(self.frame([('sx-3534_Grav_D', 7)]))
+        sql = self.ingest.db.doMultiInsert.call_args.args[0]
+        self.assertLess(sql.index('tank_serial_num = IF'), sql.index('run_type_num = VALUES'))
+        self.assertLess(sql.index('tank_serial_num = IF'), sql.index('port_info    = VALUES'))
+        # Evaluate the actual upsert expression against old/new identities.
+        # SQLite's IS implements MySQL's NULL-safe <=> comparison.
+        expression = sql.split('tank_serial_num = IF(', 1)[1].split('NULL)', 1)[0] + 'NULL'
+        expression = re.sub(r'VALUES[(]([a-z_]+)[)]',
+                            lambda match: ':new_' + match[1], expression).replace('<=>', 'IS')
+        conn = sqlite3.connect(':memory:')
+        self.addCleanup(conn.close)
+        conn.create_function('IF', 3, lambda condition, yes, no: yes if condition else no)
+        for old_label, new_label, old_type, new_type, expected in [
+            ('sx-3593_Arch_B', 'sx-3534_Grav_D', 7, 7, None),
+            ('sx-3593_Arch_B', 'sx-3593_Arch_B', 7, 7, 'SX-3593'),
+            ('sx-3593_Arch_B', 'sx-3593_Arch_B', 7, 10, None),
+            (None, 'sx-3534_Grav_D', 7, 7, None),
+        ]:
+            with self.subTest(old_label=old_label, new_label=new_label, new_type=new_type):
+                result = conn.execute(
+                    f'SELECT IF({expression}) FROM '
+                    '(SELECT ? AS port_info, ? AS run_type_num, ? AS tank_serial_num)',
+                    # Named values also bind positionally, in order of appearance.
+                    (new_label, new_type, old_label, old_type, 'SX-3593'),
+                ).fetchone()[0]
+                self.assertEqual(result, expected)
+
     def test_validation_failure_prevents_any_writes(self):
         self.ingest.db.doquery.side_effect = RuntimeError('database unavailable')
         with self.assertRaisesRegex(RuntimeError, 'database unavailable'):
             self.ingest.insert_ng_analysis(self.frame([('T1073_7099', 1)]))
         self.ingest.db.doMultiInsert.assert_not_called()
+
+
+class TestSerialRefresh(unittest.TestCase):
+    def setUp(self):
+        self.sn = M4_Serial_Numbers.__new__(M4_Serial_Numbers)
+        self.sn.inst_num = 192
+        self.sn.start_date = '19940718'
+        self.sn._fill_serial_cache = {}
+        self.sn.db = Mock()
+
+    def test_default_query_keeps_missing_only_scope(self):
+        self.sn.db.doquery.return_value = []
+        self.sn.find_missing_serials()
+        sql = self.sn.db.doquery.call_args.args[0]
+        self.assertIn('and tank_serial_num is NULL', sql)
+        self.assertNotIn('OR (run_time', sql)
+        self.assertEqual(len(self.sn.db.doquery.call_args.args), 1)
+
+    def test_refresh_repairs_swapped_serials_including_overnight_injections(self):
+        rows = [
+            dict(num=3230807, analysis_time='2026-11-20 01:34:00',
+                 run_time='2026-11-19 15:11:00', run_type_num=7,
+                 port_info='sx-3534_Grav_D', tank_serial_num='SX-3593'),
+            dict(num=3230815, analysis_time='2026-11-20 04:32:00',
+                 run_time='2026-11-19 15:11:00', run_type_num=7,
+                 port_info='sx-3593_Arch_B', tank_serial_num='SX-3534'),
+            dict(num=3230791, run_type_num=7,
+                 port_info='sx-3593_Arch_A', tank_serial_num='SX-3593'),
+            dict(num=999, run_type_num=7,
+                 port_info='unresolved', tank_serial_num='MANUAL'),
+        ]
+        def query(sql, params=None):
+            if 'SELECT * FROM hats.ng_analysis' in sql:
+                self.assertIn('OR (run_time >= %s AND run_time < %s)', sql)
+                self.assertEqual(params, (datetime.date(2026, 11, 19), datetime.date(2026, 11, 20)))
+                # Exercise MySQLdb's parameter formatting, including LIKE wildcards.
+                formatted = sql % tuple(str(value) for value in params)
+                self.assertIn('not like "%zero%"', formatted)
+                self.assertIn('not like "%junk%"', formatted)
+                return rows
+            if 'FROM reftank.fill' in sql:
+                return [{'serial_number': 'SX-3534' if 'sx-3534' in sql else 'SX-3593'}]
+            return []
+        self.sn.db.doquery.side_effect = query
+        self.sn.update_serials(datetime.date(2026, 11, 19))
+        updates = [call.args[0] for call in self.sn.db.doquery.call_args_list
+                   if call.args[0].startswith('UPDATE')]
+        self.assertEqual(len(updates), 2)
+        self.assertIn("SET tank_serial_num = 'SX-3534'", updates[0])
+        self.assertIn('num = 3230807 AND inst_num = 192', updates[0])
+        self.assertIn("SET tank_serial_num = 'SX-3593'", updates[1])
+        self.assertIn('num = 3230815 AND inst_num = 192', updates[1])
+        lookups = [call for call in self.sn.db.doquery.call_args_list
+                   if 'FROM reftank.fill' in call.args[0]]
+        self.assertEqual(len(lookups), 2)  # One lookup per distinct tank key.
 
 
 class TestCcgFlaskEvents(unittest.TestCase):

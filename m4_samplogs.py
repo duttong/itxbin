@@ -59,6 +59,10 @@ m4_ingest.py pipeline:
    tank_serial_num is still NULL, extracts a key from port_info using regex
    (sx/esx pattern or first 4+-digit run), looks it up in reftank.fill, and
    writes the canonical serial number back to ng_analysis.tank_serial_num.
+   A changed sample label or run type clears the old serial during upsert.
+   --refresh-serials YYYY-MM-DD also rechecks existing serials for sequences
+   starting on that date, including injections after midnight; only resolved
+   mismatches are rewritten. Routine runs still query missing serials only.
    Test runs (run_type_num=10) are labelled with flask numbers, so for them
    only an sx tag or a token that is exactly a reftank.fill serial is used.
    This means tanks listed in tank_serial_num can be reliably linked to the
@@ -69,11 +73,13 @@ Usage:
     m4_samplogs.py -i         # also insert/update hats DB tables
     m4_samplogs.py -i -d 1Y   # same, covering the past year
     m4_samplogs.py -i --all   # same, covering all data since start_date
+    m4_samplogs.py -i --all --refresh-serials 2026-11-19  # repair existing serials for this run date
 """
 
 import argparse
 import pandas as pd
 import re
+from datetime import date, timedelta
 
 from logos_instruments import M4_Instrument
 
@@ -736,6 +742,10 @@ class M4_SampleLogs(M4_Instrument):
             %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         )
         ON DUPLICATE KEY UPDATE
+            -- Compare original identity before replacing port_info/run_type_num.
+            tank_serial_num = IF(port_info <=> VALUES(port_info)
+                                 AND run_type_num = VALUES(run_type_num),
+                                 tank_serial_num, NULL),
             test_num     = IF(VALUES(test_num) = 0
                               AND port_info = VALUES(port_info)
                               AND TRIM(port_info) NOT REGEXP '^[Tt][0-9]{4}([_ -]|$)',
@@ -886,12 +896,24 @@ class M4_Serial_Numbers(M4_Instrument):
         super().__init__()
         self._fill_serial_cache = {}
     
-    def find_missing_serials(self):
-        """ Finds missing serial numbers in the M4 instrument. """
+    def find_missing_serials(self, refresh_date=None):
+        """Find unresolved serials, optionally rechecking runs starting on a date.
+
+        Filter refreshes by run_time so overnight injections stay with their
+        sequence. The default retains the existing missing-only lookup.
+        """
+        serial_filter = "tank_serial_num is NULL"
+        params = None
+        if refresh_date is not None:
+            refresh_date = date.fromisoformat(str(refresh_date))
+            serial_filter = (
+                "(tank_serial_num is NULL OR (run_time >= %s AND run_time < %s))"
+            )
+            params = (refresh_date, refresh_date + timedelta(days=1))
         sql = f"""
             SELECT * FROM hats.ng_analysis
             where inst_num = {self.inst_num}
-            and tank_serial_num is NULL
+            and {serial_filter}
             and pair_id_num = 0
             and port NOT in (1, 2, 12, 14)
             and port_info not like "%zero%"
@@ -900,8 +922,24 @@ class M4_Serial_Numbers(M4_Instrument):
             and run_time > '{pd.to_datetime(self.start_date, format="%Y%m%d").date()}'
             order by analysis_time;
         """
-        df = pd.DataFrame(self.db.doquery(sql))
-        return df
+        if params:
+            # MySQLdb formats bound parameters with %, so escape LIKE wildcards.
+            sql = sql.replace('%zero%', '%%zero%%').replace('%junk%', '%%junk%%')
+        rows = self.db.doquery(sql, params) if params else self.db.doquery(sql)
+        return pd.DataFrame(rows)
+
+    def update_serials(self, refresh_date=None):
+        """Resolve missing serials and repair mismatches in an explicit refresh."""
+        df = self.find_missing_serials(refresh_date)
+        if df.empty:
+            return
+        df = self.add_fill_serial_matches(df)
+        # Preserve manual identities when the label cannot be resolved, and
+        # avoid rewriting rows whose canonical serial is already correct.
+        changed = df['fill_serial_match'].notna() & (
+            df['tank_serial_num'].fillna('') != df['fill_serial_match']
+        )
+        df.loc[changed].apply(self.insert_fill_serial, axis=1)
 
     def port_key(self, port_info):
         """
@@ -1034,8 +1072,12 @@ if __name__ == '__main__':
                     help="Instead of using duration, insert/update all M4 data.")
     opt.add_argument("-i", "--insert", action='store_true',
                     help="Insert data into HATS DB tables (ng_analysis, etc.)")
+    opt.add_argument("--refresh-serials", type=date.fromisoformat, metavar="YYYY-MM-DD",
+                    help="Recheck existing tank serials for runs starting on this date (requires -i)")
     
     options = opt.parse_args()
+    if options.refresh_serials and not options.insert:
+        opt.error("--refresh-serials requires -i/--insert")
     
     m4 = M4_SampleLogs()
     sn = M4_Serial_Numbers()
@@ -1049,10 +1091,7 @@ if __name__ == '__main__':
         pd.set_option('future.no_silent_downcasting', True)
         df = m4.ng_analysis(df)
         m4.insert_ancillary_data(df)
-        sn_df = sn.find_missing_serials()
-        if not sn_df.empty:
-            sn_df = sn.add_fill_serial_matches(sn_df)
-            sn_df.apply(sn.insert_fill_serial, axis=1)
+        sn.update_serials(options.refresh_serials)
             
         print(f'Inserted or updated {df.shape[0]} rows in hats.ng_analysis and ng_ancillary_data.')
     else:

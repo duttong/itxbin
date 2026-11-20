@@ -21,6 +21,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+import logos_lock
+
 GC_DIR = Path('/hats/gc/m4')
 CHEMSTATION_DIR = GC_DIR / 'chemstation'
 
@@ -83,16 +85,18 @@ def remove_samplelog_rows(log_path: Path, yymmdd: str):
     log_path.write_text(header + ''.join(kept))
 
 
-def run_commands(gcd: Path, yymm: str):
+def run_commands(gcd: Path, yymm: str, run_date: datetime.date | None = None):
     """Same pipeline as m4_ingest.py, but bounded to the reimported month
     (yymm) instead of the recency defaults m4_ingest.py relies on, since this
     directory may be much older than 30 days: m4_samplogs.py uses --all
     instead of its 2-month window, and m4_batch.py gets explicit -s/-e so it
-    doesn't fall back to "last 30 days"."""
+    doesn't fall back to "last 30 days". Recheck cached tank serials for
+    sequences starting on run_date before rebuilding calibration aggregates."""
+    refresh_args = ["--refresh-serials", run_date.isoformat()] if run_date else []
     cmds = [
         ["/hats/gc/gcwerks-3/bin/gcimport",    "-gcdir", str(gcd)],
         ["/hats/gc/gcwerks-3/bin/run-index",   "-gcdir", str(gcd)],
-        ["/hats/gc/itxbin/m4_samplogs.py",     "--all", "-i"],
+        ["/hats/gc/itxbin/m4_samplogs.py",     "--all", "-i", *refresh_args],
         ["/hats/gc/gcwerks-3/bin/gcupdate",    "-gcdir", str(gcd), yymm],
         ["/hats/gc/gcwerks-3/bin/gccalc",      "-gcdir", str(gcd)],
         ["/hats/gc/itxbin/m4_gcwerks2db.py",   yymm, "-x", "--flagged"],
@@ -120,6 +124,13 @@ def main():
     date_obj = parse_bd_date(name)
     if date_obj is None:
         parser.error(f"Could not parse a bdMMDDYY date from '{name}'")
+    # Ingestion deletes and recopies these directories. Wait for its lock
+    # before checking paths, and hold it throughout cleanup and reprocessing.
+    with logos_lock.acquire("m4", log=logging.info):
+        _reimport_directory(parser, args, name, chemstation_path, date_obj)
+
+
+def _reimport_directory(parser, args, name, chemstation_path, date_obj):
     if not chemstation_path.is_dir():
         parser.error(f"Chemstation directory not found: {chemstation_path}")
 
@@ -163,7 +174,7 @@ def main():
         logging.info(f"Removed {samplelog_count} rows from {samplelog_path}")
 
     yymm = date_obj.strftime('%y%m')
-    run_commands(GC_DIR, yymm)
+    run_commands(GC_DIR, yymm, run_date=date_obj)
 
 
 if __name__ == "__main__":
