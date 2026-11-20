@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock
 
-from insitu_monthly_means_batch import _resolve_gases, refresh
+from insitu_monthly_means_batch import _parse_pnums, _resolve_gases, refresh
 
 
 class MonthlyGasSelectionTest(TestCase):
@@ -23,6 +23,13 @@ class MonthlyGasSelectionTest(TestCase):
 
         with self.assertRaisesRegex(ValueError, 'Unknown gas formula.*typo'):
             _resolve_gases(db, 'cfc12,typo')
+
+    def test_parse_pnums(self):
+        self.assertEqual(_parse_pnums('22'), (22,))
+        self.assertEqual(_parse_pnums(' 32, 22,32 '), (22, 32))
+        for bad in ('', 'cfc12', '22,', '0', '-5'):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, '--pnum'):
+                _parse_pnums(bad)
 
     def test_selected_gases_scope_aggregation_and_cleanup(self):
         existing = [

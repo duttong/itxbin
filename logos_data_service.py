@@ -36,6 +36,7 @@ writes must require a role here too.
     {"op": "runnotesave", "inst": "m4", "run": "...", "notes": "text"}   (empty removes them)
     {"op": "jobs", "inst": "m4"} | {"op": "jobs", "num": 12}            Load page jobs (hats.ng_ingest_jobs)
     {"op": "jobqueue", "inst": "fe3", "action": "reload", "start": "2026-10-01", "end": "2026-10-31", "update_gcwerks": false}
+    {"op": "jobqueue", "inst": "brw", "action": "means", "pnum": 22}  in situ monthly means of one analyte (no pnum: all)
     {"op": "jobcancel", "inst": "fe3", "num": 12}
 
     The Timeseries view (logosdata/logos_timeseries_web.py has the details):
@@ -1644,9 +1645,11 @@ def op_jobqueue(req):
     end inclusive; no end = now)."""
     _may_write(req)
     inst = req.get('inst')
+    action = req.get('action')
+    if action == 'means':
+        return _queue_means(req)
     if inst not in logos_jobs.INSTS:
         raise ValueError(f"the Load page can't run {inst} yet")
-    action = req.get('action')
     if action not in logos_jobs.ACTIONS:
         raise ValueError('unknown action')
     start = end = None
@@ -1678,6 +1681,33 @@ def op_jobqueue(req):
     rows = db.doquery(f'SELECT MAX(num) num FROM {JOB_TABLE} WHERE inst = %s AND requested_by = %s',
                       [inst, str(req.get('user') or '')[:64]]) or []
     _audit(req, f"job {action} {logos_dates.sql(start)}..{logos_dates.sql(end)} update={upd}")
+    return {'queued': int(rows[0]['num']) if rows and rows[0]['num'] is not None else None}
+
+
+def _queue_means(req):
+    """Queue a 'means' job (the Data page's Update monthly means): hats.ng_insitu_monthly_means of one analyte ('pnum') or,
+    without one, of every analyte, rebuilt by insitu_monthly_means_batch.py in logos_jobs.py.  A queued job that already
+    covers it (the same analyte, or every analyte) is returned in place of a new one."""
+    inst = req.get('inst')
+    if inst not in logos_jobs.MEANS_INSTS:
+        raise ValueError(f'monthly means are kept for the in situ instruments only, not {inst}')
+    pnum = int(req['pnum']) if req.get('pnum') not in (None, '', 0) else None
+    if pnum is not None and pnum not in {int(p) for p in instrument_for(inst).analytes.values()}:
+        raise ValueError(f'parameter {pnum} is not one of {inst}\'s analytes')
+    job = {'inst': inst, 'action': 'means', 'parameter_num': pnum}
+    logos_jobs.plan(job)
+    db = _jobs_db()
+    busy = db.doquery(f"SELECT num FROM {JOB_TABLE} WHERE inst = %s AND status = 'queued' AND action = 'means' "
+                      'AND (parameter_num IS NULL OR parameter_num <=> %s) ORDER BY num LIMIT 1', [inst, pnum]) or []
+    if busy:
+        return {'queued': int(busy[0]['num']), 'duplicate': True}
+    user = str(req.get('user') or '')[:64]
+    db.doquery(f'INSERT INTO {JOB_TABLE} (inst, inst_num, action, parameter_num, update_gcwerks, requested_by, requested_at) '
+               "VALUES (%s, %s, 'means', %s, 0, %s, UTC_TIMESTAMP())",
+               [inst, logos_jobs.MEANS_INSTS[inst]['inst_num'], pnum, user])
+    rows = db.doquery(f"SELECT MAX(num) num FROM {JOB_TABLE} WHERE inst = %s AND action = 'means' AND requested_by = %s",
+                      [inst, user]) or []
+    _audit(req, f"job means pnum={pnum if pnum is not None else 'all'}")
     return {'queued': int(rows[0]['num']) if rows and rows[0]['num'] is not None else None}
 
 
